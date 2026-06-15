@@ -1,0 +1,128 @@
+/**
+ * Scheduled SMS Reminders
+ * Sends SMS reminders to installers 24 hours before their scheduled events.
+ * Triggered by a Heartbeat cron job at /api/scheduled/sms-reminders
+ */
+
+import type { Express, Request, Response } from "express";
+import { sdk } from "./_core/sdk";
+import { getDb } from "./db";
+import { constructionScheduleEvents, constructionInstallers, constructionJobs, smsDeliveryLog } from "../drizzle/schema";
+import { eq, and, gte, lte, isNotNull } from "drizzle-orm";
+import * as vocphone from "./vocphone";
+import { normaliseAuPhone } from "./construction-notifications";
+
+function getSender(): string {
+  return process.env.VOCPHONE_SMS_SENDER || "61480855750";
+}
+
+export function registerScheduledSmsReminders(app: Express) {
+  app.post("/api/scheduled/sms-reminders", async (req: Request, res: Response) => {
+    try {
+      // Authenticate the cron caller
+      const user = await sdk.authenticateRequest(req);
+      if (!(user as any).isCron && !(user as any).taskUid) {
+        // Also allow from admin for testing
+        if ((user as any).role !== "admin") {
+          return res.status(403).json({ error: "cron-only" });
+        }
+      }
+
+      const db = await getDb();
+      if (!db) {
+        return res.status(500).json({ error: "Database unavailable" });
+      }
+
+      // Find events starting in the next 24-26 hours (window to account for cron timing)
+      const now = new Date();
+      const from = new Date(now.getTime() + 23 * 60 * 60 * 1000); // 23h from now
+      const to = new Date(now.getTime() + 25 * 60 * 60 * 1000);   // 25h from now
+
+      const upcomingEvents = await db
+        .select({
+          event: constructionScheduleEvents,
+          installer: constructionInstallers,
+          job: constructionJobs,
+        })
+        .from(constructionScheduleEvents)
+        .innerJoin(constructionInstallers, eq(constructionScheduleEvents.assignedInstallerId, constructionInstallers.id))
+        .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
+        .where(and(
+          gte(constructionScheduleEvents.startTime, from),
+          lte(constructionScheduleEvents.startTime, to),
+          eq(constructionScheduleEvents.status, "scheduled"),
+          isNotNull(constructionInstallers.phone),
+        ));
+
+      let sent = 0;
+      let failed = 0;
+      const results: Array<{ eventId: number; installer: string; status: string; error?: string }> = [];
+
+      for (const row of upcomingEvents) {
+        const phone = normaliseAuPhone(row.installer.phone || "");
+        if (!phone) {
+          results.push({ eventId: row.event.id, installer: row.installer.name, status: "skipped", error: "Invalid phone" });
+          continue;
+        }
+
+        const eventDate = new Date(row.event.startTime).toLocaleDateString("en-AU", {
+          weekday: "short", day: "numeric", month: "short",
+        });
+        const eventTime = row.event.allDay ? "All day" : new Date(row.event.startTime).toLocaleTimeString("en-AU", {
+          hour: "2-digit", minute: "2-digit",
+        });
+
+        const body = `Reminder: You have a ${row.event.eventType} tomorrow.\n\nClient: ${row.job.clientName}\nSite: ${row.job.siteAddress || "TBC"}\nDate: ${eventDate}\nTime: ${eventTime}\nDetails: ${row.event.title}\n\n- Altaspan Construction`;
+
+        const sender = getSender();
+
+        try {
+          await vocphone.sendSms({ recipient: phone, sender, body });
+          await db.insert(smsDeliveryLog).values({
+            jobId: row.event.jobId,
+            installerId: row.installer.id,
+            recipient: phone,
+            sender,
+            body,
+            status: "sent",
+          });
+          sent++;
+          results.push({ eventId: row.event.id, installer: row.installer.name, status: "sent" });
+        } catch (err: any) {
+          failed++;
+          try {
+            await db.insert(smsDeliveryLog).values({
+              jobId: row.event.jobId,
+              installerId: row.installer.id,
+              recipient: phone,
+              sender,
+              body,
+              status: "failed",
+              errorMessage: err?.message || String(err),
+            });
+          } catch (_) { /* ignore logging failure */ }
+          results.push({ eventId: row.event.id, installer: row.installer.name, status: "failed", error: err?.message });
+        }
+      }
+
+      console.log(`[SMS Reminders] Processed ${upcomingEvents.length} events: ${sent} sent, ${failed} failed`);
+
+      res.json({
+        ok: true,
+        eventsFound: upcomingEvents.length,
+        sent,
+        failed,
+        results,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error("[SMS Reminders] Handler error:", err);
+      res.status(500).json({
+        error: err.message,
+        stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+        context: { url: req.url },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+}

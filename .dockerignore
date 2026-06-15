@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.env
+.env.local
+.manus-logs
+.manus
+.webdev
+references
+*.test.ts
+todo.md
+notes-*.md
+notes-*.txt
+video_*.md
+seed-*.mjs
+test-pattern*.mjs
+update-cost-breakdown.mjs

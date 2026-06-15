@@ -1,0 +1,442 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Poppins", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DEFAULT THEME — Altaspan Brand (Updated June 2026)
+   Primary Navy #06162D, Secondary Navy #102544, Brand Gold #C9AB57
+   Off White #FAFAF8, Light Grey #E8EAED, Dark Text #1F2937
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root,
+:root.scheme-default {
+  --radius: 0.5rem;
+  --background: oklch(0.97 0.003 80);       /* Off White #FAFAF8 */
+  --foreground: oklch(0.25 0.03 215);       /* Primary Navy #06162D */
+  --card: oklch(1 0 0);                     /* White */
+  --card-foreground: oklch(0.35 0.042 215); /* Dark Text #1F2937 */
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.35 0.042 215);
+  --primary: oklch(0.25 0.03 215);          /* Primary Navy #06162D */
+  --primary-foreground: oklch(0.97 0.003 80); /* Off White */
+  --secondary: oklch(0.94 0.005 80);        /* Light neutral */
+  --secondary-foreground: oklch(0.33 0.035 215); /* Secondary Navy #102544 */
+  --muted: oklch(0.93 0.005 80);            /* Muted bg */
+  --muted-foreground: oklch(0.61 0.013 220); /* Medium Grey #6B7280 */
+  --accent: oklch(0.76 0.10 80);            /* Brand Gold #C9AB57 */
+  --accent-foreground: oklch(0.25 0.03 215); /* Primary Navy */
+  --destructive: oklch(0.50 0.18 25);       /* Error #DC2626 */
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.91 0.005 80);           /* Light Grey #E8EAED */
+  --input: oklch(0.91 0.005 80);
+  --ring: oklch(0.76 0.10 80);              /* Brand Gold */
+  --success: oklch(0.55 0.16 145);          /* Success #16A34A */
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.66 0.14 70);           /* Warning #D97706 */
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.25 0.03 215);          /* Primary Navy */
+  --chart-2: oklch(0.76 0.10 80);           /* Brand Gold */
+  --chart-3: oklch(0.33 0.035 215);         /* Secondary Navy */
+  --chart-4: oklch(0.80 0.086 80);          /* Gold Hover */
+  --chart-5: oklch(0.61 0.013 220);         /* Medium Grey */
+  --sidebar: oklch(0.201 0.0513 257);       /* Primary Navy #06162D */
+  --sidebar-foreground: oklch(0.98 0 0);    /* White */
+  --sidebar-primary: oklch(0.76 0.10 80);   /* Brand Gold */
+  --sidebar-primary-foreground: oklch(0.201 0.0513 257);  /* #06162D */
+  --sidebar-accent: oklch(0.266 0.0642 258);  /* Secondary Navy #102544 */
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.28 0.02 215);   /* Navy border */
+  --sidebar-ring: oklch(0.76 0.10 80);      /* Brand Gold */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ALTASPAN — Altaspan Brand Theme (Updated June 2026)
+   Primary Navy #06162D, Secondary Navy #102544, Brand Gold #C9AB57
+   Off White #FAFAF8, Light Grey #E8EAED, Dark Text #1F2937
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root.scheme-altaspan {
+  --radius: 0.5rem;
+  --background: oklch(0.97 0.003 80);
+  --foreground: oklch(0.25 0.03 215);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.35 0.042 215);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.35 0.042 215);
+  --primary: oklch(0.25 0.03 215);
+  --primary-foreground: oklch(0.97 0.003 80);
+  --secondary: oklch(0.94 0.005 80);
+  --secondary-foreground: oklch(0.33 0.035 215);
+  --muted: oklch(0.93 0.005 80);
+  --muted-foreground: oklch(0.61 0.013 220);
+  --accent: oklch(0.76 0.10 80);
+  --accent-foreground: oklch(0.25 0.03 215);
+  --destructive: oklch(0.50 0.18 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.91 0.005 80);
+  --input: oklch(0.91 0.005 80);
+  --ring: oklch(0.76 0.10 80);
+  --success: oklch(0.55 0.16 145);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.66 0.14 70);
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.25 0.03 215);
+  --chart-2: oklch(0.76 0.10 80);
+  --chart-3: oklch(0.33 0.035 215);
+  --chart-4: oklch(0.80 0.086 80);
+  --chart-5: oklch(0.61 0.013 220);
+  --sidebar: oklch(0.201 0.0513 257);       /* Primary Navy #06162D */
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.76 0.10 80);
+  --sidebar-primary-foreground: oklch(0.201 0.0513 257);  /* #06162D */
+  --sidebar-accent: oklch(0.266 0.0642 258);  /* Secondary Navy #102544 */
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.28 0.02 215);
+  --sidebar-ring: oklch(0.76 0.10 80);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SPANLINE — Matches spanline.com.au brand
+   Sidebar: #004677 (navy blue), Highlight: #DA291C (Spanline red)
+   Primary: #004677 (navy), Accent: #DA291C (red)
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root.scheme-spanline {
+  --background: oklch(0.985 0.003 240);
+  --foreground: oklch(0.22 0.02 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.02 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.02 250);
+  --primary: oklch(0.38 0.10 248);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.95 0.01 240);
+  --secondary-foreground: oklch(0.35 0.03 250);
+  --muted: oklch(0.955 0.005 240);
+  --muted-foreground: oklch(0.5 0.015 250);
+  --accent: oklch(0.57 0.21 30);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.91 0.008 240);
+  --input: oklch(0.91 0.008 240);
+  --ring: oklch(0.38 0.10 248);
+  --success: oklch(0.55 0.16 155);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.7 0.15 70);
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.38 0.10 248);
+  --chart-2: oklch(0.57 0.21 30);
+  --chart-3: oklch(0.50 0.12 230);
+  --chart-4: oklch(0.65 0.10 260);
+  --chart-5: oklch(0.70 0.12 200);
+  --sidebar: oklch(0.38 0.10 248);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.57 0.21 30);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.32 0.08 248);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.30 0.07 248);
+  --sidebar-ring: oklch(0.57 0.21 30);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PURPLE — Rich violet primary with warm accents
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root.scheme-purple {
+  --background: oklch(0.985 0.004 290);
+  --foreground: oklch(0.20 0.02 290);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.02 290);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.02 290);
+  --primary: oklch(0.50 0.18 290);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.008 290);
+  --secondary-foreground: oklch(0.35 0.03 290);
+  --muted: oklch(0.955 0.006 290);
+  --muted-foreground: oklch(0.50 0.015 290);
+  --accent: oklch(0.94 0.015 290);
+  --accent-foreground: oklch(0.20 0.02 290);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.91 0.008 290);
+  --input: oklch(0.91 0.008 290);
+  --ring: oklch(0.50 0.18 290);
+  --success: oklch(0.55 0.16 155);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.7 0.15 70);
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.50 0.18 290);
+  --chart-2: oklch(0.60 0.14 320);
+  --chart-3: oklch(0.55 0.12 260);
+  --chart-4: oklch(0.65 0.10 310);
+  --chart-5: oklch(0.70 0.08 280);
+  --sidebar: oklch(0.18 0.04 290);
+  --sidebar-foreground: oklch(0.90 0.01 290);
+  --sidebar-primary: oklch(0.58 0.16 290);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.25 0.04 290);
+  --sidebar-accent-foreground: oklch(0.95 0.005 290);
+  --sidebar-border: oklch(0.30 0.03 290);
+  --sidebar-ring: oklch(0.58 0.16 290);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FOREST GREEN — Deep green primary with earthy tones
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root.scheme-forest {
+  --background: oklch(0.985 0.004 145);
+  --foreground: oklch(0.20 0.02 150);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.02 150);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.02 150);
+  --primary: oklch(0.45 0.14 155);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.96 0.008 150);
+  --secondary-foreground: oklch(0.35 0.03 150);
+  --muted: oklch(0.955 0.006 150);
+  --muted-foreground: oklch(0.50 0.015 150);
+  --accent: oklch(0.94 0.015 150);
+  --accent-foreground: oklch(0.20 0.02 150);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.91 0.008 150);
+  --input: oklch(0.91 0.008 150);
+  --ring: oklch(0.45 0.14 155);
+  --success: oklch(0.55 0.16 155);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.7 0.15 70);
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.45 0.14 155);
+  --chart-2: oklch(0.55 0.12 140);
+  --chart-3: oklch(0.60 0.10 170);
+  --chart-4: oklch(0.50 0.08 130);
+  --chart-5: oklch(0.65 0.12 160);
+  --sidebar: oklch(0.18 0.04 155);
+  --sidebar-foreground: oklch(0.90 0.01 150);
+  --sidebar-primary: oklch(0.55 0.14 155);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.25 0.04 155);
+  --sidebar-accent-foreground: oklch(0.95 0.005 150);
+  --sidebar-border: oklch(0.30 0.03 155);
+  --sidebar-ring: oklch(0.55 0.14 155);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SLATE GREY — Clean neutral tones, minimal and professional
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root.scheme-slate {
+  --background: oklch(0.985 0.001 260);
+  --foreground: oklch(0.20 0.005 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.005 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.20 0.005 260);
+  --primary: oklch(0.42 0.01 260);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.955 0.003 260);
+  --secondary-foreground: oklch(0.35 0.008 260);
+  --muted: oklch(0.955 0.003 260);
+  --muted-foreground: oklch(0.50 0.008 260);
+  --accent: oklch(0.94 0.005 260);
+  --accent-foreground: oklch(0.20 0.005 260);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.90 0.003 260);
+  --input: oklch(0.90 0.003 260);
+  --ring: oklch(0.42 0.01 260);
+  --success: oklch(0.55 0.16 155);
+  --success-foreground: oklch(0.98 0 0);
+  --warning: oklch(0.7 0.15 70);
+  --warning-foreground: oklch(0.25 0.05 70);
+  --chart-1: oklch(0.42 0.01 260);
+  --chart-2: oklch(0.55 0.008 250);
+  --chart-3: oklch(0.65 0.006 270);
+  --chart-4: oklch(0.50 0.005 240);
+  --chart-5: oklch(0.70 0.004 260);
+  --sidebar: oklch(0.20 0.005 260);
+  --sidebar-foreground: oklch(0.88 0.003 260);
+  --sidebar-primary: oklch(0.55 0.008 260);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.27 0.005 260);
+  --sidebar-accent-foreground: oklch(0.95 0.003 260);
+  --sidebar-border: oklch(0.30 0.005 260);
+  --sidebar-ring: oklch(0.55 0.008 260);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem;
+      padding-right: 2rem;
+      max-width: 1400px;
+    }
+  }
+
+  /* Elegant number inputs for costing tables */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+
+  /* Status badges */
+  .status-draft { @apply bg-muted text-muted-foreground; }
+  .status-sent { @apply bg-blue-50 text-blue-700; }
+  .status-accepted { @apply bg-emerald-50 text-emerald-700; }
+  .status-lost { @apply bg-red-50 text-red-600; }
+
+  /* Hide scrollbar for horizontal scrollable tabs */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* ─── Print styles for Help Guide PDF export ─────────────────────────────── */
+@media print {
+  /* Hide sidebar, header, and non-content elements */
+  nav, aside, footer,
+  [data-sidebar],
+  [data-tour-overlay],
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Ensure main content takes full width */
+  main, .main-content, [data-content] {
+    margin: 0 !important;
+    padding: 1rem !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Clean page formatting */
+  body {
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  /* Ensure all accordion content is visible when printing */
+  [data-state="closed"] [role="region"] {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Page breaks */
+  h2, h3 {
+    page-break-after: avoid;
+  }
+
+  /* Remove decorative elements */
+  * {
+    box-shadow: none !important;
+  }
+}
+
+/* Login page entrance animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
