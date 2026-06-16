@@ -58,7 +58,7 @@ async function runScheduledNswDaPoll(startTime: number) {
           .filter(r => r.relevantCount > 0)
           .map(r => `• ${r.council}: ${r.relevantCount} relevant (${r.newCount} new total)`);
         const content = lines.join("\n") + "\n\nView details in DA Tracker > NSW tab.";
-        await notifyOwner({ title, content, settingKey: "notify_nsw_da_relevant" });
+        await notifyOwner({ tenantId: tenant.id, title, content, settingKey: "notify_nsw_da_relevant" });
       } catch (notifyErr: any) {
         console.error(`[NswDaPoll] Tenant ${tenant.id} notification error (non-fatal):`, notifyErr.message);
       }

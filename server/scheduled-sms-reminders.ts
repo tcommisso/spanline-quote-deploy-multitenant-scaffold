@@ -8,9 +8,10 @@ import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { constructionScheduleEvents, constructionInstallers, constructionJobs, smsDeliveryLog } from "../drizzle/schema";
-import { eq, and, gte, lte, isNotNull } from "drizzle-orm";
+import { eq, and, gte, lte, isNotNull, or, isNull } from "drizzle-orm";
 import * as vocphone from "./vocphone";
 import { normaliseAuPhone } from "./construction-notifications";
+import { getScheduledTenants } from "./_core/scheduled-tenants";
 
 function getSender(): string {
   return process.env.VOCPHONE_SMS_SENDER || "61480855750";
@@ -34,78 +35,88 @@ export function registerScheduledSmsReminders(app: Express) {
       const from = new Date(now.getTime() + 23 * 60 * 60 * 1000); // 23h from now
       const to = new Date(now.getTime() + 25 * 60 * 60 * 1000);   // 25h from now
 
-      const upcomingEvents = await db
-        .select({
-          event: constructionScheduleEvents,
-          installer: constructionInstallers,
-          job: constructionJobs,
-        })
-        .from(constructionScheduleEvents)
-        .innerJoin(constructionInstallers, eq(constructionScheduleEvents.assignedInstallerId, constructionInstallers.id))
-        .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
-        .where(and(
-          gte(constructionScheduleEvents.startTime, from),
-          lte(constructionScheduleEvents.startTime, to),
-          eq(constructionScheduleEvents.status, "scheduled"),
-          isNotNull(constructionInstallers.phone),
-        ));
-
+      const tenants = await getScheduledTenants();
       let sent = 0;
       let failed = 0;
-      const results: Array<{ eventId: number; installer: string; status: string; error?: string }> = [];
+      let eventsFound = 0;
+      const results: Array<{ tenantId: number; eventId: number; installer: string; status: string; error?: string }> = [];
 
-      for (const row of upcomingEvents) {
-        const phone = normaliseAuPhone(row.installer.phone || "");
-        if (!phone) {
-          results.push({ eventId: row.event.id, installer: row.installer.name, status: "skipped", error: "Invalid phone" });
-          continue;
-        }
+      for (const tenant of tenants) {
+        const upcomingEvents = await db
+          .select({
+            event: constructionScheduleEvents,
+            installer: constructionInstallers,
+            job: constructionJobs,
+          })
+          .from(constructionScheduleEvents)
+          .innerJoin(constructionInstallers, eq(constructionScheduleEvents.assignedInstallerId, constructionInstallers.id))
+          .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
+          .where(and(
+            eq(constructionJobs.tenantId, tenant.id),
+            or(eq(constructionInstallers.tenantId, tenant.id), isNull(constructionInstallers.tenantId)),
+            gte(constructionScheduleEvents.startTime, from),
+            lte(constructionScheduleEvents.startTime, to),
+            eq(constructionScheduleEvents.status, "scheduled"),
+            isNotNull(constructionInstallers.phone),
+          ));
 
-        const eventDate = new Date(row.event.startTime).toLocaleDateString("en-AU", {
-          weekday: "short", day: "numeric", month: "short",
-        });
-        const eventTime = row.event.allDay ? "All day" : new Date(row.event.startTime).toLocaleTimeString("en-AU", {
-          hour: "2-digit", minute: "2-digit",
-        });
+        eventsFound += upcomingEvents.length;
+        const tenantSender = await vocphone
+          .getSmsNumbers(tenant.id)
+          .then((numbers) => numbers.list[0]?.number || getSender())
+          .catch(() => getSender());
 
-        const body = `Reminder: You have a ${row.event.eventType} tomorrow.\n\nClient: ${row.job.clientName}\nSite: ${row.job.siteAddress || "TBC"}\nDate: ${eventDate}\nTime: ${eventTime}\nDetails: ${row.event.title}\n\n- Altaspan Construction`;
+        for (const row of upcomingEvents) {
+          const phone = normaliseAuPhone(row.installer.phone || "");
+          if (!phone) {
+            results.push({ tenantId: tenant.id, eventId: row.event.id, installer: row.installer.name, status: "skipped", error: "Invalid phone" });
+            continue;
+          }
 
-        const sender = getSender();
-
-        try {
-          await vocphone.sendSms({ recipient: phone, sender, body });
-          await db.insert(smsDeliveryLog).values({
-            jobId: row.event.jobId,
-            installerId: row.installer.id,
-            recipient: phone,
-            sender,
-            body,
-            status: "sent",
+          const eventDate = new Date(row.event.startTime).toLocaleDateString("en-AU", {
+            weekday: "short", day: "numeric", month: "short",
           });
-          sent++;
-          results.push({ eventId: row.event.id, installer: row.installer.name, status: "sent" });
-        } catch (err: any) {
-          failed++;
+          const eventTime = row.event.allDay ? "All day" : new Date(row.event.startTime).toLocaleTimeString("en-AU", {
+            hour: "2-digit", minute: "2-digit",
+          });
+
+          const body = `Reminder: You have a ${row.event.eventType} tomorrow.\n\nClient: ${row.job.clientName}\nSite: ${row.job.siteAddress || "TBC"}\nDate: ${eventDate}\nTime: ${eventTime}\nDetails: ${row.event.title}\n\n- Altaspan Construction`;
+
           try {
+            await vocphone.sendSms({ tenantId: tenant.id, recipient: phone, sender: tenantSender, body });
             await db.insert(smsDeliveryLog).values({
               jobId: row.event.jobId,
               installerId: row.installer.id,
               recipient: phone,
-              sender,
+              sender: tenantSender,
               body,
-              status: "failed",
-              errorMessage: err?.message || String(err),
+              status: "sent",
             });
-          } catch (_) { /* ignore logging failure */ }
-          results.push({ eventId: row.event.id, installer: row.installer.name, status: "failed", error: err?.message });
+            sent++;
+            results.push({ tenantId: tenant.id, eventId: row.event.id, installer: row.installer.name, status: "sent" });
+          } catch (err: any) {
+            failed++;
+            try {
+              await db.insert(smsDeliveryLog).values({
+                jobId: row.event.jobId,
+                installerId: row.installer.id,
+                recipient: phone,
+                sender: tenantSender,
+                body,
+                status: "failed",
+                errorMessage: err?.message || String(err),
+              });
+            } catch (_) { /* ignore logging failure */ }
+            results.push({ tenantId: tenant.id, eventId: row.event.id, installer: row.installer.name, status: "failed", error: err?.message });
+          }
         }
       }
 
-      console.log(`[SMS Reminders] Processed ${upcomingEvents.length} events: ${sent} sent, ${failed} failed`);
+      console.log(`[SMS Reminders] Processed ${eventsFound} events: ${sent} sent, ${failed} failed`);
 
       res.json({
         ok: true,
-        eventsFound: upcomingEvents.length,
+        eventsFound,
         sent,
         failed,
         results,

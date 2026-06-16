@@ -55,7 +55,7 @@ async function runScheduledDaTrackerPoll(startTime: number) {
             lines.push(`...and ${alerts.length - 5} more. View all in Competitor Intel > Lost to Competitor.`);
           }
           const content = lines.join("\n");
-          await notifyOwner({ title, content, settingKey: "notify_competitor_da_match" });
+          await notifyOwner({ tenantId: tenant.id, title, content, settingKey: "notify_competitor_da_match" });
           console.log(`[DaTrackerPoll] Tenant ${tenant.id} competitor match notification sent (${alerts.length} matches)`);
         } catch (notifyErr: any) {
           console.error(`[DaTrackerPoll] Tenant ${tenant.id} notification error (non-fatal):`, notifyErr.message);

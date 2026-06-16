@@ -141,6 +141,15 @@ export function registerScheduledXeroPaymentSync(app: Express) {
       let errors = 0;
       let tradesProcessed = 0;
       const errorDetails: string[] = [];
+      const scopeSummaries: Array<{
+        appTenantId: number | null;
+        label: string;
+        created: number;
+        skipped: number;
+        errors: number;
+        tradesProcessed: number;
+        errorDetails: string[];
+      }> = [];
       const { scopes, skipped: skippedScopes } = await resolveScheduledXeroConnectionScopes(db, "trade_portal");
 
       if (scopes.length === 0) {
@@ -163,7 +172,17 @@ export function registerScheduledXeroPaymentSync(app: Express) {
         });
         if (!auth) {
           errors++;
-          errorDetails.push(`${label}: Xero connection unavailable or token refresh failed`);
+          const errorMessage = `${label}: Xero connection unavailable or token refresh failed`;
+          errorDetails.push(errorMessage);
+          scopeSummaries.push({
+            appTenantId: scope.appTenantId,
+            label,
+            created: 0,
+            skipped: 0,
+            errors: 1,
+            tradesProcessed: 0,
+            errorDetails: [errorMessage],
+          });
           continue;
         }
 
@@ -172,7 +191,17 @@ export function registerScheduledXeroPaymentSync(app: Express) {
         skipped += result.skipped;
         errors += result.errors;
         tradesProcessed += result.tradesProcessed;
-        errorDetails.push(...result.errorDetails.map((detail) => `${label}: ${detail}`));
+        const labelledErrors = result.errorDetails.map((detail) => `${label}: ${detail}`);
+        errorDetails.push(...labelledErrors);
+        scopeSummaries.push({
+          appTenantId: scope.appTenantId,
+          label,
+          created: result.created,
+          skipped: result.skipped,
+          errors: result.errors,
+          tradesProcessed: result.tradesProcessed,
+          errorDetails: labelledErrors,
+        });
       }
 
       for (const skippedScope of skippedScopes) {
@@ -204,17 +233,19 @@ export function registerScheduledXeroPaymentSync(app: Express) {
       const duration = Date.now() - startTime;
       console.log(`[XeroPaymentSync] Completed: ${created} created, ${skipped} skipped, ${errors} errors across ${tradesProcessed} trades (${duration}ms)`);
 
-      // Notify owner if new payments were synced or if there were errors
-      if (created > 0 || errors > 0) {
+      // Notify tenant owners if new payments were synced or if there were errors
+      for (const summary of scopeSummaries) {
+        if (summary.created === 0 && summary.errors === 0) continue;
         const parts: string[] = [];
-        if (created > 0) parts.push(`${created} new payment${created !== 1 ? "s" : ""} synced`);
-        if (skipped > 0) parts.push(`${skipped} already up-to-date`);
-        if (errors > 0) parts.push(`${errors} error${errors !== 1 ? "s" : ""}`);
+        if (summary.created > 0) parts.push(`${summary.created} new payment${summary.created !== 1 ? "s" : ""} synced`);
+        if (summary.skipped > 0) parts.push(`${summary.skipped} already up-to-date`);
+        if (summary.errors > 0) parts.push(`${summary.errors} error${summary.errors !== 1 ? "s" : ""}`);
 
         notifyOwner({
-          title: errors > 0 ? "Xero Payment Sync — Completed with Errors" : "Xero Payment Sync — Complete",
-          content: `Nightly sync processed ${tradesProcessed} trades. ${parts.join(", ")}.${
-            errorDetails.length > 0 ? `\n\nErrors:\n${errorDetails.slice(0, 5).join("\n")}` : ""
+          tenantId: summary.appTenantId,
+          title: summary.errors > 0 ? `Xero Payment Sync — ${summary.label} Completed with Errors` : `Xero Payment Sync — ${summary.label} Complete`,
+          content: `Nightly sync processed ${summary.tradesProcessed} trades. ${parts.join(", ")}.${
+            summary.errorDetails.length > 0 ? `\n\nErrors:\n${summary.errorDetails.slice(0, 5).join("\n")}` : ""
           }`,
         }).catch(() => {});
       }

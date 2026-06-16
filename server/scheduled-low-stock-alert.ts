@@ -7,9 +7,10 @@
 import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
-import { inventoryStockItems, inventoryMovements, users } from "../drizzle/schema";
-import { eq, and, sql, or, inArray } from "drizzle-orm";
+import { inventoryStockItems, inventoryMovements } from "../drizzle/schema";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
+import { getScheduledTenants, getTenantNotificationRecipients } from "./_core/scheduled-tenants";
 
 export function registerScheduledLowStockAlert(app: Express) {
   app.post("/api/scheduled/low-stock-alert", async (req: Request, res: Response) => {
@@ -25,130 +26,112 @@ export function registerScheduledLowStockAlert(app: Express) {
         return res.status(500).json({ error: "Database unavailable" });
       }
 
-      // Get all active items with reorder qty set
-      const items = await db.select().from(inventoryStockItems)
-        .where(and(
-          eq(inventoryStockItems.isActive, true),
-          sql`${inventoryStockItems.reorderQty} IS NOT NULL`
-        ));
-
-      if (items.length === 0) {
-        console.log("[LowStockAlert] No items with reorder quantities configured — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No items with reorder quantities",
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Calculate on-hand for each item and check against reorder qty
-      const alerts: Array<{
-        id: number; code: string; name: string; category: string;
-        branchId: number | null; onHand: number; reorderQty: number; deficit: number;
-      }> = [];
-
-      for (const item of items) {
-        const branchConditions: any[] = [eq(inventoryMovements.stockItemId, item.id)];
-        if (item.branchId) branchConditions.push(eq(inventoryMovements.branchId, item.branchId));
-
-        const [result] = await db.select({
-          totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase', 'transfer_in') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
-          totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
-        }).from(inventoryMovements).where(and(...branchConditions));
-
-        const onHand = Number(result.totalIn) - Number(result.totalOut);
-        const reorderQty = Number(item.reorderQty);
-        if (onHand < reorderQty) {
-          alerts.push({
-            id: item.id,
-            code: item.code,
-            name: item.name,
-            category: item.category,
-            branchId: item.branchId,
-            onHand,
-            reorderQty,
-            deficit: reorderQty - onHand,
-          });
-        }
-      }
-
-      if (alerts.length === 0) {
-        console.log("[LowStockAlert] All items above reorder level — skipping email");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "All items above reorder level",
-          itemsChecked: items.length,
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Get admin recipients
-      const staffRecipients = await db
-        .select({ id: users.id, name: users.name, email: users.email, role: users.role })
-        .from(users)
-        .where(
-          or(
-            eq(users.role, "admin"),
-            eq(users.role, "super_admin"),
-          )
-        );
-
-      const recipients = staffRecipients.filter(u => u.email);
-
-      if (recipients.length === 0) {
-        console.log("[LowStockAlert] No admin recipients with email found — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No recipients",
-          alertCount: alerts.length,
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Sort alerts by deficit (most critical first)
-      alerts.sort((a, b) => b.deficit - a.deficit);
-
-      // Build the HTML email
+      const tenants = await getScheduledTenants();
       const now = new Date();
       const dateStr = now.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-      const htmlBody = buildLowStockEmail(alerts, dateStr);
-
-      // Send to each recipient
+      let itemsChecked = 0;
+      let totalAlerts = 0;
+      let totalRecipients = 0;
       let sentCount = 0;
       const errors: string[] = [];
 
-      for (const recipient of recipients) {
-        const result = await sendNotificationEmail({
-          to: recipient.email!,
-          subject: `⚠️ Low Stock Alert: ${alerts.length} item${alerts.length > 1 ? "s" : ""} below reorder level (${now.toLocaleDateString("en-AU")})`,
-          htmlBody,
-          fromName: "AltaSpan Inventory",
+      for (const tenant of tenants) {
+        const items = await db.select().from(inventoryStockItems)
+          .where(and(
+            eq(inventoryStockItems.tenantId, tenant.id),
+            eq(inventoryStockItems.isActive, true),
+            sql`${inventoryStockItems.reorderQty} IS NOT NULL`
+          ));
+
+        itemsChecked += items.length;
+        if (items.length === 0) {
+          continue;
+        }
+
+        const alerts: Array<{
+          id: number; code: string; name: string; category: string;
+          branchId: number | null; onHand: number; reorderQty: number; deficit: number;
+        }> = [];
+
+        for (const item of items) {
+          const branchConditions: any[] = [
+            eq(inventoryMovements.tenantId, tenant.id),
+            eq(inventoryMovements.stockItemId, item.id),
+          ];
+          if (item.branchId) branchConditions.push(eq(inventoryMovements.branchId, item.branchId));
+
+          const [result] = await db.select({
+            totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase', 'transfer_in') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
+            totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
+          }).from(inventoryMovements).where(and(...branchConditions));
+
+          const onHand = Number(result.totalIn) - Number(result.totalOut);
+          const reorderQty = Number(item.reorderQty);
+          if (onHand < reorderQty) {
+            alerts.push({
+              id: item.id,
+              code: item.code,
+              name: item.name,
+              category: item.category,
+              branchId: item.branchId,
+              onHand,
+              reorderQty,
+              deficit: reorderQty - onHand,
+            });
+          }
+        }
+
+        if (alerts.length === 0) {
+          continue;
+        }
+
+        const recipients = await getTenantNotificationRecipients(tenant.id, {
+          appRoles: ["admin", "super_admin", "warehouse"],
         });
-        if (result.success) {
-          sentCount++;
-        } else {
-          errors.push(`${recipient.email}: ${result.error}`);
+        if (recipients.length === 0) {
+          errors.push(`${tenant.name}: no recipients`);
+          continue;
+        }
+
+        alerts.sort((a, b) => b.deficit - a.deficit);
+        totalAlerts += alerts.length;
+        totalRecipients += recipients.length;
+        const htmlBody = buildLowStockEmail(alerts, dateStr);
+
+        for (const recipient of recipients) {
+          const result = await sendNotificationEmail({
+            tenantId: tenant.id,
+            to: recipient.email,
+            subject: `Low Stock Alert: ${alerts.length} item${alerts.length > 1 ? "s" : ""} below reorder level (${now.toLocaleDateString("en-AU")})`,
+            htmlBody,
+            fromName: "AltaSpan Inventory",
+            module: "manufacturing",
+          });
+          if (result.success) {
+            sentCount++;
+          } else {
+            errors.push(`${recipient.email}: ${result.error}`);
+          }
+        }
+
+        const alertItemIds = alerts.map(a => a.id);
+        if (alertItemIds.length) {
+          await db.update(inventoryStockItems).set({
+            lastLowStockAlertAt: now,
+          } as any).where(inArray(inventoryStockItems.id, alertItemIds));
         }
       }
 
-      // Update last alert sent timestamp
-      const alertItemIds = alerts.map(a => a.id);
-      if (alertItemIds.length) {
-        await db.update(inventoryStockItems).set({
-          lastLowStockAlertAt: now,
-        } as any).where(inArray(inventoryStockItems.id, alertItemIds));
-      }
-
-      console.log(`[LowStockAlert] Sent alert to ${sentCount}/${recipients.length} recipients. ${alerts.length} items below reorder.`);
+      console.log(`[LowStockAlert] Sent alert to ${sentCount}/${totalRecipients} recipients. ${totalAlerts} items below reorder.`);
 
       return res.json({
         ok: true,
-        alertCount: alerts.length,
-        recipientCount: recipients.length,
+        alertCount: totalAlerts,
+        recipientCount: totalRecipients,
         sentCount,
+        skipped: totalAlerts === 0,
+        reason: totalAlerts === 0 ? "All tenant items above reorder level" : undefined,
+        itemsChecked,
         errors: errors.length > 0 ? errors : undefined,
         duration: Date.now() - startTime,
       });

@@ -10,8 +10,7 @@ import { getDb } from "./db";
 import { constructionJobs } from "../drizzle/schema";
 import { eq, and, lt } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
-import { users } from "../drizzle/schema";
-import { or } from "drizzle-orm";
+import { getScheduledTenants, getTenantNotificationRecipients } from "./_core/scheduled-tenants";
 
 export function registerScheduledOverdueDigest(app: Express) {
   app.post("/api/scheduled/overdue-digest", async (req: Request, res: Response) => {
@@ -28,93 +27,79 @@ export function registerScheduledOverdueDigest(app: Express) {
       }
 
       const now = new Date();
-
-      // Get all overdue in-progress jobs (scheduled end date has passed)
-      const overdueJobs = await db.select({
-        id: constructionJobs.id,
-        clientName: constructionJobs.clientName,
-        siteAddress: constructionJobs.siteAddress,
-        scheduledEnd: constructionJobs.scheduledEnd,
-        quoteNumber: constructionJobs.quoteNumber,
-
-      })
-        .from(constructionJobs)
-        .where(and(
-          eq(constructionJobs.status, "in_progress"),
-          lt(constructionJobs.scheduledEnd, now)
-        ));
-
-      if (overdueJobs.length === 0) {
-        console.log("[OverdueDigest] No overdue jobs found — skipping digest");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No overdue jobs",
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Get admin and construction staff recipients
-      const staffRecipients = await db
-        .select({ id: users.id, name: users.name, email: users.email, role: users.role })
-        .from(users)
-        .where(
-          or(
-            eq(users.role, "admin"),
-            eq(users.role, "super_admin"),
-            eq(users.role, "construction_user"),
-          )
-        );
-
-      const recipients = staffRecipients.filter(u => u.email);
-
-      if (recipients.length === 0) {
-        console.log("[OverdueDigest] No recipients with email found — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No recipients",
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Sort overdue jobs by days overdue (most overdue first)
-      const jobsWithDays = overdueJobs.map(job => {
-        const daysOverdue = job.scheduledEnd
-          ? Math.floor((now.getTime() - new Date(job.scheduledEnd).getTime()) / (1000 * 60 * 60 * 24))
-          : 0;
-        return { ...job, daysOverdue };
-      }).sort((a, b) => b.daysOverdue - a.daysOverdue);
-
-      // Build the HTML email
-      const dateStr = now.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-      const htmlBody = buildDigestEmail(jobsWithDays, dateStr);
-
-      // Send to each recipient
+      const tenants = await getScheduledTenants();
+      let totalOverdueJobs = 0;
+      let totalRecipients = 0;
       let sentCount = 0;
       const errors: string[] = [];
 
-      for (const recipient of recipients) {
-        const result = await sendNotificationEmail({
-          to: recipient.email!,
-          subject: `Overdue Jobs Digest — ${overdueJobs.length} job${overdueJobs.length > 1 ? "s" : ""} overdue (${now.toLocaleDateString("en-AU")})`,
-          htmlBody,
-          fromName: "Altaspan Construction",
+      for (const tenant of tenants) {
+        const overdueJobs = await db.select({
+          id: constructionJobs.id,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+          scheduledEnd: constructionJobs.scheduledEnd,
+          quoteNumber: constructionJobs.quoteNumber,
+
+        })
+          .from(constructionJobs)
+          .where(and(
+            eq(constructionJobs.tenantId, tenant.id),
+            eq(constructionJobs.status, "in_progress"),
+            lt(constructionJobs.scheduledEnd, now)
+          ));
+
+        if (overdueJobs.length === 0) {
+          continue;
+        }
+
+        const recipients = await getTenantNotificationRecipients(tenant.id, {
+          appRoles: ["admin", "super_admin", "construction_user"],
         });
-        if (result.success) {
-          sentCount++;
-        } else {
-          errors.push(`${recipient.email}: ${result.error}`);
+        if (recipients.length === 0) {
+          errors.push(`${tenant.name}: no recipients`);
+          continue;
+        }
+
+        totalOverdueJobs += overdueJobs.length;
+        totalRecipients += recipients.length;
+
+        const jobsWithDays = overdueJobs.map(job => {
+          const daysOverdue = job.scheduledEnd
+            ? Math.floor((now.getTime() - new Date(job.scheduledEnd).getTime()) / (1000 * 60 * 60 * 24))
+            : 0;
+          return { ...job, daysOverdue };
+        }).sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+        const dateStr = now.toLocaleDateString("en-AU", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+        const htmlBody = buildDigestEmail(jobsWithDays, dateStr);
+
+        for (const recipient of recipients) {
+          const result = await sendNotificationEmail({
+            tenantId: tenant.id,
+            to: recipient.email,
+            subject: `Overdue Jobs Digest — ${overdueJobs.length} job${overdueJobs.length > 1 ? "s" : ""} overdue (${now.toLocaleDateString("en-AU")})`,
+            htmlBody,
+            fromName: "Altaspan Construction",
+            module: "construction",
+          });
+          if (result.success) {
+            sentCount++;
+          } else {
+            errors.push(`${recipient.email}: ${result.error}`);
+          }
         }
       }
 
-      console.log(`[OverdueDigest] Sent digest to ${sentCount}/${recipients.length} recipients. ${overdueJobs.length} overdue jobs.`);
+      console.log(`[OverdueDigest] Sent digest to ${sentCount}/${totalRecipients} recipients. ${totalOverdueJobs} overdue jobs.`);
 
       return res.json({
         ok: true,
-        overdueJobCount: overdueJobs.length,
-        recipientCount: recipients.length,
+        overdueJobCount: totalOverdueJobs,
+        recipientCount: totalRecipients,
         sentCount,
+        skipped: totalOverdueJobs === 0,
+        reason: totalOverdueJobs === 0 ? "No overdue jobs" : undefined,
         errors: errors.length > 0 ? errors : undefined,
         duration: Date.now() - startTime,
       });

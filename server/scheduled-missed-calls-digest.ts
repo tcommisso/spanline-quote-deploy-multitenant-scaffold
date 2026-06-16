@@ -7,10 +7,10 @@
 import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
-import { callLogs, users, crmLeads } from "../drizzle/schema";
-import { eq, and, gte, lt, sql } from "drizzle-orm";
+import { callLogs, crmLeads } from "../drizzle/schema";
+import { eq, and, gte, lt } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
-import { or } from "drizzle-orm";
+import { getScheduledTenants, getTenantNotificationRecipients } from "./_core/scheduled-tenants";
 
 export function registerScheduledMissedCallsDigest(app: Express) {
   app.post("/api/scheduled/missed-calls-digest", async (req: Request, res: Response) => {
@@ -40,96 +40,86 @@ export function registerScheduledMissedCallsDigest(app: Express) {
       const utcStart = new Date(aestYesterday.getTime() - aestOffset);
       const utcEnd = new Date(aestYesterdayEnd.getTime() - aestOffset);
 
-      // Get unreviewed missed calls from yesterday (inbound + 0 duration)
-      const missedCalls = await db.select({
-        id: callLogs.id,
-        fromNumber: callLogs.fromNumber,
-        toNumber: callLogs.toNumber,
-        createdAt: callLogs.createdAt,
-        extension: callLogs.extension,
-        leadId: callLogs.leadId,
-        leadFirstName: crmLeads.contactFirstName,
-        leadLastName: crmLeads.contactLastName,
-      })
-        .from(callLogs)
-        .leftJoin(crmLeads, eq(callLogs.leadId, crmLeads.id))
-        .where(and(
-          eq(callLogs.direction, "inbound"),
-          eq(callLogs.duration, 0),
-          eq(callLogs.reviewed, false),
-          gte(callLogs.createdAt, utcStart),
-          lt(callLogs.createdAt, utcEnd),
-        ))
-        .orderBy(callLogs.createdAt);
-
-      if (missedCalls.length === 0) {
-        console.log("[MissedCallsDigest] No unreviewed missed calls yesterday — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No unreviewed missed calls",
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Get admin and sales staff recipients
-      const staffRecipients = await db
-        .select({ id: users.id, name: users.name, email: users.email, role: users.role })
-        .from(users)
-        .where(
-          or(
-            eq(users.role, "admin"),
-            eq(users.role, "super_admin"),
-            eq(users.role, "office_user"),
-          )
-        );
-
-      const recipients = staffRecipients.filter(u => u.email);
-
-      if (recipients.length === 0) {
-        console.log("[MissedCallsDigest] No recipients with email found — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No recipients",
-          duration: Date.now() - startTime,
-        });
-      }
-
-      // Build the HTML email
       const dateStr = aestYesterday.toLocaleDateString("en-AU", {
         weekday: "long",
         year: "numeric",
         month: "long",
         day: "numeric",
       });
-      const htmlBody = buildMissedCallsEmail(missedCalls, dateStr);
-
-      // Send to each recipient
+      const tenants = await getScheduledTenants();
+      let totalMissedCalls = 0;
+      let totalRecipients = 0;
       let sentCount = 0;
       const errors: string[] = [];
 
-      for (const recipient of recipients) {
-        const result = await sendNotificationEmail({
-          to: recipient.email!,
-          subject: `Missed Calls — ${missedCalls.length} unanswered call${missedCalls.length > 1 ? "s" : ""} (${aestYesterday.toLocaleDateString("en-AU")})`,
-          htmlBody,
-          fromName: "Altaspan Calls",
+      for (const tenant of tenants) {
+        const missedCalls = await db.select({
+          id: callLogs.id,
+          fromNumber: callLogs.fromNumber,
+          toNumber: callLogs.toNumber,
+          createdAt: callLogs.createdAt,
+          extension: callLogs.extension,
+          leadId: callLogs.leadId,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+        })
+          .from(callLogs)
+          .leftJoin(crmLeads, and(
+            eq(callLogs.leadId, crmLeads.id),
+            eq(crmLeads.tenantId, tenant.id),
+          ))
+          .where(and(
+            eq(callLogs.tenantId, tenant.id),
+            eq(callLogs.direction, "inbound"),
+            eq(callLogs.duration, 0),
+            eq(callLogs.reviewed, false),
+            gte(callLogs.createdAt, utcStart),
+            lt(callLogs.createdAt, utcEnd),
+          ))
+          .orderBy(callLogs.createdAt);
+
+        if (missedCalls.length === 0) {
+          continue;
+        }
+
+        const recipients = await getTenantNotificationRecipients(tenant.id, {
+          appRoles: ["admin", "super_admin", "office_user"],
         });
-        if (result.success) {
-          sentCount++;
-        } else {
-          errors.push(`${recipient.email}: ${result.error}`);
+        if (recipients.length === 0) {
+          errors.push(`${tenant.name}: no recipients`);
+          continue;
+        }
+
+        totalMissedCalls += missedCalls.length;
+        totalRecipients += recipients.length;
+        const htmlBody = buildMissedCallsEmail(missedCalls, dateStr);
+
+        for (const recipient of recipients) {
+          const result = await sendNotificationEmail({
+            tenantId: tenant.id,
+            to: recipient.email,
+            subject: `Missed Calls — ${missedCalls.length} unanswered call${missedCalls.length > 1 ? "s" : ""} (${aestYesterday.toLocaleDateString("en-AU")})`,
+            htmlBody,
+            fromName: "Altaspan Calls",
+            module: "sales",
+          });
+          if (result.success) {
+            sentCount++;
+          } else {
+            errors.push(`${recipient.email}: ${result.error}`);
+          }
         }
       }
 
-      console.log(`[MissedCallsDigest] Sent digest to ${sentCount}/${recipients.length} recipients. ${missedCalls.length} missed calls.`);
+      console.log(`[MissedCallsDigest] Sent digest to ${sentCount}/${totalRecipients} recipients. ${totalMissedCalls} missed calls.`);
 
       return res.json({
         ok: true,
-        missedCallCount: missedCalls.length,
-        recipientCount: recipients.length,
+        missedCallCount: totalMissedCalls,
+        recipientCount: totalRecipients,
         sentCount,
+        skipped: totalMissedCalls === 0,
+        reason: totalMissedCalls === 0 ? "No unreviewed missed calls" : undefined,
         errors: errors.length > 0 ? errors : undefined,
         duration: Date.now() - startTime,
       });

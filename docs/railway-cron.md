@@ -15,6 +15,8 @@ Base URL:
 https://app.commissogroup.au
 ```
 
+Unless noted otherwise, each scheduled endpoint processes every active tenant internally. Railway only needs one cron job per endpoint; do not create separate cron jobs per tenant.
+
 Recommended jobs:
 
 | Job | Endpoint | Schedule |

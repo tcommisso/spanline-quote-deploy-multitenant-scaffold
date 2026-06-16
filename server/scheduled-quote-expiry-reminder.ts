@@ -8,6 +8,7 @@ import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import mysql from "mysql2/promise";
 import { sendNotificationEmail } from "./email";
+import { getScheduledTenants } from "./_core/scheduled-tenants";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 
@@ -18,27 +19,29 @@ interface ExpiringQuote {
   clientEmail: string;
   validUntil: Date;
   quoteType: "patio" | "deck" | "eclipse";
+  tenantId: number;
 }
 
 /**
  * Find quotes expiring in 2-4 days that haven't had a reminder sent yet.
  * Window is 2-4 days to account for cron timing variance.
  */
-async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
+async function getExpiringQuotes(tenantId: number): Promise<ExpiringQuote[]> {
   const results: ExpiringQuote[] = [];
 
   // Patio quotes
   const [patioRows] = await pool.execute(`
     SELECT id, quoteNumber, clientName, clientEmail, validUntil
     FROM quotes
-    WHERE validUntil IS NOT NULL
+    WHERE tenantId = ?
+      AND validUntil IS NOT NULL
       AND clientEmail IS NOT NULL
       AND clientEmail != ''
       AND status = 'sent'
       AND archived = 0
       AND expiryReminderSentAt IS NULL
       AND validUntil BETWEEN DATE_ADD(NOW(), INTERVAL 2 DAY) AND DATE_ADD(NOW(), INTERVAL 4 DAY)
-  `);
+  `, [tenantId]);
   for (const row of patioRows as any[]) {
     results.push({
       id: row.id,
@@ -47,6 +50,7 @@ async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
       clientEmail: row.clientEmail,
       validUntil: new Date(row.validUntil),
       quoteType: "patio",
+      tenantId,
     });
   }
 
@@ -60,8 +64,14 @@ async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
       AND status = 'sent'
       AND archived = 0
       AND expiryReminderSentAt IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM tenant_memberships tm
+        WHERE tm.userId = deck_quotes.userId
+          AND tm.tenantId = ?
+      )
       AND validUntil BETWEEN DATE_ADD(NOW(), INTERVAL 2 DAY) AND DATE_ADD(NOW(), INTERVAL 4 DAY)
-  `);
+  `, [tenantId]);
   for (const row of deckRows as any[]) {
     results.push({
       id: row.id,
@@ -70,6 +80,7 @@ async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
       clientEmail: row.clientEmail,
       validUntil: new Date(row.validUntil),
       quoteType: "deck",
+      tenantId,
     });
   }
 
@@ -83,8 +94,14 @@ async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
       AND status = 'sent'
       AND archived = 0
       AND expiryReminderSentAt IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM tenant_memberships tm
+        WHERE tm.userId = eclipse_quotes.userId
+          AND tm.tenantId = ?
+      )
       AND validUntil BETWEEN DATE_ADD(NOW(), INTERVAL 2 DAY) AND DATE_ADD(NOW(), INTERVAL 4 DAY)
-  `);
+  `, [tenantId]);
   for (const row of eclipseRows as any[]) {
     results.push({
       id: row.id,
@@ -93,6 +110,7 @@ async function getExpiringQuotes(): Promise<ExpiringQuote[]> {
       clientEmail: row.clientEmail,
       validUntil: new Date(row.validUntil),
       quoteType: "eclipse",
+      tenantId,
     });
   }
 
@@ -150,44 +168,46 @@ export function registerScheduledQuoteExpiryReminder(app: Express) {
         return res.status(403).json({ error: "cron-only" });
       }
 
-      const expiringQuotes = await getExpiringQuotes();
-
-      if (expiringQuotes.length === 0) {
-        return res.json({ ok: true, sent: 0, message: "No quotes expiring in 3 days" });
-      }
-
+      const tenants = await getScheduledTenants();
       let sent = 0;
       let failed = 0;
+      let total = 0;
       const results: Array<{ quoteNumber: string; email: string; status: string; error?: string }> = [];
 
-      for (const quote of expiringQuotes) {
-        try {
-          const htmlBody = buildReminderHtml(quote.clientName, quote.quoteNumber, quote.validUntil);
-          const result = await sendNotificationEmail({
-            to: quote.clientEmail,
-            subject: `Your Altaspan Quote ${quote.quoteNumber} Expires Soon`,
-            htmlBody,
-            fromName: "Altaspan",
-          });
+      for (const tenant of tenants) {
+        const expiringQuotes = await getExpiringQuotes(tenant.id);
+        total += expiringQuotes.length;
+        for (const quote of expiringQuotes) {
+          try {
+            const htmlBody = buildReminderHtml(quote.clientName, quote.quoteNumber, quote.validUntil);
+            const result = await sendNotificationEmail({
+              tenantId: quote.tenantId,
+              to: quote.clientEmail,
+              subject: `Your Altaspan Quote ${quote.quoteNumber} Expires Soon`,
+              htmlBody,
+              fromName: "Altaspan",
+              module: "sales",
+            });
 
-          if (result.success) {
-            await markReminderSent(quote.id, quote.quoteType);
-            sent++;
-            results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "sent" });
-            console.log(`[QuoteExpiryReminder] Sent reminder for ${quote.quoteNumber} to ${quote.clientEmail}`);
-          } else {
+            if (result.success) {
+              await markReminderSent(quote.id, quote.quoteType);
+              sent++;
+              results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "sent" });
+              console.log(`[QuoteExpiryReminder] Sent reminder for ${quote.quoteNumber} to ${quote.clientEmail}`);
+            } else {
+              failed++;
+              results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "failed", error: result.error });
+              console.error(`[QuoteExpiryReminder] Failed for ${quote.quoteNumber}:`, result.error);
+            }
+          } catch (err: any) {
             failed++;
-            results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "failed", error: result.error });
-            console.error(`[QuoteExpiryReminder] Failed for ${quote.quoteNumber}:`, result.error);
+            results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "error", error: err?.message });
+            console.error(`[QuoteExpiryReminder] Exception for ${quote.quoteNumber}:`, err?.message);
           }
-        } catch (err: any) {
-          failed++;
-          results.push({ quoteNumber: quote.quoteNumber, email: quote.clientEmail, status: "error", error: err?.message });
-          console.error(`[QuoteExpiryReminder] Exception for ${quote.quoteNumber}:`, err?.message);
         }
       }
 
-      return res.json({ ok: true, sent, failed, total: expiringQuotes.length, results });
+      return res.json({ ok: true, sent, failed, total, skipped: total === 0, message: total === 0 ? "No quotes expiring in 3 days" : undefined, results });
     } catch (err: any) {
       console.error("[QuoteExpiryReminder] Handler error:", err);
       return res.status(500).json({

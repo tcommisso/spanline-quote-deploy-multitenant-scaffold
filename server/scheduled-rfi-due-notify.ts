@@ -15,10 +15,11 @@ import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { approvalRfis, approvalProjects, users } from "../drizzle/schema";
-import { eq, and, or, lte, gt, inArray, isNotNull } from "drizzle-orm";
+import { eq, and, lte, inArray, isNotNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
-import { sendPushToUser, type PushPayload } from "./push";
+import { sendPushToUser } from "./push";
 import { sendNotificationEmail } from "./email";
+import { getScheduledTenants, getTenantNotificationRecipients } from "./_core/scheduled-tenants";
 
 interface RfiRow {
   rfiId: number;
@@ -114,32 +115,153 @@ export function registerScheduledRfiDueNotify(app: Express) {
 
       const now = new Date();
       const in48Hours = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+      const tenants = await getScheduledTenants();
+      let totalOverdue = 0;
+      let totalDueSoon = 0;
+      let totalNotifiedUsers = 0;
+      let totalEmailsSent = 0;
+      let totalPushesSent = 0;
 
-      // Find RFIs that are open/in_progress with a due date
-      const activeRfis: RfiRow[] = await db
-        .select({
-          rfiId: approvalRfis.id,
-          rfiNumber: approvalRfis.rfiNumber,
-          subject: approvalRfis.subject,
-          dueAt: approvalRfis.dueAt,
-          status: approvalRfis.status,
-          isBlocking: approvalRfis.isBlocking,
-          projectId: approvalRfis.projectId,
-          projectName: approvalProjects.name,
-          projectNumber: approvalProjects.projectNumber,
-          assignedToName: approvalRfis.assignedToName,
-          assignedToUserId: approvalRfis.assignedToUserId,
-        })
-        .from(approvalRfis)
-        .innerJoin(approvalProjects, eq(approvalRfis.projectId, approvalProjects.id))
-        .where(
-          and(
-            inArray(approvalRfis.status, ["open", "in_progress"]),
-            lte(approvalRfis.dueAt, in48Hours)
-          )
-        );
+      for (const tenant of tenants) {
+        // Find RFIs that are open/in_progress with a due date for this tenant.
+        const activeRfis: RfiRow[] = await db
+          .select({
+            rfiId: approvalRfis.id,
+            rfiNumber: approvalRfis.rfiNumber,
+            subject: approvalRfis.subject,
+            dueAt: approvalRfis.dueAt,
+            status: approvalRfis.status,
+            isBlocking: approvalRfis.isBlocking,
+            projectId: approvalRfis.projectId,
+            projectName: approvalProjects.name,
+            projectNumber: approvalProjects.projectNumber,
+            assignedToName: approvalRfis.assignedToName,
+            assignedToUserId: approvalRfis.assignedToUserId,
+          })
+          .from(approvalRfis)
+          .innerJoin(approvalProjects, eq(approvalRfis.projectId, approvalProjects.id))
+          .where(
+            and(
+              eq(approvalProjects.tenantId, tenant.id),
+              inArray(approvalRfis.status, ["open", "in_progress"]),
+              isNotNull(approvalRfis.dueAt),
+              lte(approvalRfis.dueAt, in48Hours)
+            )
+          );
 
-      if (activeRfis.length === 0) {
+        if (activeRfis.length === 0) continue;
+
+        // Split into overdue vs due-soon
+        const overdueRfis = activeRfis.filter((r) => r.dueAt && r.dueAt <= now);
+        const dueSoonRfis = activeRfis.filter((r) => r.dueAt && r.dueAt > now && r.dueAt <= in48Hours);
+
+        totalOverdue += overdueRfis.length;
+        totalDueSoon += dueSoonRfis.length;
+
+        // Update overdue RFIs to "overdue" status
+        if (overdueRfis.length > 0) {
+          const overdueIds = overdueRfis.map((r) => r.rfiId);
+          await db
+            .update(approvalRfis)
+            .set({ status: "overdue" })
+            .where(inArray(approvalRfis.id, overdueIds));
+        }
+
+        // Build notification message for owner/push
+        const lines: string[] = [];
+        if (overdueRfis.length > 0) {
+          lines.push(`🚨 ${overdueRfis.length} OVERDUE RFI${overdueRfis.length > 1 ? "s" : ""}:`);
+          for (const r of overdueRfis.slice(0, 10)) {
+            const daysPast = Math.ceil((now.getTime() - (r.dueAt?.getTime() || 0)) / (1000 * 60 * 60 * 24));
+            lines.push(`  • [${r.projectNumber}] ${r.subject} — ${daysPast}d overdue${r.isBlocking ? " ⛔ BLOCKING" : ""}`);
+          }
+          if (overdueRfis.length > 10) lines.push(`  ... and ${overdueRfis.length - 10} more`);
+        }
+        if (dueSoonRfis.length > 0) {
+          lines.push(`⚠️ ${dueSoonRfis.length} RFI${dueSoonRfis.length > 1 ? "s" : ""} due within 48h:`);
+          for (const r of dueSoonRfis.slice(0, 10)) {
+            const hoursLeft = Math.ceil(((r.dueAt?.getTime() || 0) - now.getTime()) / (1000 * 60 * 60));
+            lines.push(`  • [${r.projectNumber}] ${r.subject} — ${hoursLeft}h remaining${r.isBlocking ? " ⛔ BLOCKING" : ""}`);
+          }
+          if (dueSoonRfis.length > 10) lines.push(`  ... and ${dueSoonRfis.length - 10} more`);
+        }
+
+        const notificationBody = lines.join("\n");
+        const title = `RFI Alert: ${overdueRfis.length} overdue, ${dueSoonRfis.length} due soon`;
+
+        // Send owner notification
+        await notifyOwner({ tenantId: tenant.id, title, content: notificationBody });
+
+        // Collect all users to notify (assigned + tenant admins)
+        const assignedUserIds = Array.from(new Set(activeRfis.map((r) => r.assignedToUserId).filter(Boolean))) as number[];
+        const adminUsers = await getTenantNotificationRecipients(tenant.id, {
+          appRoles: ["admin", "super_admin"],
+        });
+
+        // Get assigned user details for email
+        const assignedUsers = assignedUserIds.length > 0
+          ? await db
+              .select({ id: users.id, email: users.email, name: users.name })
+              .from(users)
+              .where(inArray(users.id, assignedUserIds))
+          : [];
+
+        // Combine all users to notify (dedup by id)
+        const allUsersMap = new Map<number, { id: number; email: string | null; name: string | null }>();
+        for (const u of assignedUsers) allUsersMap.set(u.id, u);
+        for (const u of adminUsers) {
+          if (!allUsersMap.has(u.id)) allUsersMap.set(u.id, u);
+        }
+
+        totalNotifiedUsers += allUsersMap.size;
+
+        for (const [userId, userData] of Array.from(allUsersMap.entries())) {
+          // Determine which RFIs are relevant to this user
+          const isAssigned = assignedUserIds.includes(userId);
+          const userRfis = isAssigned
+            ? activeRfis.filter((r) => r.assignedToUserId === userId)
+            : activeRfis; // Admins see all tenant RFIs
+
+          // Push notification
+          const overdueCount = userRfis.filter((r) => r.dueAt && r.dueAt <= now).length;
+          const dueCount = userRfis.filter((r) => r.dueAt && r.dueAt > now).length;
+          const pushTitle = overdueCount > 0
+            ? `${overdueCount} RFI${overdueCount > 1 ? "s" : ""} overdue`
+            : `${dueCount} RFI${dueCount > 1 ? "s" : ""} due soon`;
+          const pushBody = userRfis.slice(0, 3).map((r) => `[${r.projectNumber}] ${r.subject}`).join(", ");
+
+          try {
+            await sendPushToUser(userId, { title: pushTitle, body: pushBody, url: "/approvals/dashboard" });
+            totalPushesSent++;
+          } catch (e) {
+            // Non-critical: user may not have push subscription — email will cover them
+          }
+
+          // Email digest (send to all users with an email address)
+          if (userData.email) {
+            try {
+              const emailSubject = overdueCount > 0
+                ? `⚠️ ${overdueCount} RFI${overdueCount > 1 ? "s" : ""} Overdue — Action Required`
+                : `📋 ${dueCount} RFI${dueCount > 1 ? "s" : ""} Due Soon`;
+              const htmlBody = buildEmailHtml(userRfis, now, userData.name || "Team");
+              const emailResult = await sendNotificationEmail({
+                tenantId: tenant.id,
+                to: userData.email,
+                subject: emailSubject,
+                htmlBody,
+                fromName: "Altaspan Approvals",
+                module: "approvals",
+                settingKey: "rfi_due_email",
+              });
+              if (emailResult.success) totalEmailsSent++;
+            } catch (e) {
+              console.error(`[RFI Due Notify] Email failed for user ${userId}:`, e);
+            }
+          }
+        }
+      }
+
+      if (totalOverdue + totalDueSoon === 0) {
         return res.json({
           ok: true,
           skipped: "no-rfis-due",
@@ -147,119 +269,13 @@ export function registerScheduledRfiDueNotify(app: Express) {
         });
       }
 
-      // Split into overdue vs due-soon
-      const overdueRfis = activeRfis.filter((r) => r.dueAt && r.dueAt <= now);
-      const dueSoonRfis = activeRfis.filter((r) => r.dueAt && r.dueAt > now && r.dueAt <= in48Hours);
-
-      // Update overdue RFIs to "overdue" status
-      if (overdueRfis.length > 0) {
-        const overdueIds = overdueRfis.map((r) => r.rfiId);
-        await db
-          .update(approvalRfis)
-          .set({ status: "overdue" })
-          .where(inArray(approvalRfis.id, overdueIds));
-      }
-
-      // Build notification message for owner/push
-      const lines: string[] = [];
-      if (overdueRfis.length > 0) {
-        lines.push(`🚨 ${overdueRfis.length} OVERDUE RFI${overdueRfis.length > 1 ? "s" : ""}:`);
-        for (const r of overdueRfis.slice(0, 10)) {
-          const daysPast = Math.ceil((now.getTime() - (r.dueAt?.getTime() || 0)) / (1000 * 60 * 60 * 24));
-          lines.push(`  • [${r.projectNumber}] ${r.subject} — ${daysPast}d overdue${r.isBlocking ? " ⛔ BLOCKING" : ""}`);
-        }
-        if (overdueRfis.length > 10) lines.push(`  ... and ${overdueRfis.length - 10} more`);
-      }
-      if (dueSoonRfis.length > 0) {
-        lines.push(`⚠️ ${dueSoonRfis.length} RFI${dueSoonRfis.length > 1 ? "s" : ""} due within 48h:`);
-        for (const r of dueSoonRfis.slice(0, 10)) {
-          const hoursLeft = Math.ceil(((r.dueAt?.getTime() || 0) - now.getTime()) / (1000 * 60 * 60));
-          lines.push(`  • [${r.projectNumber}] ${r.subject} — ${hoursLeft}h remaining${r.isBlocking ? " ⛔ BLOCKING" : ""}`);
-        }
-        if (dueSoonRfis.length > 10) lines.push(`  ... and ${dueSoonRfis.length - 10} more`);
-      }
-
-      const notificationBody = lines.join("\n");
-      const title = `RFI Alert: ${overdueRfis.length} overdue, ${dueSoonRfis.length} due soon`;
-
-      // Send owner notification
-      await notifyOwner({ title, content: notificationBody });
-
-      // Collect all users to notify (assigned + admins)
-      const assignedUserIds = Array.from(new Set(activeRfis.map((r) => r.assignedToUserId).filter(Boolean))) as number[];
-      const adminUsers = await db
-        .select({ id: users.id, email: users.email, name: users.name })
-        .from(users)
-        .where(inArray(users.role, ["admin", "super_admin"]));
-
-      // Get assigned user details for email
-      const assignedUsers = assignedUserIds.length > 0
-        ? await db
-            .select({ id: users.id, email: users.email, name: users.name })
-            .from(users)
-            .where(inArray(users.id, assignedUserIds))
-        : [];
-
-      // Combine all users to notify (dedup by id)
-      const allUsersMap = new Map<number, { id: number; email: string | null; name: string | null }>();
-      for (const u of assignedUsers) allUsersMap.set(u.id, u);
-      for (const u of adminUsers) {
-        if (!allUsersMap.has(u.id)) allUsersMap.set(u.id, u);
-      }
-
-      let emailsSent = 0;
-      let pushesSent = 0;
-
-      for (const [userId, userData] of Array.from(allUsersMap.entries())) {
-        // Determine which RFIs are relevant to this user
-        const isAssigned = assignedUserIds.includes(userId);
-        const userRfis = isAssigned
-          ? activeRfis.filter((r) => r.assignedToUserId === userId)
-          : activeRfis; // Admins see all
-
-        // Push notification
-        const overdueCount = userRfis.filter((r) => r.dueAt && r.dueAt <= now).length;
-        const dueCount = userRfis.filter((r) => r.dueAt && r.dueAt > now).length;
-        const pushTitle = overdueCount > 0
-          ? `${overdueCount} RFI${overdueCount > 1 ? "s" : ""} overdue`
-          : `${dueCount} RFI${dueCount > 1 ? "s" : ""} due soon`;
-        const pushBody = userRfis.slice(0, 3).map((r) => `[${r.projectNumber}] ${r.subject}`).join(", ");
-
-        try {
-          await sendPushToUser(userId, { title: pushTitle, body: pushBody, url: "/approvals/dashboard" });
-          pushesSent++;
-        } catch (e) {
-          // Non-critical: user may not have push subscription — email will cover them
-        }
-
-        // Email digest (send to all users with an email address)
-        if (userData.email) {
-          try {
-            const emailSubject = overdueCount > 0
-              ? `⚠️ ${overdueCount} RFI${overdueCount > 1 ? "s" : ""} Overdue — Action Required`
-              : `📋 ${dueCount} RFI${dueCount > 1 ? "s" : ""} Due Soon`;
-            const htmlBody = buildEmailHtml(userRfis, now, userData.name || "Team");
-            await sendNotificationEmail({
-              to: userData.email,
-              subject: emailSubject,
-              htmlBody,
-              fromName: "Altaspan Approvals",
-              settingKey: "rfi_due_email",
-            });
-            emailsSent++;
-          } catch (e) {
-            console.error(`[RFI Due Notify] Email failed for user ${userId}:`, e);
-          }
-        }
-      }
-
       return res.json({
         ok: true,
-        overdueCount: overdueRfis.length,
-        dueSoonCount: dueSoonRfis.length,
-        notifiedUsers: allUsersMap.size,
-        emailsSent,
-        pushesSent,
+        overdueCount: totalOverdue,
+        dueSoonCount: totalDueSoon,
+        notifiedUsers: totalNotifiedUsers,
+        emailsSent: totalEmailsSent,
+        pushesSent: totalPushesSent,
         duration: Date.now() - startTime,
       });
     } catch (error: any) {

@@ -58,24 +58,24 @@ type ApiCheck = {
 };
 
 const API_CHECKS: ApiCheck[] = [
-  { key: "hbcf_onegov", name: "HBCF OneGov", category: "Government", baseUrl: "https://api.onegov.nsw.gov.au", configured: true },
-  { key: "hbcf_direct", name: "HBCF Direct", category: "Government", baseUrl: "https://api.hbcf.nsw.gov.au/api/v1/certificates/", configured: true },
+  { key: "hbcf_onegov", name: "HBCF OneGov", category: "Government", baseUrl: "https://api.onegov.nsw.gov.au", configured: true, schedule: "On demand + certificate sync" },
+  { key: "hbcf_direct", name: "HBCF Direct", category: "Government", baseUrl: "https://api.hbcf.nsw.gov.au/api/v1/certificates/", configured: true, schedule: "On demand + certificate sync" },
   { key: "act_active_das", name: "ACT Active DAs", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_ACTIVE_DEVELOPMENT_APPLICATIONS/FeatureServer/0", configured: true, schedule: "Every 6 hours" },
-  { key: "act_dafinder", name: "ACT DAFINDER", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_DAFINDER_LIST_VIEW/FeatureServer/0", configured: true },
-  { key: "act_blocks", name: "ACT Blocks", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query", configured: true },
+  { key: "act_dafinder", name: "ACT DAFINDER", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_DAFINDER_LIST_VIEW/FeatureServer/0", configured: true, schedule: "On demand + competitor scans" },
+  { key: "act_blocks", name: "ACT Blocks", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query", configured: true, schedule: "On demand parcel lookup" },
   { key: "nsw_planning", name: "NSW Planning Portal", category: "Government", baseUrl: "https://api.apps1.nsw.gov.au/eplanning/data/v0/DAApplicationTracker", configured: true, schedule: "Daily" },
-  { key: "nsw_six_maps", name: "NSW SIX Maps Cadastre", category: "Government", baseUrl: "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Cadastre/MapServer/9/query", configured: true },
+  { key: "nsw_six_maps", name: "NSW SIX Maps Cadastre", category: "Government", baseUrl: "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Cadastre/MapServer/9/query", configured: true, schedule: "On demand parcel lookup" },
   { key: "open_meteo", name: "Open-Meteo", category: "Weather", baseUrl: "https://api.open-meteo.com/v1/forecast", configured: true, schedule: "Daily 6am AEST" },
-  { key: "osm_tiles", name: "OpenStreetMap Tiles", category: "Maps", baseUrl: "https://tile.openstreetmap.org", configured: true },
-  { key: "locationiq", name: "LocationIQ", category: "Maps", baseUrl: "https://api.locationiq.com", configured: !!ENV.locationIqApiKey },
-  { key: "openai", name: "OpenAI", category: "AI", baseUrl: "https://api.openai.com", configured: !!ENV.openAiApiKey },
-  { key: "xero", name: "Xero", category: "Finance", baseUrl: "https://api.xero.com", configured: !!(ENV.xeroClientId && ENV.xeroClientSecret) },
+  { key: "osm_tiles", name: "OpenStreetMap Tiles", category: "Maps", baseUrl: "https://tile.openstreetmap.org", configured: true, schedule: "Browser tile fetch" },
+  { key: "locationiq", name: "LocationIQ", category: "Maps", baseUrl: "https://api.locationiq.com", configured: !!ENV.locationIqApiKey, schedule: "On demand geocoding" },
+  { key: "openai", name: "OpenAI", category: "AI", baseUrl: "https://api.openai.com", configured: !!ENV.openAiApiKey, schedule: "On demand" },
+  { key: "xero", name: "Xero", category: "Finance", baseUrl: "https://api.xero.com", configured: !!(ENV.xeroClientId && ENV.xeroClientSecret), schedule: "Every 5 minutes + webhooks" },
   { key: "xero_webhook", name: "Xero Webhook", category: "Finance", baseUrl: "/api/xero/webhook", configured: !!ENV.xeroWebhookKey, schedule: "Event-driven" },
-  { key: "o365_graph", name: "O365 Graph", category: "Email", baseUrl: "https://graph.microsoft.com", configured: !!(ENV.msGraphTenantId && ENV.msGraphClientId && ENV.msGraphClientSecret) },
-  { key: "nylas", name: "Nylas", category: "Calendar", baseUrl: ENV.nylasApiUri || "https://api.eu.nylas.com", configured: !!(ENV.nylasClientId && ENV.nylasApiKey) },
+  { key: "o365_graph", name: "O365 Graph", category: "Email", baseUrl: "https://graph.microsoft.com", configured: !!(ENV.msGraphTenantId && ENV.msGraphClientId && ENV.msGraphClientSecret), schedule: "Every 5 minutes" },
+  { key: "nylas", name: "Nylas", category: "Calendar", baseUrl: ENV.nylasApiUri || "https://api.eu.nylas.com", configured: !!(ENV.nylasClientId && ENV.nylasApiKey), schedule: "On demand calendar sync" },
   { key: "vocphone", name: "VOCPhone", category: "Voice", baseUrl: "VOCPhone API", configured: !!(process.env.VOCPHONE_API_USERNAME && process.env.VOCPHONE_API_PASSWORD), schedule: "Hourly" },
-  { key: "signwell", name: "SignWell", category: "Signing", baseUrl: "https://www.signwell.com/api/v1", configured: !!ENV.signwellApiKey },
-  { key: "zapier", name: "Zapier Lead API", category: "Automation", baseUrl: "/api/v1/leads", configured: !!ENV.zapierApiKey },
+  { key: "signwell", name: "SignWell", category: "Signing", baseUrl: "https://www.signwell.com/api/v1", configured: !!ENV.signwellApiKey, schedule: "Webhooks + on demand" },
+  { key: "zapier", name: "Zapier Lead API", category: "Automation", baseUrl: "/api/v1/leads", configured: !!ENV.zapierApiKey, schedule: "Inbound webhook" },
 ];
 
 async function fetchJsonHealth(url: string, init?: RequestInit): Promise<{ ok: boolean; detail: string }> {

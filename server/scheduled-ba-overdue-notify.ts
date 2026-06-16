@@ -7,10 +7,11 @@
 import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
-import { crmBuildingAuthority, constructionJobs } from "../drizzle/schema";
+import { crmBuildingAuthority, crmLeads } from "../drizzle/schema";
 import { eq, and, or, isNotNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
-import { getPrimaryTenantAppSetting } from "./tenant-settings-store";
+import { getTenantAppSetting } from "./tenant-settings-store";
+import { getScheduledTenants } from "./_core/scheduled-tenants";
 
 export function registerScheduledBaOverdueNotify(app: Express) {
   app.post("/api/scheduled/ba-overdue-notify", async (req: Request, res: Response) => {
@@ -26,80 +27,69 @@ export function registerScheduledBaOverdueNotify(app: Express) {
         return res.status(500).json({ error: "Database unavailable" });
       }
 
-      const overdueDays = (await getPrimaryTenantAppSetting<number>("baOverdueThresholdDays")) ?? 30;
-      const cutoff = Date.now() - overdueDays * 24 * 60 * 60 * 1000;
+      const tenants = await getScheduledTenants();
+      let totalOverdue = 0;
+      let notificationSent = false;
 
-      // Get all pending/lodged approval applications
-      const baRows = await db
-        .select({
-          id: crmBuildingAuthority.id,
-          leadId: crmBuildingAuthority.leadId,
-          status: crmBuildingAuthority.status,
-          applicationDate: crmBuildingAuthority.applicationDate,
-          councilName: crmBuildingAuthority.councilName,
-        })
-        .from(crmBuildingAuthority)
-        .where(
-          and(
-            or(
-              eq(crmBuildingAuthority.status, "pending"),
-              eq(crmBuildingAuthority.status, "lodged"),
-              eq(crmBuildingAuthority.status, "submitted"),
-            ),
-            isNotNull(crmBuildingAuthority.applicationDate)
-          )
-        );
+      for (const tenant of tenants) {
+        const overdueDays = (await getTenantAppSetting<number>(tenant.id, "baOverdueThresholdDays")) ?? 30;
+        const cutoff = Date.now() - overdueDays * 24 * 60 * 60 * 1000;
 
-      // Filter to overdue ones
-      const overdueApps = baRows.filter(r => {
-        if (!r.applicationDate) return false;
-        return new Date(r.applicationDate).getTime() < cutoff;
-      });
+        const baRows = await db
+          .select({
+            id: crmBuildingAuthority.id,
+            leadId: crmBuildingAuthority.leadId,
+            status: crmBuildingAuthority.status,
+            applicationDate: crmBuildingAuthority.applicationDate,
+            councilName: crmBuildingAuthority.councilName,
+            leadFirstName: crmLeads.contactFirstName,
+            leadLastName: crmLeads.contactLastName,
+            leadNumber: crmLeads.leadNumber,
+          })
+          .from(crmBuildingAuthority)
+          .innerJoin(crmLeads, eq(crmBuildingAuthority.leadId, crmLeads.id))
+          .where(
+            and(
+              eq(crmLeads.tenantId, tenant.id),
+              or(
+                eq(crmBuildingAuthority.status, "pending"),
+                eq(crmBuildingAuthority.status, "lodged"),
+                eq(crmBuildingAuthority.status, "submitted"),
+              ),
+              isNotNull(crmBuildingAuthority.applicationDate)
+            )
+          );
 
-      if (overdueApps.length === 0) {
-        console.log("[BaOverdueNotify] No overdue approval applications — skipping");
-        return res.json({
-          ok: true,
-          skipped: true,
-          reason: "No overdue approval applications",
-          duration: Date.now() - startTime,
+        const overdueApps = baRows.filter(r => {
+          if (!r.applicationDate) return false;
+          return new Date(r.applicationDate).getTime() < cutoff;
         });
+
+        if (overdueApps.length === 0) {
+          continue;
+        }
+
+        totalOverdue += overdueApps.length;
+        const lines = overdueApps.map(app => {
+          const daysOverdue = Math.floor((Date.now() - new Date(app.applicationDate!).getTime()) / (1000 * 60 * 60 * 24));
+          const clientName = `${app.leadFirstName || ""} ${app.leadLastName || ""}`.trim() || app.leadNumber || "Unknown";
+          const council = app.councilName || "Unknown council";
+          return `* ${clientName} - ${council} (${daysOverdue} days, ${app.status})`;
+        });
+
+        const title = `${overdueApps.length} Approval Application${overdueApps.length > 1 ? "s" : ""} Overdue (>${overdueDays} days)`;
+        const delivered = await notifyOwner({ tenantId: tenant.id, title, content: lines.join("\n") });
+        notificationSent = notificationSent || delivered;
       }
 
-      // Get client names for the overdue applications
-      const leadIds = overdueApps.map(a => a.leadId);
-      const jobs = await db
-        .select({
-          leadId: constructionJobs.leadId,
-          clientName: constructionJobs.clientName,
-        })
-        .from(constructionJobs)
-        .where(
-          or(...leadIds.map(id => eq(constructionJobs.leadId, id)))
-        );
-
-      const clientNameByLeadId = new Map(jobs.map(j => [j.leadId, j.clientName]));
-
-      // Build notification content
-      const lines = overdueApps.map(app => {
-        const daysOverdue = Math.floor((Date.now() - new Date(app.applicationDate!).getTime()) / (1000 * 60 * 60 * 24));
-        const clientName = clientNameByLeadId.get(app.leadId) || "Unknown";
-        const council = app.councilName || "Unknown council";
-        return `• ${clientName} — ${council} (${daysOverdue} days, ${app.status})`;
-      });
-
-      const title = `${overdueApps.length} Approval Application${overdueApps.length > 1 ? "s" : ""} Overdue (>${overdueDays} days)`;
-      const content = lines.join("\n");
-
-      // Send push notification to owner
-      const delivered = await notifyOwner({ title, content });
-
-      console.log(`[BaOverdueNotify] ${overdueApps.length} overdue approval apps. Notification ${delivered ? "sent" : "failed"}.`);
+      console.log(`[BaOverdueNotify] ${totalOverdue} overdue approval apps across ${tenants.length} tenant(s).`);
 
       return res.json({
         ok: true,
-        overdueCount: overdueApps.length,
-        notificationSent: delivered,
+        overdueCount: totalOverdue,
+        skipped: totalOverdue === 0,
+        reason: totalOverdue === 0 ? "No overdue approval applications" : undefined,
+        notificationSent,
         duration: Date.now() - startTime,
       });
     } catch (err: any) {
