@@ -15,6 +15,30 @@ import {
   type InsertApprovalPathwayAssessment, type InsertApprovalWorkflowTemplate,
 } from "../drizzle/schema";
 import { getProjectHbcfGateStatus } from "./hbcf-service";
+import { appendTenantScope } from "./_core/tenant-scope";
+
+function approvalProjectScope(id: number, tenantId?: number | null) {
+  const conditions: any[] = [eq(approvalProjects.id, id)];
+  appendTenantScope(conditions, approvalProjects.tenantId, tenantId);
+  return and(...conditions);
+}
+
+async function assertApprovalProjectAccess(projectId: number, tenantId?: number | null) {
+  const project = await getApprovalProjectById(projectId, tenantId);
+  if (!project) throw new Error("Approval project not found");
+  return project;
+}
+
+async function getRowProjectId<T extends { projectId: number }>(
+  table: any,
+  idColumn: any,
+  id: number,
+): Promise<number | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const [row] = await db.select({ projectId: table.projectId }).from(table).where(eq(idColumn, id)).limit(1);
+  return (row as T | undefined)?.projectId ?? null;
+}
 
 // ─── Project Number Generator ───────────────────────────────────────────────
 export async function generateProjectNumber(): Promise<string> {
@@ -39,11 +63,11 @@ export async function createApprovalProject(data: InsertApprovalProject) {
   return result.id;
 }
 
-export async function getApprovalProjects(filters?: { status?: string; jurisdiction?: string; search?: string }) {
+export async function getApprovalProjects(filters?: { status?: string; jurisdiction?: string; search?: string }, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  let query = db.select().from(approvalProjects).orderBy(desc(approvalProjects.updatedAt));
   const conditions: any[] = [];
+  appendTenantScope(conditions, approvalProjects.tenantId, tenantId);
   if (filters?.status && filters.status !== "all") {
     conditions.push(eq(approvalProjects.overallStatus, filters.status as any));
   }
@@ -59,29 +83,28 @@ export async function getApprovalProjects(filters?: { status?: string; jurisdict
       like(approvalProjects.propertyAddress, term),
     ));
   }
-  if (conditions.length > 0) {
-    return db.select().from(approvalProjects).where(and(...conditions)).orderBy(desc(approvalProjects.updatedAt));
-  }
-  return query;
+  return db.select().from(approvalProjects)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(approvalProjects.updatedAt));
 }
 
-export async function getApprovalProjectById(id: number) {
+export async function getApprovalProjectById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, id)).limit(1);
+  const [project] = await db.select().from(approvalProjects).where(approvalProjectScope(id, tenantId)).limit(1);
   return project || null;
 }
 
-export async function updateApprovalProject(id: number, data: Partial<InsertApprovalProject>) {
+export async function updateApprovalProject(id: number, data: Partial<InsertApprovalProject>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(approvalProjects).set(data).where(eq(approvalProjects.id, id));
+  await db.update(approvalProjects).set(data).where(approvalProjectScope(id, tenantId));
 }
 
-export async function deleteApprovalProject(id: number) {
+export async function deleteApprovalProject(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.delete(approvalProjects).where(eq(approvalProjects.id, id));
+  await db.delete(approvalProjects).where(approvalProjectScope(id, tenantId));
 }
 
 // ─── Workflow Templates ─────────────────────────────────────────────────────
@@ -125,66 +148,80 @@ export async function deleteWorkflowTemplate(id: number) {
 }
 
 // ─── Lodgements ─────────────────────────────────────────────────────────────
-export async function createLodgement(data: InsertApprovalLodgement) {
+export async function createLodgement(data: InsertApprovalLodgement, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalLodgements).values(data).$returningId();
   return result.id;
 }
 
-export async function getLodgementsByProject(projectId: number) {
+export async function getLodgementsByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalLodgements)
     .where(eq(approvalLodgements.projectId, projectId))
     .orderBy(desc(approvalLodgements.createdAt));
 }
 
-export async function getLodgementById(id: number) {
+export async function getLodgementById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const [lodgement] = await db.select().from(approvalLodgements).where(eq(approvalLodgements.id, id)).limit(1);
+  if (lodgement) await assertApprovalProjectAccess(lodgement.projectId, tenantId);
   return lodgement || null;
 }
 
-export async function updateLodgement(id: number, data: Partial<InsertApprovalLodgement>) {
+export async function updateLodgement(id: number, data: Partial<InsertApprovalLodgement>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalLodgements, approvalLodgements.id, id);
+  if (!projectId) throw new Error("Lodgement not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalLodgements).set(data).where(eq(approvalLodgements.id, id));
 }
 
 // ─── Documents ──────────────────────────────────────────────────────────────
-export async function createDocument(data: InsertApprovalDocument) {
+export async function createDocument(data: InsertApprovalDocument, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalDocuments).values(data).$returningId();
   return result.id;
 }
 
-export async function getDocumentsByProject(projectId: number) {
+export async function getDocumentsByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalDocuments)
     .where(eq(approvalDocuments.projectId, projectId))
     .orderBy(desc(approvalDocuments.updatedAt));
 }
 
-export async function getDocumentById(id: number) {
+export async function getDocumentById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const [doc] = await db.select().from(approvalDocuments).where(eq(approvalDocuments.id, id)).limit(1);
+  if (doc) await assertApprovalProjectAccess(doc.projectId, tenantId);
   return doc || null;
 }
 
-export async function updateDocument(id: number, data: Partial<InsertApprovalDocument>) {
+export async function updateDocument(id: number, data: Partial<InsertApprovalDocument>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalDocuments, approvalDocuments.id, id);
+  if (!projectId) throw new Error("Document not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalDocuments).set(data).where(eq(approvalDocuments.id, id));
 }
 
-export async function createDocumentVersion(data: InsertApprovalDocumentVersion) {
+export async function createDocumentVersion(data: InsertApprovalDocumentVersion, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const doc = await getDocumentById(data.documentId, tenantId);
+  if (!doc) throw new Error("Document not found");
   const [result] = await db.insert(approvalDocumentVersions).values(data).$returningId();
   // Update parent document
   await db.update(approvalDocuments).set({
@@ -194,40 +231,48 @@ export async function createDocumentVersion(data: InsertApprovalDocumentVersion)
   return result.id;
 }
 
-export async function getDocumentVersions(documentId: number) {
+export async function getDocumentVersions(documentId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const doc = await getDocumentById(documentId, tenantId);
+  if (!doc) return [];
   return db.select().from(approvalDocumentVersions)
     .where(eq(approvalDocumentVersions.documentId, documentId))
     .orderBy(desc(approvalDocumentVersions.versionNumber));
 }
 
 // ─── RFIs ───────────────────────────────────────────────────────────────────
-export async function createRfi(data: InsertApprovalRfi) {
+export async function createRfi(data: InsertApprovalRfi, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalRfis).values(data).$returningId();
   return result.id;
 }
 
-export async function getRfisByProject(projectId: number) {
+export async function getRfisByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalRfis)
     .where(eq(approvalRfis.projectId, projectId))
     .orderBy(desc(approvalRfis.createdAt));
 }
 
-export async function getRfiById(id: number) {
+export async function getRfiById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const [rfi] = await db.select().from(approvalRfis).where(eq(approvalRfis.id, id)).limit(1);
+  if (rfi) await assertApprovalProjectAccess(rfi.projectId, tenantId);
   return rfi || null;
 }
 
-export async function updateRfi(id: number, data: Partial<InsertApprovalRfi>) {
+export async function updateRfi(id: number, data: Partial<InsertApprovalRfi>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalRfis, approvalRfis.id, id);
+  if (!projectId) throw new Error("RFI not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalRfis).set(data).where(eq(approvalRfis.id, id));
 }
 
@@ -268,38 +313,45 @@ export async function findRfiBySubjectMatch(subject: string) {
 }
 
 // ─── Conditions ─────────────────────────────────────────────────────────────
-export async function createCondition(data: InsertApprovalCondition) {
+export async function createCondition(data: InsertApprovalCondition, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalConditions).values(data).$returningId();
   return result.id;
 }
 
-export async function getConditionsByProject(projectId: number) {
+export async function getConditionsByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalConditions)
     .where(eq(approvalConditions.projectId, projectId))
     .orderBy(approvalConditions.conditionNumber);
 }
 
-export async function updateCondition(id: number, data: Partial<InsertApprovalCondition>) {
+export async function updateCondition(id: number, data: Partial<InsertApprovalCondition>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalConditions, approvalConditions.id, id);
+  if (!projectId) throw new Error("Condition not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalConditions).set(data).where(eq(approvalConditions.id, id));
 }
 
 // ─── Tasks ──────────────────────────────────────────────────────────────────
-export async function createTask(data: InsertApprovalTask) {
+export async function createTask(data: InsertApprovalTask, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalTasks).values(data).$returningId();
   return result.id;
 }
 
-export async function getTasksByProject(projectId: number, includeCompleted = false) {
+export async function getTasksByProject(projectId: number, includeCompleted = false, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   const conditions = [eq(approvalTasks.projectId, projectId)];
   if (!includeCompleted) {
     conditions.push(sql`${approvalTasks.status} != 'completed'`);
@@ -310,38 +362,47 @@ export async function getTasksByProject(projectId: number, includeCompleted = fa
     .orderBy(approvalTasks.priority, approvalTasks.dueAt);
 }
 
-export async function updateTask(id: number, data: Partial<InsertApprovalTask>) {
+export async function updateTask(id: number, data: Partial<InsertApprovalTask>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalTasks, approvalTasks.id, id);
+  if (!projectId) throw new Error("Task not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalTasks).set(data).where(eq(approvalTasks.id, id));
 }
 
 // ─── Inspections ────────────────────────────────────────────────────────────
-export async function createInspection(data: InsertApprovalInspection) {
+export async function createInspection(data: InsertApprovalInspection, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalInspections).values(data).$returningId();
   return result.id;
 }
 
-export async function getInspectionsByProject(projectId: number) {
+export async function getInspectionsByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalInspections)
     .where(eq(approvalInspections.projectId, projectId))
     .orderBy(approvalInspections.scheduledDate);
 }
 
-export async function updateInspection(id: number, data: Partial<InsertApprovalInspection>) {
+export async function updateInspection(id: number, data: Partial<InsertApprovalInspection>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalInspections, approvalInspections.id, id);
+  if (!projectId) throw new Error("Inspection not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalInspections).set(data).where(eq(approvalInspections.id, id));
 }
 
 // ─── Inspection Defects ─────────────────────────────────────────────────────
-export async function createDefect(data: InsertApprovalInspectionDefect) {
+export async function createDefect(data: InsertApprovalInspectionDefect, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalInspectionDefects).values(data).$returningId();
   // Update inspection defect count
   await db.update(approvalInspections).set({
@@ -351,62 +412,79 @@ export async function createDefect(data: InsertApprovalInspectionDefect) {
   return result.id;
 }
 
-export async function getDefectsByInspection(inspectionId: number) {
+export async function getDefectsByInspection(inspectionId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const projectId = await getRowProjectId(approvalInspections, approvalInspections.id, inspectionId);
+  if (!projectId) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalInspectionDefects)
     .where(eq(approvalInspectionDefects.inspectionId, inspectionId))
     .orderBy(desc(approvalInspectionDefects.createdAt));
 }
 
-export async function updateDefect(id: number, data: Partial<InsertApprovalInspectionDefect>) {
+export async function updateDefect(id: number, data: Partial<InsertApprovalInspectionDefect>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const [defect] = await db.select({ projectId: approvalInspectionDefects.projectId })
+    .from(approvalInspectionDefects)
+    .where(eq(approvalInspectionDefects.id, id))
+    .limit(1);
+  if (!defect?.projectId) throw new Error("Defect not found");
+  await assertApprovalProjectAccess(defect.projectId, tenantId);
   await db.update(approvalInspectionDefects).set(data).where(eq(approvalInspectionDefects.id, id));
 }
 
 // ─── Fees ───────────────────────────────────────────────────────────────────
-export async function createFee(data: InsertApprovalFee) {
+export async function createFee(data: InsertApprovalFee, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalFees).values(data).$returningId();
   return result.id;
 }
 
-export async function getFeesByProject(projectId: number) {
+export async function getFeesByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalFees)
     .where(eq(approvalFees.projectId, projectId))
     .orderBy(desc(approvalFees.createdAt));
 }
 
-export async function updateFee(id: number, data: Partial<InsertApprovalFee>) {
+export async function updateFee(id: number, data: Partial<InsertApprovalFee>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const projectId = await getRowProjectId(approvalFees, approvalFees.id, id);
+  if (!projectId) throw new Error("Fee not found");
+  await assertApprovalProjectAccess(projectId, tenantId);
   await db.update(approvalFees).set(data).where(eq(approvalFees.id, id));
 }
 
 // ─── Certificates ───────────────────────────────────────────────────────────
-export async function createCertificate(data: InsertApprovalCertificate) {
+export async function createCertificate(data: InsertApprovalCertificate, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   const [result] = await db.insert(approvalCertificates).values(data).$returningId();
   return result.id;
 }
 
-export async function getCertificatesByProject(projectId: number) {
+export async function getCertificatesByProject(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalCertificates)
     .where(eq(approvalCertificates.projectId, projectId))
     .orderBy(desc(approvalCertificates.issuedAt));
 }
 
 // ─── Pathway Assessments ────────────────────────────────────────────────────
-export async function createPathwayAssessment(data: InsertApprovalPathwayAssessment) {
+export async function createPathwayAssessment(data: InsertApprovalPathwayAssessment, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   // Supersede previous assessments for this project
   await db.update(approvalPathwayAssessments)
     .set({ supersededAt: new Date() })
@@ -415,9 +493,10 @@ export async function createPathwayAssessment(data: InsertApprovalPathwayAssessm
   return result.id;
 }
 
-export async function getLatestPathwayAssessment(projectId: number) {
+export async function getLatestPathwayAssessment(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
+  await assertApprovalProjectAccess(projectId, tenantId);
   const [assessment] = await db.select().from(approvalPathwayAssessments)
     .where(and(eq(approvalPathwayAssessments.projectId, projectId), isNull(approvalPathwayAssessments.supersededAt)))
     .orderBy(desc(approvalPathwayAssessments.assessedAt))
@@ -426,15 +505,17 @@ export async function getLatestPathwayAssessment(projectId: number) {
 }
 
 // ─── Audit Log ──────────────────────────────────────────────────────────────
-export async function createAuditEntry(data: InsertApprovalAuditLogEntry) {
+export async function createAuditEntry(data: InsertApprovalAuditLogEntry, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return;
+  await assertApprovalProjectAccess(data.projectId, tenantId);
   await db.insert(approvalAuditLog).values(data);
 }
 
-export async function getAuditLogByProject(projectId: number, limit = 50) {
+export async function getAuditLogByProject(projectId: number, limit = 50, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  await assertApprovalProjectAccess(projectId, tenantId);
   return db.select().from(approvalAuditLog)
     .where(eq(approvalAuditLog.projectId, projectId))
     .orderBy(desc(approvalAuditLog.createdAt))
@@ -442,9 +523,12 @@ export async function getAuditLogByProject(projectId: number, limit = 50) {
 }
 
 // ─── Dashboard Aggregates ───────────────────────────────────────────────────
-export async function getApprovalsDashboardStats() {
+export async function getApprovalsDashboardStats(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { total: 0, intake: 0, active: 0, onHold: 0, completed: 0, openRfis: 0, overdueRfis: 0, pendingInspections: 0 };
+  const projectConditions: any[] = [];
+  appendTenantScope(projectConditions, approvalProjects.tenantId, tenantId);
+  const projectWhere = projectConditions.length > 0 ? and(...projectConditions) : undefined;
   
   const [projectStats] = await db.select({
     total: sql<number>`COUNT(*)`,
@@ -452,16 +536,20 @@ export async function getApprovalsDashboardStats() {
     active: sql<number>`SUM(CASE WHEN ${approvalProjects.overallStatus} = 'active' THEN 1 ELSE 0 END)`,
     onHold: sql<number>`SUM(CASE WHEN ${approvalProjects.overallStatus} = 'on_hold' THEN 1 ELSE 0 END)`,
     completed: sql<number>`SUM(CASE WHEN ${approvalProjects.overallStatus} = 'completed' THEN 1 ELSE 0 END)`,
-  }).from(approvalProjects);
+  }).from(approvalProjects).where(projectWhere);
 
   const [rfiStats] = await db.select({
     openRfis: sql<number>`SUM(CASE WHEN ${approvalRfis.status} IN ('open', 'in_progress') THEN 1 ELSE 0 END)`,
     overdueRfis: sql<number>`SUM(CASE WHEN ${approvalRfis.status} = 'overdue' THEN 1 ELSE 0 END)`,
-  }).from(approvalRfis);
+  }).from(approvalRfis)
+    .leftJoin(approvalProjects, eq(approvalRfis.projectId, approvalProjects.id))
+    .where(projectWhere);
 
   const [inspectionStats] = await db.select({
     pendingInspections: sql<number>`SUM(CASE WHEN ${approvalInspections.status} IN ('required', 'scheduled', 'booked') THEN 1 ELSE 0 END)`,
-  }).from(approvalInspections);
+  }).from(approvalInspections)
+    .leftJoin(approvalProjects, eq(approvalInspections.projectId, approvalProjects.id))
+    .where(projectWhere);
 
   return {
     total: projectStats?.total || 0,
@@ -476,9 +564,10 @@ export async function getApprovalsDashboardStats() {
 }
 
 // ─── Gate Check ─────────────────────────────────────────────────────────────
-export async function checkGateReadiness(projectId: number, gateNumber: number) {
+export async function checkGateReadiness(projectId: number, gateNumber: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { ready: false, blockers: [] as string[] };
+  await assertApprovalProjectAccess(projectId, tenantId);
   
   // Check blocking RFIs
   const blockingRfis = await db.select().from(approvalRfis)
@@ -562,14 +651,14 @@ export interface TimelineEvent {
  * Aggregate all date-based events for a project into a timeline.
  * Returns events sorted by date (nulls at end).
  */
-export async function getProjectTimeline(projectId: number): Promise<TimelineEvent[]> {
+export async function getProjectTimeline(projectId: number, tenantId?: number | null): Promise<TimelineEvent[]> {
   const db = await getDb();
   if (!db) return [];
 
   const events: TimelineEvent[] = [];
 
   // Project milestones
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  const project = await getApprovalProjectById(projectId, tenantId);
   if (!project) return [];
 
   events.push({
@@ -697,20 +786,23 @@ export async function getProjectTimeline(projectId: number): Promise<TimelineEve
 }
 
 // ─── Cross-Project Calendar Events ─────────────────────────────────────────
-export async function getCrossProjectCalendarEvents(month: number, year: number) {
+export async function getCrossProjectCalendarEvents(month: number, year: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { events: [], projects: [] };
+
+  const projectConditions = [
+    or(
+      eq(approvalProjects.overallStatus, "active"),
+      eq(approvalProjects.overallStatus, "intake"),
+      eq(approvalProjects.overallStatus, "on_hold")
+    ),
+  ];
+  appendTenantScope(projectConditions, approvalProjects.tenantId, tenantId);
 
   const projects = await db
     .select({ id: approvalProjects.id, name: approvalProjects.name, status: approvalProjects.overallStatus })
     .from(approvalProjects)
-    .where(
-      or(
-        eq(approvalProjects.overallStatus, "active"),
-        eq(approvalProjects.overallStatus, "intake"),
-        eq(approvalProjects.overallStatus, "on_hold")
-      )
-    );
+    .where(and(...projectConditions));
 
   const projectIds = projects.map(p => p.id);
   if (projectIds.length === 0) return { events: [], projects };

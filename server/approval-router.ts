@@ -1,4 +1,8 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import {
+  router,
+  tenantProcedure as protectedProcedure,
+  tenantAdminProcedure as adminProcedure,
+} from "./_core/trpc";
 import { z } from "zod";
 import * as approvalDb from "./approval-db";
 import { storagePut } from "./storage";
@@ -7,6 +11,7 @@ import { ALL_TEMPLATES } from "./seed-workflow-templates";
 import { getDb } from "./db";
 import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections } from "../drizzle/schema";
 import { eq, desc, isNull, and, ne, sql } from "drizzle-orm";
+import { appendTenantScope } from "./_core/tenant-scope";
 import {
   HBCF_REQUIRED_THRESHOLD,
   createOrUpdateHbcfCertificate,
@@ -39,8 +44,8 @@ function isCommencementCertificateType(certificateType: string) {
 
 export const approvalRouter = router({
   // ─── Dashboard ──────────────────────────────────────────────────────────────
-  dashboardStats: protectedProcedure.query(async () => {
-    return approvalDb.getApprovalsDashboardStats();
+  dashboardStats: protectedProcedure.query(async ({ ctx }) => {
+    return approvalDb.getApprovalsDashboardStats(ctx.tenant!.id);
   }),
 
   // ─── Projects ───────────────────────────────────────────────────────────────
@@ -51,14 +56,14 @@ export const approvalRouter = router({
         jurisdiction: z.string().optional(),
         search: z.string().optional(),
       }).optional())
-      .query(async ({ input }) => {
-        return approvalDb.getApprovalProjects(input);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getApprovalProjects(input, ctx.tenant!.id);
       }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getApprovalProjectById(input.id);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getApprovalProjectById(input.id, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -93,7 +98,7 @@ export const approvalRouter = router({
         const projectNumber = await approvalDb.generateProjectNumber();
         const id = await approvalDb.createApprovalProject({
           ...input,
-          tenantId: ctx.tenant?.id ?? null,
+          tenantId: ctx.tenant!.id,
           ...hbcfFlagForValue(input.estimatedCost),
           projectNumber,
           createdByUserId: ctx.user.id,
@@ -106,7 +111,7 @@ export const approvalRouter = router({
           summary: `Project ${projectNumber} created: ${input.name}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id, projectNumber };
       }),
 
@@ -126,7 +131,7 @@ export const approvalRouter = router({
             updates.hbcfFlaggedAt = null;
           }
         }
-        await approvalDb.updateApprovalProject(input.id, updates);
+        await approvalDb.updateApprovalProject(input.id, updates, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.id,
           eventType: "project_updated",
@@ -136,14 +141,14 @@ export const approvalRouter = router({
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
           details: updates,
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await approvalDb.deleteApprovalProject(input.id);
+      .mutation(async ({ ctx, input }) => {
+        await approvalDb.deleteApprovalProject(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
@@ -155,12 +160,12 @@ export const approvalRouter = router({
         newGate: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const project = await approvalDb.getApprovalProjectById(input.id);
+        const project = await approvalDb.getApprovalProjectById(input.id, ctx.tenant!.id);
         if (!project) throw new Error("Project not found");
 
         // If advancing to a new gate, check gate readiness
         if (input.newGate !== undefined && input.newGate > (project.currentGate || 0)) {
-          const gateCheck = await approvalDb.checkGateReadiness(input.id, input.newGate);
+          const gateCheck = await approvalDb.checkGateReadiness(input.id, input.newGate, ctx.tenant!.id);
           if (!gateCheck.ready) {
             throw new Error(`Gate ${input.newGate} not ready: ${gateCheck.blockers.join("; ")}`);
           }
@@ -170,7 +175,7 @@ export const approvalRouter = router({
           currentState: input.newState,
           currentGate: input.newGate ?? project.currentGate,
           overallStatus: "active",
-        });
+        }, ctx.tenant!.id);
 
         await approvalDb.createAuditEntry({
           projectId: input.id,
@@ -182,15 +187,15 @@ export const approvalRouter = router({
           newValue: input.newState,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
 
     // Check gate readiness
     checkGate: protectedProcedure
       .input(z.object({ id: z.number(), gateNumber: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.checkGateReadiness(input.id, input.gateNumber);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.checkGateReadiness(input.id, input.gateNumber, ctx.tenant!.id);
       }),
   }),
 
@@ -198,8 +203,8 @@ export const approvalRouter = router({
   pathwayAssessments: router({
     getLatest: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getLatestPathwayAssessment(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getLatestPathwayAssessment(input.projectId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -216,14 +221,14 @@ export const approvalRouter = router({
           ...input,
           assessedByUserId: ctx.user.id,
           assessedByName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         // Update project with recommended pathway
         if (input.recommendedPathway) {
           await approvalDb.updateApprovalProject(input.projectId, {
             recommendedPathway: input.recommendedPathway,
             pathwayConfidence: input.confidence,
             pathwayAssumptions: input.assumptions,
-          });
+          }, ctx.tenant!.id);
         }
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
@@ -233,7 +238,7 @@ export const approvalRouter = router({
           summary: `Pathway assessed: ${input.recommendedPathway || "pending"} (${input.confidence || "unknown"} confidence)`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
   }),
@@ -332,14 +337,14 @@ export const approvalRouter = router({
   lodgements: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getLodgementsByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getLodgementsByProject(input.projectId, ctx.tenant!.id);
       }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getLodgementById(input.id);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getLodgementById(input.id, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -357,7 +362,7 @@ export const approvalRouter = router({
         const id = await approvalDb.createLodgement({
           ...input,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "lodgement_created",
@@ -366,14 +371,14 @@ export const approvalRouter = router({
           summary: `Lodgement created: ${input.lodgementType}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateLodgement(input.id, input.data as any);
+        await approvalDb.updateLodgement(input.id, input.data as any, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "lodgement_updated",
@@ -383,7 +388,7 @@ export const approvalRouter = router({
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
           details: input.data,
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
   }),
@@ -392,20 +397,20 @@ export const approvalRouter = router({
   documents: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getDocumentsByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getDocumentsByProject(input.projectId, ctx.tenant!.id);
       }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getDocumentById(input.id);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getDocumentById(input.id, ctx.tenant!.id);
       }),
 
     versions: protectedProcedure
       .input(z.object({ documentId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getDocumentVersions(input.documentId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getDocumentVersions(input.documentId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -424,7 +429,7 @@ export const approvalRouter = router({
         const id = await approvalDb.createDocument({
           ...input,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "document_created",
@@ -433,14 +438,14 @@ export const approvalRouter = router({
           summary: `Document created: ${input.title} (${input.documentType})`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateDocument(input.id, input.data as any);
+        await approvalDb.updateDocument(input.id, input.data as any, ctx.tenant!.id);
         return { success: true };
       }),
 
@@ -460,7 +465,7 @@ export const approvalRouter = router({
         const { url } = await storagePut(fileKey, buffer, input.fileMimeType);
 
         // Get current version count
-        const doc = await approvalDb.getDocumentById(input.documentId);
+        const doc = await approvalDb.getDocumentById(input.documentId, ctx.tenant!.id);
         const versionNumber = (doc?.versionCount || 0) + 1;
 
         const versionId = await approvalDb.createDocumentVersion({
@@ -474,10 +479,10 @@ export const approvalRouter = router({
           revisionNotes: input.revisionNotes,
           uploadedByUserId: ctx.user.id,
           uploadedByName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         // Update document status to draft
-        await approvalDb.updateDocument(input.documentId, { status: "draft" });
+        await approvalDb.updateDocument(input.documentId, { status: "draft" }, ctx.tenant!.id);
 
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
@@ -487,7 +492,7 @@ export const approvalRouter = router({
           summary: `Version ${versionNumber} uploaded: ${input.fileName}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         return { versionId, url, versionNumber };
       }),
@@ -500,7 +505,7 @@ export const approvalRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         // Get all documents for this project (or specific lodgement)
-        const allDocs = await approvalDb.getDocumentsByProject(input.projectId);
+        const allDocs = await approvalDb.getDocumentsByProject(input.projectId, ctx.tenant!.id);
         const docs = input.documentIds
           ? allDocs.filter((d: any) => input.documentIds!.includes(d.id))
           : input.lodgementId
@@ -510,7 +515,7 @@ export const approvalRouter = router({
         // Get latest version for each document
         const packItems: { title: string; fileName: string; fileUrl: string; documentType: string; status: string }[] = [];
         for (const doc of docs) {
-          const versions = await approvalDb.getDocumentVersions(doc.id);
+          const versions = await approvalDb.getDocumentVersions(doc.id, ctx.tenant!.id);
           if (versions.length > 0) {
             const latest = versions[versions.length - 1];
             packItems.push({
@@ -532,7 +537,7 @@ export const approvalRouter = router({
           summary: `Document pack generated (${input.format}): ${packItems.length} documents`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         return {
           format: input.format,
@@ -547,14 +552,14 @@ export const approvalRouter = router({
   rfis: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getRfisByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getRfisByProject(input.projectId, ctx.tenant!.id);
       }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getRfiById(input.id);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getRfiById(input.id, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -576,7 +581,7 @@ export const approvalRouter = router({
           dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
           receivedAt: new Date(),
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "rfi_created",
@@ -585,14 +590,14 @@ export const approvalRouter = router({
           summary: `RFI created: ${input.subject}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateRfi(input.id, input.data as any);
+        await approvalDb.updateRfi(input.id, input.data as any, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "rfi_updated",
@@ -602,7 +607,7 @@ export const approvalRouter = router({
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
           details: input.data,
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
   }),
@@ -611,8 +616,8 @@ export const approvalRouter = router({
   conditions: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getConditionsByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getConditionsByProject(input.projectId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -634,7 +639,7 @@ export const approvalRouter = router({
           ...input,
           dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "condition_created",
@@ -643,14 +648,14 @@ export const approvalRouter = router({
           summary: `Condition created: ${input.title}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateCondition(input.id, input.data as any);
+        await approvalDb.updateCondition(input.id, input.data as any, ctx.tenant!.id);
         if (input.data.status === "satisfied") {
           await approvalDb.createAuditEntry({
             projectId: input.projectId,
@@ -660,7 +665,7 @@ export const approvalRouter = router({
             summary: `Condition satisfied`,
             userId: ctx.user.id,
             userName: ctx.user.name || "Unknown",
-          });
+          }, ctx.tenant!.id);
         }
         return { success: true };
       }),
@@ -696,7 +701,7 @@ export const approvalRouter = router({
               title: `Evidence: ${file.fileName}`,
               status: "approved",
               createdByUserId: ctx.user.id,
-            });
+            }, ctx.tenant!.id);
             await approvalDb.createDocumentVersion({
               documentId: docId,
               versionNumber: 1,
@@ -707,7 +712,7 @@ export const approvalRouter = router({
               fileSize: buffer.length,
               uploadedByUserId: ctx.user.id,
               uploadedByName: ctx.user.name || "Unknown",
-            });
+            }, ctx.tenant!.id);
             evidenceDocumentIds.push(docId);
           }
         }
@@ -720,7 +725,7 @@ export const approvalRouter = router({
           satisfiedByName: ctx.user.name || "Unknown",
           evidenceNotes: input.evidenceNotes || null,
           evidenceDocumentIds: evidenceDocumentIds.length > 0 ? evidenceDocumentIds : undefined,
-        });
+        }, ctx.tenant!.id);
 
         // Audit
         await approvalDb.createAuditEntry({
@@ -731,10 +736,10 @@ export const approvalRouter = router({
           summary: `Condition satisfied with ${evidenceDocumentIds.length} evidence file(s)`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         // Auto-update blocking flags: check if all blocking conditions on this project are now satisfied
-        const allConditions = await approvalDb.getConditionsByProject(input.projectId);
+        const allConditions = await approvalDb.getConditionsByProject(input.projectId, ctx.tenant!.id);
         const blockingUnsatisfied = allConditions.filter(
           (c: any) => c.isBlocking && c.status !== "satisfied" && c.status !== "waived" && c.status !== "not_applicable"
         );
@@ -852,7 +857,7 @@ export const approvalRouter = router({
             blockingGate: c.blockingGate ?? undefined,
             dueAt: c.dueAt ? new Date(c.dueAt) : undefined,
             createdByUserId: ctx.user.id,
-          });
+          }, ctx.tenant!.id);
           createdIds.push(id);
         }
         await approvalDb.createAuditEntry({
@@ -863,7 +868,7 @@ export const approvalRouter = router({
           summary: `${createdIds.length} conditions imported from consent PDF`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { createdCount: createdIds.length, ids: createdIds };
       }),
   }),
@@ -872,8 +877,8 @@ export const approvalRouter = router({
   tasks: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number(), includeCompleted: z.boolean().optional() }))
-      .query(async ({ input }) => {
-        return approvalDb.getTasksByProject(input.projectId, input.includeCompleted);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getTasksByProject(input.projectId, input.includeCompleted, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -895,7 +900,7 @@ export const approvalRouter = router({
           ...input,
           dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
@@ -906,7 +911,7 @@ export const approvalRouter = router({
         if (input.data.status === "completed") {
           updateData.completedAt = new Date();
         }
-        await approvalDb.updateTask(input.id, updateData);
+        await approvalDb.updateTask(input.id, updateData, ctx.tenant!.id);
         return { success: true };
       }),
     generateFromGate: protectedProcedure
@@ -930,7 +935,7 @@ export const approvalRouter = router({
             priority: "medium",
             autoGenerated: true,
             createdByUserId: ctx.user.id,
-          });
+          }, ctx.tenant!.id);
           count++;
         }
         await approvalDb.createAuditEntry({
@@ -941,7 +946,7 @@ export const approvalRouter = router({
           summary: `${count} tasks auto-generated for Gate ${input.gateNumber}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { count };
       }),
   }),
@@ -950,8 +955,8 @@ export const approvalRouter = router({
   inspections: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getInspectionsByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getInspectionsByProject(input.projectId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -972,7 +977,7 @@ export const approvalRouter = router({
           ...input,
           scheduledDate: input.scheduledDate ? new Date(input.scheduledDate) : undefined,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "inspection_created",
@@ -981,7 +986,7 @@ export const approvalRouter = router({
           summary: `Inspection scheduled: ${input.title} (${input.inspectionType})`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         // Auto-populate into construction project plan (schedule events)
         try {
@@ -1024,7 +1029,7 @@ export const approvalRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateInspection(input.id, input.data as any);
+        await approvalDb.updateInspection(input.id, input.data as any, ctx.tenant!.id);
         if (input.data.result) {
           await approvalDb.createAuditEntry({
             projectId: input.projectId,
@@ -1034,7 +1039,7 @@ export const approvalRouter = router({
             summary: `Inspection result: ${input.data.result}`,
             userId: ctx.user.id,
             userName: ctx.user.name || "Unknown",
-          });
+          }, ctx.tenant!.id);
         }
         return { success: true };
       }),
@@ -1042,8 +1047,8 @@ export const approvalRouter = router({
     defects: router({
       list: protectedProcedure
         .input(z.object({ inspectionId: z.number() }))
-        .query(async ({ input }) => {
-          return approvalDb.getDefectsByInspection(input.inspectionId);
+        .query(async ({ ctx, input }) => {
+          return approvalDb.getDefectsByInspection(input.inspectionId, ctx.tenant!.id);
         }),
 
       create: protectedProcedure
@@ -1057,14 +1062,14 @@ export const approvalRouter = router({
           assignedToName: z.string().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
-          const id = await approvalDb.createDefect(input);
+          const id = await approvalDb.createDefect(input, ctx.tenant!.id);
           return { id };
         }),
 
       update: protectedProcedure
         .input(z.object({ id: z.number(), data: z.record(z.string(), z.any()) }))
-        .mutation(async ({ input }) => {
-          await approvalDb.updateDefect(input.id, input.data as any);
+        .mutation(async ({ ctx, input }) => {
+          await approvalDb.updateDefect(input.id, input.data as any, ctx.tenant!.id);
           return { success: true };
         }),
     }),
@@ -1074,8 +1079,8 @@ export const approvalRouter = router({
   fees: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getFeesByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getFeesByProject(input.projectId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -1093,14 +1098,14 @@ export const approvalRouter = router({
           ...input,
           dueAt: input.dueAt ? new Date(input.dueAt) : undefined,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), data: z.record(z.string(), z.any()) }))
-      .mutation(async ({ input }) => {
-        await approvalDb.updateFee(input.id, input.data as any);
+      .mutation(async ({ ctx, input }) => {
+        await approvalDb.updateFee(input.id, input.data as any, ctx.tenant!.id);
         return { success: true };
       }),
   }),
@@ -1109,8 +1114,8 @@ export const approvalRouter = router({
   certificates: router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getCertificatesByProject(input.projectId);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getCertificatesByProject(input.projectId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -1136,7 +1141,7 @@ export const approvalRouter = router({
           issuedAt: input.issuedAt ? new Date(input.issuedAt) : undefined,
           expiresAt: input.expiresAt ? new Date(input.expiresAt) : undefined,
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "certificate_issued",
@@ -1145,7 +1150,7 @@ export const approvalRouter = router({
           summary: `Certificate issued: ${input.certificateType} ${input.certificateNumber || ""}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
   }),
@@ -1154,7 +1159,7 @@ export const approvalRouter = router({
   hbcf: router({
     profile: router({
       get: protectedProcedure.query(async ({ ctx }) => {
-        return getHbcfBuilderProfile(ctx.tenant?.id ?? null);
+        return getHbcfBuilderProfile(ctx.tenant!.id);
       }),
       update: adminProcedure
         .input(z.object({
@@ -1172,11 +1177,11 @@ export const approvalRouter = router({
           apiMonthlyLimit: z.number().int().min(1).max(2500).optional(),
         }))
         .mutation(async ({ ctx, input }) => {
-          const id = await upsertHbcfBuilderProfile(ctx.tenant?.id ?? null, {
+          const id = await upsertHbcfBuilderProfile(ctx.tenant!.id, {
             ...input,
             annualLimit: input.annualLimit || "0",
             annualLimitUsed: input.annualLimitUsed || "0",
-            updatedByUserId: ctx.user.id,
+            updatedByUserId: ctx.user!.id,
           } as any);
           return { id };
         }),
@@ -1184,7 +1189,11 @@ export const approvalRouter = router({
 
     gateStatus: protectedProcedure
       .input(z.object({ projectId: z.number() }))
-      .query(async ({ input }) => getProjectHbcfGateStatus(input.projectId)),
+      .query(async ({ ctx, input }) => {
+        const project = await approvalDb.getApprovalProjectById(input.projectId, ctx.tenant!.id);
+        if (!project) throw new Error("Project not found");
+        return getProjectHbcfGateStatus(input.projectId);
+      }),
 
     certificates: router({
       list: protectedProcedure
@@ -1195,7 +1204,7 @@ export const approvalRouter = router({
         }).optional())
         .query(async ({ ctx, input }) => {
           return listHbcfCertificates({
-            tenantId: ctx.tenant?.id ?? null,
+            tenantId: ctx.tenant!.id,
             projectId: input?.projectId,
             quoteId: input?.quoteId,
             leadId: input?.leadId,
@@ -1223,9 +1232,13 @@ export const approvalRouter = router({
           notes: z.string().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
+          if (input.approvalProjectId) {
+            const project = await approvalDb.getApprovalProjectById(input.approvalProjectId, ctx.tenant!.id);
+            if (!project) throw new Error("Project not found");
+          }
           const id = await createOrUpdateHbcfCertificate({
             ...input,
-            tenantId: ctx.tenant?.id ?? null,
+            tenantId: ctx.tenant!.id,
             source: "manual",
             syncStatus: "not_synced",
             issuedAt: input.issuedAt ? new Date(input.issuedAt) : undefined,
@@ -1242,14 +1255,16 @@ export const approvalRouter = router({
               userId: ctx.user.id,
               userName: ctx.user.name || "Unknown",
               details: input,
-            });
+            }, ctx.tenant!.id);
           }
           return { id };
         }),
       syncProject: protectedProcedure
         .input(z.object({ projectId: z.number() }))
         .mutation(async ({ ctx, input }) => {
-          return syncProjectHbcfFromApi(input.projectId, ctx.tenant?.id ?? null, ctx.user.id);
+          const project = await approvalDb.getApprovalProjectById(input.projectId, ctx.tenant!.id);
+          if (!project) throw new Error("Project not found");
+          return syncProjectHbcfFromApi(input.projectId, ctx.tenant!.id, ctx.user.id);
         }),
     }),
 
@@ -1261,7 +1276,7 @@ export const approvalRouter = router({
         }).optional())
         .mutation(async ({ ctx, input }) => {
           return runHbcfCompetitorMatching({
-            tenantId: ctx.tenant?.id ?? null,
+            tenantId: ctx.tenant!.id,
             leadIds: input?.leadIds,
             forceRefresh: input?.forceRefresh,
           });
@@ -1274,7 +1289,7 @@ export const approvalRouter = router({
         }).optional())
         .query(async ({ ctx, input }) => {
           return listHbcfCompetitorMatches({
-            tenantId: ctx.tenant?.id ?? null,
+            tenantId: ctx.tenant!.id,
             leadId: input?.leadId,
             limit: input?.limit,
             offset: input?.offset,
@@ -1286,22 +1301,22 @@ export const approvalRouter = router({
   // ─── Timeline ─────────────────────────────────────────────────────────────
   timeline: protectedProcedure
     .input(z.object({ projectId: z.number() }))
-    .query(async ({ input }) => {
-      return approvalDb.getProjectTimeline(input.projectId);
+    .query(async ({ ctx, input }) => {
+      return approvalDb.getProjectTimeline(input.projectId, ctx.tenant!.id);
     }),
 
   // ─── Audit Log ────────────────────────────────────────────────────────────
   auditLog: protectedProcedure
     .input(z.object({ projectId: z.number(), limit: z.number().optional() }))
-    .query(async ({ input }) => {
-      return approvalDb.getAuditLogByProject(input.projectId, input.limit);
+    .query(async ({ ctx, input }) => {
+      return approvalDb.getAuditLogByProject(input.projectId, input.limit, ctx.tenant!.id);
     }),
 
   // ─── Cross-Project Calendar Events ────────────────────────────────────────
   calendarEvents: protectedProcedure
     .input(z.object({ month: z.number().min(1).max(12), year: z.number() }))
-    .query(async ({ input }) => {
-      return approvalDb.getCrossProjectCalendarEvents(input.month, input.year);
+    .query(async ({ ctx, input }) => {
+      return approvalDb.getCrossProjectCalendarEvents(input.month, input.year, ctx.tenant!.id);
     }),
 
   // ─── Bulk Document Upload ──────────────────────────────────────────────────
@@ -1334,7 +1349,7 @@ export const approvalRouter = router({
           title,
           status: "draft",
           createdByUserId: ctx.user.id,
-        });
+        }, ctx.tenant!.id);
 
         // Upload file to S3
         const buffer = Buffer.from(file.fileBase64, "base64");
@@ -1353,7 +1368,7 @@ export const approvalRouter = router({
           fileSize: buffer.length,
           uploadedByUserId: ctx.user.id,
           uploadedByName: ctx.user.name || "Unknown",
-        });
+        }, ctx.tenant!.id);
 
         results.push({ fileName: file.fileName, documentId: docId, documentType, title });
       }
@@ -1367,7 +1382,7 @@ export const approvalRouter = router({
         summary: `Bulk upload: ${results.length} documents uploaded`,
         userId: ctx.user.id,
         userName: ctx.user.name || "Unknown",
-      });
+      }, ctx.tenant!.id);
 
       return { uploaded: results.length, documents: results };
     }),
@@ -1383,7 +1398,7 @@ export const approvalRouter = router({
       if (!db) throw new Error("Database not available");
 
       // Get source project
-      const source = await approvalDb.getApprovalProjectById(input.sourceProjectId);
+      const source = await approvalDb.getApprovalProjectById(input.sourceProjectId, ctx.tenant!.id);
       if (!source) throw new Error("Source project not found");
 
       // Generate new project number
@@ -1424,11 +1439,12 @@ export const approvalRouter = router({
         crmLeadId: source.crmLeadId,
         projectManagerId: source.projectManagerId,
         projectManagerName: source.projectManagerName,
+        tenantId: ctx.tenant!.id,
         createdByUserId: ctx.user.id,
       });
 
       // Clone document checklist (documents without file versions — just placeholders)
-      const sourceDocs = await approvalDb.getDocumentsByProject(input.sourceProjectId);
+      const sourceDocs = await approvalDb.getDocumentsByProject(input.sourceProjectId, ctx.tenant!.id);
       let docsCloned = 0;
       for (const doc of sourceDocs) {
         if (doc.checklistRequired) {
@@ -1442,7 +1458,7 @@ export const approvalRouter = router({
             signatureRequired: (doc as any).signatureRequired,
             preparedByParty: (doc as any).preparedByParty,
             createdByUserId: ctx.user.id,
-          });
+          }, ctx.tenant!.id);
           docsCloned++;
         }
       }
@@ -1456,7 +1472,7 @@ export const approvalRouter = router({
         summary: `Cloned from ${source.projectNumber} (${source.name}). ${docsCloned} checklist documents copied.`,
         userId: ctx.user.id,
         userName: ctx.user.name || "Unknown",
-      });
+      }, ctx.tenant!.id);
 
       return { newProjectId, projectNumber, docsCloned };
     }),
@@ -1469,10 +1485,11 @@ export const approvalRouter = router({
       priority: z.string().optional(),
       limit: z.number().optional().default(100),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const conditions: any[] = [];
+      appendTenantScope(conditions, approvalProjects.tenantId, ctx.tenant!.id);
       if (input.status && input.status !== "all") {
         conditions.push(eq(approvalTasks.status, input.status as any));
       }
@@ -1508,10 +1525,11 @@ export const approvalRouter = router({
       documentType: z.string().optional(),
       limit: z.number().optional().default(100),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const conditions: any[] = [];
+      appendTenantScope(conditions, approvalProjects.tenantId, ctx.tenant!.id);
       if (input.status && input.status !== "all") {
         conditions.push(eq(approvalDocuments.status, input.status as any));
       }
@@ -1544,10 +1562,11 @@ export const approvalRouter = router({
       status: z.string().optional(),
       limit: z.number().optional().default(100),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const conditions: any[] = [];
+      appendTenantScope(conditions, approvalProjects.tenantId, ctx.tenant!.id);
       if (input.status && input.status !== "all") {
         conditions.push(eq(approvalRfis.status, input.status as any));
       }
@@ -1579,10 +1598,11 @@ export const approvalRouter = router({
       status: z.string().optional(),
       limit: z.number().optional().default(100),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const conditions: any[] = [];
+      appendTenantScope(conditions, approvalProjects.tenantId, ctx.tenant!.id);
       if (input.status && input.status !== "all") {
         conditions.push(eq(approvalInspections.status, input.status as any));
       }
