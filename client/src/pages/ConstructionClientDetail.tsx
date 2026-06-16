@@ -244,6 +244,8 @@ export default function ConstructionClientDetail() {
   const { job, progress, assignments, financials, xeroAccountingSummary, kanbanTasks, quoteData, leadData, completedStages, totalStages, progressPercent, progressSource } = detailQuery.data;
   const statusCfg = STATUS_CONFIG[job.status] || STATUS_CONFIG.scheduled;
   const StatusIcon = statusCfg.icon;
+  const activeTabConfig = TAB_CONFIG.find(tab => tab.value === activeTab) || TAB_CONFIG[0];
+  const ActiveTabIcon = activeTabConfig.icon;
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -307,23 +309,35 @@ export default function ConstructionClientDetail() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" className="w-full justify-between mb-3">
-              <span className="flex items-center gap-2">
-                {(() => { const t = TAB_CONFIG.find(t => t.value === activeTab); const Icon = t?.icon; return Icon ? <Icon className="h-4 w-4" /> : null; })()}
-                {TAB_CONFIG.find(t => t.value === activeTab)?.label || "Overview"}
-                {activeTab === "tasks" ? ` (${kanbanTasks.length})` : ""}
+            <Button className="mb-4 h-auto min-h-14 w-full justify-between rounded-md border border-primary/30 bg-primary px-4 py-3 text-primary-foreground shadow-sm hover:bg-primary/90">
+              <span className="flex items-center gap-3 text-left">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-foreground/15">
+                  <ActiveTabIcon className="h-5 w-5" />
+                </span>
+                <span className="flex flex-col leading-tight">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-primary-foreground/75">Section</span>
+                  <span className="text-base font-semibold">
+                    {activeTabConfig.label}
+                    {activeTab === "tasks" ? ` (${kanbanTasks.length})` : ""}
+                  </span>
+                </span>
               </span>
-              <ChevronDown className="h-4 w-4 opacity-50" />
+              <ChevronDown className="h-5 w-5 shrink-0 opacity-90" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)]">
+          <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)] p-2">
             {TAB_CONFIG.map(tab => {
               const Icon = tab.icon;
+              const isActive = activeTab === tab.value;
               return (
                 <DropdownMenuItem
                   key={tab.value}
                   onClick={() => setActiveTab(tab.value)}
-                  className={activeTab === tab.value ? "bg-accent" : ""}
+                  className={`mb-1 cursor-pointer rounded-md px-3 py-2.5 text-sm font-medium last:mb-0 ${
+                    isActive
+                      ? "bg-primary text-primary-foreground focus:bg-primary focus:text-primary-foreground"
+                      : "hover:bg-muted focus:bg-muted"
+                  }`}
                 >
                   <Icon className="h-4 w-4 mr-2" />
                   {tab.label}{tab.value === "tasks" ? ` (${kanbanTasks.length})` : ""}
