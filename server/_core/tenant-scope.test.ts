@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV } from "./env";
 import {
+  appendTenantScope,
   isMultiTenancyMode,
   isRecordVisibleToTenant,
   tenantScoped,
@@ -24,9 +25,12 @@ describe("tenant-scope", () => {
 
   it("fails closed for missing tenant context in multi-tenant mode", () => {
     ENV.tenancyMode = "multi";
+    const conditions: unknown[] = [];
+    appendTenantScope(conditions, {} as any, undefined);
 
     expect(isMultiTenancyMode()).toBe(true);
     expect(tenantScoped({} as any, undefined)).toBeTruthy();
+    expect(conditions).toHaveLength(1);
     expect(isRecordVisibleToTenant(null, 1)).toBe(false);
     expect(isRecordVisibleToTenant(1, null)).toBe(false);
   });

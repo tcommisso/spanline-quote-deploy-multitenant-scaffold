@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { desc, eq } from "drizzle-orm";
-import { adminProcedure, router } from "./_core/trpc";
+import { tenantAdminProcedure, router } from "./_core/trpc";
 import { ENV } from "./_core/env";
 import { getDb } from "./db";
 import { daTrackerPollLog, nswDaPollLog, xeroWebhookEvents } from "../drizzle/schema";
@@ -134,7 +134,7 @@ async function testApi(key: ApiKey): Promise<{ ok: boolean; detail: string }> {
 }
 
 export const apiHealthRouter = router({
-  list: adminProcedure.query(async ({ ctx }) => {
+  list: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     let lastActPoll = null as any;
     let lastNswPoll = null as any;
@@ -173,7 +173,7 @@ export const apiHealthRouter = router({
       };
     });
   }),
-  test: adminProcedure
+  test: tenantAdminProcedure
     .input(z.object({ key: apiKeySchema }))
     .mutation(async ({ input }) => {
       const result = await testApi(input.key);

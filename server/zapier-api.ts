@@ -409,7 +409,7 @@ export function registerZapierApi(app: Express) {
         if (!resolved) {
           try {
             // 2. Try design_advisors table
-            const daRecord = await getDesignAdvisorByEmail(designAdvisor);
+            const daRecord = await getDesignAdvisorByEmail(designAdvisor, tenantId);
             if (daRecord && daRecord.name) {
               designAdvisor = daRecord.name;
               resolved = true;

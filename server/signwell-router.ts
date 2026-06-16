@@ -46,7 +46,7 @@ export const signwellRouter = router({
       // Skip if their email matches the recipient (SignWell rejects duplicate emails)
       let copiedContacts: Array<{ name: string; email: string }> = [];
       if (quote.designAdvisor) {
-        const adviser = await getDesignAdvisorByName(quote.designAdvisor);
+        const adviser = await getDesignAdvisorByName(quote.designAdvisor, ctx.tenant.id);
         if (adviser?.email && adviser.email.toLowerCase() !== input.recipientEmail.toLowerCase()) {
           copiedContacts.push({ name: adviser.name, email: adviser.email });
         }
