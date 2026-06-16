@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 export type NotificationPayload = {
   title: string;
   content: string;
+  tenantId?: number | null;
   /** Optional setting key for the notification gateway. If provided, the notification
    *  will be checked against master_data "notification" category before sending. */
   settingKey?: string;
@@ -63,10 +64,16 @@ export async function notifyOwner(
   const { title, content } = validatePayload(payload);
 
   // Lazy import to avoid circular dependency
+  let tenantId = payload.tenantId ?? null;
   if (payload.settingKey) {
     try {
+      if (tenantId == null) {
+        const { getDefaultTenantId } = await import("../db");
+        tenantId = await getDefaultTenantId();
+      }
       const { checkNotificationGate, logNotification } = await import("../notification-gateway");
       const gate = await checkNotificationGate({
+        tenantId,
         settingKey: payload.settingKey,
         channel: "owner_notify",
         recipientType: "owner",
@@ -74,7 +81,7 @@ export async function notifyOwner(
       });
       if (!gate.allowed) {
         await logNotification(
-          { settingKey: payload.settingKey, channel: "owner_notify", recipientType: "owner", title },
+          { tenantId, settingKey: payload.settingKey, channel: "owner_notify", recipientType: "owner", title },
           "suppressed",
           gate.suppressionReason
         );
@@ -92,7 +99,7 @@ export async function notifyOwner(
       try {
         const { logNotification } = await import("../notification-gateway");
         await logNotification(
-          { settingKey: payload.settingKey, channel: "owner_notify", recipientType: "owner", title },
+          { tenantId, settingKey: payload.settingKey, channel: "owner_notify", recipientType: "owner", title },
           "failed",
           "Forge notification service removed; event logged by app"
         );

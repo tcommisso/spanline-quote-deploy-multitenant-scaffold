@@ -160,13 +160,14 @@ interface SmsResult {
 }
 
 async function sendAndLogSms(params: {
+  tenantId?: number | null;
   jobId: number;
   installerId?: number;
   phone: string;
   body: string;
 }): Promise<SmsResult> {
   // Check if SMS notifications are enabled
-  const smsEnabled = await isNotificationEnabled("notify_trade_sms");
+  const smsEnabled = await isNotificationEnabled("notify_trade_sms", params.tenantId);
   if (!smsEnabled) {
     return { sent: false, error: "SMS notifications disabled" };
   }
@@ -233,6 +234,7 @@ export async function notifyScheduleEventCreated(eventId: number): Promise<void>
       if (installer?.phone) {
         const body = `Hi ${installer.name}, new ${event.eventType} scheduled.\n\nClient: ${job.clientName}\nSite: ${job.siteAddress || "TBC"}\nDate: ${eventDate}\nTime: ${eventTime}\nDetails: ${event.title}\n\n- Altaspan Construction`;
         await sendAndLogSms({
+          tenantId: job.tenantId,
           jobId: event.jobId,
           installerId: installer.id,
           phone: installer.phone,
@@ -248,7 +250,7 @@ export async function notifyScheduleEventCreated(eventId: number): Promise<void>
 
     // 3. Notify owner (guarded)
     await guardedSend(
-      { settingKey: "notify_construction_schedule", channel: "owner_notify", recipientType: "owner", title: `Schedule: ${event.title}` },
+      { tenantId: job.tenantId, settingKey: "notify_construction_schedule", channel: "owner_notify", recipientType: "owner", title: `Schedule: ${event.title}` },
       () => notifyOwner({ title: `Schedule: ${event.title}`, content: `New ${event.eventType} scheduled for ${job.clientName} at ${job.siteAddress || "N/A"} on ${eventDate} ${eventTime}.` })
     );
 
@@ -287,6 +289,7 @@ export async function notifyScheduleEventUpdated(eventId: number, changes: strin
       if (installer?.phone) {
         const body = `Hi ${installer.name}, schedule update for ${job.clientName}.\n\nEvent: ${event.title}\nDate: ${eventDate}\nChanges: ${changes.join(", ")}\n\n- Altaspan Construction`;
         await sendAndLogSms({
+          tenantId: job.tenantId,
           jobId: event.jobId,
           installerId: installer.id,
           phone: installer.phone,
@@ -323,7 +326,7 @@ export async function notifyJobStageChanged(params: {
 
     // Notify owner of stage changes (guarded)
     await guardedSend(
-      { settingKey: "notify_construction_stage", channel: "owner_notify", recipientType: "owner", title: `Stage Update: ${job.clientName}` },
+      { tenantId: job.tenantId, settingKey: "notify_construction_stage", channel: "owner_notify", recipientType: "owner", title: `Stage Update: ${job.clientName}` },
       () => notifyOwner({ title: `Stage Update: ${job.clientName}`, content: `${params.stage} is now "${statusLabel}" for ${job.clientName} at ${job.siteAddress || "N/A"}.` })
     );
 
@@ -354,7 +357,7 @@ export async function notifyJobStatusChanged(params: {
     const statusLabel = params.newStatus.replace("_", " ");
 
     await guardedSend(
-      { settingKey: "notify_construction_status", channel: "owner_notify", recipientType: "owner", title: `Job ${statusLabel}: ${job.clientName}` },
+      { tenantId: job.tenantId, settingKey: "notify_construction_status", channel: "owner_notify", recipientType: "owner", title: `Job ${statusLabel}: ${job.clientName}` },
       () => notifyOwner({ title: `Job ${statusLabel}: ${job.clientName}`, content: `Construction job for ${job.clientName} at ${job.siteAddress || "N/A"} has been updated to "${statusLabel}".` })
     );
   } catch (err) {
@@ -405,9 +408,10 @@ async function sendClientEventEmail(
   `;
 
   try {
-    const enabled = await isNotificationEnabled("notify_client_schedule_email");
+    const enabled = await isNotificationEnabled("notify_client_schedule_email", job.tenantId);
     if (!enabled) return;
     await sendNotificationEmail({
+      tenantId: job.tenantId,
       to: clientEmail,
       subject: `${eventTypeLabel} Scheduled - ${job.clientName}`,
       htmlBody,
@@ -448,9 +452,10 @@ async function sendClientStageEmail(job: any, stage: string): Promise<void> {
   `;
 
   try {
-    const enabled = await isNotificationEnabled("notify_client_stage_email");
+    const enabled = await isNotificationEnabled("notify_client_stage_email", job.tenantId);
     if (!enabled) return;
     await sendNotificationEmail({
+      tenantId: job.tenantId,
       to: clientEmail,
       subject: `Stage Completed: ${stage} - ${job.clientName}`,
       htmlBody,

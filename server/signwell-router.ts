@@ -70,7 +70,7 @@ export const signwellRouter = router({
 
       // Check if a SignWell template is configured
       const signwellConfig = await getTenantSignwellConfig(ctx.tenant.id);
-      const templateSetting = signwellConfig.templateId || await db.getMasterDataValue("signwell", "template_id");
+      const templateSetting = signwellConfig.templateId || await db.getMasterDataValue("signwell", "template_id", ctx.tenant?.id ?? null);
       let doc: signwell.SignWellDocument;
 
       if (templateSetting) {

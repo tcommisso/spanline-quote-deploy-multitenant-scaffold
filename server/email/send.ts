@@ -194,10 +194,10 @@ async function sendViaMsGraph(params: UnifiedSendParams, mailbox: ResolvedMailbo
 export async function sendUnifiedEmail(params: UnifiedSendParams): Promise<SendResult> {
   // Check notification suppression
   if (params.settingKey) {
-    const enabled = await isNotificationEnabled(params.settingKey);
+    const enabled = await isNotificationEnabled(params.settingKey, params.tenantId);
     if (!enabled) {
       await logNotification(
-        { settingKey: params.settingKey, channel: "email", recipientType: "user", recipientId: params.to[0], title: params.subject },
+        { tenantId: params.tenantId, settingKey: params.settingKey, channel: "email", recipientType: "user", recipientId: params.to[0], title: params.subject },
         "suppressed",
         "setting_disabled"
       );
@@ -213,7 +213,7 @@ export async function sendUnifiedEmail(params: UnifiedSendParams): Promise<SendR
   // Log notification if setting key provided
   if (params.settingKey) {
     await logNotification(
-      { settingKey: params.settingKey, channel: "email", recipientType: "user", recipientId: params.to[0], title: params.subject },
+      { tenantId: params.tenantId, settingKey: params.settingKey, channel: "email", recipientType: "user", recipientId: params.to[0], title: params.subject },
       result.success ? "sent" : "failed",
       result.error
     );

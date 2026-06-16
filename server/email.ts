@@ -34,10 +34,10 @@ export async function sendNotificationEmail(params: SendNotificationEmailParams 
 
   // Check notification setting if a key is provided
   if (settingKey) {
-    const enabled = await isNotificationEnabled(settingKey);
+    const enabled = await isNotificationEnabled(settingKey, tenantId);
     if (!enabled) {
       await logNotification(
-        { settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
+        { tenantId, settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
         "suppressed",
         "setting_disabled"
       );
@@ -59,7 +59,7 @@ export async function sendNotificationEmail(params: SendNotificationEmailParams 
       console.error("[Email] Microsoft Graph error:", result.error);
       if (settingKey) {
         await logNotification(
-          { settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
+          { tenantId, settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
           "failed",
           result.error
         );
@@ -68,7 +68,7 @@ export async function sendNotificationEmail(params: SendNotificationEmailParams 
     }
     if (settingKey) {
       await logNotification(
-        { settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
+        { tenantId, settingKey, channel: "email", recipientType: "user", recipientId: to, title: subject },
         "sent"
       );
     }

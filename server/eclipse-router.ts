@@ -302,8 +302,8 @@ export const eclipseRouter = router({
       const totalSqm = units.reduce((s, u) => s + ((u.bladeWidth || 0) / 1000) * ((u.length || 0) / 1000), 0);
 
       // Fetch DOW reference examples
-      const dowGroups = await db.getMasterDataByCategory("dow_group");
-      const dowItems = await db.getMasterDataByCategory("dow_item");
+      const dowGroups = await db.getMasterDataByCategory("dow_group", ctx.tenant?.id ?? null);
+      const dowItems = await db.getMasterDataByCategory("dow_item", ctx.tenant?.id ?? null);
       let referenceExamples = "";
       if (dowGroups.length > 0 && dowItems.length > 0) {
         const eclipseGroup = dowGroups.find(g => g.value.toLowerCase().includes("eclipse") || g.value.toLowerCase().includes("louvre") || g.value.toLowerCase().includes("opening"));

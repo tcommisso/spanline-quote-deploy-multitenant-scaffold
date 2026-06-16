@@ -60,7 +60,7 @@ export const supplierFeedbackRouter = router({
 
       // Check if supplier avg dropped below threshold and notify admin
       try {
-        const thresholdStr = await getMasterDataValue("notification", "supplier_alert_threshold");
+        const thresholdStr = await getMasterDataValue("notification", "supplier_alert_threshold", ctx.tenant?.id ?? null);
         const threshold = parseFloat(thresholdStr || "3.0");
         const summary = await getSupplierRatingsSummary(input.supplierId);
         if (summary && summary.avgOverall < threshold) {

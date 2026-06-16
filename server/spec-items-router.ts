@@ -228,7 +228,7 @@ export const specItemsRouter = router({
       quoteId: z.number(),
       specValues: z.record(z.string(), z.any()), // The spec sheet field values
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { quoteId, specValues } = input;
 
       // Enrich specValues with derived calculations
@@ -263,7 +263,7 @@ export const specItemsRouter = router({
       // Get waste factor from master data
       try {
         const { getMasterDataByCategory } = await import("./db");
-        const wasteData = await getMasterDataByCategory("waste_factor");
+        const wasteData = await getMasterDataByCategory("waste_factor", ctx.tenant?.id ?? null);
         const wasteEntry = wasteData.find((d: any) => d.key === "roof" || d.key === "default");
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }
@@ -337,7 +337,7 @@ export const specItemsRouter = router({
       newBeamSize: z.string(), // e.g. "150x60" or "200×60"
       beamIndex: z.number().optional(), // Which beam entry (0-based); if omitted, updates the primary beam item
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { quoteId, newBeamSize, beamIndex } = input;
 
       // Normalise beam size: replace unicode × with x for matching
@@ -363,7 +363,7 @@ export const specItemsRouter = router({
       const { getMasterDataByCategory } = await import("./db");
 
       // Get markup rates
-      const markupData = await getMasterDataByCategory("markup");
+      const markupData = await getMasterDataByCategory("markup", ctx.tenant?.id ?? null);
       const markupRates: Record<string, number> = {};
       for (const entry of markupData) {
         markupRates[entry.key] = parseFloat(String(entry.value)) || 2.2;
@@ -412,7 +412,7 @@ export const specItemsRouter = router({
       quoteId: z.number(),
       angleCuttingMetres: z.number(), // The calculated LM of diagonal cuts
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { quoteId, angleCuttingMetres } = input;
 
       // If metres is 0 or negative, nothing to do (could optionally remove item)
@@ -435,7 +435,7 @@ export const specItemsRouter = router({
       const { calculateRates } = await import("../shared/specEngine");
       const { getMasterDataByCategory } = await import("./db");
 
-      const markupData = await getMasterDataByCategory("markup");
+      const markupData = await getMasterDataByCategory("markup", ctx.tenant?.id ?? null);
       const markupRates: Record<string, number> = {};
       for (const entry of markupData) {
         markupRates[entry.key] = parseFloat(String(entry.value)) || 2.2;
@@ -534,7 +534,7 @@ export const specItemsRouter = router({
       // Waste factor
       try {
         const { getMasterDataByCategory } = await import("./db");
-        const wasteData = await getMasterDataByCategory("waste_factor");
+        const wasteData = await getMasterDataByCategory("waste_factor", ctx.tenant?.id ?? null);
         const wasteEntry = wasteData.find((d: any) => d.key === "roof" || d.key === "default");
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }
@@ -545,7 +545,7 @@ export const specItemsRouter = router({
 
       // Markup rates
       const { getMasterDataByCategory: getMD } = await import("./db");
-      const markupData = await getMD("markup");
+      const markupData = await getMD("markup", ctx.tenant?.id ?? null);
       const markupRates: Record<string, number> = {};
       for (const entry of markupData) {
         markupRates[entry.key] = parseFloat(String(entry.value)) || 2.2;
@@ -654,7 +654,7 @@ export const specItemsRouter = router({
       formula: z.string(),
       productId: z.number().nullable().optional(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const { formula, productId } = input;
       // Get the most recent quote with spec values
       const { getDb } = await import("./db");
@@ -697,7 +697,7 @@ export const specItemsRouter = router({
       // Get waste factor from master data
       try {
         const { getMasterDataByCategory } = await import("./db");
-        const wasteData = await getMasterDataByCategory("waste_factor");
+        const wasteData = await getMasterDataByCategory("waste_factor", ctx.tenant?.id ?? null);
         const wasteEntry = wasteData.find((d: any) => d.key === "roof" || d.key === "default");
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }

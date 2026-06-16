@@ -313,7 +313,7 @@ export const appRouter = router({
         // Notify owner
         try {
           await guardedSend(
-            { settingKey: "notify_quote_created", channel: "owner_notify", recipientType: "owner", title: "New Quote Created" },
+            { tenantId: ctx.tenant?.id ?? null, settingKey: "notify_quote_created", channel: "owner_notify", recipientType: "owner", title: "New Quote Created" },
             () => notifyOwner({ title: "New Quote Created", content: `${ctx.user.name || "A design adviser"} created quote ${quoteNumber} for ${input.clientName}.` })
           );
         } catch (e) { /* non-blocking */ }
@@ -389,7 +389,7 @@ export const appRouter = router({
           try {
             const key = input.status === "accepted" ? "notify_quote_accepted" : "notify_quote_lost";
             await guardedSend(
-              { settingKey: key, channel: "owner_notify", recipientType: "owner", title: `Quote ${quote.quoteNumber} ${input.status}` },
+              { tenantId: ctx.tenant?.id ?? null, settingKey: key, channel: "owner_notify", recipientType: "owner", title: `Quote ${quote.quoteNumber} ${input.status}` },
               () => notifyOwner({ title: `Quote ${quote.quoteNumber} ${input.status === "accepted" ? "Accepted" : "Lost"}`, content: `Quote ${quote.quoteNumber} for ${quote.clientName} has been marked as ${input.status}.` })
             );
           } catch (e) { /* non-blocking */ }
@@ -414,10 +414,10 @@ export const appRouter = router({
             totalSell += parseFloat(updatedQuote.councilFees || "0");
             totalSell += parseFloat(updatedQuote.homeWarranty || "0");
           }
-          const threshold = await db.getMasterDataValue("threshold", "quote_value_alert");
+          const threshold = await db.getMasterDataValue("threshold", "quote_value_alert", ctx.tenant?.id ?? null);
           if (threshold && totalSell > parseFloat(threshold)) {
             await guardedSend(
-              { settingKey: "notify_quote_value_exceeded", channel: "owner_notify", recipientType: "owner", title: "High-Value Quote Alert" },
+              { tenantId: ctx.tenant?.id ?? null, settingKey: "notify_quote_value_exceeded", channel: "owner_notify", recipientType: "owner", title: "High-Value Quote Alert" },
               () => notifyOwner({ title: `High-Value Quote Alert`, content: `Quote ${quote.quoteNumber} for ${quote.clientName} has reached $${totalSell.toFixed(2)} (threshold: $${threshold}).` })
             );
           }
@@ -455,7 +455,7 @@ export const appRouter = router({
         // Auto-calculate complexity loading if not manually overridden
         const updatedQuote = await db.getQuoteById(input.id);
         if (updatedQuote && !(updatedQuote as any).complexityOverride) {
-          const complexityRates = await db.getMasterDataByCategory("complexity");
+          const complexityRates = await db.getMasterDataByCategory("complexity", ctx.tenant?.id ?? null);
           const getRate = (key: string) => {
             const entry = complexityRates.find((r: any) => r.key.toLowerCase() === key.toLowerCase());
             return entry ? parseFloat(entry.value) || 0 : 0;
@@ -480,7 +480,7 @@ export const appRouter = router({
         // Auto-calculate construction management % if not manually overridden
         const quoteForMgmt = await db.getQuoteById(input.id);
         if (quoteForMgmt && !(quoteForMgmt as any).constructionMgmtOverride) {
-          const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates");
+          const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
           const getMgmtRate = (key: string) => {
             const entry = mgmtRates.find((r: any) => r.key.toLowerCase() === key.toLowerCase());
             return entry ? parseFloat(entry.value) || 0 : 0;
@@ -509,7 +509,7 @@ export const appRouter = router({
         const updates: Record<string, any> = {};
 
         // 1. Recalculate complexity loading (ignore override)
-        const complexityRates = await db.getMasterDataByCategory("complexity");
+        const complexityRates = await db.getMasterDataByCategory("complexity", ctx.tenant?.id ?? null);
         const getRate = (key: string) => {
           const entry = complexityRates.find((r: any) => r.key.toLowerCase() === key.toLowerCase());
           return entry ? parseFloat(entry.value) || 0 : 0;
@@ -527,7 +527,7 @@ export const appRouter = router({
         updates.complexityOverride = false;
 
         // 2. Recalculate construction management % (ignore override)
-        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates");
+        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
         let mgmtTotal = 0;
         for (const rate of mgmtRates) {
           if (roofShape.includes(rate.key.toLowerCase())) {
@@ -538,8 +538,8 @@ export const appRouter = router({
         updates.constructionMgmtOverride = false;
 
         // 3. Recalculate delivery (distance × rate × factor)
-        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate");
-        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers");
+        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate", ctx.tenant?.id ?? null);
+        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers", ctx.tenant?.id ?? null);
         const ratePerKm = deliveryRateData.length > 0 ? parseFloat(deliveryRateData[0].value) || 0 : 0;
         const distanceKm = Number(quote.travelDistanceKm) || 0;
         // Get subtotal for factor tier lookup
@@ -560,7 +560,7 @@ export const appRouter = router({
         updates.deliveryAmount = autoDelivery.toFixed(2);
 
         // 4. Recalculate small job surcharge
-        const smallJobData = await db.getMasterDataByCategory("small_job_threshold");
+        const smallJobData = await db.getMasterDataByCategory("small_job_threshold", ctx.tenant?.id ?? null);
         const threshold = smallJobData.length > 0 ? parseFloat(smallJobData[0].value) || 0 : 0;
         const smallJobRate = smallJobData.length > 1 ? parseFloat(smallJobData[1].value) || 0 : 0;
         if (threshold > 0 && subtotal < threshold) {
@@ -596,7 +596,7 @@ export const appRouter = router({
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
 
         // 1. Complexity breakdown
-        const complexityRates = await db.getMasterDataByCategory("complexity");
+        const complexityRates = await db.getMasterDataByCategory("complexity", ctx.tenant?.id ?? null);
         const getRate = (key: string) => {
           const entry = complexityRates.find((r: any) => r.key.toLowerCase() === key.toLowerCase());
           return entry ? parseFloat(entry.value) || 0 : 0;
@@ -613,7 +613,7 @@ export const appRouter = router({
         const complexityTotal = complexityCriteria.reduce((sum, c) => sum + c.rate, 0);
 
         // 2. Construction management breakdown
-        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates");
+        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
         let mgmtTotal = 0;
         for (const rate of mgmtRates) {
           if (roofShape.includes(rate.key.toLowerCase())) {
@@ -622,8 +622,8 @@ export const appRouter = router({
         }
 
         // 3. Delivery breakdown
-        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate");
-        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers");
+        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate", ctx.tenant?.id ?? null);
+        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers", ctx.tenant?.id ?? null);
         const ratePerKm = deliveryRateData.length > 0 ? parseFloat(deliveryRateData[0].value) || 0 : 0;
         const distanceKm = Number(quote.travelDistanceKm) || 0;
         const components = await db.getComponentsByQuote(input.id);
@@ -641,7 +641,7 @@ export const appRouter = router({
         const deliveryTotal = distanceKm * ratePerKm * factor;
 
         // 4. Small job surcharge breakdown
-        const smallJobData = await db.getMasterDataByCategory("small_job_threshold");
+        const smallJobData = await db.getMasterDataByCategory("small_job_threshold", ctx.tenant?.id ?? null);
         const threshold = smallJobData.length > 0 ? parseFloat(smallJobData[0].value) || 0 : 0;
         const smallJobRate = smallJobData.length > 1 ? parseFloat(smallJobData[1].value) || 0 : 0;
         const smallJobApplied = threshold > 0 && subtotal < threshold;
@@ -845,7 +845,7 @@ export const appRouter = router({
         const distanceKm = Math.round(element.distance.value / 100) / 10; // metres to km, 1dp
 
         // Look up travel band
-        const travelBands = await db.getMasterDataByCategory("travel_band");
+        const travelBands = await db.getMasterDataByCategory("travel_band", ctx.tenant?.id ?? null);
         travelBands.sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
 
         let matchedBand: { key: string; value: string } | null = null;
@@ -1119,11 +1119,11 @@ export const appRouter = router({
 
   // ─── Master Data ───────────────────────────────────────────────────────────
   masterData: router({
-    getAll: protectedProcedure.query(async () => db.getAllMasterData()),
+    getAll: protectedProcedure.query(async ({ ctx }) => db.getAllMasterData(ctx.tenant?.id ?? null)),
 
     getByCategory: protectedProcedure
       .input(z.object({ category: z.string() }))
-      .query(async ({ input }) => db.getMasterDataByCategory(input.category)),
+      .query(async ({ ctx, input }) => db.getMasterDataByCategory(input.category, ctx.tenant?.id ?? null)),
 
     upsert: adminProcedure
       .input(z.object({
@@ -1135,24 +1135,24 @@ export const appRouter = router({
         sortOrder: z.number().optional(),
         metadata: z.any().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         // If updating an existing product_tab, cascade the key change to all products
         if (input.id && input.category === "product_tab") {
-          const existing = await db.getMasterDataById(input.id);
+          const existing = await db.getMasterDataById(input.id, ctx.tenant?.id ?? null);
           if (existing && existing.key !== input.key) {
             // Tab key was renamed — update all products referencing the old key
             await db.reassignProductsFromTab(existing.key, input.key);
           }
         }
-        const id = await db.upsertMasterData(input as any);
+        const id = await db.upsertMasterData(input as any, ctx.tenant?.id ?? null);
         return { id };
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number(), reassignTo: z.string().optional() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         // Check if this is a product_tab being deleted — handle orphaned products
-        const entry = await db.getMasterDataById(input.id);
+        const entry = await db.getMasterDataById(input.id, ctx.tenant?.id ?? null);
         if (entry && entry.category === "product_tab") {
           await db.reassignProductsFromTab(entry.key, input.reassignTo || null);
         }
@@ -1160,7 +1160,7 @@ export const appRouter = router({
         if (entry && entry.category === "colour") {
           await db.removeColourGroupMembersByValue(entry.value);
         }
-        await db.deleteMasterData(input.id);
+        await db.deleteMasterData(input.id, ctx.tenant?.id ?? null);
         return { success: true };
       }),
 
@@ -1168,9 +1168,9 @@ export const appRouter = router({
       .input(z.object({
         items: z.array(z.object({ id: z.number(), sortOrder: z.number() })),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         for (const item of input.items) {
-          await db.updateMasterDataSortOrder(item.id, item.sortOrder);
+          await db.updateMasterDataSortOrder(item.id, item.sortOrder, ctx.tenant?.id ?? null);
         }
         return { success: true };
       }),
@@ -1267,11 +1267,11 @@ export const appRouter = router({
 
     getRatesForTab: protectedProcedure
       .input(z.object({ tabName: z.string(), region: z.string().optional() }))
-      .query(async ({ input }) => db.calculateTabProductRates(input.tabName, input.region || "Canberra")),
+      .query(async ({ ctx, input }) => db.calculateTabProductRates(input.tabName, input.region || "Canberra", ctx.tenant?.id ?? null)),
 
     calculateRate: protectedProcedure
       .input(z.object({ productId: z.number(), isPowderCoated: z.boolean().optional(), region: z.string().optional() }))
-      .query(async ({ input }) => db.calculateProductSellRate(input.productId, input.isPowderCoated ?? false, input.region || "Canberra")),
+      .query(async ({ ctx, input }) => db.calculateProductSellRate(input.productId, input.isPowderCoated ?? false, input.region || "Canberra", ctx.tenant?.id ?? null)),
 
     upsert: adminProcedure
       .input(z.object({
@@ -1319,8 +1319,8 @@ export const appRouter = router({
         return { deleted: input.ids.length };
       }),
 
-    getTabsAndUoms: protectedProcedure.query(async () => {
-      const allMd = await db.getAllMasterData();
+    getTabsAndUoms: protectedProcedure.query(async ({ ctx }) => {
+      const allMd = await db.getAllMasterData(ctx.tenant?.id ?? null);
       const tabs = allMd.filter(m => m.category === "product_tab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       const uoms = allMd.filter(m => m.category === "product_uom").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       const subTabs = allMd.filter(m => m.category === "product_subtab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -1332,8 +1332,8 @@ export const appRouter = router({
      * Each specField maps to one or more product tabs. Products are grouped by sub-tab within each tab.
      * Response shape: { [specField]: { categories: { id, label, options[] }[] } }
      */
-    getSpecFieldOptions: protectedProcedure.query(async () => {
-      const allMd = await db.getAllMasterData();
+    getSpecFieldOptions: protectedProcedure.query(async ({ ctx }) => {
+      const allMd = await db.getAllMasterData(ctx.tenant?.id ?? null);
       const tabs = allMd.filter(m => m.category === "product_tab");
       const subTabs = allMd.filter(m => m.category === "product_subtab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
 
@@ -1602,8 +1602,8 @@ export const appRouter = router({
           }).join("\n");
 
         // Fetch master Descriptions of Work as reference examples
-        const dowGroups = await db.getMasterDataByCategory("dow_group");
-        const dowItems = await db.getMasterDataByCategory("dow_item");
+        const dowGroups = await db.getMasterDataByCategory("dow_group", ctx.tenant?.id ?? null);
+        const dowItems = await db.getMasterDataByCategory("dow_item", ctx.tenant?.id ?? null);
 
         // Build reference examples grouped by roof shape
         let referenceExamples = "";
@@ -1701,9 +1701,9 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
         description: z.string().min(1),
         groupKey: z.string().min(1),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         // Get existing items in this group to determine sort order
-        const dowItems = await db.getMasterDataByCategory("dow_item");
+        const dowItems = await db.getMasterDataByCategory("dow_item", ctx.tenant?.id ?? null);
         const groupItems = dowItems.filter(item => (item.metadata as any)?.groupKey === input.groupKey);
         const nextSortOrder = groupItems.length;
         const key = `dow_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1713,21 +1713,21 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
           value: input.description,
           sortOrder: nextSortOrder,
           metadata: { groupKey: input.groupKey },
-        });
+        }, ctx.tenant?.id ?? null);
         return { success: true };
       }),
 
     // List available DOW groups for the roof shape selector
-    listDowGroups: protectedProcedure.query(async () => {
-      const groups = await db.getMasterDataByCategory("dow_group");
+    listDowGroups: protectedProcedure.query(async ({ ctx }) => {
+      const groups = await db.getMasterDataByCategory("dow_group", ctx.tenant?.id ?? null);
       return groups.map(g => ({ key: g.key, name: g.value }));
     }),
 
     // List DOW items (templates) optionally filtered by group
     listDowItems: protectedProcedure
       .input(z.object({ groupKey: z.string().optional() }).optional())
-      .query(async ({ input }) => {
-        const dowItems = await db.getMasterDataByCategory("dow_item");
+      .query(async ({ ctx, input }) => {
+        const dowItems = await db.getMasterDataByCategory("dow_item", ctx.tenant?.id ?? null);
         const filtered = input?.groupKey
           ? dowItems.filter(item => (item.metadata as any)?.groupKey === input.groupKey)
           : dowItems;
@@ -1743,8 +1743,8 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
         jobDescription: z.string(),
         tabName: z.string(),
       }))
-      .mutation(async ({ input }) => {
-        const masterDataItems = await db.getMasterDataByCategory("markup");
+      .mutation(async ({ ctx, input }) => {
+        const masterDataItems = await db.getMasterDataByCategory("markup", ctx.tenant?.id ?? null);
         const prompt = `You are an experienced estimator for Altaspan. Based on this job description, suggest typical quantities for the "${input.tabName}" component tab.
 
 Job Description: ${input.jobDescription}
@@ -1835,8 +1835,8 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
 
     askPricing: protectedProcedure
       .input(z.object({ question: z.string() }))
-      .mutation(async ({ input }) => {
-        const allData = await db.getAllMasterData();
+      .mutation(async ({ ctx, input }) => {
+        const allData = await db.getAllMasterData(ctx.tenant?.id ?? null);
         const dataContext = allData.map(d => `[${d.category}] ${d.key}: ${d.value}${d.description ? ` (${d.description})` : ""}`).join("\n");
 
         // ─── AI Learning: Fetch knowledge chunks, few-shot examples, corrections ───

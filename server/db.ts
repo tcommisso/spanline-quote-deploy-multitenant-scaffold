@@ -1,6 +1,6 @@
-import { eq, and, desc, like, sql, notInArray, or, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, desc, like, sql, notInArray, or, gte, lte, inArray, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, quotes, quoteDetails, quoteComponents, skyluxEntries, eclipseEntries, masterData, skyluxMatrix, products, deckQuotes, eclipseQuotes, colourGroups, colourGroupMembers, crmLeads, emailImages, quoteRevisions, smsDeliveryLog, userSettings, tenantSettings, techLibraryDocuments, practicalCompletionNotices, constructionJobs, constructionKanbanTasks, portalVariations, swmsDocuments, siteInductions, constructionInstallers, constructionAssignments, inductionFormConfig, invitations, tenantMemberships, manufacturingDrivers, tradePortalAccess, quoteItems, type InsertInductionFormConfig } from "../drizzle/schema";
+import { InsertUser, users, quotes, quoteDetails, quoteComponents, skyluxEntries, eclipseEntries, masterData, skyluxMatrix, products, deckQuotes, eclipseQuotes, colourGroups, colourGroupMembers, crmLeads, emailImages, quoteRevisions, smsDeliveryLog, userSettings, tenantSettings, techLibraryDocuments, practicalCompletionNotices, constructionJobs, constructionKanbanTasks, portalVariations, swmsDocuments, siteInductions, constructionInstallers, constructionAssignments, inductionFormConfig, invitations, tenantMemberships, manufacturingDrivers, tradePortalAccess, quoteItems, tenants, type InsertInductionFormConfig } from "../drizzle/schema";
 import { randomBytes } from "crypto";
 import type { InsertSwmsDocument, InsertSiteInduction } from "../drizzle/schema";
 import type { InsertPracticalCompletionNotice, InsertPortalVariation } from "../drizzle/schema";
@@ -21,6 +21,19 @@ export async function getDb() {
     }
   }
   return _db;
+}
+
+export async function getDefaultTenantId(): Promise<number | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const [tenant] = await db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .orderBy(sql`(${tenants.status} = 'active') desc`, tenants.id)
+    .limit(1);
+
+  return tenant?.id ?? null;
 }
 
 /** Alias for getDb - used by procedures needing direct Drizzle access */
@@ -415,46 +428,89 @@ export async function deleteEclipse(id: number) {
 }
 
 // ─── Master Data ─────────────────────────────────────────────────────────────
-export async function getMasterDataByCategory(category: string) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(masterData).where(eq(masterData.category, category)).orderBy(masterData.sortOrder);
+type TenantScope = number | null | undefined;
+
+function masterDataScopePredicate(tenantId: TenantScope) {
+  return tenantId == null
+    ? isNull(masterData.tenantId)
+    : or(eq(masterData.tenantId, tenantId), isNull(masterData.tenantId))!;
 }
 
-export async function getAllMasterData() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(masterData).orderBy(masterData.category, masterData.sortOrder);
+function preferTenantMasterData<T extends { tenantId?: number | null; category: string; key: string; sortOrder?: number | null }>(
+  rows: T[],
+  tenantId: TenantScope,
+) {
+  if (tenantId == null) return rows;
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = `${row.category}:${row.key}`;
+    const existing = byKey.get(key);
+    if (!existing || row.tenantId === tenantId) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => {
+    const categoryCompare = a.category.localeCompare(b.category);
+    if (categoryCompare !== 0) return categoryCompare;
+    return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+  });
 }
 
-export async function upsertMasterData(data: InsertMasterData) {
+export async function getMasterDataByCategory(category: string, tenantId?: TenantScope) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(masterData)
+    .where(and(eq(masterData.category, category), masterDataScopePredicate(tenantId)))
+    .orderBy(masterData.sortOrder);
+  return preferTenantMasterData(rows, tenantId);
+}
+
+export async function getAllMasterData(tenantId?: TenantScope) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select().from(masterData)
+    .where(masterDataScopePredicate(tenantId))
+    .orderBy(masterData.category, masterData.sortOrder);
+  return preferTenantMasterData(rows, tenantId);
+}
+
+export async function upsertMasterData(data: InsertMasterData, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   if (data.id) {
+    const existing = await getMasterDataById(data.id, tenantId);
+    if (!existing) throw new Error("Master data not found");
     const { id, ...rest } = data as any;
+    if (tenantId != null) rest.tenantId = tenantId;
     await db.update(masterData).set(rest).where(eq(masterData.id, id));
     return id;
   }
-  const result = await db.insert(masterData).values(data);
+  const result = await db.insert(masterData).values({ ...data, tenantId: tenantId ?? data.tenantId ?? null });
   return result[0].insertId;
 }
 
-export async function getMasterDataById(id: number) {
+export async function getMasterDataById(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(masterData).where(eq(masterData.id, id)).limit(1);
+  const result = await db.select().from(masterData)
+    .where(and(eq(masterData.id, id), masterDataScopePredicate(tenantId)))
+    .limit(1);
   return result[0];
 }
 
-export async function deleteMasterData(id: number) {
+export async function deleteMasterData(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const existing = await getMasterDataById(id, tenantId);
+  if (!existing) throw new Error("Master data not found");
   await db.delete(masterData).where(eq(masterData.id, id));
 }
 
-export async function updateMasterDataSortOrder(id: number, sortOrder: number) {
+export async function updateMasterDataSortOrder(id: number, sortOrder: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const existing = await getMasterDataById(id, tenantId);
+  if (!existing) throw new Error("Master data not found");
   await db.update(masterData).set({ sortOrder }).where(eq(masterData.id, id));
 }
 
@@ -480,11 +536,17 @@ export async function getProductCountByTab(tabKey: string): Promise<number> {
   return Number(result[0]?.count || 0);
 }
 
-export async function getMasterDataValue(category: string, key: string) {
+export async function getMasterDataValue(category: string, key: string, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return undefined;
+  if (tenantId != null) {
+    const tenantResult = await db.select().from(masterData)
+      .where(and(eq(masterData.category, category), eq(masterData.key, key), eq(masterData.tenantId, tenantId)))
+      .limit(1);
+    if (tenantResult[0]?.value !== undefined) return tenantResult[0].value;
+  }
   const result = await db.select().from(masterData)
-    .where(and(eq(masterData.category, category), eq(masterData.key, key)))
+    .where(and(eq(masterData.category, category), eq(masterData.key, key), isNull(masterData.tenantId)))
     .limit(1);
   return result[0]?.value;
 }
@@ -680,7 +742,7 @@ export async function getAllProductsForExport() {
  * Implements: ROUNDDOWN(baseCost × markupMultiplier, 0) + powderCoatSurcharge (if applicable)
  * If fixedSell is set, returns that directly.
  */
-export async function calculateProductSellRate(productId: number, isPowderCoated: boolean = false, region: string = "Canberra") {
+export async function calculateProductSellRate(productId: number, isPowderCoated: boolean = false, region: string = "Canberra", tenantId?: TenantScope) {
   const product = await getProductById(productId);
   if (!product) return { sellRate: 0, costRate: 0, regionMultiplier: 1 };
 
@@ -693,7 +755,7 @@ export async function calculateProductSellRate(productId: number, isPowderCoated
   const pcSurcharge = parseFloat(product.powderCoatSurcharge || "0");
 
   // Look up region multiplier from master data
-  const regionValue = await getMasterDataValue("region", region);
+  const regionValue = await getMasterDataValue("region", region, tenantId);
   const regionMultiplier = regionValue ? parseFloat(regionValue) : 1;
 
   if (fixedSell !== null) {
@@ -707,7 +769,7 @@ export async function calculateProductSellRate(productId: number, isPowderCoated
   }
 
   // Look up the markup multiplier from master data
-  const markupValue = await getMasterDataValue("markup", product.markupCategory);
+  const markupValue = await getMasterDataValue("markup", product.markupCategory, tenantId);
   const multiplier = markupValue ? parseFloat(markupValue) : 1;
 
   let sellRate = Math.floor(costAmount * multiplier * regionMultiplier); // ROUNDDOWN to 0 decimals
@@ -722,7 +784,7 @@ export async function calculateProductSellRate(productId: number, isPowderCoated
  * Batch calculate sell rates for all products in a tab.
  * Returns a map of productId -> { sellRate, costRate }
  */
-export async function calculateTabProductRates(tabName: string, region: string = "Canberra") {
+export async function calculateTabProductRates(tabName: string, region: string = "Canberra", tenantId?: TenantScope) {
   const tabProducts = await getProductsByTab(tabName);
   const rates: Record<number, { sellRate: number; costRate: number; name: string; uom: string; baseCost: number; hasPowderCoat: boolean; regionMultiplier: number }> = {};
 
@@ -730,12 +792,12 @@ export async function calculateTabProductRates(tabName: string, region: string =
   const markupCategories = Array.from(new Set(tabProducts.map(p => p.markupCategory).filter((c): c is string => c !== null && c !== undefined)));
   const markupMap: Record<string, number> = {};
   for (const cat of markupCategories) {
-    const val = await getMasterDataValue("markup", cat);
+    const val = await getMasterDataValue("markup", cat, tenantId);
     markupMap[cat] = val ? parseFloat(val) : 1;
   }
 
   // Pre-fetch region multiplier
-  const regionValue = await getMasterDataValue("region", region);
+  const regionValue = await getMasterDataValue("region", region, tenantId);
   const regionMultiplier = regionValue ? parseFloat(regionValue) : 1;
 
   for (const product of tabProducts) {

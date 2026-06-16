@@ -234,6 +234,7 @@ export type InsertEclipseEntry = typeof eclipseEntries.$inferInsert;
 // ─── Master Data ────────────────────────────────────────────────────────────
 export const masterData = mysqlTable("master_data", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   category: varchar("category", { length: 64 }).notNull(), // markup, region, council_fee, travel_band, complexity, colour, threshold
   key: varchar("dataKey", { length: 128 }).notNull(),
   value: text("value").notNull(),
@@ -241,7 +242,10 @@ export const masterData = mysqlTable("master_data", {
   sortOrder: int("sortOrder").default(0),
   metadata: json("metadata"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_master_data_tenant").on(table.tenantId),
+  tenantCategoryIdx: index("idx_master_data_tenant_category").on(table.tenantId, table.category),
+}));
 
 export type MasterData = typeof masterData.$inferSelect;
 export type InsertMasterData = typeof masterData.$inferInsert;

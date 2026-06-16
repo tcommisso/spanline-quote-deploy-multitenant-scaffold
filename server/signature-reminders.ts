@@ -4,7 +4,7 @@
  * and send reminder emails to clients.
  */
 import type { Express, Request, Response } from "express";
-import { getDb } from "./db";
+import { getDb, getDefaultTenantId } from "./db";
 import { quotes, users } from "../drizzle/schema";
 import { eq, and, isNotNull, lt, isNull } from "drizzle-orm";
 import { getMasterDataValue } from "./db";
@@ -31,7 +31,8 @@ export function registerSignatureReminderRoutes(app: Express) {
       }
 
       // Get the configured reminder days from master data
-      const reminderDaysStr = await getMasterDataValue("notification", "signature_reminder_days");
+      const tenantId = await getDefaultTenantId();
+      const reminderDaysStr = await getMasterDataValue("notification", "signature_reminder_days", tenantId);
       const reminderDays = parseInt(reminderDaysStr || "3", 10);
 
       if (isNaN(reminderDays) || reminderDays <= 0) {
@@ -43,17 +44,18 @@ export function registerSignatureReminderRoutes(app: Express) {
       cutoffDate.setDate(cutoffDate.getDate() - reminderDays);
 
       // Find quotes that are "sent" with a signwellDocumentId but not yet signed
+      const quoteFilters = [
+        eq(quotes.status, "sent"),
+        isNotNull(quotes.signwellDocumentId),
+        eq(quotes.signwellStatus, "pending"),
+        lt(quotes.updatedAt, cutoffDate),
+      ];
+      if (tenantId != null) quoteFilters.push(eq(quotes.tenantId, tenantId));
+
       const overdueQuotes = await db
         .select()
         .from(quotes)
-        .where(
-          and(
-            eq(quotes.status, "sent"),
-            isNotNull(quotes.signwellDocumentId),
-            eq(quotes.signwellStatus, "pending"),
-            lt(quotes.updatedAt, cutoffDate)
-          )
-        );
+        .where(and(...quoteFilters));
 
       let sentCount = 0;
       const errors: string[] = [];
@@ -73,6 +75,7 @@ export function registerSignatureReminderRoutes(app: Express) {
                 (Date.now() - new Date(quote.updatedAt!).getTime()) / (1000 * 60 * 60 * 24)
               );
               await sendNotificationEmail({
+                tenantId: quote.tenantId ?? tenantId,
                 to: adviser.email,
                 subject: `Signature Reminder - ${quote.quoteNumber} (${quote.clientName}) - ${daysSinceSent} days pending`,
                 htmlBody: `

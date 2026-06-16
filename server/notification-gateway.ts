@@ -9,7 +9,7 @@
  * 5. Logs every notification attempt to notification_log table
  */
 
-import { getDb, getMasterDataValue } from "./db";
+import { getDb, getDefaultTenantId, getMasterDataValue } from "./db";
 import { notificationLog } from "../drizzle/schema";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,15 +36,21 @@ export interface NotificationGateResult {
 
 const AEST_OFFSET_HOURS = 10;
 
+async function resolveNotificationTenantId(tenantId?: number | null): Promise<number | null | undefined> {
+  if (tenantId !== undefined) return tenantId;
+  return getDefaultTenantId();
+}
+
 function getCurrentAESTHour(): number {
   const now = new Date();
   const utcHour = now.getUTCHours();
   return (utcHour + AEST_OFFSET_HOURS) % 24;
 }
 
-async function isWithinQuietHours(): Promise<boolean> {
-  const startStr = await getMasterDataValue("notification", "quiet_hours_start");
-  const endStr = await getMasterDataValue("notification", "quiet_hours_end");
+async function isWithinQuietHours(tenantId?: number | null): Promise<boolean> {
+  const resolvedTenantId = await resolveNotificationTenantId(tenantId);
+  const startStr = await getMasterDataValue("notification", "quiet_hours_start", resolvedTenantId);
+  const endStr = await getMasterDataValue("notification", "quiet_hours_end", resolvedTenantId);
 
   if (!startStr || !endStr) return false;
 
@@ -67,7 +73,7 @@ async function isWithinQuietHours(): Promise<boolean> {
 
 // ─── Channel Preference Check ────────────────────────────────────────────────
 
-async function isChannelEnabled(recipientType: RecipientType): Promise<boolean> {
+async function isChannelEnabled(recipientType: RecipientType, tenantId?: number | null): Promise<boolean> {
   let channelKey: string;
   switch (recipientType) {
     case "owner":
@@ -84,7 +90,8 @@ async function isChannelEnabled(recipientType: RecipientType): Promise<boolean> 
       return true;
   }
 
-  const val = await getMasterDataValue("notification", channelKey);
+  const resolvedTenantId = await resolveNotificationTenantId(tenantId);
+  const val = await getMasterDataValue("notification", channelKey, resolvedTenantId);
   if (!val) return true; // Default to enabled if not set
   return val.toLowerCase() !== "false" && val !== "0";
 }
@@ -96,22 +103,24 @@ async function isChannelEnabled(recipientType: RecipientType): Promise<boolean> 
  * Returns { allowed: true } or { allowed: false, suppressionReason: ... }
  */
 export async function checkNotificationGate(attempt: NotificationAttempt): Promise<NotificationGateResult> {
+  const tenantId = await resolveNotificationTenantId(attempt.tenantId);
+
   // 1. Check if the specific setting is enabled
-  const settingValue = await getMasterDataValue("notification", attempt.settingKey);
+  const settingValue = await getMasterDataValue("notification", attempt.settingKey, tenantId);
   if (settingValue && (settingValue.toLowerCase() === "false" || settingValue === "0")) {
     return { allowed: false, suppressionReason: "setting_disabled" };
   }
 
   // 2. Check quiet hours (skip for owner_notify channel as those are system-critical)
   if (attempt.channel !== "owner_notify") {
-    const inQuietHours = await isWithinQuietHours();
+    const inQuietHours = await isWithinQuietHours(tenantId);
     if (inQuietHours) {
       return { allowed: false, suppressionReason: "quiet_hours" };
     }
   }
 
   // 3. Check channel preferences
-  const channelEnabled = await isChannelEnabled(attempt.recipientType);
+  const channelEnabled = await isChannelEnabled(attempt.recipientType, tenantId);
   if (!channelEnabled) {
     return { allowed: false, suppressionReason: "channel_disabled" };
   }
@@ -125,8 +134,9 @@ export async function checkNotificationGate(attempt: NotificationAttempt): Promi
  * Simple boolean check: is a notification setting key enabled?
  * Returns true if the setting is not explicitly set to "False" or "0".
  */
-export async function isNotificationEnabled(key: string): Promise<boolean> {
-  const val = await getMasterDataValue("notification", key);
+export async function isNotificationEnabled(key: string, tenantId?: number | null): Promise<boolean> {
+  const resolvedTenantId = await resolveNotificationTenantId(tenantId);
+  const val = await getMasterDataValue("notification", key, resolvedTenantId);
   if (!val) return true; // Default to enabled if not configured
   return val.toLowerCase() !== "false" && val !== "0";
 }
@@ -144,9 +154,10 @@ export async function logNotification(
   try {
     const db = await getDb();
     if (!db) return;
+    const tenantId = await resolveNotificationTenantId(attempt.tenantId);
 
     await db.insert(notificationLog).values({
-      tenantId: attempt.tenantId ?? null,
+      tenantId: tenantId ?? null,
       type: attempt.channel,
       settingKey: attempt.settingKey,
       recipientType: attempt.recipientType,
