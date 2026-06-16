@@ -18,6 +18,7 @@ export type NotificationChannel = "email" | "sms" | "push" | "in_app" | "owner_n
 export type RecipientType = "owner" | "user" | "client" | "trade";
 
 export interface NotificationAttempt {
+  tenantId?: number | null;
   settingKey: string;
   channel: NotificationChannel;
   recipientType: RecipientType;
@@ -145,6 +146,7 @@ export async function logNotification(
     if (!db) return;
 
     await db.insert(notificationLog).values({
+      tenantId: attempt.tenantId ?? null,
       type: attempt.channel,
       settingKey: attempt.settingKey,
       recipientType: attempt.recipientType,

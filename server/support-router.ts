@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { supportSubmissions, supportSubmissionNotes, users } from "../drizzle/schema";
+import { supportSubmissions, supportSubmissionNotes, tenantMemberships, users } from "../drizzle/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { sendNotificationViaGraph } from "./email/send";
@@ -19,7 +19,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 export const supportRouter = router({
   // ─── Upload Support Attachment (S3) ─────────────────────────────────────────
-  uploadAttachment: protectedProcedure
+  uploadAttachment: tenantProcedure
     .input(z.object({
       filename: z.string().min(1),
       mimeType: z.string().min(1),
@@ -28,7 +28,7 @@ export const supportRouter = router({
     .mutation(async ({ ctx, input }) => {
       const ext = input.filename.split(".").pop() || "png";
       const randomSuffix = crypto.randomBytes(8).toString("hex");
-      const key = `support-attachments/${ctx.user.id}-${randomSuffix}.${ext}`;
+      const key = `tenant-${ctx.tenant!.id}/support-attachments/${ctx.user!.id}-${randomSuffix}.${ext}`;
       const buffer = Buffer.from(input.base64Data, "base64");
       
       // Limit to 5MB
@@ -41,7 +41,7 @@ export const supportRouter = router({
     }),
 
   // ─── Submit a Bug Report ────────────────────────────────────────────────────
-  submitBug: protectedProcedure
+  submitBug: tenantProcedure
     .input(z.object({
       screen: z.string().min(1, "Screen is required").max(255),
       action: z.string().min(1, "Action/button is required").max(500),
@@ -61,9 +61,10 @@ export const supportRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const [result] = await db.insert(supportSubmissions).values({
-        userId: ctx.user.id,
-        userName: ctx.user.name,
-        userEmail: ctx.user.email,
+        tenantId: ctx.tenant!.id,
+        userId: ctx.user!.id,
+        userName: ctx.user!.name,
+        userEmail: ctx.user!.email,
         type: "bug",
         screen: input.screen,
         action: input.action,
@@ -87,7 +88,7 @@ export const supportRouter = router({
           subject,
           heading: subject,
           body: `
-            <p><strong>Reported by:</strong> ${ctx.user.name || ctx.user.email || "Unknown"}</p>
+            <p><strong>Reported by:</strong> ${ctx.user!.name || ctx.user!.email || "Unknown"}</p>
             <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
               <tr><td style="padding: 8px 12px; background: #f3f4f6; font-weight: 600; width: 140px;">Screen</td><td style="padding: 8px 12px;">${input.screen}</td></tr>
               <tr><td style="padding: 8px 12px; background: #f3f4f6; font-weight: 600;">Action</td><td style="padding: 8px 12px;">${input.action}</td></tr>
@@ -119,7 +120,7 @@ export const supportRouter = router({
     }),
 
   // ─── Submit a Suggestion ────────────────────────────────────────────────────
-  submitSuggestion: protectedProcedure
+  submitSuggestion: tenantProcedure
     .input(z.object({
       category: z.enum(["feature", "improvement", "ui_ux", "performance", "other"]),
       title: z.string().min(1, "Title is required").max(500),
@@ -130,9 +131,10 @@ export const supportRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       const [result] = await db.insert(supportSubmissions).values({
-        userId: ctx.user.id,
-        userName: ctx.user.name,
-        userEmail: ctx.user.email,
+        tenantId: ctx.tenant!.id,
+        userId: ctx.user!.id,
+        userName: ctx.user!.name,
+        userEmail: ctx.user!.email,
         type: "suggestion",
         category: input.category,
         title: input.title,
@@ -148,7 +150,7 @@ export const supportRouter = router({
           subject,
           heading: subject,
           body: `
-            <p><strong>Submitted by:</strong> ${ctx.user.name || ctx.user.email || "Unknown"}</p>
+            <p><strong>Submitted by:</strong> ${ctx.user!.name || ctx.user!.email || "Unknown"}</p>
             <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
               <tr><td style="padding: 8px 12px; background: #f3f4f6; font-weight: 600; width: 140px;">Category</td><td style="padding: 8px 12px;">${input.category}</td></tr>
               <tr><td style="padding: 8px 12px; background: #f3f4f6; font-weight: 600;">Priority</td><td style="padding: 8px 12px;">${input.priority}</td></tr>
@@ -174,25 +176,27 @@ export const supportRouter = router({
     }),
 
   // ─── List Staff (for Assign To dropdown) ───────────────────────────────────
-  listStaff: adminProcedure
-    .query(async () => {
+  listStaff: tenantAdminProcedure
+    .query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) return [];
       const staffList = await db
         .select({ id: users.id, name: users.name, email: users.email })
         .from(users)
+        .innerJoin(tenantMemberships, eq(tenantMemberships.userId, users.id))
+        .where(eq(tenantMemberships.tenantId, ctx.tenant!.id))
         .orderBy(users.name);
       return staffList;
     }),
 
   // ─── Assign Submission to Staff (Admin) ────────────────────────────────────
-  assignSubmission: adminProcedure
+  assignSubmission: tenantAdminProcedure
     .input(z.object({
       id: z.number(),
       assignedToUserId: z.number().nullable(),
       assignedToUserName: z.string().nullable(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
       await db.update(supportSubmissions)
@@ -200,12 +204,12 @@ export const supportRouter = router({
           assignedToUserId: input.assignedToUserId,
           assignedToUserName: input.assignedToUserName,
         })
-        .where(eq(supportSubmissions.id, input.id));
+        .where(and(eq(supportSubmissions.id, input.id), eq(supportSubmissions.tenantId, ctx.tenant!.id)));
       return { success: true };
     }),
 
   // ─── List Submissions (Admin) ───────────────────────────────────────────────
-  listSubmissions: adminProcedure
+  listSubmissions: tenantAdminProcedure
     .input(z.object({
       type: z.enum(["bug", "suggestion"]).optional(),
       status: z.enum(["new", "in_progress", "resolved", "closed", "wont_fix"]).optional(),
@@ -213,10 +217,10 @@ export const supportRouter = router({
       limit: z.number().min(1).max(100).default(50),
       offset: z.number().min(0).default(0),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
-      const conditions = [];
+      const conditions = [eq(supportSubmissions.tenantId, ctx.tenant!.id)];
       if (input?.type) conditions.push(eq(supportSubmissions.type, input.type));
       if (input?.status) conditions.push(eq(supportSubmissions.status, input.status));
       if (input?.assignedToUserId) conditions.push(eq(supportSubmissions.assignedToUserId, input.assignedToUserId));
@@ -233,7 +237,7 @@ export const supportRouter = router({
     }),
 
   // ─── Update Submission Status (Admin) + Email Notification ─────────────────
-  updateStatus: adminProcedure
+  updateStatus: tenantAdminProcedure
     .input(z.object({
       id: z.number(),
       status: z.enum(["new", "in_progress", "resolved", "closed", "wont_fix"]),
@@ -246,7 +250,7 @@ export const supportRouter = router({
       const [submission] = await db
         .select()
         .from(supportSubmissions)
-        .where(eq(supportSubmissions.id, input.id))
+        .where(and(eq(supportSubmissions.id, input.id), eq(supportSubmissions.tenantId, ctx.tenant!.id)))
         .limit(1);
 
       if (!submission) throw new Error("Submission not found");
@@ -254,7 +258,7 @@ export const supportRouter = router({
       const oldStatus = submission.status;
       await db.update(supportSubmissions)
         .set({ status: input.status })
-        .where(eq(supportSubmissions.id, input.id));
+        .where(and(eq(supportSubmissions.id, input.id), eq(supportSubmissions.tenantId, ctx.tenant!.id)));
 
       // Send email notification to the submitter if they have an email
       if (submission.userEmail && oldStatus !== input.status) {
@@ -304,7 +308,7 @@ export const supportRouter = router({
     }),
 
   // ─── Add Note to Submission (Admin) ────────────────────────────────────────
-  addNote: adminProcedure
+  addNote: tenantAdminProcedure
     .input(z.object({
       submissionId: z.number(),
       content: z.string().min(1, "Note content is required").max(5000),
@@ -312,27 +316,45 @@ export const supportRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const [submission] = await db
+        .select({ id: supportSubmissions.id })
+        .from(supportSubmissions)
+        .where(and(eq(supportSubmissions.id, input.submissionId), eq(supportSubmissions.tenantId, ctx.tenant!.id)))
+        .limit(1);
+      if (!submission) throw new Error("Submission not found");
+
       const [result] = await db.insert(supportSubmissionNotes).values({
         submissionId: input.submissionId,
-        userId: ctx.user.id,
-        userName: ctx.user.name,
+        userId: ctx.user!.id,
+        userName: ctx.user!.name,
         content: input.content,
       });
       return { success: true, id: result.insertId };
     }),
 
   // ─── List Notes for a Submission (Admin) ───────────────────────────────────
-  listNotes: adminProcedure
+  listNotes: tenantAdminProcedure
     .input(z.object({
       submissionId: z.number(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const notes = await db
-        .select()
+        .select({
+          id: supportSubmissionNotes.id,
+          submissionId: supportSubmissionNotes.submissionId,
+          userId: supportSubmissionNotes.userId,
+          userName: supportSubmissionNotes.userName,
+          content: supportSubmissionNotes.content,
+          createdAt: supportSubmissionNotes.createdAt,
+        })
         .from(supportSubmissionNotes)
-        .where(eq(supportSubmissionNotes.submissionId, input.submissionId))
+        .innerJoin(supportSubmissions, eq(supportSubmissions.id, supportSubmissionNotes.submissionId))
+        .where(and(
+          eq(supportSubmissionNotes.submissionId, input.submissionId),
+          eq(supportSubmissions.tenantId, ctx.tenant!.id),
+        ))
         .orderBy(desc(supportSubmissionNotes.createdAt));
       return notes;
     }),

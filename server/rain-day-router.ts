@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { rainDays, rainDayJobImpacts, extensionOfTimeRecords, constructionScheduleEvents, constructionJobs, weatherHistory } from "../drizzle/schema";
 import { eq, and, gte, lte, sql, desc, or } from "drizzle-orm";
@@ -37,15 +37,15 @@ function buildEotReportEmail(job: any, message?: string): string {
 
 export const rainDayRouter = router({
   // List all rain days with optional filters
-  list: adminProcedure
+  list: tenantAdminProcedure
     .input(z.object({
       startDate: z.string().optional(),
       endDate: z.string().optional(),
       status: z.enum(["pending", "approved", "executed", "revoked"]).optional(),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      const conditions: any[] = [];
+      const conditions: any[] = [eq(rainDays.tenantId, ctx.tenant!.id)];
       if (input?.startDate) conditions.push(gte(rainDays.date, input.startDate));
       if (input?.endDate) conditions.push(lte(rainDays.date, input.endDate));
       if (input?.status) conditions.push(eq(rainDays.status, input.status));
@@ -59,7 +59,7 @@ export const rainDayRouter = router({
     }),
 
   // Declare a rain day (creates in pending status)
-  declare: adminProcedure
+  declare: tenantAdminProcedure
     .input(z.object({
       date: z.string(), // YYYY-MM-DD
       reason: z.string().min(1),
@@ -71,6 +71,7 @@ export const rainDayRouter = router({
       // Check for duplicate declaration on same date+zone
       const existing = await db.select().from(rainDays)
         .where(and(
+          eq(rainDays.tenantId, ctx.tenant!.id),
           eq(rainDays.date, input.date),
           input.zone ? eq(rainDays.zone, input.zone) : sql`1=1`
         ));
@@ -80,12 +81,13 @@ export const rainDayRouter = router({
       }
 
       const [result] = await db.insert(rainDays).values({
+        tenantId: ctx.tenant!.id,
         date: input.date,
         reason: input.reason,
         zone: input.zone || null,
         weatherData: input.weatherData || null,
-        declaredByUserId: ctx.user.id,
-        declaredByUserName: ctx.user.name || "Admin",
+        declaredByUserId: ctx.user!.id,
+        declaredByUserName: ctx.user!.name || "Admin",
         status: "pending",
       });
 
@@ -93,12 +95,12 @@ export const rainDayRouter = router({
     }),
 
   // Approve a rain day (moves to approved, does NOT yet execute)
-  approve: adminProcedure
+  approve: tenantAdminProcedure
     .input(z.object({ rainDayId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [rainDay] = await db.select().from(rainDays)
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       if (!rainDay) throw new Error("Rain day not found");
       if (rainDay.status !== "pending") throw new Error("Rain day is not pending approval");
@@ -106,32 +108,35 @@ export const rainDayRouter = router({
       await db.update(rainDays)
         .set({
           status: "approved",
-          approvedByUserId: ctx.user.id,
-          approvedByUserName: ctx.user.name || "Admin",
+          approvedByUserId: ctx.user!.id,
+          approvedByUserName: ctx.user!.name || "Admin",
           approvedAt: new Date(),
         })
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       return { approved: true };
     }),
 
   // Execute an approved rain day — reschedule jobs and create EOT records
-  execute: adminProcedure
+  execute: tenantAdminProcedure
     .input(z.object({ rainDayId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [rainDay] = await db.select().from(rainDays)
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       if (!rainDay) throw new Error("Rain day not found");
       if (rainDay.status !== "approved") throw new Error("Rain day must be approved before execution");
 
       // Find all scheduled events on this date
-      const affectedEvents = await db.select().from(constructionScheduleEvents)
+      const affectedEventRows = await db.select({ event: constructionScheduleEvents }).from(constructionScheduleEvents)
+        .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
         .where(and(
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
           eq(constructionScheduleEvents.status, "scheduled"),
           sql`DATE(${constructionScheduleEvents.startTime}) = ${rainDay.date}`
         ));
+      const affectedEvents = affectedEventRows.map(row => row.event);
 
       // Push each event forward by 1 business day and record impacts
       const impactRecords: any[] = [];
@@ -156,10 +161,11 @@ export const rainDayRouter = router({
 
         // Get job info for impact record
         const [job] = await db.select().from(constructionJobs)
-          .where(eq(constructionJobs.id, event.jobId));
+          .where(and(eq(constructionJobs.id, event.jobId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
 
         // Record impact
         const [impact] = await db.insert(rainDayJobImpacts).values({
+          tenantId: ctx.tenant!.id,
           rainDayId: input.rainDayId,
           jobId: event.jobId,
           clientName: job?.clientName || null,
@@ -178,14 +184,15 @@ export const rainDayRouter = router({
       const jobIds = Array.from(new Set(affectedEvents.map((e: any) => e.jobId)));
       for (const jobId of jobIds) {
         const [job] = await db.select().from(constructionJobs)
-          .where(eq(constructionJobs.id, jobId));
+          .where(and(eq(constructionJobs.id, jobId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
 
         // Get existing cumulative days
         const existingEOTs = await db.select().from(extensionOfTimeRecords)
-          .where(eq(extensionOfTimeRecords.jobId, jobId));
+          .where(and(eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id), eq(extensionOfTimeRecords.jobId, jobId)));
         const cumulativeDays = existingEOTs.reduce((sum: number, e: any) => sum + (e.daysClaimed || 0), 0) + 1;
 
         await db.insert(extensionOfTimeRecords).values({
+          tenantId: ctx.tenant!.id,
           jobId,
           clientName: job?.clientName || null,
           rainDayId: input.rainDayId,
@@ -193,8 +200,8 @@ export const rainDayRouter = router({
           daysClaimed: 1,
           cumulativeDays,
           reason: `Rain day: ${rainDay.reason}`,
-          createdByUserId: ctx.user.id,
-          createdByUserName: ctx.user.name || "Admin",
+          createdByUserId: ctx.user!.id,
+          createdByUserName: ctx.user!.name || "Admin",
         });
       }
 
@@ -205,7 +212,7 @@ export const rainDayRouter = router({
           executedAt: new Date(),
           affectedJobCount: jobIds.length,
         })
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       return {
         executed: true,
@@ -216,33 +223,36 @@ export const rainDayRouter = router({
     }),
 
   // Reject a rain day declaration
-  reject: adminProcedure
+  reject: tenantAdminProcedure
     .input(z.object({
       rainDayId: z.number(),
       reason: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       await db.update(rainDays)
         .set({ status: "revoked", revokedAt: new Date() })
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
       return { rejected: true };
     }),
 
   // Revoke an executed rain day (undo reschedule)
-  revoke: adminProcedure
+  revoke: tenantAdminProcedure
     .input(z.object({ rainDayId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [rainDay] = await db.select().from(rainDays)
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       if (!rainDay) throw new Error("Rain day not found");
       if (rainDay.status !== "executed") throw new Error("Can only revoke executed rain days");
 
       // Reverse schedule changes
       const impacts = await db.select().from(rainDayJobImpacts)
-        .where(eq(rainDayJobImpacts.rainDayId, input.rainDayId));
+        .where(and(
+          eq(rainDayJobImpacts.rainDayId, input.rainDayId),
+          eq(rainDayJobImpacts.tenantId, ctx.tenant!.id),
+        ));
 
       for (const impact of impacts) {
         if (impact.scheduleEventId && impact.originalDate) {
@@ -255,27 +265,33 @@ export const rainDayRouter = router({
 
       // Remove EOT records
       await db.delete(extensionOfTimeRecords)
-        .where(eq(extensionOfTimeRecords.rainDayId, input.rainDayId));
+        .where(and(
+          eq(extensionOfTimeRecords.rainDayId, input.rainDayId),
+          eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id),
+        ));
 
       // Remove impacts
       await db.delete(rainDayJobImpacts)
-        .where(eq(rainDayJobImpacts.rainDayId, input.rainDayId));
+        .where(and(
+          eq(rainDayJobImpacts.rainDayId, input.rainDayId),
+          eq(rainDayJobImpacts.tenantId, ctx.tenant!.id),
+        ));
 
       // Update status
       await db.update(rainDays)
         .set({ status: "revoked", revokedAt: new Date(), affectedJobCount: 0 })
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       return { revoked: true, reversedEvents: impacts.length };
     }),
 
   // Send notifications for an executed rain day
-  sendNotifications: adminProcedure
+  sendNotifications: tenantAdminProcedure
     .input(z.object({ rainDayId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [rainDay] = await db.select().from(rainDays)
-        .where(eq(rainDays.id, input.rainDayId));
+        .where(and(eq(rainDays.id, input.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
 
       if (!rainDay || rainDay.status !== "executed") {
         throw new Error("Rain day must be executed before sending notifications");
@@ -286,7 +302,11 @@ export const rainDayRouter = router({
         job: constructionJobs,
       }).from(rainDayJobImpacts)
         .innerJoin(constructionJobs, eq(rainDayJobImpacts.jobId, constructionJobs.id))
-        .where(eq(rainDayJobImpacts.rainDayId, input.rainDayId));
+        .where(and(
+          eq(rainDayJobImpacts.rainDayId, input.rainDayId),
+          eq(rainDayJobImpacts.tenantId, ctx.tenant!.id),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+        ));
 
       let clientNotifications = 0;
       let tradeNotifications = 0;
@@ -305,7 +325,7 @@ export const rainDayRouter = router({
             clientNotifications++;
             await db.update(rainDayJobImpacts)
               .set({ clientNotified: true, clientNotifiedAt: new Date() })
-              .where(eq(rainDayJobImpacts.id, impact.id));
+              .where(and(eq(rainDayJobImpacts.id, impact.id), eq(rainDayJobImpacts.tenantId, ctx.tenant!.id)));
           } catch (e) {
             console.error(`[RainDay] Failed to notify client for job ${job.id}:`, e);
           }
@@ -316,52 +336,61 @@ export const rainDayRouter = router({
     }),
 
   // Get impacts for a specific rain day
-  getImpacts: adminProcedure
+  getImpacts: tenantAdminProcedure
     .input(z.object({ rainDayId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       return db.select({
         impact: rainDayJobImpacts,
         job: constructionJobs,
       }).from(rainDayJobImpacts)
         .innerJoin(constructionJobs, eq(rainDayJobImpacts.jobId, constructionJobs.id))
-        .where(eq(rainDayJobImpacts.rainDayId, input.rainDayId));
+        .where(and(
+          eq(rainDayJobImpacts.rainDayId, input.rainDayId),
+          eq(rainDayJobImpacts.tenantId, ctx.tenant!.id),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+        ));
     }),
 
   // Get EOT records for a specific job
-  getJobEOT: protectedProcedure
+  getJobEOT: tenantProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       return db.select({
         eot: extensionOfTimeRecords,
         rainDay: rainDays,
       }).from(extensionOfTimeRecords)
+        .innerJoin(constructionJobs, eq(extensionOfTimeRecords.jobId, constructionJobs.id))
         .leftJoin(rainDays, eq(extensionOfTimeRecords.rainDayId, rainDays.id))
-        .where(eq(extensionOfTimeRecords.jobId, input.jobId))
+        .where(and(
+          eq(extensionOfTimeRecords.jobId, input.jobId),
+          eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+        ))
         .orderBy(desc(extensionOfTimeRecords.createdAt));
     }),
 
   // Issue formal EOT notice to client
-  issueEOTNotice: adminProcedure
+  issueEOTNotice: tenantAdminProcedure
     .input(z.object({
       eotId: z.number(),
       jobId: z.number(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [eot] = await db.select().from(extensionOfTimeRecords)
-        .where(eq(extensionOfTimeRecords.id, input.eotId));
+        .where(and(eq(extensionOfTimeRecords.id, input.eotId), eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id)));
       if (!eot) throw new Error("EOT record not found");
 
       const [job] = await db.select().from(constructionJobs)
-        .where(eq(constructionJobs.id, input.jobId));
+        .where(and(eq(constructionJobs.id, input.jobId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
       if (!job) throw new Error("Job not found");
 
       let rainDay = null;
       if (eot.rainDayId) {
         const [rd] = await db.select().from(rainDays)
-          .where(eq(rainDays.id, eot.rainDayId));
+          .where(and(eq(rainDays.id, eot.rainDayId), eq(rainDays.tenantId, ctx.tenant!.id)));
         rainDay = rd;
       }
 
@@ -375,14 +404,14 @@ export const rainDayRouter = router({
 
         await db.update(extensionOfTimeRecords)
           .set({ sentAt: new Date(), sentToEmail: clientEmail })
-          .where(eq(extensionOfTimeRecords.id, input.eotId));
+          .where(and(eq(extensionOfTimeRecords.id, input.eotId), eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id)));
       }
 
       return { issued: true, sentTo: clientEmail };
     }),
 
   // Get weather data for a specific date (uses existing weather service)
-  getWeatherForDate: adminProcedure
+  getWeatherForDate: tenantAdminProcedure
     .input(z.object({
       date: z.string(),
       location: z.string().optional(),
@@ -400,14 +429,16 @@ export const rainDayRouter = router({
     }),
 
   // Summary stats
-  stats: adminProcedure.query(async () => {
+  stats: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-    const allDays = await db.select().from(rainDays);
+    const allDays = await db.select().from(rainDays).where(eq(rainDays.tenantId, ctx.tenant!.id));
     const pending = allDays.filter((d: any) => d.status === "pending").length;
     const approved = allDays.filter((d: any) => d.status === "approved").length;
     const executed = allDays.filter((d: any) => d.status === "executed").length;
-    const totalImpacts = await db.select({ count: sql<number>`count(*)` }).from(rainDayJobImpacts);
-    const totalEOTs = await db.select({ count: sql<number>`count(*)` }).from(extensionOfTimeRecords);
+    const totalImpacts = await db.select({ count: sql<number>`count(*)` }).from(rainDayJobImpacts)
+      .where(eq(rainDayJobImpacts.tenantId, ctx.tenant!.id));
+    const totalEOTs = await db.select({ count: sql<number>`count(*)` }).from(extensionOfTimeRecords)
+      .where(eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id));
 
     return {
       pending,
@@ -420,7 +451,7 @@ export const rainDayRouter = router({
   }),
 
   // ─── Bulk Declaration (multiple consecutive days) ─────────────────────────
-  declareBulk: adminProcedure
+  declareBulk: tenantAdminProcedure
     .input(z.object({
       startDate: z.string(), // YYYY-MM-DD
       endDate: z.string(),   // YYYY-MM-DD
@@ -449,6 +480,7 @@ export const rainDayRouter = router({
       // Check for duplicates
       const existing = await db.select({ date: rainDays.date }).from(rainDays)
         .where(and(
+          eq(rainDays.tenantId, ctx.tenant!.id),
           gte(rainDays.date, input.startDate),
           lte(rainDays.date, input.endDate),
         ));
@@ -461,12 +493,13 @@ export const rainDayRouter = router({
       const insertedIds: number[] = [];
       for (const date of newDates) {
         const [result] = await db.insert(rainDays).values({
+          tenantId: ctx.tenant!.id,
           date,
           reason: input.reason,
           zone: input.zone || null,
           weatherData: null,
-          declaredByUserId: ctx.user.id,
-          declaredByUserName: ctx.user.name || "Admin",
+          declaredByUserId: ctx.user!.id,
+          declaredByUserName: ctx.user!.name || "Admin",
           status: "pending",
         });
         insertedIds.push(result.insertId);
@@ -476,7 +509,7 @@ export const rainDayRouter = router({
     }),
 
   // ─── Weather Auto-Suggest (forecast-based rain day recommendations) ────────
-  weatherSuggest: adminProcedure
+  weatherSuggest: tenantAdminProcedure
     .input(z.object({
       zone: z.string().optional(), // specific location or default to all main locations
       precipitationThreshold: z.number().default(10), // mm threshold
@@ -547,7 +580,7 @@ export const rainDayRouter = router({
     }),
 
   // ─── EOT Summary Report (PDF export per job) ──────────────────────────────
-  generateEotReport: adminProcedure
+  generateEotReport: tenantAdminProcedure
     .input(z.object({
       jobId: z.number(),
     }))
@@ -556,12 +589,18 @@ export const rainDayRouter = router({
 
       // Get job details
       const [job] = await db.select().from(constructionJobs)
-        .where(eq(constructionJobs.id, input.jobId));
+        .where(and(
+          eq(constructionJobs.id, input.jobId),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+        ));
       if (!job) throw new Error("Job not found");
 
       // Get all EOT records for this job
       const eotRecords = await db.select().from(extensionOfTimeRecords)
-        .where(eq(extensionOfTimeRecords.jobId, input.jobId))
+        .where(and(
+          eq(extensionOfTimeRecords.jobId, input.jobId),
+          eq(extensionOfTimeRecords.tenantId, ctx.tenant!.id),
+        ))
         .orderBy(extensionOfTimeRecords.createdAt);
 
       if (eotRecords.length === 0) throw new Error("No EOT records found for this job");
@@ -571,7 +610,8 @@ export const rainDayRouter = router({
       let relatedRainDays: any[] = [];
       if (rainDayIds.length > 0) {
         for (const rdId of rainDayIds) {
-          const [rd] = await db.select().from(rainDays).where(eq(rainDays.id, rdId));
+          const [rd] = await db.select().from(rainDays)
+            .where(and(eq(rainDays.id, rdId), eq(rainDays.tenantId, ctx.tenant!.id)));
           if (rd) relatedRainDays.push(rd);
         }
       }
@@ -592,19 +632,19 @@ export const rainDayRouter = router({
           rainDayDate: relatedRainDays.find(rd => rd.id === e.rainDayId)?.date || null,
         })),
         totalDays: eotRecords.reduce((sum, e) => sum + (e.daysClaimed || 0), 0),
-        generatedBy: ctx.user.name || "Admin",
+        generatedBy: ctx.user!.name || "Admin",
         generatedDate: new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "long", year: "numeric" }),
       });
 
       // Upload to S3
-      const fileKey = `eot-reports/${input.jobId}-eot-summary-${Date.now()}.pdf`;
+      const fileKey = `tenant-${ctx.tenant!.id}/eot-reports/${input.jobId}-eot-summary-${Date.now()}.pdf`;
       const { url: pdfUrl } = await storagePut(fileKey, pdfBuffer, "application/pdf");
 
       return { pdfUrl, totalDays: eotRecords.reduce((sum, e) => sum + (e.daysClaimed || 0), 0), recordCount: eotRecords.length };
     }),
 
   // ─── Send EOT Report via Email ─────────────────────────────────────────────
-  sendEotReport: adminProcedure
+  sendEotReport: tenantAdminProcedure
     .input(z.object({
       jobId: z.number(),
       recipientEmail: z.string().email(),
@@ -615,7 +655,10 @@ export const rainDayRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [job] = await db.select().from(constructionJobs)
-        .where(eq(constructionJobs.id, input.jobId));
+        .where(and(
+          eq(constructionJobs.id, input.jobId),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+        ));
       if (!job) throw new Error("Job not found");
 
       // Download PDF from S3 to get base64
@@ -630,7 +673,7 @@ export const rainDayRouter = router({
         to: input.recipientEmail,
         subject,
         htmlBody,
-        fromName: ctx.user.name || "Altaspan",
+        fromName: ctx.user!.name || "Altaspan",
         attachments: [{
           filename: `EOT-Summary-${job.quoteNumber || job.id}.pdf`,
           content: pdfBase64,
@@ -642,12 +685,12 @@ export const rainDayRouter = router({
     }),
 
   // Public-facing rain days for schedule indicator (any authenticated user)
-  listForSchedule: protectedProcedure
+  listForSchedule: tenantProcedure
     .input(z.object({
       startDate: z.string(),
       endDate: z.string(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const results = await db.select({
         id: rainDays.id,
@@ -657,6 +700,7 @@ export const rainDayRouter = router({
         zone: rainDays.zone,
       }).from(rainDays)
         .where(and(
+          eq(rainDays.tenantId, ctx.tenant!.id),
           gte(rainDays.date, input.startDate),
           lte(rainDays.date, input.endDate),
           or(eq(rainDays.status, "approved"), eq(rainDays.status, "executed"))
@@ -666,11 +710,11 @@ export const rainDayRouter = router({
     }),
 
   // Weather history for dashboard chart (past 30 days)
-  weatherHistoryChart: adminProcedure
+  weatherHistoryChart: tenantAdminProcedure
     .input(z.object({
       days: z.number().min(7).max(90).default(30),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const days = input?.days ?? 30;
       const startDate = new Date();
@@ -707,7 +751,10 @@ export const rainDayRouter = router({
         date: rainDays.date,
         status: rainDays.status,
       }).from(rainDays)
-        .where(gte(rainDays.date, startStr))
+        .where(and(
+          eq(rainDays.tenantId, ctx.tenant!.id),
+          gte(rainDays.date, startStr),
+        ))
         .orderBy(rainDays.date);
 
       return {

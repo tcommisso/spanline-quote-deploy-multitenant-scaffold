@@ -3,14 +3,14 @@
  * Provides admin access to the notification audit log with filtering, stats, and clearing.
  */
 import { z } from "zod";
-import { protectedProcedure, router } from "./_core/trpc";
+import { tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { notificationLog } from "../drizzle/schema";
 import { desc, eq, and, gte, lte, sql, count } from "drizzle-orm";
 
 export const notificationLogRouter = router({
   /** List notification log entries with pagination and filters */
-  list: protectedProcedure
+  list: tenantAdminProcedure
     .input(
       z.object({
         page: z.number().min(1).default(1),
@@ -22,11 +22,11 @@ export const notificationLogRouter = router({
         dateTo: z.string().optional(),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { entries: [], total: 0 };
 
-      const conditions: any[] = [];
+      const conditions: any[] = [eq(notificationLog.tenantId, ctx.tenant!.id)];
 
       if (input.status !== "all") {
         conditions.push(eq(notificationLog.status, input.status));
@@ -67,7 +67,7 @@ export const notificationLogRouter = router({
     }),
 
   /** Get summary statistics for the notification log */
-  stats: protectedProcedure.query(async () => {
+  stats: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return { total: 0, sent: 0, suppressed: 0, failed: 0, byChannel: [], byRecipientType: [] };
 
@@ -78,7 +78,8 @@ export const notificationLogRouter = router({
         suppressed: sql<number>`SUM(CASE WHEN status = 'suppressed' THEN 1 ELSE 0 END)`,
         failed: sql<number>`SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)`,
       })
-      .from(notificationLog);
+      .from(notificationLog)
+      .where(eq(notificationLog.tenantId, ctx.tenant!.id));
 
     const byChannel = await db
       .select({
@@ -86,6 +87,7 @@ export const notificationLogRouter = router({
         count: count(),
       })
       .from(notificationLog)
+      .where(eq(notificationLog.tenantId, ctx.tenant!.id))
       .groupBy(notificationLog.channel);
 
     const byRecipientType = await db
@@ -94,6 +96,7 @@ export const notificationLogRouter = router({
         count: count(),
       })
       .from(notificationLog)
+      .where(eq(notificationLog.tenantId, ctx.tenant!.id))
       .groupBy(notificationLog.recipientType);
 
     return {
@@ -107,9 +110,9 @@ export const notificationLogRouter = router({
   }),
 
   /** Clear old log entries (older than specified days) */
-  clearOld: protectedProcedure
+  clearOld: tenantAdminProcedure
     .input(z.object({ olderThanDays: z.number().min(7).default(90) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { deleted: 0 };
 
@@ -118,7 +121,7 @@ export const notificationLogRouter = router({
 
       const result = await db
         .delete(notificationLog)
-        .where(lte(notificationLog.createdAt, cutoff));
+        .where(and(eq(notificationLog.tenantId, ctx.tenant!.id), lte(notificationLog.createdAt, cutoff)));
 
       return { deleted: (result as any)[0]?.affectedRows || 0 };
     }),

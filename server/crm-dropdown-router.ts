@@ -1,4 +1,4 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure, tenantAdminProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
 import { crmDropdownOptions } from "../drizzle/schema";
@@ -9,16 +9,16 @@ export const crmDropdownRouter = router({
    * List all options for a given category (or all categories).
    * Public to all authenticated users (they need to populate dropdowns).
    */
-  list: protectedProcedure
+  list: tenantProcedure
     .input(z.object({
       category: z.string().optional(),
       activeOnly: z.boolean().optional().default(true),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
 
-      const conditions = [];
+      const conditions = [eq(crmDropdownOptions.tenantId, ctx.tenant!.id)];
       if (input.category) conditions.push(eq(crmDropdownOptions.category, input.category));
       if (input.activeOnly) conditions.push(eq(crmDropdownOptions.active, true));
 
@@ -33,29 +33,31 @@ export const crmDropdownRouter = router({
   /**
    * List all distinct categories.
    */
-  categories: protectedProcedure.query(async () => {
+  categories: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
     const rows = await db.selectDistinct({ category: crmDropdownOptions.category })
-      .from(crmDropdownOptions);
+      .from(crmDropdownOptions)
+      .where(eq(crmDropdownOptions.tenantId, ctx.tenant!.id));
     return rows.map(r => r.category);
   }),
 
   /**
    * Create a new dropdown option (admin only).
    */
-  create: adminProcedure
+  create: tenantAdminProcedure
     .input(z.object({
       category: z.string().min(1).max(64),
       value: z.string().min(1).max(128),
       label: z.string().min(1).max(128),
       sortOrder: z.number().int().optional().default(0),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
       const [result] = await db.insert(crmDropdownOptions).values({
+        tenantId: ctx.tenant!.id,
         category: input.category,
         value: input.value,
         label: input.label,
@@ -67,7 +69,7 @@ export const crmDropdownRouter = router({
   /**
    * Update an existing dropdown option (admin only).
    */
-  update: adminProcedure
+  update: tenantAdminProcedure
     .input(z.object({
       id: z.number(),
       value: z.string().min(1).max(128).optional(),
@@ -75,7 +77,7 @@ export const crmDropdownRouter = router({
       sortOrder: z.number().int().optional(),
       active: z.boolean().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -86,7 +88,10 @@ export const crmDropdownRouter = router({
       if (input.active !== undefined) updates.active = input.active;
 
       if (Object.keys(updates).length > 0) {
-        await db.update(crmDropdownOptions).set(updates).where(eq(crmDropdownOptions.id, input.id));
+        await db
+          .update(crmDropdownOptions)
+          .set(updates)
+          .where(and(eq(crmDropdownOptions.id, input.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
       }
       return { success: true };
     }),
@@ -94,33 +99,35 @@ export const crmDropdownRouter = router({
   /**
    * Delete a dropdown option (admin only).
    */
-  delete: adminProcedure
+  delete: tenantAdminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.delete(crmDropdownOptions).where(eq(crmDropdownOptions.id, input.id));
+      await db
+        .delete(crmDropdownOptions)
+        .where(and(eq(crmDropdownOptions.id, input.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
       return { success: true };
     }),
 
   /**
    * Bulk reorder options within a category (admin only).
    */
-  reorder: adminProcedure
+  reorder: tenantAdminProcedure
     .input(z.object({
       items: z.array(z.object({
         id: z.number(),
         sortOrder: z.number().int(),
       })),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
       for (const item of input.items) {
         await db.update(crmDropdownOptions)
           .set({ sortOrder: item.sortOrder })
-          .where(eq(crmDropdownOptions.id, item.id));
+          .where(and(eq(crmDropdownOptions.id, item.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
       }
       return { success: true };
     }),

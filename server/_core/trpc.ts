@@ -14,15 +14,16 @@ export const middleware = t.middleware;
 
 const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;
+  const user = ctx.user;
 
-  if (!ctx.user) {
+  if (!user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   }
 
   return next({
     ctx: {
       ...ctx,
-      user: ctx.user,
+      user,
     },
   });
 });
@@ -43,15 +44,16 @@ export function canAdministerTenant(
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
+    const user = ctx.user;
 
-    if (!ctx.user || !ADMIN_ROLES.includes(ctx.user!.role)) {
+    if (!user || !ADMIN_ROLES.includes(user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 
     return next({
       ctx: {
         ...ctx,
-        user: ctx.user,
+        user,
       },
     });
   }),
@@ -60,15 +62,16 @@ export const adminProcedure = t.procedure.use(
 export const superAdminProcedure = t.procedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
+    const user = ctx.user;
 
-    if (!ctx.user || ctx.user!.role !== 'super_admin') {
+    if (!user || user.role !== 'super_admin') {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 
     return next({
       ctx: {
         ...ctx,
-        user: ctx.user,
+        user,
       },
     });
   }),
@@ -76,12 +79,15 @@ export const superAdminProcedure = t.procedure.use(
 
 const requireTenant = t.middleware(async opts => {
   const { ctx, next } = opts;
+  const user = ctx.user;
+  const tenant = ctx.tenant;
+  const tenantMembership = ctx.tenantMembership;
 
-  if (!ctx.user) {
+  if (!user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
   }
 
-  if (!ctx.tenant || !ctx.tenantMembership) {
+  if (!tenant || !tenantMembership) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "A valid tenant context is required.",
@@ -91,9 +97,9 @@ const requireTenant = t.middleware(async opts => {
   return next({
     ctx: {
       ...ctx,
-      user: ctx.user,
-      tenant: ctx.tenant,
-      tenantMembership: ctx.tenantMembership,
+      user,
+      tenant,
+      tenantMembership,
     },
   });
 });

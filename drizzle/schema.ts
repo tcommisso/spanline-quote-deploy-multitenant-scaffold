@@ -1062,6 +1062,7 @@ export type InsertGlobalSetting = typeof globalSettings.$inferInsert;
 // ─── Branches ───────────────────────────────────────────────────────────────
 export const branches = mysqlTable("branches", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 128 }).notNull(),
   address: text("address"),
   phone: varchar("phone", { length: 64 }),
@@ -1073,7 +1074,9 @@ export const branches = mysqlTable("branches", {
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_branches_tenant").on(table.tenantId),
+]);
 export type Branch = typeof branches.$inferSelect;
 export type InsertBranch = typeof branches.$inferInsert;
 
@@ -3714,13 +3717,17 @@ export type InsertUserTimeOff = typeof userTimeOff.$inferInsert;
 // ─── CRM Dropdown Options (Admin-configurable) ─────────────────────────────
 export const crmDropdownOptions = mysqlTable("crm_dropdown_options", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   category: varchar("category", { length: 64 }).notNull(), // e.g. "lead_status", "product_type", "lead_source", "outcome"
   value: varchar("value", { length: 128 }).notNull(),
   label: varchar("label", { length: 128 }).notNull(),
   sortOrder: int("sortOrder").default(0).notNull(),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_crm_dropdown_options_tenant").on(table.tenantId),
+  index("idx_crm_dropdown_options_tenant_category").on(table.tenantId, table.category),
+]);
 
 // ─── User Notification Preferences ──────────────────────────────────────────
 export const userNotificationPreferences = mysqlTable("user_notification_preferences", {
@@ -4272,6 +4279,7 @@ export type TextBlock = typeof textBlocks.$inferSelect;
 // ─── Notification Log ────────────────────────────────────────────────────────
 export const notificationLog = mysqlTable("notification_log", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   type: varchar("type", { length: 64 }).notNull(), // email, sms, push, owner_notify
   settingKey: varchar("setting_key", { length: 128 }), // the notification setting key that triggered this
   recipientType: varchar("recipient_type", { length: 32 }).notNull(), // owner, user, client, trade
@@ -4282,7 +4290,10 @@ export const notificationLog = mysqlTable("notification_log", {
   suppressionReason: varchar("suppression_reason", { length: 128 }), // setting_disabled, quiet_hours, user_preference
   metadata: text("metadata"), // JSON with extra context
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_notification_log_tenant").on(table.tenantId),
+  index("idx_notification_log_tenant_created").on(table.tenantId, table.createdAt),
+]);
 export type NotificationLogEntry = typeof notificationLog.$inferSelect;
 export type InsertNotificationLogEntry = typeof notificationLog.$inferInsert;
 
@@ -4392,6 +4403,7 @@ export type InsertChatMessageReaction = typeof chatMessageReactions.$inferInsert
 // ─── Support Submissions ────────────────────────────────────────────────────
 export const supportSubmissions = mysqlTable("support_submissions", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
   userName: text("userName"),
   userEmail: varchar("userEmail", { length: 320 }),
@@ -4413,7 +4425,10 @@ export const supportSubmissions = mysqlTable("support_submissions", {
   assignedToUserId: int("assignedToUserId").references(() => users.id, { onDelete: "set null" }),
   assignedToUserName: text("assignedToUserName"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_support_submissions_tenant").on(table.tenantId),
+  index("idx_support_submissions_tenant_status").on(table.tenantId, table.status),
+]);
 
 export type SupportSubmission = typeof supportSubmissions.$inferSelect;
 export type InsertSupportSubmission = typeof supportSubmissions.$inferInsert;
@@ -4454,6 +4469,7 @@ export type InsertSupportSubmissionNote = typeof supportSubmissionNotes.$inferIn
 // ─── Rain Days ──────────────────────────────────────────────────────────────
 export const rainDays = mysqlTable("rain_days", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD
   zone: varchar("zone", { length: 100 }), // optional zone/region filter
   reason: text("reason"),
@@ -4469,13 +4485,17 @@ export const rainDays = mysqlTable("rain_days", {
   affectedJobCount: int("affectedJobCount").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_rain_days_tenant").on(table.tenantId),
+  index("idx_rain_days_tenant_date").on(table.tenantId, table.date),
+]);
 export type RainDay = typeof rainDays.$inferSelect;
 export type InsertRainDay = typeof rainDays.$inferInsert;
 
 // ─── Rain Day Job Impacts ───────────────────────────────────────────────────
 export const rainDayJobImpacts = mysqlTable("rain_day_job_impacts", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   rainDayId: int("rainDayId").notNull().references(() => rainDays.id, { onDelete: "cascade" }),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   clientName: varchar("clientName", { length: 255 }),
@@ -4490,6 +4510,8 @@ export const rainDayJobImpacts = mysqlTable("rain_day_job_impacts", {
   tradesNotifiedAt: timestamp("tradesNotifiedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
+  index("idx_rain_day_job_impacts_tenant").on(table.tenantId),
+  index("idx_rain_day_job_impacts_tenant_rain_day").on(table.tenantId, table.rainDayId),
   foreignKey({
     name: "fk_rain_impact_event",
     columns: [table.scheduleEventId],
@@ -4502,6 +4524,7 @@ export type InsertRainDayJobImpact = typeof rainDayJobImpacts.$inferInsert;
 // ─── Extension of Time Records ──────────────────────────────────────────────
 export const extensionOfTimeRecords = mysqlTable("extension_of_time_records", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   clientName: varchar("clientName", { length: 255 }),
   rainDayId: int("rainDayId").references(() => rainDays.id, { onDelete: "set null" }),
@@ -4515,7 +4538,10 @@ export const extensionOfTimeRecords = mysqlTable("extension_of_time_records", {
   createdByUserId: int("createdByUserId").references(() => users.id),
   createdByUserName: varchar("createdByUserName", { length: 255 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_extension_of_time_records_tenant").on(table.tenantId),
+  index("idx_extension_of_time_records_tenant_job").on(table.tenantId, table.jobId),
+]);
 export type ExtensionOfTimeRecord = typeof extensionOfTimeRecords.$inferSelect;
 export type InsertExtensionOfTimeRecord = typeof extensionOfTimeRecords.$inferInsert;
 
