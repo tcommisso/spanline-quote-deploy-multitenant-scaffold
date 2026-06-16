@@ -1,10 +1,12 @@
-import { router, adminProcedure, protectedProcedure, publicProcedure } from "./_core/trpc";
+import { router, protectedProcedure, publicProcedure, tenantAdminProcedure } from "./_core/trpc";
 import { z } from "zod";
-import { getDb } from "./db";
-import { globalSettings } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
 import { getActiveStorageProvider, isStorageConfigured, storagePut } from "./storage";
 import crypto from "crypto";
+import {
+  getTenantAppSetting,
+  removeTenantAppSetting,
+  setTenantAppSetting,
+} from "./tenant-settings-store";
 
 const LOGIN_BACKGROUND_MAX_BYTES = 1.5 * 1024 * 1024;
 const LOGIN_BACKGROUND_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -17,138 +19,75 @@ export const globalSettingsRouter = router({
   // Get a setting by key (any authenticated user can read)
   get: protectedProcedure
     .input(z.object({ key: z.string() }))
-    .query(async ({ input }) => {
-      const db = await getDb();
-      if (!db) return null;
-      const [row] = await db
-        .select()
-        .from(globalSettings)
-        .where(eq(globalSettings.key, input.key))
-        .limit(1);
-      return row?.value ?? null;
+    .query(async ({ ctx, input }) => {
+      return getTenantAppSetting(ctx.tenant?.id, input.key);
     }),
 
-  // Set a setting (admin only)
-  set: adminProcedure
+  // Set a setting (tenant admin only)
+  set: tenantAdminProcedure
     .input(z.object({ key: z.string(), value: z.any() }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      // Upsert: insert or update on duplicate key
-      await db
-        .insert(globalSettings)
-        .values({ key: input.key, value: input.value })
-        .onDuplicateKeyUpdate({ set: { value: input.value } });
-      return { success: true };
+    .mutation(async ({ ctx, input }) => {
+      return setTenantAppSetting(ctx.tenant!.id, input.key, input.value);
     }),
 
   // Get colour palette config (convenience wrapper)
-  getColourPalette: protectedProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return { defaultGroup: "", sectionOverrides: {} };
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "colourPalette"))
-      .limit(1);
+  getColourPalette: protectedProcedure.query(async ({ ctx }) => {
     // Expected shape: { defaultGroup: string, sectionOverrides: { [sectionKey]: string (comma-separated groups) } }
-    return (row?.value as { defaultGroup?: string; sectionOverrides?: Record<string, string> }) ?? { defaultGroup: "", sectionOverrides: {} };
+    return (await getTenantAppSetting(ctx.tenant?.id, "colourPalette") as { defaultGroup?: string; sectionOverrides?: Record<string, string> } | null) ?? { defaultGroup: "", sectionOverrides: {} };
   }),
 
-  // Set colour palette config (admin only)
-  setColourPalette: adminProcedure
+  // Set colour palette config (tenant admin only)
+  setColourPalette: tenantAdminProcedure
     .input(z.object({
       defaultGroup: z.string(),
       sectionOverrides: z.record(z.string(), z.string()),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      await db
-        .insert(globalSettings)
-        .values({ key: "colourPalette", value: input })
-        .onDuplicateKeyUpdate({ set: { value: input } });
-      return { success: true };
+    .mutation(async ({ ctx, input }) => {
+      return setTenantAppSetting(ctx.tenant!.id, "colourPalette", input);
     }),
 
   // Get AI render pricing settings
-  getRenderPricing: protectedProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return getDefaultRenderPricing();
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "renderPricing"))
-      .limit(1);
-    const stored = row?.value as Partial<RenderPricingSettings> | null;
+  getRenderPricing: protectedProcedure.query(async ({ ctx }) => {
+    const stored = await getTenantAppSetting<Partial<RenderPricingSettings>>(ctx.tenant?.id, "renderPricing");
     return { ...getDefaultRenderPricing(), ...stored };
   }),
 
-  // Set AI render pricing settings (admin only)
-  setRenderPricing: adminProcedure
+  // Set AI render pricing settings (tenant admin only)
+  setRenderPricing: tenantAdminProcedure
     .input(z.object({
       fullRenderCostAud: z.number().min(0).max(10),
       quickRenderCostAud: z.number().min(0).max(10),
       batchRenderCostAud: z.number().min(0).max(10),
       monthlyBudgetAud: z.number().min(0).max(10000),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      await db
-        .insert(globalSettings)
-        .values({ key: "renderPricing", value: input })
-        .onDuplicateKeyUpdate({ set: { value: input } });
-      return { success: true };
+    .mutation(async ({ ctx, input }) => {
+      return setTenantAppSetting(ctx.tenant!.id, "renderPricing", input);
     }),
   // ─── Approvals Overdue Threshold ──────────────────────────────────────────────────
-  getBaOverdueThreshold: protectedProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return 30;
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "baOverdueThresholdDays"))
-      .limit(1);
-    return (row?.value as number) ?? 30;
+  getBaOverdueThreshold: protectedProcedure.query(async ({ ctx }) => {
+    return (await getTenantAppSetting<number>(ctx.tenant?.id, "baOverdueThresholdDays")) ?? 30;
   }),
-  setBaOverdueThreshold: adminProcedure
+  setBaOverdueThreshold: tenantAdminProcedure
     .input(z.object({ days: z.number().min(1).max(365) }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      await db
-        .insert(globalSettings)
-        .values({ key: "baOverdueThresholdDays", value: input.days })
-        .onDuplicateKeyUpdate({ set: { value: input.days } });
-      return { success: true };
+    .mutation(async ({ ctx, input }) => {
+      return setTenantAppSetting(ctx.tenant!.id, "baOverdueThresholdDays", input.days);
     }),
 
   // ─── Login Background Image ──────────────────────────────────────────────
 
   // Public: anyone (including unauthenticated) can fetch the login background
-  getLoginBackground: publicProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return null;
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "loginBackgroundImage"))
-      .limit(1);
-    return (row?.value as { url: string; originalName?: string; uploadedAt?: string } | null) ?? null;
+  getLoginBackground: publicProcedure.query(async ({ ctx }) => {
+    return (await getTenantAppSetting(ctx.tenant?.id, "loginBackgroundImage") as { url: string; originalName?: string; uploadedAt?: string } | null) ?? null;
   }),
 
   // Admin: upload a new login background image (receives base64)
-  uploadLoginBackground: adminProcedure
+  uploadLoginBackground: tenantAdminProcedure
     .input(z.object({
       fileBase64: z.string(), // base64-encoded image data
       fileName: z.string(),
       mimeType: z.string(),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-
+    .mutation(async ({ ctx, input }) => {
       const fileBuffer = Buffer.from(input.fileBase64, "base64");
       if (!LOGIN_BACKGROUND_ALLOWED_MIME_TYPES.has(input.mimeType)) {
         throw new Error("Unsupported image type. Please upload a JPEG, PNG, or WebP image.");
@@ -172,76 +111,44 @@ export const globalSettingsRouter = router({
         uploadedAt: new Date().toISOString(),
       };
 
-      await db
-        .insert(globalSettings)
-        .values({ key: "loginBackgroundImage", value })
-        .onDuplicateKeyUpdate({ set: { value } });
+      await setTenantAppSetting(ctx.tenant!.id, "loginBackgroundImage", value);
 
       return value;
     }),
 
   // Admin: remove the login background image (revert to default)
-  removeLoginBackground: adminProcedure
-    .mutation(async () => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      await db.delete(globalSettings).where(eq(globalSettings.key, "loginBackgroundImage"));
-      return { success: true };
+  removeLoginBackground: tenantAdminProcedure
+    .mutation(async ({ ctx }) => {
+      return removeTenantAppSetting(ctx.tenant!.id, "loginBackgroundImage");
     }),
 
   // Public: get login tagline text
-  getLoginTagline: publicProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return null;
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "loginTagline"))
-      .limit(1);
-    return (row?.value as { headline: string; subtitle: string; signInPrompt?: string } | null) ?? null;
+  getLoginTagline: publicProcedure.query(async ({ ctx }) => {
+    return (await getTenantAppSetting(ctx.tenant?.id, "loginTagline") as { headline: string; subtitle: string; signInPrompt?: string } | null) ?? null;
   }),
 
   // Admin: set login tagline text
-  setLoginTagline: adminProcedure
+  setLoginTagline: tenantAdminProcedure
     .input(z.object({
       headline: z.string().max(100),
       subtitle: z.string().max(200),
       signInPrompt: z.string().max(200).optional(),
     }))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
+    .mutation(async ({ ctx, input }) => {
       const value = { headline: input.headline, subtitle: input.subtitle, signInPrompt: input.signInPrompt || "" };
-      await db
-        .insert(globalSettings)
-        .values({ key: "loginTagline", value })
-        .onDuplicateKeyUpdate({ set: { value } });
-      return { success: true };
+      return setTenantAppSetting(ctx.tenant!.id, "loginTagline", value);
     }),
 
   // Get colour scheme hex values
-  getColourScheme: protectedProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return null;
-    const [row] = await db
-      .select()
-      .from(globalSettings)
-      .where(eq(globalSettings.key, "colourSchemeHex"))
-      .limit(1);
-    return (row?.value as Record<string, string>) ?? null;
+  getColourScheme: protectedProcedure.query(async ({ ctx }) => {
+    return (await getTenantAppSetting(ctx.tenant?.id, "colourSchemeHex") as Record<string, string> | null) ?? null;
   }),
 
-  // Set colour scheme hex values (admin only)
-  setColourScheme: adminProcedure
+  // Set colour scheme hex values (tenant admin only)
+  setColourScheme: tenantAdminProcedure
     .input(z.record(z.string(), z.string()))
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new Error("Database unavailable");
-      await db
-        .insert(globalSettings)
-        .values({ key: "colourSchemeHex", value: input })
-        .onDuplicateKeyUpdate({ set: { value: input } });
-      return { success: true };
+    .mutation(async ({ ctx, input }) => {
+      return setTenantAppSetting(ctx.tenant!.id, "colourSchemeHex", input);
     }),
 });
 

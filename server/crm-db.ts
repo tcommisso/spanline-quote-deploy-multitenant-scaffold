@@ -9,6 +9,7 @@ import {
   type InsertCrmLead, type InsertLeadNote
 } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
+import { getTenantAppSetting } from "./tenant-settings-store";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
@@ -1884,7 +1885,7 @@ export async function getAssignedDaForLead(suburb?: string, postcode?: string, s
 
 /**
  * Default follow-up thresholds (days) per lead status.
- * These can be overridden via global_settings key "followUpThresholds".
+ * These can be overridden via the tenant app setting key "followUpThresholds".
  */
 const DEFAULT_FOLLOW_UP_THRESHOLDS: Record<string, number> = {
   new: 3,
@@ -1896,19 +1897,10 @@ const DEFAULT_FOLLOW_UP_THRESHOLDS: Record<string, number> = {
   construction: 14,
 };
 
-/** Load follow-up thresholds from globalSettings, falling back to defaults. */
-async function getFollowUpThresholds(): Promise<Record<string, number>> {
-  try {
-    const [rows] = await pool.execute(
-      `SELECT value FROM global_settings WHERE settingKey = 'followUpThresholds' LIMIT 1`
-    );
-    const row = (rows as any[])[0];
-    if (row?.value) {
-      const parsed = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-      return { ...DEFAULT_FOLLOW_UP_THRESHOLDS, ...parsed };
-    }
-  } catch { /* fall through to defaults */ }
-  return DEFAULT_FOLLOW_UP_THRESHOLDS;
+/** Load follow-up thresholds from tenant settings, falling back to defaults. */
+async function getFollowUpThresholds(tenantId?: number | null): Promise<Record<string, number>> {
+  const stored = await getTenantAppSetting<Record<string, number>>(tenantId, "followUpThresholds");
+  return { ...DEFAULT_FOLLOW_UP_THRESHOLDS, ...(stored ?? {}) };
 }
 
 /**
@@ -1917,7 +1909,7 @@ async function getFollowUpThresholds(): Promise<Record<string, number>> {
  * Excludes completed/cancelled/won leads.
  */
 export async function getStaleLeadIds(tenantId?: number | null): Promise<{ id: number; daysSinceActivity: number }[]> {
-  const thresholds = await getFollowUpThresholds();
+  const thresholds = await getFollowUpThresholds(tenantId);
   // Build CASE expression for thresholds
   const caseParts = Object.entries(thresholds)
     .map(([status, days]) => `WHEN '${status}' THEN ${days}`)

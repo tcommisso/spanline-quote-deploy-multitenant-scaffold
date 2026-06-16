@@ -54,6 +54,7 @@ export const tenantSettings = mysqlTable("tenant_settings", {
   companyDetails: json("companyDetails"),
   branding: json("branding"),
   featureFlags: json("featureFlags").$type<Record<string, boolean>>().default({}),
+  appSettings: json("appSettings").$type<Record<string, any>>().default({}),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

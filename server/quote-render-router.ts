@@ -265,6 +265,7 @@ export const quoteRenderRouter = router({
         projectId: input.quoteId,
         renderMode: input.mode,
         stylePreset: input.stylePreset,
+        tenantId: ctx.tenant?.id,
       });
 
       // Build history entry
@@ -335,6 +336,7 @@ export const quoteRenderRouter = router({
         projectId: input.quoteId,
         renderMode: input.mode,
         stylePreset: input.stylePreset,
+        tenantId: ctx.tenant?.id,
       });
 
       // Build history entry

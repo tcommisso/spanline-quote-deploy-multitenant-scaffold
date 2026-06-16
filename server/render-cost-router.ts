@@ -2,21 +2,15 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
-import { renderCostLogs, users, patioPlanner, globalSettings } from "../drizzle/schema";
+import { renderCostLogs, users, patioPlanner } from "../drizzle/schema";
 import { eq, and, sql, gte, lte, desc } from "drizzle-orm";
 import { getDefaultRenderPricing, getRenderCostAud, type RenderPricingSettings } from "./global-settings-router";
 import { isAdminRole } from "@shared/const";
+import { getTenantAppSetting } from "./tenant-settings-store";
 
 // ─── Fetch Pricing from DB ──────────────────────────────────────────────────
-async function fetchRenderPricing(): Promise<RenderPricingSettings> {
-  const db = await getDb();
-  if (!db) return getDefaultRenderPricing();
-  const [row] = await db
-    .select()
-    .from(globalSettings)
-    .where(eq(globalSettings.key, "renderPricing"))
-    .limit(1);
-  const stored = row?.value as Partial<RenderPricingSettings> | null;
+async function fetchRenderPricing(tenantId?: number | null): Promise<RenderPricingSettings> {
+  const stored = await getTenantAppSetting<Partial<RenderPricingSettings>>(tenantId, "renderPricing");
   return { ...getDefaultRenderPricing(), ...stored };
 }
 
@@ -27,11 +21,12 @@ export async function logRenderCost(params: {
   renderMode: "full" | "quick" | "batch";
   stylePreset?: string;
   renderCount?: number;
+  tenantId?: number | null;
 }) {
   const db = await getDb();
   if (!db) return;
 
-  const pricing = await fetchRenderPricing();
+  const pricing = await fetchRenderPricing(params.tenantId);
   const perRenderCost = getRenderCostAud(params.renderMode, pricing);
   const totalCost = perRenderCost * (params.renderCount || 1);
 
@@ -117,7 +112,7 @@ export const renderCostRouter = router({
       const monthlyCostAud = parseFloat(monthResult.monthlyCredits) || 0;
 
       // Fetch pricing settings for budget
-      const pricing = await fetchRenderPricing();
+      const pricing = await fetchRenderPricing(ctx.tenant?.id);
 
       return {
         totalCostAud,

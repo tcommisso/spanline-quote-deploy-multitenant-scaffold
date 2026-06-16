@@ -221,6 +221,7 @@ export const patioRenderRouter = router({
         projectId: input.projectId,
         renderMode: input.mode,
         stylePreset: input.stylePreset,
+        tenantId: ctx.tenant?.id,
       });
 
       // Build render history entry
@@ -497,6 +498,7 @@ export const patioRenderRouter = router({
           projectId: input.projectId,
           renderMode: "batch",
           renderCount: results.length,
+          tenantId: ctx.tenant?.id,
         });
       }
 

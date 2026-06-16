@@ -7,9 +7,10 @@
 import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
-import { crmBuildingAuthority, globalSettings, constructionJobs } from "../drizzle/schema";
+import { crmBuildingAuthority, constructionJobs } from "../drizzle/schema";
 import { eq, and, or, isNotNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
+import { getPrimaryTenantAppSetting } from "./tenant-settings-store";
 
 export function registerScheduledBaOverdueNotify(app: Express) {
   app.post("/api/scheduled/ba-overdue-notify", async (req: Request, res: Response) => {
@@ -25,13 +26,7 @@ export function registerScheduledBaOverdueNotify(app: Express) {
         return res.status(500).json({ error: "Database unavailable" });
       }
 
-      // Get configurable threshold
-      const [thresholdRow] = await db
-        .select()
-        .from(globalSettings)
-        .where(eq(globalSettings.key, "baOverdueThresholdDays"))
-        .limit(1);
-      const overdueDays = (thresholdRow?.value as number) ?? 30;
+      const overdueDays = (await getPrimaryTenantAppSetting<number>("baOverdueThresholdDays")) ?? 30;
       const cutoff = Date.now() - overdueDays * 24 * 60 * 60 * 1000;
 
       // Get all pending/lodged approval applications

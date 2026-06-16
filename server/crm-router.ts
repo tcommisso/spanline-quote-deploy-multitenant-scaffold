@@ -5,9 +5,10 @@ import * as crmDb from "./crm-db";
 import * as emailTemplatesDb from "./email-templates-db";
 import { storagePut } from "./storage";
 import { getDb } from "./db";
-import { quotes, quoteComponents, constructionJobs, constructionProgress, checkMeasureWorkbooks, users, crmLeads, deckQuotes, eclipseQuotes, branches, crmBuildingAuthority, globalSettings } from "../drizzle/schema";
+import { quotes, quoteComponents, constructionJobs, constructionProgress, checkMeasureWorkbooks, users, crmLeads, deckQuotes, eclipseQuotes, branches, crmBuildingAuthority } from "../drizzle/schema";
 import { and, eq, inArray, sql, isNull, or } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { getTenantAppSetting } from "./tenant-settings-store";
 
 async function assertLeadAccess(ctx: any, leadId: number) {
   const lead = await crmDb.getLead(leadId, tenantIdFromContext(ctx));
@@ -1136,13 +1137,7 @@ export const crmRouter = router({
 
     statusCounts: protectedProcedure.query(async ({ ctx }) => {
       const db = await getDb();
-      // Fetch configurable threshold
-      const [thresholdRow] = await db!
-        .select()
-        .from(globalSettings)
-        .where(eq(globalSettings.key, "baOverdueThresholdDays"))
-        .limit(1);
-      const overdueDays = (thresholdRow?.value as number) ?? 30;
+      const overdueDays = (await getTenantAppSetting<number>(tenantIdFromContext(ctx), "baOverdueThresholdDays")) ?? 30;
       const rows = await db!
         .select({
           status: crmBuildingAuthority.status,
@@ -1173,13 +1168,7 @@ export const crmRouter = router({
       year: z.number(),
     })).query(async ({ ctx, input }) => {
       const db = await getDb();
-      // Fetch configurable threshold
-      const [thresholdRow] = await db!
-        .select()
-        .from(globalSettings)
-        .where(eq(globalSettings.key, "baOverdueThresholdDays"))
-        .limit(1);
-      const overdueDays = (thresholdRow?.value as number) ?? 30;
+      const overdueDays = (await getTenantAppSetting<number>(tenantIdFromContext(ctx), "baOverdueThresholdDays")) ?? 30;
 
       // Get all Approval records with their lead info
       const baRecords = await db!
