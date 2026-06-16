@@ -4,14 +4,15 @@
  * Includes permission audit logging for all permission/role changes
  */
 import { z } from "zod";
-import { superAdminProcedure, protectedProcedure, adminProcedure, sensitiveSuperAdminProcedure, tenantAdminProcedure, router } from "./_core/trpc";
+import { superAdminProcedure, protectedProcedure, sensitiveSuperAdminProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { tenantMemberships, users, permissionAuditLog } from "../drizzle/schema";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, like, sql } from "drizzle-orm";
 import { USER_ROLES } from "./user-roles-const";
 import { IMPERSONATE_COOKIE_NAME, EIGHT_HOURS_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 export const userManagementRouter = router({
   list: tenantAdminProcedure.query(async ({ ctx }) => {
@@ -149,31 +150,27 @@ export const userManagementRouter = router({
       return { success: true };
     }),
 
-  getAuditLog: adminProcedure
+  getAuditLog: tenantAdminProcedure
     .input(z.object({
       limit: z.number().min(1).max(200).default(50),
       offset: z.number().min(0).default(0),
       targetUserId: z.number().optional(),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = (await getDb())!;
       const limit = input?.limit ?? 50;
       const offset = input?.offset ?? 0;
+      const conditions: any[] = [];
+      appendTenantScope(conditions, permissionAuditLog.tenantId, tenantIdFromContext(ctx));
 
       if (input?.targetUserId) {
-        const logs = await db
-          .select()
-          .from(permissionAuditLog)
-          .where(eq(permissionAuditLog.targetUserId, input.targetUserId))
-          .orderBy(desc(permissionAuditLog.createdAt))
-          .limit(limit)
-          .offset(offset);
-        return logs;
+        conditions.push(eq(permissionAuditLog.targetUserId, input.targetUserId));
       }
 
       const logs = await db
         .select()
         .from(permissionAuditLog)
+        .where(and(...conditions))
         .orderBy(desc(permissionAuditLog.createdAt))
         .limit(limit)
         .offset(offset);
@@ -185,20 +182,21 @@ export const userManagementRouter = router({
   }),
 
   /** Get impersonation-specific audit log entries */
-  getImpersonationLog: adminProcedure
+  getImpersonationLog: tenantAdminProcedure
     .input(z.object({
       limit: z.number().min(1).max(200).default(50),
       offset: z.number().min(0).default(0),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = (await getDb())!;
       const limit = input?.limit ?? 50;
       const offset = input?.offset ?? 0;
-      const { like } = await import("drizzle-orm");
+      const conditions: any[] = [like(permissionAuditLog.action, "impersonation%")];
+      appendTenantScope(conditions, permissionAuditLog.tenantId, tenantIdFromContext(ctx));
       const logs = await db
         .select()
         .from(permissionAuditLog)
-        .where(like(permissionAuditLog.action, "impersonation%"))
+        .where(and(...conditions))
         .orderBy(desc(permissionAuditLog.createdAt))
         .limit(limit)
         .offset(offset);

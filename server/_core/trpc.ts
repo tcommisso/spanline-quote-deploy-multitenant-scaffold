@@ -2,6 +2,7 @@ import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { ENV } from "./env";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -30,6 +31,14 @@ export const protectedProcedure = t.procedure.use(requireUser);
 
 const ADMIN_ROLES = ['admin', 'super_admin'];
 const TENANT_ADMIN_ROLES = ['owner', 'admin'];
+
+export function canAdministerTenant(
+  userRole: string | null | undefined,
+  tenantRole: string | null | undefined,
+) {
+  if (tenantRole && TENANT_ADMIN_ROLES.includes(tenantRole)) return true;
+  return ENV.tenancyMode !== "multi" && !!userRole && ADMIN_ROLES.includes(userRole);
+}
 
 export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {
@@ -95,10 +104,7 @@ export const tenantAdminProcedure = tenantProcedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 
-    if (
-      !TENANT_ADMIN_ROLES.includes(ctx.tenantMembership!.role) &&
-      !ADMIN_ROLES.includes(ctx.user!.role)
-    ) {
+    if (!canAdministerTenant(ctx.user!.role, ctx.tenantMembership!.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 
