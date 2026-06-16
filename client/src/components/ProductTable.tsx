@@ -18,6 +18,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import ProductImport from "@/components/ProductImport";
 import CatalogueImportDialog from "@/components/CatalogueImportDialog";
+import { isAdminRole } from "@shared/const";
 
 /** Tiny inline thumbnail that matches product by code or name to product_images table */
 function ProductImageThumb({ code, name }: { code: string | null; name: string }) {
@@ -79,7 +80,7 @@ function sumCostBreakdown(materials: string, installLabour: string, consumables:
 export default function ProductTable() {
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminRole(user?.role || "");
   const { data: allProducts, isLoading } = trpc.products.getAll.useQuery();
   const { data: masterDataItems } = trpc.masterData.getAll.useQuery();
   const { data: tabsAndUoms } = trpc.products.getTabsAndUoms.useQuery();

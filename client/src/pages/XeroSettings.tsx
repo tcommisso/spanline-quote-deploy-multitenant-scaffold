@@ -5,16 +5,92 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import {
   Link2, Unlink, RefreshCw, CheckCircle2, AlertCircle, ExternalLink,
   Download, Upload, ArrowUpDown, Clock, Loader2, FolderSync, Users,
   DollarSign, Activity, UserPlus, AlertTriangle, Building2, XCircle,
+  Route, Plus, Trash2, Pencil, PlayCircle,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+
+type RoutingConditionDraft = {
+  field: string;
+  operator: string;
+  value: string;
+};
+
+type RoutingRuleDraft = {
+  id?: number;
+  name: string;
+  moduleKey: string;
+  targetXeroConnectionId: string;
+  priority: string;
+  isActive: boolean;
+  conditions: RoutingConditionDraft[];
+  notes: string;
+};
+
+type XeroScopeProfile = "accounting_standard" | "accounting_read" | "sign_in_only";
+
+const ROUTING_FIELD_LABELS: Record<string, string> = {
+  branch: "Branch",
+  postcode: "Postcode",
+  state: "State",
+  jobStatus: "Job status",
+  productType: "Product type",
+  quoteTotal: "Quote total",
+  supplierName: "Supplier",
+  clientName: "Client",
+  projectName: "Project",
+};
+
+const ROUTING_OPERATOR_LABELS: Record<string, string> = {
+  equals: "equals",
+  contains: "contains",
+  starts_with: "starts with",
+  in: "is one of",
+  gte: "is at least",
+  lte: "is at most",
+};
+
+function emptyRoutingRuleDraft(): RoutingRuleDraft {
+  return {
+    name: "",
+    moduleKey: "construction",
+    targetXeroConnectionId: "",
+    priority: "100",
+    isActive: true,
+    conditions: [{ field: "branch", operator: "equals", value: "" }],
+    notes: "",
+  };
+}
+
+function formatCurrency(value: unknown) {
+  const amount = Number(value || 0);
+  return amount.toLocaleString("en-AU", {
+    style: "currency",
+    currency: "AUD",
+    minimumFractionDigits: 2,
+  });
+}
+
+function formatShortDate(value: string | Date | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString("en-AU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
 
 function XeroClientImportSection() {
   const [showConfirm, setShowConfirm] = useState(false);
@@ -179,10 +255,207 @@ function XeroClientImportSection() {
   );
 }
 
+function UnmatchedXeroTransactionsPanel() {
+  const utils = trpc.useUtils();
+  const [selectedMappings, setSelectedMappings] = useState<Record<number, string>>({});
+  const [applyToDocument, setApplyToDocument] = useState(true);
+  const { data: rows, isLoading, isError, refetch } = trpc.xeroAccounting.getUnmatched.useQuery(
+    { limit: 25 },
+    { refetchInterval: 60_000 }
+  );
+
+  useEffect(() => {
+    if (!rows?.length) return;
+    setSelectedMappings((current) => {
+      const next = { ...current };
+      for (const row of rows as any[]) {
+        if (!next[row.id] && row.suggestions?.[0]?.id) {
+          next[row.id] = String(row.suggestions[0].id);
+        }
+      }
+      return next;
+    });
+  }, [rows]);
+
+  const assignUnmatched = trpc.xeroAccounting.assignUnmatched.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Assigned ${result.updatedRows} Xero line${result.updatedRows === 1 ? "" : "s"} to job #${result.jobId}.`);
+      refetch();
+      utils.xeroAccounting.getSyncHealth.invalidate();
+      utils.xeroProjects.getAllMappings.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to assign Xero transaction"),
+  });
+  const ignoreUnmatched = trpc.xeroAccounting.ignoreUnmatched.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Ignored ${result.ignoredRows} Xero line${result.ignoredRows === 1 ? "" : "s"}.`);
+      refetch();
+      utils.xeroAccounting.getSyncHealth.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to ignore Xero transaction"),
+  });
+
+  const unmatchedRows = (rows || []) as any[];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
+              Unmatched Xero Transactions
+              {unmatchedRows.length > 0 && <Badge variant="secondary">{unmatchedRows.length}</Badge>}
+            </CardTitle>
+            <CardDescription>
+              Xero lines that were imported but could not be confidently matched to a construction client.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Switch id="xero-apply-document" checked={applyToDocument} onCheckedChange={setApplyToDocument} />
+              <Label htmlFor="xero-apply-document" className="whitespace-nowrap">Assign whole document</Label>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isLoading}>
+              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isLoading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading unmatched transactions...
+          </div>
+        ) : isError ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+            <AlertCircle className="h-4 w-4 text-red-600" />
+            <span>Could not load unmatched transactions.</span>
+            <Button size="sm" variant="ghost" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : unmatchedRows.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+            <CheckCircle2 className="h-4 w-4 text-green-600" />
+            No unmatched Xero transaction lines in the current construction entity.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {unmatchedRows.map((row) => {
+              const selected = selectedMappings[row.id] || (row.suggestions?.[0]?.id ? String(row.suggestions[0].id) : "none");
+              const selectedSuggestion = row.suggestions?.find((suggestion: any) => String(suggestion.id) === selected);
+              const canAssign = selected && selected !== "none";
+
+              return (
+                <div key={row.id} className="border rounded-lg p-3 space-y-3">
+                  <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">{String(row.sourceType || "").replace("_", " ")}</Badge>
+                        <span className="font-medium">{row.transactionNumber || row.reference || "No reference"}</span>
+                        <span className="text-sm text-muted-foreground">{formatShortDate(row.transactionDate)}</span>
+                        <span className={Number(row.grossAmount || 0) < 0 ? "font-semibold text-red-600" : "font-semibold"}>
+                          {formatCurrency(row.grossAmount)}
+                        </span>
+                      </div>
+                      <p className="text-sm text-muted-foreground truncate">
+                        {row.contactName || "Unknown contact"}{row.description ? ` · ${row.description}` : ""}
+                      </p>
+                      {(row.reference || row.trackingOptionName) && (
+                        <p className="text-xs text-muted-foreground truncate">
+                          {row.reference ? `Ref: ${row.reference}` : ""}{row.reference && row.trackingOptionName ? " · " : ""}{row.trackingOptionName ? `Tracking: ${row.trackingOptionName}` : ""}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2 sm:items-center lg:min-w-[420px]">
+                      <Select
+                        value={selected}
+                        onValueChange={(value) => setSelectedMappings((current) => ({ ...current, [row.id]: value }))}
+                      >
+                        <SelectTrigger className="sm:min-w-[280px]">
+                          <SelectValue placeholder="Choose matching job" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {row.suggestions?.length ? row.suggestions.map((suggestion: any) => (
+                            <SelectItem key={suggestion.id} value={String(suggestion.id)}>
+                              {suggestion.quoteNumber || `Job #${suggestion.jobId}`} · {suggestion.clientName}
+                            </SelectItem>
+                          )) : (
+                            <SelectItem value="none">No suggestion</SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="sm"
+                        onClick={() => assignUnmatched.mutate({
+                          transactionId: row.id,
+                          mappingId: Number(selected),
+                          applyToDocument,
+                        })}
+                        disabled={!canAssign || assignUnmatched.isPending}
+                      >
+                        {assignUnmatched.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null}
+                        Assign
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => ignoreUnmatched.mutate({
+                          transactionId: row.id,
+                          applyToDocument,
+                          reason: "Not relevant to construction client matching",
+                        })}
+                        disabled={ignoreUnmatched.isPending}
+                      >
+                        {ignoreUnmatched.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null}
+                        Ignore
+                      </Button>
+                    </div>
+                  </div>
+                  {selectedSuggestion && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <span>Suggested match score {selectedSuggestion.score}</span>
+                      {selectedSuggestion.reasons?.map((reason: string) => (
+                        <Badge key={`${row.id}-${reason}`} variant="secondary" className="text-[11px] font-normal">
+                          {reason}
+                        </Badge>
+                      ))}
+                      <Button asChild variant="ghost" size="sm" className="h-6 px-2 ml-auto">
+                        <a href={`/construction/clients/${selectedSuggestion.jobId}`}>
+                          <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                          View job
+                        </a>
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function XeroSettings() {
+  const utils = trpc.useUtils();
   const [isConnecting, setIsConnecting] = useState(false);
+  const [entityToDelete, setEntityToDelete] = useState<any | null>(null);
   const [activeSyncLogId, setActiveSyncLogId] = useState<number | null>(null);
   const [expandedSyncLogId, setExpandedSyncLogId] = useState<number | null>(null);
+  const [routingRuleDraft, setRoutingRuleDraft] = useState<RoutingRuleDraft>(() => emptyRoutingRuleDraft());
+  const [dryRunModuleKey, setDryRunModuleKey] = useState("construction");
+  const [dryRunContext, setDryRunContext] = useState({
+    branch: "",
+    postcode: "",
+    state: "NSW",
+    quoteTotal: "",
+    productType: "",
+    supplierName: "",
+    clientName: "",
+    projectName: "",
+  });
 
   // Import options
   const [includeOpen, setIncludeOpen] = useState(true);
@@ -199,9 +472,68 @@ export default function XeroSettings() {
   }, []);
 
   const { data: connectionStatus, isLoading, refetch } = trpc.xero.connectionStatus.useQuery();
+  const { data: entityConfig, isLoading: isLoadingEntityConfig } = trpc.xero.entityConfig.useQuery(undefined, {
+    enabled: !!connectionStatus?.connected,
+  });
+  const { data: routingRulesConfig, isLoading: isLoadingRoutingRules } = trpc.xero.routingRules.useQuery(undefined, {
+    enabled: !!connectionStatus?.connected,
+  });
   const getAuthUrl = trpc.xero.getAuthUrl.useMutation();
   const handleCallbackMutation = trpc.xero.handleCallback.useMutation();
   const disconnect = trpc.xero.disconnect.useMutation();
+  const deleteConnection = trpc.xero.deleteConnection.useMutation({
+    onSuccess: (result) => {
+      toast.success(result.reassignedTo
+        ? `Removed duplicate entity and kept history on ${result.reassignedTo.tenantName || "the active entity"}`
+        : "Xero entity deleted");
+      setEntityToDelete(null);
+      utils.xero.entityConfig.invalidate();
+      utils.xero.connectionStatus.invalidate();
+      utils.xero.routingRules.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to delete Xero entity"),
+  });
+  const setEntityDefault = trpc.xero.setEntityDefault.useMutation({
+    onSuccess: () => {
+      toast.success("Xero entity default updated");
+      utils.xero.entityConfig.invalidate();
+      utils.xero.connectionStatus.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to update Xero entity default"),
+  });
+  const setConnectionActive = trpc.xero.setConnectionActive.useMutation({
+    onSuccess: () => {
+      toast.success("Xero entity status updated");
+      utils.xero.entityConfig.invalidate();
+      utils.xero.connectionStatus.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to update Xero entity status"),
+  });
+  const saveRoutingRule = trpc.xero.saveRoutingRule.useMutation({
+    onSuccess: () => {
+      toast.success("Xero routing rule saved");
+      utils.xero.routingRules.invalidate();
+      setRoutingRuleDraft(emptyRoutingRuleDraft());
+    },
+    onError: (err) => toast.error(err.message || "Failed to save routing rule"),
+  });
+  const deleteRoutingRule = trpc.xero.deleteRoutingRule.useMutation({
+    onSuccess: () => {
+      toast.success("Xero routing rule deleted");
+      utils.xero.routingRules.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to delete routing rule"),
+  });
+  const dryRunRouting = trpc.xero.dryRunRouting.useMutation({
+    onSuccess: (result) => {
+      if (result.connection) {
+        toast.success(`Routes to ${result.connection.tenantName || "selected Xero entity"}`);
+      } else {
+        toast.warning("No matching Xero entity found");
+      }
+    },
+    onError: (err) => toast.error(err.message || "Dry run failed"),
+  });
   const { data: orgInfo } = trpc.xero.getOrganisation.useQuery(undefined, {
     enabled: !!connectionStatus?.connected,
   });
@@ -317,7 +649,13 @@ export default function XeroSettings() {
 
   const syncAccountingTransactions = trpc.xeroAccounting.syncAll.useMutation({
     onSuccess: (result) => {
-      toast.success(`Synced ${result.imported} Xero transaction line(s) across ${result.affectedMappings} project(s)`);
+      const fetched = result.fetched?.total ?? 0;
+      toast.success(
+        `Fetched ${fetched} Xero document(s); imported ${result.imported} line(s), with ${result.unmatched} unmatched.`
+      );
+      if (result.fetchErrors?.length) {
+        toast.warning(`Some Xero endpoints returned warnings: ${result.fetchErrors.join("; ")}`);
+      }
       refetchMappings();
       refetchLogs();
       refetchSyncHealth();
@@ -347,10 +685,10 @@ export default function XeroSettings() {
     populateBranches.isPending ||
     isBatchSyncRunning;
 
-  async function handleConnect() {
+  async function handleConnect(scopeProfile?: XeroScopeProfile) {
     setIsConnecting(true);
     try {
-      const result = await getAuthUrl.mutateAsync({ origin: window.location.origin });
+      const result = await getAuthUrl.mutateAsync({ origin: window.location.origin, scopeProfile });
       window.location.href = result.authUrl;
     } catch (error: any) {
       toast.error(error.message || "Failed to initiate Xero connection");
@@ -367,6 +705,7 @@ export default function XeroSettings() {
       });
       toast.success(`Successfully connected ${result.tenants.length} organisation(s)`);
       refetch();
+      utils.xero.entityConfig.invalidate();
     } catch (error: any) {
       toast.error(error.message || "Failed to complete Xero connection");
     } finally {
@@ -379,9 +718,90 @@ export default function XeroSettings() {
       await disconnect.mutateAsync({ connectionId });
       toast.success("Xero connection has been removed");
       refetch();
+      utils.xero.entityConfig.invalidate();
     } catch (error: any) {
       toast.error(error.message || "Failed to disconnect");
     }
+  }
+
+  function handleDeleteEntity() {
+    if (!entityToDelete) return;
+    deleteConnection.mutate({ connectionId: entityToDelete.id });
+  }
+
+  function updateRoutingCondition(index: number, patch: Partial<RoutingConditionDraft>) {
+    setRoutingRuleDraft((draft) => ({
+      ...draft,
+      conditions: draft.conditions.map((condition, i) => i === index ? { ...condition, ...patch } : condition),
+    }));
+  }
+
+  function removeRoutingCondition(index: number) {
+    setRoutingRuleDraft((draft) => ({
+      ...draft,
+      conditions: draft.conditions.filter((_, i) => i !== index),
+    }));
+  }
+
+  function editRoutingRule(rule: any) {
+    setRoutingRuleDraft({
+      id: rule.id,
+      name: rule.name || "",
+      moduleKey: rule.moduleKey || "construction",
+      targetXeroConnectionId: String(rule.targetXeroConnectionId || ""),
+      priority: String(rule.priority || 100),
+      isActive: !!rule.isActive,
+      conditions: Array.isArray(rule.conditions) && rule.conditions.length
+        ? rule.conditions.map((condition: any) => ({
+          field: condition.field || "branch",
+          operator: condition.operator || "equals",
+          value: String(condition.value || ""),
+        }))
+        : [{ field: "branch", operator: "equals", value: "" }],
+      notes: rule.notes || "",
+    });
+  }
+
+  function handleSaveRoutingRule() {
+    if (!routingRuleDraft.name.trim()) {
+      toast.error("Give the routing rule a name");
+      return;
+    }
+    if (!routingRuleDraft.targetXeroConnectionId) {
+      toast.error("Choose the target Xero entity");
+      return;
+    }
+
+    const conditions = routingRuleDraft.conditions
+      .map((condition) => ({
+        field: condition.field,
+        operator: condition.operator,
+        value: condition.value.trim(),
+      }))
+      .filter((condition) => condition.value.length > 0);
+
+    saveRoutingRule.mutate({
+      id: routingRuleDraft.id,
+      name: routingRuleDraft.name.trim(),
+      moduleKey: routingRuleDraft.moduleKey as any,
+      targetXeroConnectionId: Number(routingRuleDraft.targetXeroConnectionId),
+      priority: Number(routingRuleDraft.priority) || 100,
+      isActive: routingRuleDraft.isActive,
+      conditions: conditions as any,
+      notes: routingRuleDraft.notes.trim() || null,
+    });
+  }
+
+  function handleDryRunRouting() {
+    const context: Record<string, string | number | null> = {};
+    for (const [key, value] of Object.entries(dryRunContext)) {
+      if (value === "") continue;
+      context[key] = key === "quoteTotal" ? Number(value) : value;
+    }
+    dryRunRouting.mutate({
+      moduleKey: dryRunModuleKey as any,
+      context,
+    });
   }
 
   function formatSyncType(type: string) {
@@ -418,6 +838,16 @@ export default function XeroSettings() {
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  const defaultByModule = new Map(
+    (entityConfig?.defaults || []).map((d) => [d.moduleKey, d.xeroConnectionId] as const)
+  );
+  const activeEntityOptions = (entityConfig?.connections || []).filter((conn) => conn.isActive);
+  const entityCountByTenant = new Map<string, number>();
+  for (const conn of entityConfig?.connections || []) {
+    if (!conn.tenantId) continue;
+    entityCountByTenant.set(conn.tenantId, (entityCountByTenant.get(conn.tenantId) || 0) + 1);
   }
 
   if (isLoading) {
@@ -481,10 +911,31 @@ export default function XeroSettings() {
                   <li>Track invoice payments and job profitability</li>
                 </ul>
               </div>
-              <Button onClick={handleConnect} disabled={isConnecting} size="lg">
-                <Link2 className="h-4 w-4 mr-2" />
-                {isConnecting ? "Connecting..." : "Connect to Xero"}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button onClick={() => handleConnect("accounting_standard")} disabled={isConnecting} size="lg">
+                  <Link2 className="h-4 w-4 mr-2" />
+                  {isConnecting ? "Connecting..." : "Connect to Xero"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => handleConnect("accounting_read")}
+                  disabled={isConnecting}
+                >
+                  Read-only accounting
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => handleConnect("sign_in_only")}
+                  disabled={isConnecting}
+                >
+                  Settings-only test
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                If Xero reports invalid_scope, try Settings-only test. If that works, the Xero developer app accepts OAuth and we can narrow the accounting scope that needs adjustment.
+              </p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -524,7 +975,17 @@ export default function XeroSettings() {
                 ))}
               </div>
 
-              <div className="flex gap-2 pt-2">
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button onClick={() => handleConnect("accounting_standard")} disabled={isConnecting}>
+                  <Link2 className="h-4 w-4 mr-2" />
+                  {isConnecting ? "Connecting..." : "Add Xero Organisation"}
+                </Button>
+                <Button variant="outline" onClick={() => handleConnect("accounting_read")} disabled={isConnecting}>
+                  Read-only
+                </Button>
+                <Button variant="ghost" onClick={() => handleConnect("sign_in_only")} disabled={isConnecting}>
+                  Settings-only test
+                </Button>
                 <Button variant="outline" onClick={() => refetch()}>
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Refresh Status
@@ -541,9 +1002,414 @@ export default function XeroSettings() {
         </CardContent>
       </Card>
 
-      {/* Xero Projects Sync Section */}
       {connectionStatus?.connected && (
-        <>
+        <Tabs defaultValue="connections" className="space-y-4">
+          <TabsList className="w-full justify-start overflow-x-auto">
+            <TabsTrigger value="connections">Entities</TabsTrigger>
+            <TabsTrigger value="routing">Routing</TabsTrigger>
+            <TabsTrigger value="sync">Sync</TabsTrigger>
+            <TabsTrigger value="projects">Projects</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
+            <TabsTrigger value="clients">Client Import</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="connections" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Building2 className="h-5 w-5" />
+                    Xero Entities
+                  </CardTitle>
+                  <CardDescription>
+                    Choose which connected Xero organisation each part of the app should use.
+                  </CardDescription>
+                </div>
+                <Button onClick={() => handleConnect("accounting_standard")} disabled={isConnecting} size="sm">
+                  <Plus className="h-4 w-4 mr-2" />
+                  {isConnecting ? "Connecting..." : "Add Entity"}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {isLoadingEntityConfig ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading Xero entities...
+                </div>
+              ) : !entityConfig?.connections?.length ? (
+                <p className="text-sm text-muted-foreground">No connected Xero organisations found.</p>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    <p className="text-sm font-medium">Connected entities</p>
+                    <div className="grid gap-3">
+                      {entityConfig.connections.map((conn) => (
+                        <div key={conn.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border rounded-lg p-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium truncate">{conn.tenantName || "Unknown Organisation"}</p>
+                              <Badge variant={conn.isActive ? "default" : "secondary"} className="shrink-0">
+                                {conn.isActive ? "Active" : "Inactive"}
+                              </Badge>
+                              {(entityCountByTenant.get(conn.tenantId || "") || 0) > 1 && (
+                                <Badge variant="outline" className="shrink-0 border-amber-300 text-amber-700">
+                                  Duplicate
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {conn.tenantType || "ORGANISATION"} &middot; Xero tenant {conn.tenantId?.slice(0, 8) || "—"} &middot; Token expires {new Date(conn.tokenExpiresAt).toLocaleDateString("en-AU")}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2">
+                              <Label htmlFor={`xero-active-${conn.id}`} className="text-sm">Use</Label>
+                              <Switch
+                                id={`xero-active-${conn.id}`}
+                                checked={conn.isActive}
+                                disabled={setConnectionActive.isPending}
+                                onCheckedChange={(isActive) => setConnectionActive.mutate({ connectionId: conn.id, isActive })}
+                              />
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={conn.isActive || deleteConnection.isPending}
+                              onClick={() => setEntityToDelete(conn)}
+                              title={conn.isActive ? "Turn this entity off before deleting it" : "Delete this local Xero entity"}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 mr-1" />
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="px-4 py-3 bg-muted/50 border-b">
+                      <p className="text-sm font-medium">Module defaults</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Module defaults fall back to the global default. If multiple active entities exist and no default is set, sync is blocked instead of guessing.
+                      </p>
+                    </div>
+                    <div className="divide-y">
+                      {(entityConfig.modules || []).map((module) => (
+                        <div key={module.key} className="grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-2 sm:items-center px-4 py-3">
+                          <div>
+                            <p className="text-sm font-medium">{module.label}</p>
+                          </div>
+                          <Select
+                            value={String(defaultByModule.get(module.key) ?? "none")}
+                            disabled={setEntityDefault.isPending || activeEntityOptions.length === 0}
+                            onValueChange={(value) => {
+                              setEntityDefault.mutate({
+                                moduleKey: module.key,
+                                connectionId: value === "none" ? null : Number(value),
+                              });
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Choose Xero entity" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">Use fallback</SelectItem>
+                              {activeEntityOptions.map((conn) => (
+                                <SelectItem key={conn.id} value={String(conn.id)}>
+                                  {conn.tenantName || `Xero entity #${conn.id}`}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+          </TabsContent>
+
+          <TabsContent value="routing" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Route className="h-5 w-5" />
+                Xero Routing Rules
+              </CardTitle>
+              <CardDescription>
+                Route records to a specific Xero entity when project or transaction details match.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="border rounded-lg p-4 space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{routingRuleDraft.id ? "Edit routing rule" : "New routing rule"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Rules are checked by priority; the first active match wins.
+                    </p>
+                  </div>
+                  {routingRuleDraft.id && (
+                    <Button variant="outline" size="sm" onClick={() => setRoutingRuleDraft(emptyRoutingRuleDraft())}>
+                      New
+                    </Button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Rule name</Label>
+                    <Input
+                      value={routingRuleDraft.name}
+                      onChange={(event) => setRoutingRuleDraft((draft) => ({ ...draft, name: event.target.value }))}
+                      placeholder="e.g. Manufacturing POs to Spanline"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Module</Label>
+                    <Select
+                      value={routingRuleDraft.moduleKey}
+                      onValueChange={(moduleKey) => setRoutingRuleDraft((draft) => ({ ...draft, moduleKey }))}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {(entityConfig?.modules || []).map((module) => (
+                          <SelectItem key={module.key} value={module.key}>{module.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Target Xero entity</Label>
+                    <Select
+                      value={routingRuleDraft.targetXeroConnectionId || "none"}
+                      onValueChange={(targetXeroConnectionId) => setRoutingRuleDraft((draft) => ({
+                        ...draft,
+                        targetXeroConnectionId: targetXeroConnectionId === "none" ? "" : targetXeroConnectionId,
+                      }))}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Choose target entity" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Choose entity</SelectItem>
+                        {activeEntityOptions.map((conn) => (
+                          <SelectItem key={conn.id} value={String(conn.id)}>
+                            {conn.tenantName || `Xero entity #${conn.id}`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto] gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Priority</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={routingRuleDraft.priority}
+                        onChange={(event) => setRoutingRuleDraft((draft) => ({ ...draft, priority: event.target.value }))}
+                      />
+                    </div>
+                    <div className="flex items-end gap-2 pb-2">
+                      <Label htmlFor="xero-rule-active" className="text-sm">Active</Label>
+                      <Switch
+                        id="xero-rule-active"
+                        checked={routingRuleDraft.isActive}
+                        onCheckedChange={(isActive) => setRoutingRuleDraft((draft) => ({ ...draft, isActive }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Conditions</Label>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRoutingRuleDraft((draft) => ({
+                        ...draft,
+                        conditions: [...draft.conditions, { field: "branch", operator: "equals", value: "" }],
+                      }))}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                      Add
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    {routingRuleDraft.conditions.map((condition, index) => (
+                      <div key={`${condition.field}-${index}`} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_1.2fr_auto] gap-2">
+                        <Select value={condition.field} onValueChange={(field) => updateRoutingCondition(index, { field })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {(routingRulesConfig?.fields || Object.keys(ROUTING_FIELD_LABELS)).map((field) => (
+                              <SelectItem key={field} value={field}>{ROUTING_FIELD_LABELS[field] || field}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select value={condition.operator} onValueChange={(operator) => updateRoutingCondition(index, { operator })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {(routingRulesConfig?.operators || Object.keys(ROUTING_OPERATOR_LABELS)).map((operator) => (
+                              <SelectItem key={operator} value={operator}>{ROUTING_OPERATOR_LABELS[operator] || operator}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={condition.value}
+                          onChange={(event) => updateRoutingCondition(index, { value: event.target.value })}
+                          placeholder={condition.operator === "in" ? "ACT, NSW" : "Value"}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => removeRoutingCondition(index)}
+                          disabled={routingRuleDraft.conditions.length === 1}
+                          aria-label="Remove condition"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Input
+                    value={routingRuleDraft.notes}
+                    onChange={(event) => setRoutingRuleDraft((draft) => ({ ...draft, notes: event.target.value }))}
+                    placeholder="Optional internal note"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handleSaveRoutingRule} disabled={saveRoutingRule.isPending || activeEntityOptions.length === 0}>
+                    {saveRoutingRule.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                    Save Rule
+                  </Button>
+                  <Button variant="outline" onClick={() => setRoutingRuleDraft(emptyRoutingRuleDraft())}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 bg-muted/50 border-b">
+                    <p className="text-sm font-medium">Configured rules</p>
+                  </div>
+                  <div className="divide-y">
+                    {isLoadingRoutingRules ? (
+                      <div className="p-4 text-sm text-muted-foreground flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Loading rules...
+                      </div>
+                    ) : routingRulesConfig?.rules?.length ? (
+                      routingRulesConfig.rules.map((rule) => (
+                        <div key={rule.id} className="p-4 space-y-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium">{rule.name}</p>
+                                <Badge variant={rule.isActive ? "default" : "secondary"}>{rule.isActive ? "Active" : "Inactive"}</Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                Priority {rule.priority} &middot; {entityConfig?.modules?.find((m) => m.key === rule.moduleKey)?.label || rule.moduleKey} &middot; {rule.targetConnection?.tenantName || "Unknown entity"}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button variant="ghost" size="icon" onClick={() => editRoutingRule(rule)} aria-label="Edit rule">
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => deleteRoutingRule.mutate({ id: rule.id })}
+                                disabled={deleteRoutingRule.isPending}
+                                aria-label="Delete rule"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(rule.conditions || []).length ? (rule.conditions || []).map((condition: any, index: number) => (
+                              <Badge key={`${rule.id}-${index}`} variant="outline" className="font-normal">
+                                {ROUTING_FIELD_LABELS[condition.field] || condition.field} {ROUTING_OPERATOR_LABELS[condition.operator] || condition.operator} {condition.value}
+                              </Badge>
+                            )) : (
+                              <Badge variant="outline" className="font-normal">Always matches</Badge>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="p-4 text-sm text-muted-foreground">No routing rules configured yet.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border rounded-lg p-4 space-y-4">
+                  <div>
+                    <p className="text-sm font-medium">Dry run</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Test which entity would be selected before enabling write routing.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Module</Label>
+                    <Select value={dryRunModuleKey} onValueChange={setDryRunModuleKey}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {(entityConfig?.modules || []).map((module) => (
+                          <SelectItem key={module.key} value={module.key}>{module.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.keys(dryRunContext).map((field) => (
+                      <div key={field} className="space-y-1.5">
+                        <Label>{ROUTING_FIELD_LABELS[field] || field}</Label>
+                        <Input
+                          type={field === "quoteTotal" ? "number" : "text"}
+                          value={(dryRunContext as any)[field]}
+                          onChange={(event) => setDryRunContext((context) => ({ ...context, [field]: event.target.value }))}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <Button variant="outline" onClick={handleDryRunRouting} disabled={dryRunRouting.isPending}>
+                    {dryRunRouting.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <PlayCircle className="h-4 w-4 mr-2" />}
+                    Run Dry Run
+                  </Button>
+                  {dryRunRouting.data && (
+                    <div className="rounded-lg border p-3 text-sm space-y-1">
+                      <p className="font-medium">
+                        {dryRunRouting.data.connection
+                          ? dryRunRouting.data.connection.tenantName || `Xero entity #${dryRunRouting.data.connection.id}`
+                          : "No Xero entity selected"}
+                      </p>
+                      <p className="text-muted-foreground">
+                        {dryRunRouting.data.source === "rule" && dryRunRouting.data.matchedRule
+                          ? `Matched rule: ${dryRunRouting.data.matchedRule.name}`
+                          : "Used module/global default"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          </TabsContent>
+
+          <TabsContent value="sync" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -555,7 +1421,7 @@ export default function XeroSettings() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div className="border rounded-lg p-3">
                   <p className="text-xs text-muted-foreground">Transaction Lines</p>
                   <p className="text-xl font-semibold">{syncHealth?.totals.rows ?? 0}</p>
@@ -573,6 +1439,10 @@ export default function XeroSettings() {
                 <div className="border rounded-lg p-3">
                   <p className="text-xs text-muted-foreground">Revenue Lines</p>
                   <p className="text-xl font-semibold">{syncHealth?.totals.revenue ?? 0}</p>
+                </div>
+                <div className="border rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">Ignored Lines</p>
+                  <p className="text-xl font-semibold text-muted-foreground">{syncHealth?.totals.ignored ?? 0}</p>
                 </div>
               </div>
 
@@ -632,6 +1502,10 @@ export default function XeroSettings() {
             </CardContent>
           </Card>
 
+          <UnmatchedXeroTransactionsPanel />
+          </TabsContent>
+
+          <TabsContent value="projects" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -718,7 +1592,7 @@ export default function XeroSettings() {
                     <h3 className="font-semibold text-sm">Sync Financials</h3>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Pull latest invoiced amounts, costs, and profit from Xero (processes 50 projects every 5 min).
+                    Pull latest invoiced amounts, costs, and profit from Xero (processes small batches every 5 min).
                   </p>
                   <Button
                     size="sm"
@@ -758,21 +1632,32 @@ export default function XeroSettings() {
                     <h3 className="font-semibold text-sm">Sync Transactions</h3>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Pull Xero bills, invoices, and spend-money lines and match them to linked projects.
+                    Pull changed Xero bills, invoices, credit notes, and spend-money lines and match them to linked projects.
                   </p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => syncAccountingTransactions.mutate({ maxPages: 50, includeUnmatched: false })}
-                    disabled={isSyncing}
-                    className="w-full"
-                  >
-                    {syncAccountingTransactions.isPending ? (
-                      <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Syncing...</>
-                    ) : (
-                      <><Activity className="h-3.5 w-3.5 mr-1" /> Sync Transactions</>
-                    )}
-                  </Button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => syncAccountingTransactions.mutate({ maxPages: 50, includeUnmatched: true, incremental: true })}
+                      disabled={isSyncing}
+                      className="w-full"
+                    >
+                      {syncAccountingTransactions.isPending ? (
+                        <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Syncing...</>
+                      ) : (
+                        <><Activity className="h-3.5 w-3.5 mr-1" /> Sync Changes</>
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => syncAccountingTransactions.mutate({ maxPages: 100, includeUnmatched: true, incremental: false })}
+                      disabled={isSyncing}
+                      className="w-full"
+                    >
+                      Full Resync
+                    </Button>
+                  </div>
                 </div>
 
 
@@ -869,7 +1754,9 @@ export default function XeroSettings() {
               )}
             </CardContent>
           </Card>
+          </TabsContent>
 
+          <TabsContent value="history" className="space-y-4">
           {/* Sync Logs */}
           <Card>
             <CardHeader>
@@ -973,44 +1860,13 @@ export default function XeroSettings() {
               )}
             </CardContent>
           </Card>
+          </TabsContent>
 
+          <TabsContent value="clients" className="space-y-4">
           {/* Xero Client → CRM Lead Import */}
           <XeroClientImportSection />
-
-          {/* Features Overview */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Contact Sync</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Push construction clients and leads to Xero as contacts. Available from the Clients page and batch sync above.
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Progress Invoicing</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Create progress claim invoices from job financials. Available from Client Detail &rarr; Financials tab.
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Purchase Orders</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Send purchase orders to suppliers for materials and subcontractors. Available from Client Detail.
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        </>
+          </TabsContent>
+        </Tabs>
       )}
 
       {/* Setup Instructions */}
@@ -1032,6 +1888,29 @@ export default function XeroSettings() {
           </CardContent>
         </Card>
       )}
+
+      <AlertDialog open={!!entityToDelete} onOpenChange={(open) => !open && setEntityToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Xero entity?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the local saved entity for {entityToDelete?.tenantName || "this Xero organisation"}.
+              It does not delete anything inside Xero. If another active copy of the same Xero tenant exists,
+              existing mappings and sync history will be reassigned to that active entity.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteEntity}
+              disabled={deleteConnection.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteConnection.isPending ? "Deleting..." : "Delete Entity"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

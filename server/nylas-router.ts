@@ -19,6 +19,19 @@ import {
   validateApiKey,
 } from "./nylas";
 import type { NylasEventInput } from "./nylas";
+import { buildTrustedAppUrl } from "./_core/url";
+
+function getNylasRedirectUri(ctx: { req: any }, requestedRedirectUri?: string) {
+  return buildTrustedAppUrl(ctx.req, "/api/nylas/callback", requestedRedirectUri);
+}
+
+function normalizeNylasProvider(provider?: string | null, email?: string | null) {
+  const normalized = provider?.trim().toLowerCase();
+  if (normalized === "google" || normalized === "microsoft") return normalized;
+  const domain = email?.split("@")[1]?.toLowerCase() ?? "";
+  if (domain === "gmail.com" || domain === "googlemail.com") return "google";
+  return "microsoft";
+}
 
 export const nylasRouter = router({
   /**
@@ -83,8 +96,9 @@ export const nylasRouter = router({
       loginHint: z.string().optional(),
     }))
     .query(async ({ ctx, input }) => {
-      const state = JSON.stringify({ userId: ctx.user.id, tenantId: ctx.tenant!.id });
-      const url = await buildAuthUrl(input.redirectUri, state, {
+      const state = JSON.stringify({ userId: ctx.user.id, tenantId: ctx.tenant!.id, provider: input.provider ?? null });
+      const redirectUri = getNylasRedirectUri(ctx, input.redirectUri);
+      const url = await buildAuthUrl(redirectUri, state, {
         tenantId: ctx.tenant!.id,
         provider: input.provider,
         loginHint: input.loginHint,
@@ -99,41 +113,43 @@ export const nylasRouter = router({
     .input(z.object({
       code: z.string(),
       redirectUri: z.string(),
+      provider: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
       // Exchange code for grant
-      const result = await exchangeCodeForGrant(input.code, input.redirectUri, ctx.tenant!.id);
+      const redirectUri = getNylasRedirectUri(ctx, input.redirectUri);
+      const result = await exchangeCodeForGrant(input.code, redirectUri, ctx.tenant!.id);
+      const provider = normalizeNylasProvider(input.provider, result.email);
 
-      // Check if this grant already exists (same grantId or same email for this user)
+      // grantId is globally unique in the live schema, so re-auth should update
+      // the existing row even if the account was previously linked to another user.
       const [existingByGrant] = await db
         .select()
         .from(nylasGrants)
-        .where(and(
-          eq(nylasGrants.tenantId, ctx.tenant!.id),
-          eq(nylasGrants.userId, ctx.user.id),
-          eq(nylasGrants.grantId, result.grant_id)
-        ))
+        .where(eq(nylasGrants.grantId, result.grant_id))
         .limit(1);
 
       if (existingByGrant) {
         // Re-activate existing grant
         await db.update(nylasGrants)
           .set({
+            tenantId: ctx.tenant!.id,
+            userId: ctx.user.id,
             email: result.email,
+            provider,
             status: "active",
           })
           .where(eq(nylasGrants.id, existingByGrant.id));
       } else {
-        // Check if same email already connected (re-auth same account)
+        // Check if same email already connected (re-auth same account).
         const [existingByEmail] = await db
           .select()
           .from(nylasGrants)
           .where(and(
             eq(nylasGrants.tenantId, ctx.tenant!.id),
-            eq(nylasGrants.userId, ctx.user.id),
             eq(nylasGrants.email, result.email)
           ))
           .limit(1);
@@ -142,7 +158,9 @@ export const nylasRouter = router({
           // Update grant ID for existing email connection
           await db.update(nylasGrants)
             .set({
+              userId: ctx.user.id,
               grantId: result.grant_id,
+              provider,
               status: "active",
             })
             .where(eq(nylasGrants.id, existingByEmail.id));
@@ -153,6 +171,7 @@ export const nylasRouter = router({
             userId: ctx.user.id,
             grantId: result.grant_id,
             email: result.email,
+            provider,
             status: "active",
           });
         }

@@ -4,27 +4,15 @@
  * Endpoint: /api/scheduled/msgraph-email-sync
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { syncAllMailboxes } from "./email/msgraph-sync";
-import { isGraphConfigured } from "./email/msgraph";
 
 export function registerScheduledMsGraphSync(app: Express) {
   app.post("/api/scheduled/msgraph-email-sync", async (req: Request, res: Response) => {
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
-      }
-
-      if (!isGraphConfigured()) {
-        return res.json({
-          success: true,
-          skipped: true,
-          reason: "Microsoft Graph not configured (missing credentials)",
-        });
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       console.log("[MSGraph Sync] Heartbeat triggered — starting sync...");

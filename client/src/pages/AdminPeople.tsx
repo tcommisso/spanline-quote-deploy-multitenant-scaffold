@@ -1344,6 +1344,10 @@ function NotificationRulesManager() {
             <span><code className="bg-muted px-1 rounded">{"{{trade_name}}"}</code> — Trade's name</span>
             <span><code className="bg-muted px-1 rounded">{"{{job_number}}"}</code> — Job number</span>
             <span><code className="bg-muted px-1 rounded">{"{{client_name}}"}</code> — Client name</span>
+            <span><code className="bg-muted px-1 rounded">{"{{client_phone}}"}</code> — Client phone number</span>
+            <span><code className="bg-muted px-1 rounded">{"{{office_phone}}"}</code> — Office phone number</span>
+            <span><code className="bg-muted px-1 rounded">{"{{cm}}"}</code> — Construction manager</span>
+            <span><code className="bg-muted px-1 rounded">{"{{est_days}}"}</code> — Estimated job days</span>
             <span><code className="bg-muted px-1 rounded">{"{{site_address}}"}</code> — Site address</span>
             <span><code className="bg-muted px-1 rounded">{"{{start_date}}"}</code> — Scheduled start</span>
             <span><code className="bg-muted px-1 rounded">{"{{start_time}}"}</code> — Scheduled time</span>

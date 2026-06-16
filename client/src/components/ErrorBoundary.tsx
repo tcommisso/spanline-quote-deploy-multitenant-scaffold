@@ -12,6 +12,7 @@ interface State {
   hasError: boolean;
   error: Error | null;
   errorInfo: React.ErrorInfo | null;
+  autoRefreshing: boolean;
 }
 
 /**
@@ -34,7 +35,7 @@ function isChunkLoadError(error: Error): boolean {
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
+    this.state = { hasError: false, error: null, errorInfo: null, autoRefreshing: false };
   }
 
   static getDerivedStateFromError(error: Error): Partial<State> {
@@ -45,15 +46,30 @@ class ErrorBoundary extends Component<Props, State> {
     this.setState({ errorInfo });
     // Log to console for debugging
     console.error("[ErrorBoundary]", error, errorInfo);
+    this.scheduleOneTimeRefresh(error);
   }
 
   handleRetry = () => {
-    this.setState({ hasError: false, error: null, errorInfo: null });
+    this.setState({ hasError: false, error: null, errorInfo: null, autoRefreshing: false });
   };
 
   handleReload = () => {
     window.location.reload();
   };
+
+  scheduleOneTimeRefresh(error: Error) {
+    if (typeof window === "undefined") return;
+
+    const signature = `${window.location.pathname}|${error.name}|${error.message}`.slice(0, 240);
+    const key = `spanline:error-autorefresh:${signature}`;
+    if (window.sessionStorage.getItem(key)) return;
+
+    window.sessionStorage.setItem(key, new Date().toISOString());
+    this.setState({ autoRefreshing: true });
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 800);
+  }
 
   render() {
     if (!this.state.hasError) {
@@ -75,24 +91,28 @@ class ErrorBoundary extends Component<Props, State> {
           </div>
           <div className="text-center space-y-1">
             <h3 className="text-base font-semibold text-foreground">
-              {isNetworkError ? "Connection issue" : "Something went wrong"}
+              {this.state.autoRefreshing ? "Refreshing page..." : isNetworkError ? "Connection issue" : "Something went wrong"}
             </h3>
             <p className="text-sm text-muted-foreground max-w-sm">
-              {isNetworkError
+              {this.state.autoRefreshing
+                ? "A loading error occurred. The page will refresh automatically once."
+                : isNetworkError
                 ? "Failed to load this section. Please check your connection and try again."
                 : "An error occurred while loading this content."}
             </p>
           </div>
           <button
             onClick={this.handleRetry}
+            disabled={this.state.autoRefreshing}
             className={cn(
               "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium",
               "bg-primary text-primary-foreground",
-              "hover:opacity-90 cursor-pointer transition-opacity"
+              "hover:opacity-90 cursor-pointer transition-opacity",
+              this.state.autoRefreshing && "opacity-70 cursor-wait"
             )}
           >
-            <RefreshCw size={14} />
-            Retry
+            <RefreshCw size={14} className={this.state.autoRefreshing ? "animate-spin" : ""} />
+            {this.state.autoRefreshing ? "Refreshing" : "Retry"}
           </button>
         </div>
       );
@@ -113,14 +133,18 @@ class ErrorBoundary extends Component<Props, State> {
 
           {/* Title */}
           <h2 className="text-xl font-semibold text-foreground mb-2">
-            {isNetworkError
+            {this.state.autoRefreshing
+              ? "Refreshing page..."
+              : isNetworkError
               ? "Unable to load the application"
               : "Something went wrong"}
           </h2>
 
           {/* Description */}
           <p className="text-sm text-muted-foreground mb-6 max-w-md">
-            {isNetworkError
+            {this.state.autoRefreshing
+              ? "A loading error occurred. The page will refresh automatically once."
+              : isNetworkError
               ? "It looks like there was a network issue loading part of the application. This can happen with slow or unstable connections."
               : "An unexpected error occurred. You can try again or reload the page if the problem persists."}
           </p>
@@ -149,14 +173,16 @@ class ErrorBoundary extends Component<Props, State> {
           <div className="flex items-center gap-3">
             <button
               onClick={this.handleRetry}
+              disabled={this.state.autoRefreshing}
               className={cn(
                 "flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium",
                 "bg-primary text-primary-foreground",
-                "hover:opacity-90 cursor-pointer transition-opacity"
+                "hover:opacity-90 cursor-pointer transition-opacity",
+                this.state.autoRefreshing && "opacity-70 cursor-wait"
               )}
             >
-              <RefreshCw size={15} />
-              Retry
+              <RefreshCw size={15} className={this.state.autoRefreshing ? "animate-spin" : ""} />
+              {this.state.autoRefreshing ? "Refreshing" : "Retry"}
             </button>
             <button
               onClick={this.handleReload}

@@ -9,11 +9,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Loader2, Search, ChevronLeft, ChevronRight, MapPin, ExternalLink } from "lucide-react";
 import { useLocation } from "wouter";
 
+const DEFAULT_SUBCLASS = "ADDITIONS/ALTERATION";
+
 export default function DaTrackerList() {
   const [, navigate] = useLocation();
   const [search, setSearch] = useState("");
   const [district, setDistrict] = useState("");
-  const [subclass, setSubclass] = useState("");
+  const [subclass, setSubclass] = useState(DEFAULT_SUBCLASS);
   const [applicationType, setApplicationType] = useState("");
   const [offset, setOffset] = useState(0);
   const limit = 50;

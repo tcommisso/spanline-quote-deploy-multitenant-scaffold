@@ -75,7 +75,13 @@ export default function XeroJobPanel({ jobId, clientName }: XeroJobPanelProps) {
 
   const syncJobAccounting = trpc.xeroAccounting.syncJob.useMutation({
     onSuccess: (result) => {
-      toast.success(`Synced ${result.imported} Xero transaction line(s)`);
+      if (result.warning) {
+        toast.warning(result.warning);
+      } else if (result.fetched?.total === 0) {
+        toast.warning("Xero returned no accounting documents for this entity.");
+      } else {
+        toast.success(`Synced ${result.imported} Xero transaction line(s)`);
+      }
       accountingSummary.refetch();
       xeroInvoices.refetch();
       xeroMapping.refetch();

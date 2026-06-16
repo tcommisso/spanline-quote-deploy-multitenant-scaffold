@@ -1,8 +1,10 @@
 import { COOKIE_NAME, isAdminRole } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, superAdminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
+import { randomBytes } from "crypto";
 import * as db from "./db";
 import { notifyOwner } from "./_core/notification";
 import { guardedSend } from "./notification-gateway";
@@ -91,7 +93,9 @@ import { competitorIntelRouter } from "./competitor-intel-router";
 import { nswDaRouter } from "./nsw-da-router";
 import { aiLearningRouter } from "./ai-learning-router";
 import { tenantRouter } from "./tenant-router";
-import { storageGet, storageDownload } from "./storage";
+import { apiHealthRouter } from "./api-health-router";
+import { isStorageConfigured, storageGet, storageDownload, storagePut } from "./storage";
+import { syncQuoteHbcfRequirement } from "./hbcf-service";
 
 /** Check if a user can access a specific quote based on permissions */
 function canAccessQuote(user: { id: number; role: string; name: string | null; canViewAllQuotes: boolean }, quote: { userId: number; designAdvisor: string | null }): boolean {
@@ -111,9 +115,50 @@ function canAccessTenantRecord(
   return record.tenantId == null || record.tenantId === tenant.id;
 }
 
+type BrandingAssetKind = "customLogoUrl" | "appIconUrl" | "faviconUrl";
+
+const BRANDING_ASSET_META_KEYS: Record<BrandingAssetKind, string> = {
+  customLogoUrl: "customLogoMeta",
+  appIconUrl: "appIconMeta",
+  faviconUrl: "faviconMeta",
+};
+
+function parseDataUrl(value: string) {
+  const match = value.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], base64: match[2] };
+}
+
+function extensionForMimeType(mimeType: string) {
+  if (mimeType.includes("svg")) return "svg";
+  if (mimeType.includes("png")) return "png";
+  if (mimeType.includes("webp")) return "webp";
+  if (mimeType.includes("gif")) return "gif";
+  if (mimeType.includes("x-icon") || mimeType.includes("vnd.microsoft.icon")) return "ico";
+  return "jpg";
+}
+
+async function persistBrandingAsset(
+  tenantId: number | null | undefined,
+  kind: BrandingAssetKind,
+  value: string | null | undefined,
+) {
+  if (value == null || !value.startsWith("data:")) return value ?? null;
+  const parsed = parseDataUrl(value);
+  if (!parsed || !isStorageConfigured()) return value;
+
+  const tenantSegment = tenantId ? `tenant-${tenantId}` : "global";
+  const suffix = randomBytes(4).toString("hex");
+  const key = `company/branding/${tenantSegment}/${kind}-${Date.now()}-${suffix}.${extensionForMimeType(parsed.mimeType)}`;
+  const buffer = Buffer.from(parsed.base64, "base64");
+  const result = await storagePut(key, buffer, parsed.mimeType);
+  return result.url;
+}
+
 export const appRouter = router({
   system: systemRouter,
   tenants: tenantRouter,
+  apiHealth: apiHealthRouter,
   geotracking: geotrackingRouter,
   textBlocks: textBlocksRouter,
   notificationLog: notificationLogRouter,
@@ -376,6 +421,7 @@ export const appRouter = router({
               () => notifyOwner({ title: `High-Value Quote Alert`, content: `Quote ${quote.quoteNumber} for ${quote.clientName} has reached $${totalSell.toFixed(2)} (threshold: $${threshold}).` })
             );
           }
+          await syncQuoteHbcfRequirement(input.id);
         } catch (e) { /* non-blocking */ }
         return { success: true };
       }),
@@ -525,6 +571,7 @@ export const appRouter = router({
         }
 
         await db.updateQuote(input.id, updates);
+        await syncQuoteHbcfRequirement(input.id);
 
         // Log recalculation revision
         try {
@@ -854,15 +901,31 @@ export const appRouter = router({
         height: z.number().min(100).max(640).default(420),
       }))
       .query(async ({ input }) => {
-        const { makeRequest } = await import("./_core/map");
-        // Fetch the static map image as binary through the server-side proxy
-        const { baseUrl, apiKey } = (() => {
-          const b = (process.env.BUILT_IN_FORGE_API_URL || "").replace(/\/+$/, "");
-          const k = process.env.BUILT_IN_FORGE_API_KEY || "";
-          return { baseUrl: b, apiKey: k };
-        })();
-        const url = `${baseUrl}/v1/maps/proxy/maps/api/staticmap?center=${input.lat},${input.lng}&zoom=${input.zoom}&size=${input.width}x${input.height}&maptype=satellite&key=${apiKey}`;
-        const resp = await fetch(url);
+        const earthRadiusM = 6378137;
+        const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, input.lat));
+        const lngRad = input.lng * Math.PI / 180;
+        const latRad = clampedLat * Math.PI / 180;
+        const centerX = earthRadiusM * lngRad;
+        const centerY = earthRadiusM * Math.log(Math.tan(Math.PI / 4 + latRad / 2));
+        const metresPerPixel = 156543.03392804097 / Math.pow(2, input.zoom);
+        const halfWidthM = input.width * metresPerPixel / 2;
+        const halfHeightM = input.height * metresPerPixel / 2;
+
+        const url = new URL("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export");
+        url.searchParams.set("bbox", [
+          centerX - halfWidthM,
+          centerY - halfHeightM,
+          centerX + halfWidthM,
+          centerY + halfHeightM,
+        ].join(","));
+        url.searchParams.set("bboxSR", "3857");
+        url.searchParams.set("imageSR", "3857");
+        url.searchParams.set("size", `${input.width},${input.height}`);
+        url.searchParams.set("format", "png");
+        url.searchParams.set("transparent", "false");
+        url.searchParams.set("f", "image");
+
+        const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!resp.ok) throw new Error(`Static map request failed: ${resp.status}`);
         const buffer = await resp.arrayBuffer();
         const base64 = Buffer.from(buffer).toString("base64");
@@ -961,6 +1024,7 @@ export const appRouter = router({
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const id = await db.upsertComponent(input);
+        await syncQuoteHbcfRequirement(input.quoteId);
         return { id };
       }),
   }),
@@ -2228,7 +2292,17 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   // ─── User Settings (synced across devices) ──────────────────────────────────────────────
   userSettings: router({
     get: protectedProcedure.query(async ({ ctx }) => {
-      return db.getUserSettings(ctx.user.id);
+      const userSettings = await db.getUserSettings(ctx.user.id);
+      const tenantBranding = await db.getTenantBrandingSettings(ctx.tenant?.id ?? null);
+      if (!tenantBranding) return userSettings;
+      return {
+        ...(userSettings ?? {}),
+        companyDetails: tenantBranding.companyDetails ?? userSettings?.companyDetails ?? null,
+        customLogoUrl: tenantBranding.customLogoUrl ?? userSettings?.customLogoUrl ?? null,
+        appIconUrl: tenantBranding.appIconUrl ?? userSettings?.appIconUrl ?? null,
+        faviconUrl: tenantBranding.faviconUrl ?? userSettings?.faviconUrl ?? null,
+        companyTheme: tenantBranding.companyTheme ?? userSettings?.companyTheme ?? null,
+      };
     }),
     save: protectedProcedure
       .input(z.object({
@@ -2242,10 +2316,39 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         companyTheme: z.any().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        return db.upsertUserSettings(ctx.user.id, input);
+        const normalizedInput: typeof input = { ...input };
+        const tenantId = ctx.tenant?.id ?? null;
+
+        const brandingPatch: Record<string, any> = {};
+        for (const key of ["customLogoUrl", "appIconUrl", "faviconUrl"] as BrandingAssetKind[]) {
+          if (Object.prototype.hasOwnProperty.call(input, key)) {
+            const persistedUrl = await persistBrandingAsset(tenantId, key, input[key]);
+            normalizedInput[key] = persistedUrl as any;
+            brandingPatch[key] = persistedUrl;
+            brandingPatch[BRANDING_ASSET_META_KEYS[key]] = {
+              updatedAt: new Date().toISOString(),
+              storage: persistedUrl?.startsWith("data:") ? "database" : "r2",
+            };
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(input, "companyTheme")) {
+          brandingPatch.companyTheme = input.companyTheme;
+        }
+
+        if (tenantId && (
+          Object.prototype.hasOwnProperty.call(input, "companyDetails") ||
+          Object.keys(brandingPatch).length > 0
+        )) {
+          await db.upsertTenantBrandingSettings(tenantId, {
+            ...(Object.prototype.hasOwnProperty.call(input, "companyDetails") ? { companyDetails: input.companyDetails } : {}),
+            ...(Object.keys(brandingPatch).length > 0 ? { branding: brandingPatch } : {}),
+          });
+        }
+
+        return db.upsertUserSettings(ctx.user.id, normalizedInput);
       }),
-    getCompanyTheme: publicProcedure.query(async () => {
-      return db.getCompanyTheme();
+    getCompanyTheme: publicProcedure.query(async ({ ctx }) => {
+      return db.getCompanyTheme(ctx.tenant?.id ?? null);
     }),
   }),
   // ─── Push Notifications ────────────────────────────────────────────────────

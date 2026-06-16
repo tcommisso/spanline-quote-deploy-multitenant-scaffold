@@ -13,13 +13,14 @@
  */
 import { getDb } from "./db";
 import { nswDaApplications, nswDaPollLog } from "../drizzle/schema";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { eq, and, isNull, sql, or } from "drizzle-orm";
 import { getTenantPlanningConfig } from "./tenant-integrations";
 import crypto from "crypto";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const NSW_DA_API_URL = "https://api.apps1.nsw.gov.au/eplanning/data/v0/DAApplicationTracker";
+export const NSW_DA_DEFAULT_START_DATE = "2022-09-01";
 
 /**
  * Target councils for Spanline/AltaSpan NSW territory
@@ -35,7 +36,7 @@ export const NSW_TARGET_COUNCILS = [
 
 /**
  * Development types relevant to outdoor living / patio / pergola / carport work.
- * Matched against the TYPE_OF_DEVELOPMENT field (comma-separated values).
+ * Matched against the DA description/scope first, with TYPE_OF_DEVELOPMENT as a fallback.
  */
 const RELEVANT_DEV_TYPE_KEYWORDS = [
   "balconies",
@@ -78,6 +79,33 @@ function isRelevantDevType(devType: string | null): boolean {
   if (!devType) return false;
   const lower = devType.toLowerCase();
   return RELEVANT_DEV_TYPE_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+function dateFromInput(value?: string | null): Date {
+  return new Date(`${value || NSW_DA_DEFAULT_START_DATE}T00:00:00.000Z`);
+}
+
+function isOnOrAfterDefaultStart(date: Date | null): boolean {
+  return !!date && date >= dateFromInput();
+}
+
+function isValidNswPortalAppNumber(value: string | null | undefined): boolean {
+  return !!value && value.trim().length > 3;
+}
+
+function getNswDaDescription(props: NswDaFeature["properties"]): string {
+  const value =
+    props.DESCRIPTION ??
+    props.DEVELOPMENT_DESCRIPTION ??
+    props.APPLICATION_DESCRIPTION ??
+    props.PROPOSAL_DESCRIPTION ??
+    props.PROPOSED_DEVELOPMENT ??
+    props.DESCRIPTION_OF_WORK ??
+    props.WORK_DESCRIPTION ??
+    props.DETAILS ??
+    "";
+
+  return typeof value === "string" ? value.trim() : String(value ?? "").trim();
 }
 
 /**
@@ -137,6 +165,14 @@ interface NswDaFeature {
     STATUS: string | null;
     TYPE_OF_DEVELOPMENT: string | null;
     APPLICATION_TYPE: string | null;
+    DESCRIPTION?: string | null;
+    DEVELOPMENT_DESCRIPTION?: string | null;
+    APPLICATION_DESCRIPTION?: string | null;
+    PROPOSAL_DESCRIPTION?: string | null;
+    PROPOSED_DEVELOPMENT?: string | null;
+    DESCRIPTION_OF_WORK?: string | null;
+    WORK_DESCRIPTION?: string | null;
+    DETAILS?: string | null;
     LODGEMENT_DATE: string | null;
     DETERMINATION_DATE?: string | null;
     FULL_ADDRESS: string | null;
@@ -201,6 +237,7 @@ function computeNswDaHash(props: NswDaFeature["properties"]): string {
     app: props.PLANNING_PORTAL_APP_NUMBER,
     status: props.STATUS,
     devType: props.TYPE_OF_DEVELOPMENT,
+    description: getNswDaDescription(props),
     addr: props.FULL_ADDRESS,
     det: props.DETERMINATION_DATE,
   });
@@ -263,10 +300,12 @@ export async function pollNswDaApplications(options?: {
     console.log(`[NswDaService] Total features fetched: ${allFeatures.length}`);
 
     // Filter by target councils
-    const targetFeatures = allFeatures.filter(f =>
-      f.properties.COUNCIL_NAME &&
-      targetCouncils.includes(f.properties.COUNCIL_NAME)
-    );
+    const targetFeatures = allFeatures.filter((f) => {
+      const lodgementDate = f.properties.LODGEMENT_DATE ? new Date(f.properties.LODGEMENT_DATE) : null;
+      return !!f.properties.COUNCIL_NAME &&
+        targetCouncils.includes(f.properties.COUNCIL_NAME) &&
+        isOnOrAfterDefaultStart(lodgementDate);
+    });
     console.log(`[NswDaService] Features matching target councils: ${targetFeatures.length}`);
 
     // Group by council for reporting
@@ -292,12 +331,14 @@ export async function pollNswDaApplications(options?: {
         for (const feature of features) {
           const props = feature.properties;
           const appNumber = props.PLANNING_PORTAL_APP_NUMBER;
-          if (!appNumber) continue;
+          if (!isValidNswPortalAppNumber(appNumber)) continue;
 
           const hash = computeNswDaHash(props);
           const devType = props.TYPE_OF_DEVELOPMENT || "";
-          const relevant = isRelevantDevType(devType);
-          const category = relevant ? categoriseDevType(devType) : null;
+          const description = getNswDaDescription(props);
+          const relevanceText = description || devType;
+          const relevant = isRelevantDevType(relevanceText);
+          const category = relevant ? categoriseDevType(relevanceText) : null;
 
           // Parse coordinates
           let lat: number | null = null;
@@ -333,6 +374,7 @@ export async function pollNswDaApplications(options?: {
               applicationStatus: props.STATUS || null,
               applicationType: props.APPLICATION_TYPE || null,
               developmentType: devType || null,
+              description: description || null,
               fullAddress: props.FULL_ADDRESS || null,
               suburb,
               postcode,
@@ -356,6 +398,7 @@ export async function pollNswDaApplications(options?: {
                 applicationStatus: props.STATUS || null,
                 applicationType: props.APPLICATION_TYPE || null,
                 developmentType: devType || null,
+                description: description || null,
                 fullAddress: props.FULL_ADDRESS || null,
                 suburb,
                 postcode,
@@ -425,7 +468,9 @@ export async function getNswDaStats(options?: { tenantId?: number | null }) {
   if (!db) return [];
   const tenantId = options?.tenantId ?? null;
   const conditions: any[] = [];
-  if (tenantId) conditions.push(eq(nswDaApplications.tenantId, tenantId));
+  if (tenantId) conditions.push(or(eq(nswDaApplications.tenantId, tenantId), isNull(nswDaApplications.tenantId)));
+  conditions.push(sql`${nswDaApplications.lodgementDate} >= ${dateFromInput()}`);
+  conditions.push(sql`length(${nswDaApplications.portalAppNumber}) > 3`);
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
   const stats = await db.select({
@@ -454,7 +499,7 @@ export async function getNswDaBySuburb(options?: {
 
   const conditions: any[] = [];
   if (options?.tenantId) {
-    conditions.push(eq(nswDaApplications.tenantId, options.tenantId));
+    conditions.push(or(eq(nswDaApplications.tenantId, options.tenantId), isNull(nswDaApplications.tenantId)));
   }
   if (options?.councilName) {
     conditions.push(eq(nswDaApplications.councilName, options.councilName));
@@ -463,8 +508,11 @@ export async function getNswDaBySuburb(options?: {
     conditions.push(eq(nswDaApplications.isRelevant, true));
   }
   if (options?.dateFrom) {
-    conditions.push(sql`${nswDaApplications.lodgementDate} >= ${new Date(options.dateFrom)}`);
+    conditions.push(sql`${nswDaApplications.lodgementDate} >= ${dateFromInput(options.dateFrom)}`);
+  } else {
+    conditions.push(sql`${nswDaApplications.lodgementDate} >= ${dateFromInput()}`);
   }
+  conditions.push(sql`length(${nswDaApplications.portalAppNumber}) > 3`);
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -490,8 +538,10 @@ export async function getRecentRelevantNswDas(daysSince: number = 7, tenantId?: 
   const conditions: any[] = [
     eq(nswDaApplications.isRelevant, true),
     sql`${nswDaApplications.firstSeenAt} >= ${since}`,
+    sql`${nswDaApplications.lodgementDate} >= ${dateFromInput()}`,
+    sql`length(${nswDaApplications.portalAppNumber}) > 3`,
   ];
-  if (tenantId) conditions.push(eq(nswDaApplications.tenantId, tenantId));
+  if (tenantId) conditions.push(or(eq(nswDaApplications.tenantId, tenantId), isNull(nswDaApplications.tenantId)));
 
   return db.select()
     .from(nswDaApplications)

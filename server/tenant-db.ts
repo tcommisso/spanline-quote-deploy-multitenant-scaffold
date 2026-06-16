@@ -75,6 +75,32 @@ async function getMembership(userId: number, tenantId: number) {
   return membership ?? null;
 }
 
+function membershipRoleForUser(user: User): "owner" | "admin" | "member" {
+  if (user.role === "super_admin") return "owner";
+  if (user.role === "admin") return "admin";
+  return "member";
+}
+
+async function ensureMembership(user: User, tenantId: number) {
+  const db = await getDb();
+  if (!db) return syntheticLegacyMembership(user, tenantId);
+  const role = membershipRoleForUser(user);
+  await db.insert(tenantMemberships)
+    .values({
+      tenantId,
+      userId: user.id,
+      role,
+      isDefault: true,
+    })
+    .onDuplicateKeyUpdate({
+      set: {
+        role,
+        isDefault: true,
+      },
+    });
+  return getMembership(user.id, tenantId) ?? syntheticLegacyMembership(user, tenantId);
+}
+
 async function getDefaultMembership(userId: number) {
   const db = await getDb();
   if (!db) return null;
@@ -93,7 +119,7 @@ function syntheticLegacyMembership(user: User, tenantId: number): TenantMembersh
     id: 0,
     tenantId,
     userId: user.id,
-    role: user.role === "admin" || user.role === "super_admin" ? "owner" : "member",
+    role: membershipRoleForUser(user),
     isDefault: true,
     createdAt: now,
     updatedAt: now,
@@ -124,7 +150,7 @@ export async function resolveTenantForRequest(req: Request, user: User | null): 
       const tenantMembership = await getMembership(user.id, tenant.id);
       if (tenantMembership) return { tenant, tenantMembership };
       if (ENV.tenancyMode === "single") {
-        return { tenant, tenantMembership: syntheticLegacyMembership(user, tenant.id) };
+        return { tenant, tenantMembership: await ensureMembership(user, tenant.id) };
       }
       return { tenant: null, tenantMembership: null };
     }
@@ -142,7 +168,7 @@ export async function resolveTenantForRequest(req: Request, user: User | null): 
       if (defaultTenant) {
         return {
           tenant: defaultTenant,
-          tenantMembership: syntheticLegacyMembership(user, defaultTenant.id),
+          tenantMembership: await ensureMembership(user, defaultTenant.id),
         };
       }
     }

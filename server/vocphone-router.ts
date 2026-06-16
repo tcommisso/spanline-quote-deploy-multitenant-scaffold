@@ -8,39 +8,7 @@ import { getDb } from "./db";
 import { smsMessages, callLogs, smsTemplates, crmLeads, crmActivities, globalSettings, vocphoneExtensions } from "../drizzle/schema";
 import { eq, desc, or, and, sql, like, gte, lte, count, sum, avg, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
-
-/** Normalize phone number for lead matching */
-function normalizePhone(phone: string): string {
-  let n = phone.replace(/[^0-9]/g, "");
-  if (n.startsWith("61") && n.length === 11) {
-    n = "0" + n.slice(2);
-  }
-  return n;
-}
-
-/** Find a lead by phone number */
-async function findLeadByPhone(phone: string, tenantId?: number | null): Promise<number | null> {
-  const normalized = normalizePhone(phone);
-  if (!normalized || normalized.length < 8) return null;
-  const variants = [normalized];
-  if (normalized.startsWith("0")) {
-    variants.push("61" + normalized.slice(1));
-    variants.push("+61" + normalized.slice(1));
-  }
-  const db = (await getDb())!;
-  const phoneCondition = or(
-    ...variants.flatMap((v) => [
-      eq(crmLeads.contactPhone, v),
-      like(crmLeads.contactPhone, `%${v.slice(-8)}`),
-    ])
-  );
-  const results = await db
-    .select({ id: crmLeads.id })
-    .from(crmLeads)
-    .where(tenantId ? and(eq(crmLeads.tenantId, tenantId), phoneCondition) : phoneCondition)
-    .limit(1);
-  return results.length > 0 ? results[0].id : null;
-}
+import { findLeadByPhone, phoneSearchCondition } from "./phone-match";
 
 export const vocphoneRouter = router({
   // ─── SMS Numbers ──────────────────────────────────────────────────────────
@@ -596,9 +564,12 @@ export const vocphoneRouter = router({
       }
 
       if (search && search.trim()) {
-        const term = `%${search.trim()}%`;
+        const trimmedSearch = search.trim();
+        const term = `%${trimmedSearch}%`;
+        const phoneCondition = phoneSearchCondition(trimmedSearch, callLogs.fromNumber, callLogs.toNumber, crmLeads.contactPhone);
         conditions.push(
           or(
+            ...(phoneCondition ? [phoneCondition] : []),
             like(callLogs.fromNumber, term),
             like(callLogs.toNumber, term),
             like(crmLeads.contactFirstName, term),
@@ -679,9 +650,12 @@ export const vocphoneRouter = router({
         conditions.push(lte(callLogs.createdAt, endDate));
       }
       if (search && search.trim()) {
-        const term = `%${search.trim()}%`;
+        const trimmedSearch = search.trim();
+        const term = `%${trimmedSearch}%`;
+        const phoneCondition = phoneSearchCondition(trimmedSearch, callLogs.fromNumber, callLogs.toNumber, crmLeads.contactPhone);
         conditions.push(
           or(
+            ...(phoneCondition ? [phoneCondition] : []),
             like(callLogs.fromNumber, term),
             like(callLogs.toNumber, term),
             like(crmLeads.contactFirstName, term),

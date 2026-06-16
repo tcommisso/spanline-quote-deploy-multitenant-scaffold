@@ -1,5 +1,5 @@
 import { useLocation } from "wouter";
-import { getSectionForPath } from "@/pages/AppCentral";
+import { getSectionForPath } from "@/lib/appSections";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole, type UserRole } from "@shared/const";
 import {

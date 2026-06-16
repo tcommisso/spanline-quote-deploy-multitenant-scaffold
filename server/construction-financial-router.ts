@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { constructionJobs, constructionJobFinancials, constructionProgress } from "../drizzle/schema";
-import { eq, and, sql, desc, like, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, sql, desc, like, inArray } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
@@ -16,6 +16,16 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+function constructionJobDateExpr() {
+  return sql<Date>`COALESCE(${constructionJobs.actualEnd}, ${constructionJobs.actualStart}, ${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart}, ${constructionJobs.createdAt})`;
+}
+
+function appendProjectDateFilter(conditions: any[], fyStart?: string, fyEnd?: string) {
+  const jobDate = constructionJobDateExpr();
+  if (fyStart) conditions.push(sql`${jobDate} >= ${new Date(fyStart)}`);
+  if (fyEnd) conditions.push(sql`${jobDate} <= ${new Date(fyEnd + "T23:59:59.999Z")}`);
 }
 
 const fyFilterSchema = z.object({
@@ -43,14 +53,12 @@ export const constructionFinancialRouter = router({
       if (input?.roofStyle) conditions.push(eq(constructionJobFinancials.roofStyle, input.roofStyle));
       if (input?.postcode) conditions.push(like(constructionJobFinancials.postcode, `${input.postcode}%`));
 
-      // FY date filter on jobs createdAt (join to filter financials by job creation date)
-      // We'll filter the jobs first then match financials
+      // FY date filter on real project timing, not import/create timestamp.
       const jobConditions: any[] = [];
       if (input?.excludeCompleted !== false) {
         jobConditions.push(sql`${constructionJobs.status} != 'completed'`);
       }
-      if (input?.fyStart) jobConditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-      if (input?.fyEnd) jobConditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+      appendProjectDateFilter(jobConditions, input?.fyStart, input?.fyEnd);
       if (input?.designAdviserId) jobConditions.push(eq(constructionJobs.designAdviserId, input.designAdviserId));
       const scopedJobConditions = jobTenantConditions(ctx, ...jobConditions);
       const financialWhere = and(...conditions, ...scopedJobConditions);
@@ -114,8 +122,7 @@ export const constructionFinancialRouter = router({
       if (input?.excludeCompleted !== false) {
         jobConditions.push(sql`${constructionJobs.status} != 'completed'`);
       }
-      if (input?.fyStart) jobConditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-      if (input?.fyEnd) jobConditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+      appendProjectDateFilter(jobConditions, input?.fyStart, input?.fyEnd);
       if (input?.designAdviserId) jobConditions.push(eq(constructionJobs.designAdviserId, input.designAdviserId));
       const scopedJobConditions = jobTenantConditions(ctx, ...jobConditions);
 
@@ -209,17 +216,17 @@ export const constructionFinancialRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      const jobDate = constructionJobDateExpr();
       if (input?.fyStart && input?.fyEnd) {
-        conditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-        conditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+        appendProjectDateFilter(conditions, input.fyStart, input.fyEnd);
       } else {
-        conditions.push(sql`${constructionJobs.createdAt} >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)`);
+        conditions.push(sql`${jobDate} >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)`);
       }
       if (input?.excludeCompleted !== false) {
         conditions.push(sql`${constructionJobs.status} != 'completed'`);
       }
 
-      const monthExpr = sql<string>`DATE_FORMAT(${constructionJobs.createdAt}, '%Y-%m')`;
+      const monthExpr = sql<string>`DATE_FORMAT(${jobDate}, '%Y-%m')`;
       const rows = await db.select({
         month: monthExpr,
         total: sql<number>`COUNT(*)`,
@@ -249,17 +256,17 @@ export const constructionFinancialRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      const jobDate = constructionJobDateExpr();
       if (input?.fyStart && input?.fyEnd) {
-        conditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-        conditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+        appendProjectDateFilter(conditions, input.fyStart, input.fyEnd);
       } else {
-        conditions.push(sql`${constructionJobs.createdAt} >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)`);
+        conditions.push(sql`${jobDate} >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)`);
       }
       if (input?.excludeCompleted !== false) {
         conditions.push(sql`${constructionJobs.status} != 'completed'`);
       }
 
-      const monthExpr = sql<string>`DATE_FORMAT(${constructionJobs.createdAt}, '%Y-%m')`;
+      const monthExpr = sql<string>`DATE_FORMAT(${jobDate}, '%Y-%m')`;
       const rows = await db.select({
         month: monthExpr,
         revenue: sql<string>`COALESCE(SUM(COALESCE(${constructionJobFinancials.xeroContractValue}, ${constructionJobFinancials.contractValue}, 0)), 0)`,
@@ -298,8 +305,7 @@ export const constructionFinancialRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
-      if (input?.fyStart) conditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-      if (input?.fyEnd) conditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+      appendProjectDateFilter(conditions, input?.fyStart, input?.fyEnd);
 
       const rows = await db.select({
         status: constructionJobs.status,
@@ -326,8 +332,7 @@ export const constructionFinancialRouter = router({
       const conditions: any[] = [
         sql`${constructionJobs.status} IN ('scheduled', 'in_progress')`,
       ];
-      if (input?.fyStart) conditions.push(gte(constructionJobs.createdAt, new Date(input.fyStart)));
-      if (input?.fyEnd) conditions.push(lte(constructionJobs.createdAt, new Date(input.fyEnd + "T23:59:59.999Z")));
+      appendProjectDateFilter(conditions, input?.fyStart, input?.fyEnd);
 
       const rows = await db.select({
         xeroInvoicedAmount: constructionJobFinancials.xeroInvoicedAmount,

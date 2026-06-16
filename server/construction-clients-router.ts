@@ -6,9 +6,10 @@ import {
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   quotes, crmLeads, crmBuildingAuthority,
 } from "../drizzle/schema";
-import { eq, desc, and, like, sql, or, gte, lt, inArray } from "drizzle-orm";
+import { eq, desc, and, like, sql, or, inArray } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
+import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 
 async function requireDb() {
   const db = await getDb();
@@ -49,6 +50,16 @@ function fyDateRange(fyStartYear: number): { from: Date; to: Date } {
   };
 }
 
+function constructionJobDateExpr() {
+  return sql<Date>`COALESCE(${constructionJobs.actualEnd}, ${constructionJobs.actualStart}, ${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart}, ${constructionJobs.createdAt})`;
+}
+
+function appendProjectDateRange(conditions: any[], from: Date, to: Date) {
+  const jobDate = constructionJobDateExpr();
+  conditions.push(sql`${jobDate} >= ${from}`);
+  conditions.push(sql`${jobDate} < ${to}`);
+}
+
 /** Get the current Australian FY start year. Before July → previous year. */
 function currentFyStartYear(): number {
   const now = new Date();
@@ -56,11 +67,111 @@ function currentFyStartYear(): number {
 }
 
 export const constructionClientsRouter = router({
+  filterOptions: protectedProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    const tenantConditions = jobTenantConditions(ctx);
+
+    const [branchRows, leadSuburbRows, quoteSuburbRows, installers, managerRows] = await Promise.all([
+      db.select({ branch: constructionJobFinancials.branch })
+        .from(constructionJobs)
+        .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+        .where(and(
+          ...tenantConditions,
+          sql`${constructionJobFinancials.branch} IS NOT NULL`,
+          sql`${constructionJobFinancials.branch} != ''`,
+        ))
+        .groupBy(constructionJobFinancials.branch)
+        .orderBy(constructionJobFinancials.branch),
+      db.select({ suburb: crmLeads.suburb })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+        .where(and(
+          ...tenantConditions,
+          sql`${crmLeads.suburb} IS NOT NULL`,
+          sql`${crmLeads.suburb} != ''`,
+        ))
+        .groupBy(crmLeads.suburb)
+        .orderBy(crmLeads.suburb),
+      db.select({ suburb: quotes.suburb })
+        .from(constructionJobs)
+        .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
+        .where(and(
+          ...tenantConditions,
+          sql`${quotes.suburb} IS NOT NULL`,
+          sql`${quotes.suburb} != ''`,
+        ))
+        .groupBy(quotes.suburb)
+        .orderBy(quotes.suburb),
+      db.select({
+        id: constructionInstallers.id,
+        name: constructionInstallers.name,
+        tradeType: constructionInstallers.tradeType,
+      })
+        .from(constructionInstallers)
+        .where(and(...installerTenantConditions(ctx, eq(constructionInstallers.active, true))))
+        .orderBy(constructionInstallers.name),
+      db.select({
+        constructionManagerId: constructionJobFinancials.constructionManagerId,
+        constructionManagerName: constructionJobFinancials.constructionManagerName,
+        supervisorId: constructionJobs.supervisorId,
+        supervisorName: constructionJobs.supervisorName,
+      })
+        .from(constructionJobs)
+        .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+        .where(and(...tenantConditions))
+        .groupBy(
+          constructionJobFinancials.constructionManagerId,
+          constructionJobFinancials.constructionManagerName,
+          constructionJobs.supervisorId,
+          constructionJobs.supervisorName,
+        ),
+    ]);
+
+    const branches = Array.from(new Set(
+      branchRows.map((row: any) => String(row.branch || "").trim()).filter(Boolean),
+    )).sort((a, b) => a.localeCompare(b));
+
+    const suburbs = Array.from(new Set(
+      [...leadSuburbRows, ...quoteSuburbRows]
+        .map((row: any) => String(row.suburb || "").trim())
+        .filter(Boolean),
+    )).sort((a, b) => a.localeCompare(b));
+
+    const managerMap = new Map<string, { id: number | null; name: string }>();
+    for (const row of managerRows as any[]) {
+      if (row.constructionManagerName) {
+        const key = row.constructionManagerId != null ? `id:${row.constructionManagerId}` : `name:${row.constructionManagerName}`;
+        managerMap.set(key, { id: row.constructionManagerId ?? null, name: row.constructionManagerName });
+      }
+      if (row.supervisorName) {
+        const key = row.supervisorId != null ? `id:${row.supervisorId}` : `name:${row.supervisorName}`;
+        if (!managerMap.has(key)) {
+          managerMap.set(key, { id: row.supervisorId ?? null, name: row.supervisorName });
+        }
+      }
+    }
+
+    const constructionManagers = Array.from(managerMap.values())
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      branches,
+      suburbs,
+      installers,
+      constructionManagers,
+    };
+  }),
+
   // List all construction clients (jobs) with stage indicators
   list: protectedProcedure
     .input(z.object({
       status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled"]).optional(),
       search: z.string().optional(),
+      branch: z.string().optional(),
+      suburb: z.string().optional(),
+      scheduled: z.enum(["unscheduled", "scheduled", "overdue", "today", "next_7_days", "future"]).optional(),
+      installerId: z.number().optional(),
+      constructionManagerId: z.number().optional(),
       fyStartYear: z.number().optional(), // e.g. 2025 for FY 2025-26
       month: z.number().min(1).max(12).optional(), // 1-12, calendar month within the FY
       limit: z.number().optional(),
@@ -83,15 +194,58 @@ export const constructionClientsRouter = router({
             like(constructionJobs.clientName, `%${input.search}%`),
             like(constructionJobs.siteAddress, `%${input.search}%`),
             like(constructionJobs.quoteNumber, `%${input.search}%`),
+            like(crmLeads.clientNumber, `%${input.search}%`),
           )
         );
       }
+      if (input?.branch) {
+        conditions.push(eq(constructionJobFinancials.branch, input.branch));
+      }
+      if (input?.suburb) {
+        conditions.push(or(
+          like(constructionJobs.siteAddress, `%${input.suburb}%`),
+          eq(sql`LOWER(${quotes.suburb})`, input.suburb.toLowerCase()),
+          eq(sql`LOWER(${crmLeads.suburb})`, input.suburb.toLowerCase()),
+        ));
+      }
+      if (input?.constructionManagerId != null) {
+        conditions.push(eq(constructionJobFinancials.constructionManagerId, input.constructionManagerId));
+      }
+      if (input?.installerId != null) {
+        conditions.push(sql`EXISTS (
+          SELECT 1 FROM ${constructionAssignments}
+          WHERE ${constructionAssignments.jobId} = ${constructionJobs.id}
+            AND ${constructionAssignments.installerId} = ${input.installerId}
+        )`);
+      }
+      if (input?.scheduled) {
+        const now = new Date();
+        const todayStart = new Date(now);
+        todayStart.setHours(0, 0, 0, 0);
+        const tomorrowStart = new Date(todayStart);
+        tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+        const nextWeekEnd = new Date(todayStart);
+        nextWeekEnd.setDate(nextWeekEnd.getDate() + 8);
 
-      // FY date filter on createdAt
+        if (input.scheduled === "unscheduled") {
+          conditions.push(sql`${constructionJobs.scheduledStart} IS NULL`);
+        } else if (input.scheduled === "scheduled") {
+          conditions.push(sql`${constructionJobs.scheduledStart} IS NOT NULL`);
+        } else if (input.scheduled === "overdue") {
+          conditions.push(sql`${constructionJobs.scheduledStart} IS NOT NULL AND ${constructionJobs.scheduledStart} < ${todayStart} AND ${constructionJobs.status} != 'completed'`);
+        } else if (input.scheduled === "today") {
+          conditions.push(sql`${constructionJobs.scheduledStart} >= ${todayStart} AND ${constructionJobs.scheduledStart} < ${tomorrowStart}`);
+        } else if (input.scheduled === "next_7_days") {
+          conditions.push(sql`${constructionJobs.scheduledStart} >= ${todayStart} AND ${constructionJobs.scheduledStart} < ${nextWeekEnd}`);
+        } else if (input.scheduled === "future") {
+          conditions.push(sql`${constructionJobs.scheduledStart} >= ${nextWeekEnd}`);
+        }
+      }
+
+      // FY date filter on real project timing, not import/create timestamp.
       if (input?.fyStartYear != null) {
         const range = fyDateRange(input.fyStartYear);
-        conditions.push(gte(constructionJobs.createdAt, range.from));
-        conditions.push(lt(constructionJobs.createdAt, range.to));
+        appendProjectDateRange(conditions, range.from, range.to);
       }
 
       // Month filter within the FY (or standalone)
@@ -102,16 +256,14 @@ export const constructionClientsRouter = router({
           const year = input.month >= 7 ? input.fyStartYear : input.fyStartYear + 1;
           const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
           const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          conditions.push(gte(constructionJobs.createdAt, monthStart));
-          conditions.push(lt(constructionJobs.createdAt, monthEnd));
+          appendProjectDateRange(conditions, monthStart, monthEnd);
         } else {
           // No FY set — filter by month in current calendar year
           const now = new Date();
           const year = now.getFullYear();
           const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
           const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          conditions.push(gte(constructionJobs.createdAt, monthStart));
-          conditions.push(lt(constructionJobs.createdAt, monthEnd));
+          appendProjectDateRange(conditions, monthStart, monthEnd);
         }
       }
 
@@ -120,16 +272,34 @@ export const constructionClientsRouter = router({
       const offset = input?.offset || 0;
 
       const [jobs, countResult] = await Promise.all([
-        db.select().from(constructionJobs)
+        db.select({
+          job: constructionJobs,
+          clientNumber: crmLeads.clientNumber,
+          leadSuburb: crmLeads.suburb,
+          quoteSuburb: quotes.suburb,
+          branch: constructionJobFinancials.branch,
+          constructionManagerId: constructionJobFinancials.constructionManagerId,
+          constructionManagerName: constructionJobFinancials.constructionManagerName,
+        }).from(constructionJobs)
+          .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+          .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+          .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
           .where(where)
           .orderBy(desc(constructionJobs.updatedAt))
           .limit(limit)
           .offset(offset),
-        db.select({ count: sql<number>`count(*)` }).from(constructionJobs).where(where),
+        db.select({ count: sql<number>`count(DISTINCT ${constructionJobs.id})` })
+          .from(constructionJobs)
+          .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+          .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+          .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
+          .where(where),
       ]);
 
+      const jobRows = jobs.map((row: any) => ({ ...row.job, clientNumber: row.clientNumber, leadSuburb: row.leadSuburb, quoteSuburb: row.quoteSuburb, branch: row.branch, constructionManagerId: row.constructionManagerId, constructionManagerName: row.constructionManagerName }));
+
       // Get progress for each job to show stage indicators
-      const jobIds = jobs.map(j => j.id);
+      const jobIds = jobRows.map(j => j.id);
       const allProgress = jobIds.length > 0
         ? await db.select().from(constructionProgress)
             .where(inArray(constructionProgress.jobId, jobIds))
@@ -191,7 +361,7 @@ export const constructionClientsRouter = router({
       }
 
       // Get Approval status for each job via leadId
-      const leadIds = jobs.map(j => j.leadId).filter((id): id is number => id != null);
+      const leadIds = jobRows.map(j => j.leadId).filter((id): id is number => id != null);
       const allBaStatuses = leadIds.length > 0
         ? await db.select({
             leadId: crmBuildingAuthority.leadId,
@@ -204,7 +374,7 @@ export const constructionClientsRouter = router({
         baStatusByLeadId[ba.leadId] = { status: ba.status, applicationDate: ba.applicationDate };
       }
 
-      const clients = jobs.map(job => {
+      const clients = jobRows.map(job => {
         const progress = progressByJob[job.id] || [];
         const completedStages = progress.filter(p => p.status === "completed").length;
         const totalStages = progress.length;
@@ -263,8 +433,7 @@ export const constructionClientsRouter = router({
       const conditions: any[] = [];
       if (input?.fyStartYear != null) {
         const range = fyDateRange(input.fyStartYear);
-        conditions.push(gte(constructionJobs.createdAt, range.from));
-        conditions.push(lt(constructionJobs.createdAt, range.to));
+        appendProjectDateRange(conditions, range.from, range.to);
       }
       // Month filter within the FY
       if (input?.month != null) {
@@ -272,15 +441,13 @@ export const constructionClientsRouter = router({
           const year = input.month >= 7 ? input.fyStartYear : input.fyStartYear + 1;
           const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
           const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          conditions.push(gte(constructionJobs.createdAt, monthStart));
-          conditions.push(lt(constructionJobs.createdAt, monthEnd));
+          appendProjectDateRange(conditions, monthStart, monthEnd);
         } else {
           const now = new Date();
           const year = now.getFullYear();
           const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
           const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          conditions.push(gte(constructionJobs.createdAt, monthStart));
-          conditions.push(lt(constructionJobs.createdAt, monthEnd));
+          appendProjectDateRange(conditions, monthStart, monthEnd);
         }
       }
       const where = and(...jobTenantConditions(ctx, ...conditions));
@@ -303,10 +470,10 @@ export const constructionClientsRouter = router({
   availableFYs: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
 
-    // Find the earliest and latest job creation dates
+    // Find the earliest and latest project dates.
     const [result] = await db.select({
-      earliest: sql<Date>`MIN(${constructionJobs.createdAt})`,
-      latest: sql<Date>`MAX(${constructionJobs.createdAt})`,
+      earliest: sql<Date>`MIN(${constructionJobDateExpr()})`,
+      latest: sql<Date>`MAX(${constructionJobDateExpr()})`,
     }).from(constructionJobs)
       .where(and(...jobTenantConditions(ctx)));
 
@@ -337,7 +504,7 @@ export const constructionClientsRouter = router({
       const job = await requireJobAccess(db, ctx, input.jobId);
 
       // Get related data
-      const [progress, assignments, financials, kanbanTasks] = await Promise.all([
+      const [progress, assignments, financials, kanbanTasks, xeroAccountingSummary] = await Promise.all([
         db.select().from(constructionProgress)
           .where(eq(constructionProgress.jobId, input.jobId))
           .orderBy(constructionProgress.createdAt),
@@ -347,6 +514,7 @@ export const constructionClientsRouter = router({
           .where(eq(constructionJobFinancials.jobId, input.jobId)),
         db.select().from(constructionKanbanTasks)
           .where(eq(constructionKanbanTasks.jobId, input.jobId)),
+        getXeroAccountingSummaryForJob(db, input.jobId),
       ]);
 
       // Get installer names for assignments
@@ -413,6 +581,7 @@ export const constructionClientsRouter = router({
         progress,
         assignments: enrichedAssignments,
         financials: financials[0] || null,
+        xeroAccountingSummary,
         kanbanTasks,
         quoteData,
         leadData,

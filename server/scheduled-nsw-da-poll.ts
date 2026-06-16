@@ -5,7 +5,7 @@
  * Triggered by a Heartbeat cron job at /api/scheduled/nsw-da-poll (weekly on Monday 7am AEST)
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { pollNswDaApplications, getRecentRelevantNswDas, NSW_TARGET_COUNCILS } from "./nsw-da-service";
 import { scrapeAndStoreT1CloudDas } from "./t1cloud-scraper-service";
 import { notifyOwner } from "./_core/notification";
@@ -14,82 +14,109 @@ import { getDb } from "./db";
 import { tenantMemberships, tenants, users } from "../drizzle/schema";
 import { and, eq, inArray } from "drizzle-orm";
 
+let nswDaPollRunning = false;
+
+async function runScheduledNswDaPoll(startTime: number) {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("DB unavailable");
+  }
+
+  const activeTenants = await db.select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .where(eq(tenants.status, "active"));
+
+  const tenantResults = [];
+  for (const tenant of activeTenants) {
+    console.log(`[NswDaPoll] Starting NSW Planning Portal poll for tenant ${tenant.id} (${tenant.name})...`);
+    const pollResult = await pollNswDaApplications({ tenantId: tenant.id });
+    console.log(`[NswDaPoll] Tenant ${tenant.id} poll complete. New: ${pollResult.totalNew}, Updated: ${pollResult.totalUpdated}, Relevant: ${pollResult.totalRelevant}`);
+
+    for (const r of pollResult.results) {
+      if (r.errors.length > 0) {
+        console.warn(`[NswDaPoll] tenant=${tenant.id} ${r.council}: ${r.errors.join(", ")}`);
+      } else {
+        console.log(`[NswDaPoll] tenant=${tenant.id} ${r.council}: fetched=${r.totalFetched}, new=${r.newCount}, relevant=${r.relevantCount}`);
+      }
+    }
+
+    // Phase 2: Scrape T1Cloud portals for builder/applicant names (tenant planning config can narrow councils)
+    let scrapeResult;
+    try {
+      console.log(`[NswDaPoll] Starting T1Cloud scrape for tenant ${tenant.id}...`);
+      scrapeResult = await scrapeAndStoreT1CloudDas({ tenantId: tenant.id });
+      console.log(`[NswDaPoll] Tenant ${tenant.id} T1Cloud scrape complete. New: ${scrapeResult.totalNew}, Updated: ${scrapeResult.totalUpdated}, Competitors: ${scrapeResult.totalCompetitorMatches}`);
+    } catch (scrapeErr: any) {
+      console.error(`[NswDaPoll] Tenant ${tenant.id} T1Cloud scrape error (non-fatal):`, scrapeErr.message);
+    }
+
+    // Notify owner if new relevant DAs found
+    if (pollResult.totalRelevant > 0) {
+      try {
+        const title = `🏗️ ${pollResult.totalRelevant} new relevant NSW DA${pollResult.totalRelevant > 1 ? "s" : ""} detected for ${tenant.name}`;
+        const lines = pollResult.results
+          .filter(r => r.relevantCount > 0)
+          .map(r => `• ${r.council}: ${r.relevantCount} relevant (${r.newCount} new total)`);
+        const content = lines.join("\n") + "\n\nView details in DA Tracker > NSW tab.";
+        await notifyOwner({ title, content, settingKey: "notify_nsw_da_relevant" });
+      } catch (notifyErr: any) {
+        console.error(`[NswDaPoll] Tenant ${tenant.id} notification error (non-fatal):`, notifyErr.message);
+      }
+    }
+
+    tenantResults.push({
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+      results: pollResult.results,
+      scrapeResult,
+      totals: {
+        new: pollResult.totalNew,
+        updated: pollResult.totalUpdated,
+        relevant: pollResult.totalRelevant,
+      },
+    });
+  }
+
+  return {
+    ok: true,
+    tenantResults,
+    duration: Date.now() - startTime,
+  };
+}
+
 export function registerScheduledNswDaPoll(app: Express) {
   app.post("/api/scheduled/nsw-da-poll", async (req: Request, res: Response) => {
     const startTime = Date.now();
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
-      const db = await getDb();
-      if (!db) {
-        return res.status(500).json({ error: "DB unavailable" });
+      if (req.query.wait === "1") {
+        return res.json(await runScheduledNswDaPoll(startTime));
       }
 
-      const activeTenants = await db.select({ id: tenants.id, name: tenants.name })
-        .from(tenants)
-        .where(eq(tenants.status, "active"));
-
-      const tenantResults = [];
-      for (const tenant of activeTenants) {
-        console.log(`[NswDaPoll] Starting NSW Planning Portal poll for tenant ${tenant.id} (${tenant.name})...`);
-        const pollResult = await pollNswDaApplications({ tenantId: tenant.id });
-        console.log(`[NswDaPoll] Tenant ${tenant.id} poll complete. New: ${pollResult.totalNew}, Updated: ${pollResult.totalUpdated}, Relevant: ${pollResult.totalRelevant}`);
-
-        for (const r of pollResult.results) {
-          if (r.errors.length > 0) {
-            console.warn(`[NswDaPoll] tenant=${tenant.id} ${r.council}: ${r.errors.join(", ")}`);
-          } else {
-            console.log(`[NswDaPoll] tenant=${tenant.id} ${r.council}: fetched=${r.totalFetched}, new=${r.newCount}, relevant=${r.relevantCount}`);
-          }
-        }
-
-        // Phase 2: Scrape T1Cloud portals for builder/applicant names (tenant planning config can narrow councils)
-        let scrapeResult;
-        try {
-          console.log(`[NswDaPoll] Starting T1Cloud scrape for tenant ${tenant.id}...`);
-          scrapeResult = await scrapeAndStoreT1CloudDas({ tenantId: tenant.id });
-          console.log(`[NswDaPoll] Tenant ${tenant.id} T1Cloud scrape complete. New: ${scrapeResult.totalNew}, Updated: ${scrapeResult.totalUpdated}, Competitors: ${scrapeResult.totalCompetitorMatches}`);
-        } catch (scrapeErr: any) {
-          console.error(`[NswDaPoll] Tenant ${tenant.id} T1Cloud scrape error (non-fatal):`, scrapeErr.message);
-        }
-
-        // Notify owner if new relevant DAs found
-        if (pollResult.totalRelevant > 0) {
-          try {
-            const title = `🏗️ ${pollResult.totalRelevant} new relevant NSW DA${pollResult.totalRelevant > 1 ? "s" : ""} detected for ${tenant.name}`;
-            const lines = pollResult.results
-              .filter(r => r.relevantCount > 0)
-              .map(r => `• ${r.council}: ${r.relevantCount} relevant (${r.newCount} new total)`);
-            const content = lines.join("\n") + "\n\nView details in DA Tracker > NSW tab.";
-            await notifyOwner({ title, content, settingKey: "notify_nsw_da_relevant" });
-          } catch (notifyErr: any) {
-            console.error(`[NswDaPoll] Tenant ${tenant.id} notification error (non-fatal):`, notifyErr.message);
-          }
-        }
-
-        tenantResults.push({
-          tenantId: tenant.id,
-          tenantName: tenant.name,
-          results: pollResult.results,
-          scrapeResult,
-          totals: {
-            new: pollResult.totalNew,
-            updated: pollResult.totalUpdated,
-            relevant: pollResult.totalRelevant,
-          },
+      if (nswDaPollRunning) {
+        return res.status(202).json({
+          ok: true,
+          queued: false,
+          alreadyRunning: true,
+          message: "NSW DA poll is already running.",
         });
       }
 
-      return res.json({
+      nswDaPollRunning = true;
+      void runScheduledNswDaPoll(startTime)
+        .then((result) => console.log(`[NswDaPoll] Background poll complete in ${result.duration}ms`))
+        .catch((err) => console.error("[NswDaPoll] Background poll failed:", err))
+        .finally(() => { nswDaPollRunning = false; });
+
+      return res.status(202).json({
         ok: true,
-        tenantResults,
-        duration: Date.now() - startTime,
+        queued: true,
+        mode: "background",
+        message: "NSW DA poll queued.",
       });
     } catch (err: any) {
       console.error("[NswDaPoll] Error:", err);
@@ -104,11 +131,8 @@ export function registerScheduledNswDaPoll(app: Express) {
   app.post("/api/scheduled/nsw-competitor-digest", async (req: Request, res: Response) => {
     const startTime = Date.now();
     try {
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();

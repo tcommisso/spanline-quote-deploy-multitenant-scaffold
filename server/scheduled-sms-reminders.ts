@@ -5,7 +5,7 @@
  */
 
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { constructionScheduleEvents, constructionInstallers, constructionJobs, smsDeliveryLog } from "../drizzle/schema";
 import { eq, and, gte, lte, isNotNull } from "drizzle-orm";
@@ -20,12 +20,8 @@ export function registerScheduledSmsReminders(app: Express) {
   app.post("/api/scheduled/sms-reminders", async (req: Request, res: Response) => {
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        // Also allow from admin for testing
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();

@@ -13,23 +13,34 @@ export default function DaTrackerDetail() {
 
   const { data: da, isLoading } = trpc.daTracker.detail.useQuery({ id: daId }, { enabled: daId > 0 });
 
-  const handleMapReady = (map: google.maps.Map) => {
-    if (!da || !da.centroidLat || !da.centroidLng) return;
+  const mapCenter = da ? {
+    lat: Number(da.parcelCentroidLat ?? da.centroidLat),
+    lng: Number(da.parcelCentroidLng ?? da.centroidLng),
+  } : null;
+  const hasMapCenter = !!mapCenter && Number.isFinite(mapCenter.lat) && Number.isFinite(mapCenter.lng);
+  const locationLabel = da
+    ? da.parcelAddress || `Block ${da.block ?? "—"}, Section ${da.section ?? "—"}, ${da.division || "—"} ACT`
+    : "";
+  const mapPolygon = da?.parcelPolygonJson || da?.polygonJson;
 
-    map.setCenter({ lat: da.centroidLat, lng: da.centroidLng });
-    map.setZoom(16);
+  const handleMapReady = (map: google.maps.Map) => {
+    if (!da || !hasMapCenter || !mapCenter) return;
+
+    map.setCenter(mapCenter);
+    map.setZoom(17);
 
     new google.maps.Marker({
-      position: { lat: da.centroidLat, lng: da.centroidLng },
+      position: mapCenter,
       map,
-      title: `DA ${da.daNumber}`,
+      title: locationLabel || `DA ${da.daNumber}`,
     });
 
-    // Draw polygon if available
-    if (da.polygonJson && Array.isArray(da.polygonJson)) {
-      const rings = da.polygonJson as number[][][];
+    if (mapPolygon && Array.isArray(mapPolygon)) {
+      const rings = mapPolygon as number[][][];
+      const bounds = new google.maps.LatLngBounds();
       for (const ring of rings) {
         const path = ring.map(([lng, lat]) => ({ lat, lng }));
+        path.forEach(point => bounds.extend(point));
         new google.maps.Polygon({
           paths: path,
           map,
@@ -39,6 +50,7 @@ export default function DaTrackerDetail() {
           fillOpacity: 0.15,
         });
       }
+      map.fitBounds(bounds, 32);
     }
   };
 
@@ -154,10 +166,17 @@ export default function DaTrackerDetail() {
             <CardTitle className="flex items-center gap-2">
               <MapPin className="h-4 w-4" /> Location
             </CardTitle>
+            <p className="text-sm text-muted-foreground">{locationLabel}</p>
           </CardHeader>
           <CardContent className="p-0 h-[400px]">
-            {da.centroidLat && da.centroidLng ? (
-              <MapView onMapReady={handleMapReady} className="w-full h-full rounded-b-lg" />
+            {hasMapCenter && mapCenter ? (
+              <MapView
+                key={`${da.id}-${mapCenter.lat}-${mapCenter.lng}`}
+                initialCenter={mapCenter}
+                initialZoom={17}
+                onMapReady={handleMapReady}
+                className="w-full h-full rounded-b-lg"
+              />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
                 No location data available

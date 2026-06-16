@@ -10,7 +10,7 @@ import {
   DollarSign, TrendingUp, TrendingDown, BarChart3, Percent,
   CheckCircle2, Receipt, CreditCard, Filter, ArrowUpDown,
   ArrowUp, ArrowDown, ExternalLink, PieChart as PieChartIcon,
-  CircleDot, Calendar,
+  CircleDot, Calendar, Wallet, Clock, HardHat, AlertTriangle, Ban,
 } from "lucide-react";
 // Import dialogs moved to Import History page
 import CollapsibleFilters from "@/components/CollapsibleFilters";
@@ -45,6 +45,24 @@ function getFYRange(fy: number): { fyStart: string; fyEnd: string } {
   };
 }
 
+function getFYMonthRange(fy: number, month: number): { fyStart: string; fyEnd: string } {
+  const year = month >= 7 ? fy : fy + 1;
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 0));
+  return {
+    fyStart: start.toISOString().slice(0, 10),
+    fyEnd: end.toISOString().slice(0, 10),
+  };
+}
+
+const STATUS_DASHBOARD_CONFIG: Record<string, { label: string; icon: any }> = {
+  scheduled: { label: "Scheduled", icon: Clock },
+  in_progress: { label: "In Progress", icon: HardHat },
+  on_hold: { label: "On Hold", icon: AlertTriangle },
+  completed: { label: "Completed", icon: CheckCircle2 },
+  cancelled: { label: "Cancelled", icon: Ban },
+};
+
 export default function ConstructionFinancial() {
   const [, navigate] = useLocation();
   // Dynamic FY from backend
@@ -52,6 +70,7 @@ export default function ConstructionFinancial() {
   const currentFy = fysQuery.data?.currentFy;
   // Default to null (All Years) — show all non-complete jobs regardless of year
   const [fyFilter, setFyFilter] = useState<number | null>(null);
+  const [monthFilter, setMonthFilter] = useState<number | null>(null);
   const selectedFY = fyFilter;
   const fyOptions = fysQuery.data?.years || [];
   const [filters, setFilters] = useState<{
@@ -63,7 +82,22 @@ export default function ConstructionFinancial() {
   const [sortField, setSortField] = useState<string>("contractValue");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const fyRange = useMemo(() => selectedFY != null ? getFYRange(selectedFY) : { fyStart: undefined, fyEnd: undefined }, [selectedFY]);
+  const monthOptions = useMemo(() => {
+    const FY_MONTHS = [7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6];
+    const MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return FY_MONTHS.map((m) => ({
+      value: m,
+      label: MONTH_NAMES[m],
+      fullLabel: selectedFY != null
+        ? `${MONTH_NAMES[m]} ${m >= 7 ? selectedFY : selectedFY + 1}`
+        : MONTH_NAMES[m],
+    }));
+  }, [selectedFY]);
+
+  const fyRange = useMemo(() => {
+    if (selectedFY != null && monthFilter != null) return getFYMonthRange(selectedFY, monthFilter);
+    return selectedFY != null ? getFYRange(selectedFY) : { fyStart: undefined, fyEnd: undefined };
+  }, [selectedFY, monthFilter]);
 
   // All queries include FY date range
   const queryInput = useMemo(() => ({
@@ -78,10 +112,16 @@ export default function ConstructionFinancial() {
   const jobVolumeTrend = trpc.constructionFinancial.jobVolumeTrend.useQuery({ fyStart: fyRange.fyStart, fyEnd: fyRange.fyEnd });
   const financialTrend = trpc.constructionFinancial.financialTrend.useQuery({ fyStart: fyRange.fyStart, fyEnd: fyRange.fyEnd });
   const statusDistribution = trpc.constructionFinancial.statusDistribution.useQuery({ fyStart: fyRange.fyStart, fyEnd: fyRange.fyEnd });
+  const clientStatusCounts = trpc.constructionClients.statusCounts.useQuery({
+    fyStartYear: selectedFY ?? undefined,
+    month: monthFilter ?? undefined,
+  });
 
   const summary = summaryQuery.data;
   const projects = projectsQuery.data || [];
   const filterOptions = filterOptionsQuery.data;
+  const statusCounts: Record<string, number> = (clientStatusCounts.data || {}) as Record<string, number>;
+  const dashboardProjectCount = statusCounts.total ?? summary?.totalProjects ?? 0;
 
   // Sort projects
   const sortedProjects = useMemo(() => {
@@ -119,7 +159,10 @@ export default function ConstructionFinancial() {
           <Calendar className="h-4 w-4 text-muted-foreground" />
           <Select
             value={selectedFY != null ? String(selectedFY) : "all"}
-            onValueChange={(v) => setFyFilter(v === "all" ? null : Number(v))}
+            onValueChange={(v) => {
+              setFyFilter(v === "all" ? null : Number(v));
+              setMonthFilter(null);
+            }}
           >
             <SelectTrigger className="w-[160px]">
               <SelectValue placeholder="Financial Year" />
@@ -131,6 +174,79 @@ export default function ConstructionFinancial() {
               ))}
             </SelectContent>
           </Select>
+          <Select
+            value={monthFilter != null ? String(monthFilter) : "all"}
+            onValueChange={(v) => setMonthFilter(v === "all" ? null : Number(v))}
+            disabled={selectedFY == null}
+          >
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="All Months" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Months</SelectItem>
+              {monthOptions.map((m) => (
+                <SelectItem key={m.value} value={String(m.value)}>{m.fullLabel}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Construction client dashboard tiles moved from Active Jobs */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold">Construction Client Dashboard</h2>
+          <p className="text-xs text-muted-foreground">
+            {dashboardProjectCount} project{dashboardProjectCount !== 1 ? "s" : ""}
+            {selectedFY != null ? ` in FY ${selectedFY}-${String(selectedFY + 1).slice(-2)}` : ""}
+            {monthFilter != null ? ` · ${monthOptions.find(m => m.value === monthFilter)?.fullLabel || ""}` : ""}
+          </p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <DashboardTile
+            title="Contract Value"
+            value={fmtShort(summary?.totalRevenue || 0)}
+            subtitle={`${dashboardProjectCount} projects`}
+            icon={DollarSign}
+            accent="border-l-primary"
+            iconClassName="text-primary"
+          />
+          <DashboardTile
+            title="Total Invoiced"
+            value={fmtShort(summary?.totalInvoiced || 0)}
+            subtitle={(summary?.totalRevenue || 0) > 0
+              ? `${Math.round(((summary?.totalInvoiced || 0) / (summary?.totalRevenue || 1)) * 100)}% of contract value`
+              : "—"}
+            icon={Receipt}
+            accent="border-l-blue-500"
+            iconClassName="text-blue-500"
+          />
+          <DashboardTile
+            title="Total Paid"
+            value={fmtShort(summary?.totalPaid || 0)}
+            subtitle={(summary?.totalInvoiced || 0) > 0
+              ? `${Math.round(((summary?.totalPaid || 0) / (summary?.totalInvoiced || 1)) * 100)}% of invoiced`
+              : "—"}
+            icon={Wallet}
+            accent="border-l-green-500 col-span-2 md:col-span-1"
+            iconClassName="text-green-500"
+          />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {Object.entries(STATUS_DASHBOARD_CONFIG).map(([key, config]) => {
+            const Icon = config.icon;
+            return (
+              <Card key={key}>
+                <CardContent className="p-3">
+                  <div className="flex items-center gap-2">
+                    <Icon className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">{config.label}</span>
+                  </div>
+                  <p className="text-2xl font-bold mt-1">{statusCounts[key] || 0}</p>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       </div>
 
@@ -470,6 +586,36 @@ function HealthDot({ marginPercent }: { marginPercent: number }) {
     <div className="flex justify-center" title={title}>
       <CircleDot className={`h-5 w-5 ${color}`} />
     </div>
+  );
+}
+
+// ─── Relocated Construction Client Dashboard Tile ───────────────────────────
+function DashboardTile({
+  title,
+  value,
+  icon: Icon,
+  subtitle,
+  accent,
+  iconClassName,
+}: {
+  title: string;
+  value: string;
+  icon: any;
+  subtitle?: string;
+  accent: string;
+  iconClassName?: string;
+}) {
+  return (
+    <Card className={`border-l-4 ${accent}`}>
+      <CardContent className="p-3">
+        <div className="flex items-center gap-2">
+          <Icon className={`h-4 w-4 ${iconClassName || "text-muted-foreground"}`} />
+          <span className="text-xs text-muted-foreground">{title}</span>
+        </div>
+        <p className="text-2xl font-bold mt-1">{value}</p>
+        {subtitle && <p className="text-[11px] text-muted-foreground">{subtitle}</p>}
+      </CardContent>
+    </Card>
   );
 }
 

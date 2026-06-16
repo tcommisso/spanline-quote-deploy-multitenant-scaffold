@@ -267,7 +267,7 @@ export default function SitePlanDiagram({
     }
   }, [satelliteUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasSatellite = !!(satelliteUrl && imgLoaded && !imgError);
+  const hasSatellite = !!(satelliteUrl && !imgError);
   const hasStructure = structureWidthM > 0 && structureLengthM > 0;
 
   // Structure position in SVG coordinates
@@ -430,7 +430,7 @@ export default function SitePlanDiagram({
           <img
             src={satelliteUrl}
             alt="Satellite view"
-            className={`absolute inset-0 w-full h-full object-cover rounded transition-opacity duration-300 ${imgLoaded ? "opacity-100" : "opacity-0"}`}
+            className="absolute inset-0 w-full h-full object-cover rounded"
             onLoad={() => setImgLoaded(true)}
             onError={() => setImgError(true)}
           />

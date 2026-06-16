@@ -7,6 +7,7 @@ RUN npm install -g pnpm@10
 
 # Copy package files for dependency installation
 COPY package.json pnpm-lock.yaml ./
+COPY patches ./patches
 
 # Install all dependencies (including devDependencies for build)
 RUN pnpm install --frozen-lockfile
@@ -27,9 +28,14 @@ RUN npm install -g pnpm@10
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
+COPY patches ./patches
 
-# Install production dependencies only
-RUN pnpm install --frozen-lockfile --prod
+# Install dependencies needed for the app and first-deploy schema setup
+RUN pnpm install --frozen-lockfile
+
+# Copy schema files required by the Railway pre-deploy command
+COPY drizzle ./drizzle
+COPY drizzle.config.ts tsconfig.json ./
 
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist

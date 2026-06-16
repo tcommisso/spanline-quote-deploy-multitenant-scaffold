@@ -19,6 +19,20 @@ import { sanitiseSignatureHtml, detectSignatureSource } from "@/lib/signatureHtm
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+function nylasRedirectUri() {
+  return `${window.location.origin}/api/nylas/callback`;
+}
+
+function nylasProviderFromState(state: string | null) {
+  if (!state) return undefined;
+  try {
+    const parsed = JSON.parse(state);
+    return typeof parsed.provider === "string" ? parsed.provider : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type ScheduleBlock = {
   dayOfWeek: number;
   startTime: string;
@@ -41,6 +55,7 @@ export default function ProfilePage() {
     const code = params.get("code");
     const error = params.get("error");
     const errorDescription = params.get("error_description");
+    const provider = nylasProviderFromState(params.get("state"));
 
     if (error) {
       // Nylas/provider returned an error during OAuth
@@ -51,8 +66,8 @@ export default function ProfilePage() {
       window.history.replaceState({}, "", window.location.pathname);
     } else if (code) {
       setIsConnectingCalendar(true);
-      const redirectUri = `${window.location.origin}/profile`;
-      exchangeCode.mutateAsync({ code, redirectUri })
+      const redirectUri = nylasRedirectUri();
+      exchangeCode.mutateAsync({ code, redirectUri, provider })
         .then((res) => {
           toast.success(`Calendar connected: ${res.email}`);
           refetchGrants();
@@ -68,7 +83,7 @@ export default function ProfilePage() {
   const handleConnectCalendar = async (provider?: string, loginHint?: string) => {
     setIsConnectingCalendar(true);
     try {
-      const redirectUri = `${window.location.origin}/profile`;
+      const redirectUri = nylasRedirectUri();
       const result = await utils.client.nylas.getAuthUrl.query({ redirectUri, provider, loginHint });
       window.location.href = result.url;
     } catch (err: any) {
@@ -759,11 +774,11 @@ function EmailSignatureSection() {
         )}
       </CardContent>
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-[600px]">
-          <DialogHeader>
+        <DialogContent className="max-w-[600px] max-h-[90dvh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editId ? "Edit Signature" : "Create Signature"}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 pr-1 overflow-y-auto flex-1 min-h-0">
             <div>
               <Label>Signature Name</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My Work Signature" />
@@ -825,7 +840,7 @@ function EmailSignatureSection() {
               <p className="text-xs text-muted-foreground mt-1">The system automatically selects the right signature based on the time of day.</p>
             </div>
           </div>
-          <DialogFooter className="flex justify-between sm:justify-between">
+          <DialogFooter className="flex justify-between sm:justify-between shrink-0 border-t pt-3">
             <Button variant="ghost" size="sm" className="text-xs" disabled={!htmlContent || sendTestMut.isPending} onClick={() => sendTestMut.mutate({ signatureHtml: htmlContent })}>
               <Send className="h-3 w-3 mr-1" /> {sendTestMut.isPending ? "Sending..." : "Send test email"}
             </Button>

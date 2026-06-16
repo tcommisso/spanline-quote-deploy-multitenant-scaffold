@@ -1,7 +1,8 @@
 import { ENV } from "./_core/env";
 import { getDb } from "./db";
 import { xeroConnections } from "../drizzle/schema";
-import { eq, and, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { resolveXeroConnectionForModule, type XeroEntityModule } from "./xero-entity-routing";
 
 // ─── Xero OAuth 2.0 Configuration ──────────────────────────────────────────
 const XERO_AUTH_URL = "https://login.xero.com/identity/connect/authorize";
@@ -11,28 +12,72 @@ const XERO_REVOKE_URL = "https://identity.xero.com/connect/revocation";
 const XERO_API_BASE = "https://api.xero.com/api.xro/2.0";
 const XERO_PROJECTS_API_BASE = "https://api.xero.com/projects.xro/2.0";
 
-const XERO_SCOPES = [
-  "openid",
-  "profile",
-  "email",
+export const XERO_SCOPE_PROFILES = {
+  sign_in_only: [
+    "offline_access",
+    "accounting.settings.read",
+  ],
+  accounting_read: [
+    "offline_access",
+    "accounting.settings.read",
+    "accounting.contacts.read",
+    "accounting.invoices.read",
+    "accounting.banktransactions.read",
+    "accounting.payments.read",
+    "accounting.budgets.read",
+    "projects.read",
+  ],
+  accounting_standard: [
+    "offline_access",
+    "accounting.settings",
+    "accounting.contacts",
+    "accounting.invoices",
+    "accounting.banktransactions",
+    "accounting.payments",
+    "accounting.budgets.read",
+    "projects",
+  ],
+} as const;
+
+export type XeroScopeProfile = keyof typeof XERO_SCOPE_PROFILES;
+
+const DEFAULT_XERO_SCOPES = [
   "offline_access",
-  "accounting.invoices",
-  "accounting.payments",
-  "accounting.banktransactions.read",
-  "accounting.contacts",
   "accounting.settings",
-  "accounting.settings.read",
+  "accounting.contacts",
+  "accounting.invoices",
+  "accounting.banktransactions",
+  "accounting.payments",
+  "accounting.budgets.read",
   "projects",
-].join(" ");
+];
+
+function normaliseScopes(scopes: string) {
+  return Array.from(
+    new Set(
+      scopes
+        .split(/[\s,]+/)
+        .map((scope) => scope.trim())
+        .filter(Boolean)
+    )
+  ).join(" ");
+}
+
+const XERO_SCOPES = normaliseScopes(ENV.xeroScopes || DEFAULT_XERO_SCOPES.join(" "));
+
+export function getXeroScopes(profile?: XeroScopeProfile): string {
+  if (profile) return normaliseScopes(XERO_SCOPE_PROFILES[profile].join(" "));
+  return XERO_SCOPES;
+}
 
 // ─── Auth Helpers ───────────────────────────────────────────────────────────
 
-export function getXeroAuthUrl(redirectUri: string, state: string): string {
+export function getXeroAuthUrl(redirectUri: string, state: string, scopeProfile?: XeroScopeProfile): string {
   const params = new URLSearchParams({
     response_type: "code",
     client_id: ENV.xeroClientId,
     redirect_uri: redirectUri,
-    scope: XERO_SCOPES,
+    scope: getXeroScopes(scopeProfile),
     state,
   });
   return `${XERO_AUTH_URL}?${params.toString()}`;
@@ -156,41 +201,113 @@ export async function disconnectXeroTenant(accessToken: string, connectionId: st
 type XeroTokenLookupOptions = {
   connectionId?: number;
   appTenantId?: number | null;
+  moduleKey?: XeroEntityModule | string | null;
+  forceRefresh?: boolean;
 };
+
+async function persistXeroTokenBundle(db: any, connection: typeof xeroConnections.$inferSelect, tokens: XeroTokenResponse) {
+  const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+  let tenantIds: string[] = [];
+
+  try {
+    const tenants = await getXeroTenants(tokens.access_token);
+    tenantIds = tenants.map((tenant) => tenant.tenantId).filter(Boolean);
+  } catch {
+    tenantIds = [];
+  }
+
+  if (tenantIds.length && !tenantIds.includes(connection.tenantId)) {
+    throw new Error(`Refreshed Xero token is not authorised for tenant ${connection.tenantId}`);
+  }
+
+  const appTenantCondition = connection.appTenantId
+    ? eq(xeroConnections.appTenantId, connection.appTenantId)
+    : isNull(xeroConnections.appTenantId);
+
+  const sharedTokenConditions = [
+    eq(xeroConnections.userId, connection.userId),
+    appTenantCondition,
+    eq(xeroConnections.isActive, true),
+    tenantIds.length ? inArray(xeroConnections.tenantId, tenantIds) : eq(xeroConnections.id, connection.id),
+  ];
+
+  await db.update(xeroConnections)
+    .set({
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      tokenExpiresAt: newExpiresAt,
+      scopes: tokens.scope,
+      updatedAt: new Date(),
+    })
+    .where(and(...sharedTokenConditions));
+
+  return {
+    accessToken: tokens.access_token,
+    tenantId: connection.tenantId,
+    xeroConnectionId: connection.id,
+    appTenantId: connection.appTenantId ?? null,
+  };
+}
+
+async function refreshConnectionTokenBundle(db: any, connection: typeof xeroConnections.$inferSelect) {
+  const triedRefreshTokens = new Set<string>();
+
+  const tryRefresh = async (candidate: typeof xeroConnections.$inferSelect) => {
+    if (triedRefreshTokens.has(candidate.refreshToken)) return null;
+    triedRefreshTokens.add(candidate.refreshToken);
+    const tokens = await refreshAccessToken(candidate.refreshToken);
+    return persistXeroTokenBundle(db, connection, tokens);
+  };
+
+  try {
+    return await tryRefresh(connection);
+  } catch {
+    // Xero refresh tokens rotate. In a multi-entity connection, a sibling row
+    // may already hold the latest token bundle, so try those before giving up.
+  }
+
+  const siblingConditions: any[] = [
+    eq(xeroConnections.userId, connection.userId),
+    eq(xeroConnections.isActive, true),
+    ne(xeroConnections.id, connection.id),
+  ];
+  if (connection.appTenantId) {
+    siblingConditions.push(eq(xeroConnections.appTenantId, connection.appTenantId));
+  } else {
+    siblingConditions.push(isNull(xeroConnections.appTenantId));
+  }
+
+  const siblings = await db.select()
+    .from(xeroConnections)
+    .where(and(...siblingConditions))
+    .orderBy(xeroConnections.updatedAt);
+
+  for (const sibling of siblings.reverse()) {
+    try {
+      const refreshed = await tryRefresh(sibling);
+      if (refreshed) return refreshed;
+    } catch {
+      // Try the next sibling token.
+    }
+  }
+
+  await db.update(xeroConnections)
+    .set({ isActive: false, updatedAt: new Date() })
+    .where(eq(xeroConnections.id, connection.id));
+  return null;
+}
 
 export async function getValidAccessToken(
   connectionIdOrOptions?: number | XeroTokenLookupOptions
-): Promise<{ accessToken: string; tenantId: string; xeroConnectionId: number } | null> {
+): Promise<{ accessToken: string; tenantId: string; xeroConnectionId: number; appTenantId: number | null } | null> {
   const db = await getDb();
   if (!db) return null;
 
   const options: XeroTokenLookupOptions = typeof connectionIdOrOptions === "number"
     ? { connectionId: connectionIdOrOptions }
     : connectionIdOrOptions || {};
-  const tenantCondition = options.appTenantId
-    ? or(eq(xeroConnections.appTenantId, options.appTenantId), isNull(xeroConnections.appTenantId))
-    : undefined;
 
-  let connection;
-  if (options.connectionId) {
-    const conditions = [
-      eq(xeroConnections.id, options.connectionId),
-      eq(xeroConnections.isActive, true),
-    ];
-    if (tenantCondition) conditions.push(tenantCondition);
-    const [conn] = await db.select().from(xeroConnections).where(
-      and(...conditions)
-    );
-    connection = conn;
-  } else {
-    // Get the first active connection
-    const conditions = [eq(xeroConnections.isActive, true)];
-    if (tenantCondition) conditions.push(tenantCondition);
-    const [conn] = await db.select().from(xeroConnections)
-      .where(and(...conditions))
-      .limit(1);
-    connection = conn;
-  }
+  const connection = await resolveXeroConnectionForModule(db, options);
 
   if (!connection) return null;
 
@@ -199,38 +316,16 @@ export async function getValidAccessToken(
   const expiresAt = new Date(connection.tokenExpiresAt);
   const bufferMs = 5 * 60 * 1000; // 5 minutes
 
-  if (now.getTime() + bufferMs >= expiresAt.getTime()) {
+  if (options.forceRefresh || now.getTime() + bufferMs >= expiresAt.getTime()) {
     // Token expired or about to expire - refresh it
-    try {
-      const tokens = await refreshAccessToken(connection.refreshToken);
-      const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-
-      await db.update(xeroConnections)
-        .set({
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          tokenExpiresAt: newExpiresAt,
-        })
-        .where(eq(xeroConnections.id, connection.id));
-
-      return {
-        accessToken: tokens.access_token,
-        tenantId: connection.tenantId,
-        xeroConnectionId: connection.id,
-      };
-    } catch (error) {
-      // If refresh fails, mark connection as inactive
-      await db.update(xeroConnections)
-        .set({ isActive: false })
-        .where(eq(xeroConnections.id, connection.id));
-      return null;
-    }
+    return refreshConnectionTokenBundle(db, connection);
   }
 
   return {
     accessToken: connection.accessToken,
     tenantId: connection.tenantId,
     xeroConnectionId: connection.id,
+    appTenantId: connection.appTenantId ?? null,
   };
 }
 
@@ -240,18 +335,23 @@ interface XeroApiOptions {
   timeoutMs?: number;
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: any;
+  headers?: Record<string, string>;
   connectionId?: number;
+  appTenantId?: number | null;
+  moduleKey?: XeroEntityModule | string | null;
 }
+
+type XeroRequestRoutingOptions = Pick<XeroApiOptions, "connectionId" | "appTenantId" | "moduleKey" | "timeoutMs">;
 
 export async function xeroApiRequest<T = any>(
   endpoint: string,
   options: XeroApiOptions = {}
 ): Promise<T> {
-  const { method = "GET", body, connectionId, timeoutMs = 30000 } = options;
+  const { method = "GET", body, headers: customHeaders = {}, connectionId, appTenantId, moduleKey, timeoutMs = 30000 } = options;
   const maxRetries = 3;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const auth = await getValidAccessToken(connectionId);
+    const auth = await getValidAccessToken({ connectionId, appTenantId, moduleKey });
     if (!auth) {
       throw new Error("No active Xero connection. Please connect to Xero first.");
     }
@@ -266,6 +366,7 @@ export async function xeroApiRequest<T = any>(
       "Authorization": `Bearer ${auth.accessToken}`,
       "Xero-tenant-id": auth.tenantId,
       "Accept": "application/json",
+      ...customHeaders,
     };
 
     if (body) {
@@ -301,6 +402,19 @@ export async function xeroApiRequest<T = any>(
       console.log(`[Xero] Rate limited (429) on ${method} ${endpoint}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
       continue;
+    }
+
+    if ((response.status === 401 || response.status === 403) && attempt < maxRetries) {
+      const errorText = await response.text();
+      if (/AuthenticationUnsuccessful|token|auth/i.test(errorText)) {
+        await getValidAccessToken({ connectionId: auth.xeroConnectionId, forceRefresh: true });
+        continue;
+      }
+      throw new Error(`Xero API error (${response.status}): ${errorText}`);
+    }
+
+    if (response.status === 304) {
+      return {} as T;
     }
 
     if (!response.ok) {
@@ -386,39 +500,58 @@ export interface XeroPurchaseOrder {
 }
 
 // Contact operations
-export async function getXeroContacts(options?: { where?: string; page?: number }): Promise<{ Contacts: XeroContact[] }> {
+export async function getXeroContacts(
+  options?: { where?: string; page?: number },
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Contacts: XeroContact[] }> {
   let endpoint = "/Contacts";
   const params = new URLSearchParams();
   if (options?.where) params.set("where", options.where);
   if (options?.page) params.set("page", options.page.toString());
   if (params.toString()) endpoint += `?${params.toString()}`;
-  return xeroApiRequest(endpoint);
+  return xeroApiRequest(endpoint, routing);
 }
 
-export async function createXeroContact(contact: Partial<XeroContact>): Promise<{ Contacts: XeroContact[] }> {
-  return xeroApiRequest("/Contacts", { method: "POST", body: contact });
+export async function createXeroContact(
+  contact: Partial<XeroContact>,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Contacts: XeroContact[] }> {
+  return xeroApiRequest("/Contacts", { method: "POST", body: contact, ...routing });
 }
 
-export async function updateXeroContact(contactId: string, contact: Partial<XeroContact>): Promise<{ Contacts: XeroContact[] }> {
-  return xeroApiRequest(`/Contacts/${contactId}`, { method: "POST", body: contact });
+export async function updateXeroContact(
+  contactId: string,
+  contact: Partial<XeroContact>,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Contacts: XeroContact[] }> {
+  return xeroApiRequest(`/Contacts/${contactId}`, { method: "POST", body: contact, ...routing });
 }
 
 // Invoice operations
-export async function createXeroInvoice(invoice: Partial<XeroInvoice>): Promise<{ Invoices: XeroInvoice[] }> {
-  return xeroApiRequest("/Invoices", { method: "POST", body: invoice });
+export async function createXeroInvoice(
+  invoice: Partial<XeroInvoice>,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Invoices: XeroInvoice[] }> {
+  return xeroApiRequest("/Invoices", { method: "POST", body: invoice, ...routing });
 }
 
-export async function getXeroInvoice(invoiceId: string): Promise<{ Invoices: XeroInvoice[] }> {
-  return xeroApiRequest(`/Invoices/${invoiceId}`);
+export async function getXeroInvoice(
+  invoiceId: string,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Invoices: XeroInvoice[] }> {
+  return xeroApiRequest(`/Invoices/${invoiceId}`, routing);
 }
 
-export async function getXeroInvoices(options?: { where?: string; page?: number }): Promise<{ Invoices: XeroInvoice[] }> {
+export async function getXeroInvoices(
+  options?: { where?: string; page?: number },
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Invoices: XeroInvoice[] }> {
   let endpoint = "/Invoices";
   const params = new URLSearchParams();
   if (options?.where) params.set("where", options.where);
   if (options?.page) params.set("page", options.page.toString());
   if (params.toString()) endpoint += `?${params.toString()}`;
-  return xeroApiRequest(endpoint);
+  return xeroApiRequest(endpoint, routing);
 }
 
 // Payment operations
@@ -433,22 +566,31 @@ export interface XeroPayment {
   BatchPayment?: { BatchPaymentID: string; Date?: string };
 }
 
-export async function getXeroPayments(options?: { where?: string; page?: number }): Promise<{ Payments: XeroPayment[] }> {
+export async function getXeroPayments(
+  options?: { where?: string; page?: number },
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ Payments: XeroPayment[] }> {
   let endpoint = "/Payments";
   const params = new URLSearchParams();
   if (options?.where) params.set("where", options.where);
   if (options?.page) params.set("page", options.page.toString());
   if (params.toString()) endpoint += `?${params.toString()}`;
-  return xeroApiRequest(endpoint);
+  return xeroApiRequest(endpoint, routing);
 }
 
 // Purchase Order operations
-export async function createXeroPurchaseOrder(po: Partial<XeroPurchaseOrder>): Promise<{ PurchaseOrders: XeroPurchaseOrder[] }> {
-  return xeroApiRequest("/PurchaseOrders", { method: "POST", body: po });
+export async function createXeroPurchaseOrder(
+  po: Partial<XeroPurchaseOrder>,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ PurchaseOrders: XeroPurchaseOrder[] }> {
+  return xeroApiRequest("/PurchaseOrders", { method: "POST", body: po, ...routing });
 }
 
-export async function getXeroPurchaseOrder(poId: string): Promise<{ PurchaseOrders: XeroPurchaseOrder[] }> {
-  return xeroApiRequest(`/PurchaseOrders/${poId}`);
+export async function getXeroPurchaseOrder(
+  poId: string,
+  routing?: XeroRequestRoutingOptions,
+): Promise<{ PurchaseOrders: XeroPurchaseOrder[] }> {
+  return xeroApiRequest(`/PurchaseOrders/${poId}`, routing);
 }
 
 // ─── Xero Projects API ─────────────────────────────────────────────────────
@@ -500,7 +642,7 @@ export async function getXeroProjects(options?: {
   states?: string;
   page?: number;
   pageSize?: number;
-}): Promise<XeroProjectsResponse> {
+}, routing?: XeroRequestRoutingOptions): Promise<XeroProjectsResponse> {
   const params = new URLSearchParams();
   if (options?.contactId) params.set("contactID", options.contactId);
   if (options?.states) params.set("states", options.states);
@@ -508,14 +650,14 @@ export async function getXeroProjects(options?: {
   if (options?.pageSize) params.set("pageSize", options.pageSize.toString());
   const qs = params.toString();
   const endpoint = `/projects/projects${qs ? `?${qs}` : ""}`;
-  return xeroApiRequest(endpoint);
+  return xeroApiRequest(endpoint, routing);
 }
 
 /**
  * Get a single Xero project by ID.
  */
-export async function getXeroProject(projectId: string): Promise<XeroProject> {
-  return xeroApiRequest(`/projects/projects/${projectId}`);
+export async function getXeroProject(projectId: string, routing?: XeroRequestRoutingOptions): Promise<XeroProject> {
+  return xeroApiRequest(`/projects/projects/${projectId}`, routing);
 }
 
 /**
@@ -524,11 +666,11 @@ export async function getXeroProject(projectId: string): Promise<XeroProject> {
 export async function getXeroProjectTasks(projectId: string, options?: {
   page?: number;
   pageSize?: number;
-}): Promise<XeroProjectTasksResponse> {
+}, routing?: XeroRequestRoutingOptions): Promise<XeroProjectTasksResponse> {
   const params = new URLSearchParams();
   if (options?.page) params.set("page", options.page.toString());
   if (options?.pageSize) params.set("pageSize", options.pageSize.toString());
   const qs = params.toString();
   const endpoint = `/projects/projects/${projectId}/tasks${qs ? `?${qs}` : ""}`;
-  return xeroApiRequest(endpoint);
+  return xeroApiRequest(endpoint, routing);
 }

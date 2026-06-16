@@ -83,6 +83,7 @@ const GeneralThreshold = lazy(() => import("./pages/admin/GeneralThreshold"));
 const DescriptionsOfWork = lazy(() => import("./pages/admin/DescriptionsOfWork"));
 const SmsTemplates = lazy(() => import("./pages/admin/SmsTemplates"));
 const SupplierCategoriesPage = lazy(() => import("./pages/admin/SupplierCategoriesPage"));
+const AIRenderPricingSettings = lazy(() => import("./pages/admin/AIRenderPricingSettings"));
 const AdminImageLibrary = lazy(() => import("./pages/AdminImageLibrary"));
 const UserSettings = lazy(() => import("./pages/admin/UserSettings"));
 const ColourPaletteSettings = lazy(() => import("./pages/admin/ColourPaletteSettings"));
@@ -105,6 +106,7 @@ const SubscriptionManagement = lazy(() => import("./pages/SubscriptionManagement
 const RenderCostDashboard = lazy(() => import("./pages/admin/RenderCostDashboard"));
 const SubcontractEditor = lazy(() => import("./pages/SubcontractEditor"));
 const HelpGuide = lazy(() => import("./pages/HelpGuide"));
+const ProcessFlows = lazy(() => import("./pages/ProcessFlows"));
 const ReportBug = lazy(() => import("./pages/ReportBug"));
 const MakeSuggestion = lazy(() => import("./pages/MakeSuggestion"));
 const AcceptInvitation = lazy(() => import("./pages/AcceptInvitation"));
@@ -112,6 +114,7 @@ const AdminSupportSubmissions = lazy(() => import("./pages/AdminSupportSubmissio
 const TechLibraryAdmin = lazy(() => import("./pages/TechLibraryAdmin"));
 const EnginiKnowledgeViewer = lazy(() => import("./pages/EnginiKnowledgeViewer"));
 const AISettingsAdmin = lazy(() => import("./pages/AISettingsAdmin"));
+const ApiHealthAdmin = lazy(() => import("./pages/ApiHealthAdmin"));
 const WhsAdmin = lazy(() => import("./pages/WhsAdmin"));
 const InductionFormAdmin = lazy(() => import("./pages/InductionFormAdmin"));
 const SupplierDirectory = lazy(() => import("./pages/SupplierDirectory"));
@@ -141,6 +144,7 @@ const ApprovalsProjectDetail = lazy(() => import("./pages/ApprovalsProjectDetail
 const ApprovalsPathwayAssessment = lazy(() => import("./pages/ApprovalsPathwayAssessment"));
 const ApprovalsWorkflow = lazy(() => import("./pages/ApprovalsWorkflow"));
 const ApprovalsWorkflowTemplates = lazy(() => import("./pages/ApprovalsWorkflowTemplates"));
+const AdminHbcfBuilderProfile = lazy(() => import("./pages/AdminHbcfBuilderProfile"));
 const ApprovalsAllTasks = lazy(() => import("./pages/ApprovalsAllTasks"));
 const ApprovalsAllDocuments = lazy(() => import("./pages/ApprovalsAllDocuments"));
 const ApprovalsAllRfis = lazy(() => import("./pages/ApprovalsAllRfis"));
@@ -168,6 +172,7 @@ const InventoryTransfers = lazy(() => import("./pages/InventoryTransfers"));
 const InventoryReports = lazy(() => import("./pages/InventoryReports"));
 const StocktakeList = lazy(() => import("./pages/StocktakeList"));
 const StocktakeDetail = lazy(() => import("./pages/StocktakeDetail"));
+const StocktakeMobileCount = lazy(() => import("./pages/StocktakeMobileCount"));
 const LowStockAlerts = lazy(() => import("./pages/LowStockAlerts"));
 const InventoryDashboard = lazy(() => import("./pages/InventoryDashboard"));
 const WarehouseReceiving = lazy(() => import("./pages/WarehouseReceiving"));
@@ -234,6 +239,8 @@ const DaTrackerDetail = lazy(() => import("./pages/DaTrackerDetail"));
 const DaTrackerSubscriptions = lazy(() => import("./pages/DaTrackerSubscriptions"));
 const DaTrackerCompetitors = lazy(() => import("./pages/DaTrackerCompetitors"));
 const NswDaTracker = lazy(() => import("./pages/NswDaTracker"));
+const HbcfCertificates = lazy(() => import("./pages/HbcfCertificates"));
+const HbcfDashboard = lazy(() => import("./pages/HbcfDashboard"));
 
 // Non-lazy trade portal imports
 import { TradePortalProvider } from "./contexts/TradePortalContext";
@@ -394,6 +401,7 @@ function MainRouter() {
         <Route path="/admin/master-data/general/image-library">{() => <MasterDataPage><AdminImageLibrary /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/general/crm-dropdowns">{() => <MasterDataPage><CrmDropdownOptions /></MasterDataPage>}</Route>
         <Route path="/admin/master-data">{() => <Redirect to="/admin/master-data/structure/products" />}</Route>
+        <Route path="/admin/ai-render-pricing">{() => <AdminRoute><AIRenderPricingSettings /></AdminRoute>}</Route>
         <Route path="/admin/company-settings">{() => <AdminRoute><CompanySettings /></AdminRoute>}</Route>
         <Route path="/admin/settings">{() => <AdminRoute><AdminSettings /></AdminRoute>}</Route>
         <Route path="/admin/climbo-settings">{() => <AdminRoute><ClimboSettings /></AdminRoute>}</Route>
@@ -445,6 +453,7 @@ function MainRouter() {
         <Route path="/inventory/transfers" component={InventoryTransfers} />
         <Route path="/inventory/reports" component={InventoryReports} />
         <Route path="/manufacturing/stocktake" component={StocktakeList} />
+        <Route path="/manufacturing/stocktake/:id/count" component={StocktakeMobileCount} />
         <Route path="/manufacturing/stocktake/:id" component={StocktakeDetail} />
         <Route path="/inventory/warehouse-receiving" component={WarehouseReceiving} />
         <Route path="/inventory/low-stock-alerts" component={LowStockAlerts} />
@@ -477,9 +486,11 @@ function MainRouter() {
         <Route path="/admin/tech-library">{() => <AdminRoute><TechLibraryAdmin /></AdminRoute>}</Route>
         <Route path="/admin/engini-knowledge">{() => <AdminRoute><EnginiKnowledgeViewer /></AdminRoute>}</Route>
         <Route path="/admin/ai-settings">{() => <AdminRoute><AISettingsAdmin /></AdminRoute>}</Route>
+        <Route path="/admin/api-health">{() => <AdminRoute><ApiHealthAdmin /></AdminRoute>}</Route>
         <Route path="/admin/whs">{() => <AdminRoute><WhsAdmin /></AdminRoute>}</Route>
         <Route path="/admin/induction-config">{() => <AdminRoute><InductionFormAdmin /></AdminRoute>}</Route>
-        <Route path="/admin/suppliers">{() => <AdminRoute><SupplierDirectory /></AdminRoute>}</Route>
+        <Route path="/admin/suppliers">{() => <AdminRoute><SupplierDirectory supplierScope="construction" /></AdminRoute>}</Route>
+        <Route path="/manufacturing/suppliers">{() => <AdminRoute><SupplierDirectory supplierScope="manufacturing" /></AdminRoute>}</Route>
         <Route path="/admin/supplier-feedback">{() => <AdminRoute><SupplierFeedback /></AdminRoute>}</Route>
         <Route path="/admin/component-catalogue">{() => <AdminRoute><ComponentCatalogueAdmin /></AdminRoute>}</Route>
         <Route path="/admin/text-blocks">{() => <AdminRoute><AdminTextBlocks /></AdminRoute>}</Route>
@@ -496,6 +507,7 @@ function MainRouter() {
         <Route path="/profile" component={ProfilePage} />
         <Route path="/calendar-availability" component={CalendarAvailability} />
         <Route path="/help" component={HelpGuide} />
+        <Route path="/process-flows" component={ProcessFlows} />
         <Route path="/support/bug" component={ReportBug} />
         <Route path="/support/suggestion" component={MakeSuggestion} />
         <Route path="/invite/:token">{(params) => <AcceptInvitation token={params.token!} />}</Route>
@@ -505,6 +517,11 @@ function MainRouter() {
         <Route path="/approvals/rfis" component={ApprovalsAllRfis} />
         <Route path="/approvals/inspections" component={ApprovalsAllInspections} />
         <Route path="/approvals/workflow-templates" component={ApprovalsWorkflowTemplates} />
+        <Route path="/approvals/hbcf/dashboard" component={HbcfDashboard} />
+        <Route path="/approvals/hbcf/certificates" component={HbcfCertificates} />
+        <Route path="/approvals/hbcf/competitors">{() => <DaTrackerCompetitors initialBranch="hbcf" />}</Route>
+        <Route path="/approvals/hbcf/builder-profile">{() => <AdminRoute><AdminHbcfBuilderProfile /></AdminRoute>}</Route>
+        <Route path="/approvals/hbcf-builder-profile">{() => <AdminRoute><AdminHbcfBuilderProfile /></AdminRoute>}</Route>
         <Route path="/approvals/projects/new" component={ApprovalsProjectNew} />
         <Route path="/approvals/projects/:id/pathway" component={ApprovalsPathwayAssessment} />
         <Route path="/approvals/projects/:id/workflow" component={ApprovalsWorkflow} />
@@ -513,7 +530,7 @@ function MainRouter() {
         <Route path="/approvals" component={ApprovalsDashboard} />
 
         <Route path="/da-tracker/nsw" component={NswDaTracker} />
-        <Route path="/da-tracker/competitors" component={DaTrackerCompetitors} />
+        <Route path="/da-tracker/competitors">{() => <DaTrackerCompetitors />}</Route>
         <Route path="/da-tracker/subscriptions" component={DaTrackerSubscriptions} />
         <Route path="/da-tracker/list" component={DaTrackerList} />
         <Route path="/da-tracker/:id">{() => <DaTrackerDetail />}</Route>

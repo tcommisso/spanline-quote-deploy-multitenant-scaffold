@@ -13,6 +13,8 @@ import { randomUUID } from "crypto";
 import { applyWatermark, fetchImageBuffer } from "./watermark";
 import { storagePut } from "./storage";
 import { logRenderCost } from "./render-cost-router";
+import { getTenantBrandingSettings } from "./db";
+import { getCompanyName } from "./company-name";
 
 /** Shape of a single render history entry stored in the DB JSON column */
 export interface PatioRenderHistoryEntry {
@@ -181,16 +183,15 @@ export const patioRenderRouter = router({
       try {
         const rawBuffer = await fetchImageBuffer(result.url);
 
-        // Try to fetch company logo from user settings
+        // Try to fetch company logo from tenant branding
         let logoBuffer: Buffer | undefined;
+        let companyName = "Altaspan";
         try {
-          const { getDb } = await import("./db");
-          const db2 = await getDb();
-          const { userSettings } = await import("../drizzle/schema");
-          const { eq } = await import("drizzle-orm");
-          const [settings] = await db2!.select().from(userSettings).where(eq(userSettings.userId, ctx.user.id)).limit(1);
-          if (settings?.customLogoUrl) {
-            logoBuffer = await fetchImageBuffer(settings.customLogoUrl);
+          const branding = await getTenantBrandingSettings(ctx.tenant?.id ?? null);
+          const companyInfo = await getCompanyName(ctx.tenant?.id ?? null);
+          companyName = companyInfo.displayName || companyName;
+          if (branding?.customLogoUrl) {
+            logoBuffer = await fetchImageBuffer(branding.customLogoUrl);
           }
         } catch {
           // Continue without logo
@@ -199,7 +200,7 @@ export const patioRenderRouter = router({
         const watermarked = await applyWatermark({
           imageBuffer: rawBuffer,
           logoBuffer,
-          companyName: "Altaspan",
+          companyName,
           year: new Date().getFullYear(),
           opacity: 0.85,
           position: "bottom-right",
@@ -447,21 +448,20 @@ export const patioRenderRouter = router({
           try {
             const rawBuffer = await fetchImageBuffer(result.url);
             let logoBuffer: Buffer | undefined;
+            let companyName = "Altaspan";
             try {
-              const { getDb } = await import("./db");
-              const db2 = await getDb();
-              const { userSettings } = await import("../drizzle/schema");
-              const { eq } = await import("drizzle-orm");
-              const [settings] = await db2!.select().from(userSettings).where(eq(userSettings.userId, ctx.user.id)).limit(1);
-              if (settings?.customLogoUrl) {
-                logoBuffer = await fetchImageBuffer(settings.customLogoUrl);
+              const branding = await getTenantBrandingSettings(ctx.tenant?.id ?? null);
+              const companyInfo = await getCompanyName(ctx.tenant?.id ?? null);
+              companyName = companyInfo.displayName || companyName;
+              if (branding?.customLogoUrl) {
+                logoBuffer = await fetchImageBuffer(branding.customLogoUrl);
               }
             } catch { /* continue without logo */ }
 
             const watermarked = await applyWatermark({
               imageBuffer: rawBuffer,
               logoBuffer,
-              companyName: "Altaspan",
+              companyName,
               year: new Date().getFullYear(),
               opacity: 0.85,
               position: "bottom-right",

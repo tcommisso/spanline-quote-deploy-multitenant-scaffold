@@ -166,7 +166,7 @@ function AddressSettings() {
   const [address, setAddress] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
-  const [provider, setProvider] = useState<string>("resend");
+  const [provider, setProvider] = useState<string>("msgraph");
   const [module, setModule] = useState<string>("none");
   const [defaultAssigneeId, setDefaultAssigneeId] = useState<string>("none");
 
@@ -175,7 +175,7 @@ function AddressSettings() {
     setAddress("");
     setDisplayName("");
     setDescription("");
-    setProvider("resend");
+    setProvider("msgraph");
     setModule("none");
     setDefaultAssigneeId("none");
   }
@@ -1106,11 +1106,11 @@ function SignatureSettings() {
       </CardContent>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-[600px] max-h-[90vh] flex flex-col">
-          <DialogHeader>
+        <DialogContent className="max-w-[600px] max-h-[90dvh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editId ? "Edit Signature" : "Create Signature"}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
+          <div className="space-y-4 py-2 pr-1 overflow-y-auto flex-1 min-h-0">
             <div>
               <Label>Signature Name</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My Work Signature" />
@@ -1159,7 +1159,7 @@ function SignatureSettings() {
               <Label htmlFor="sig-default">Set as default signature</Label>
             </div>
           </div>
-          <DialogFooter className="flex justify-between sm:justify-between">
+          <DialogFooter className="flex justify-between sm:justify-between shrink-0 border-t pt-3">
             <Button variant="ghost" size="sm" className="text-xs" disabled={!htmlContent || sendTestMut.isPending} onClick={() => sendTestMut.mutate({ signatureHtml: htmlContent })}>
               <Send className="h-3 w-3 mr-1" /> {sendTestMut.isPending ? "Sending..." : "Send test email"}
             </Button>

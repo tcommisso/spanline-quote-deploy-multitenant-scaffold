@@ -1,11 +1,9 @@
 /**
  * Xero Cost Import Router
  * 
- * Handles importing Xero "Project Details for Cost Report" Excel exports.
- * The report is grouped by supplier with the following structure:
- *   - Supplier header row: Only column A has the supplier name (text, not a date)
- *   - Data rows: Date, Project Name, Project State, Item Type, Item Name, Item Code, Reference, Hours, Cost, Actual, Total Invoiced
- *   - Total row: "Total <supplier name>" in column A with sum formulas
+ * Handles importing Xero "Project Details for Cost Report" exports.
+ * Supports both the older supplier-grouped Excel report and the newer flat CSV/XLSX report:
+ *   - Date, Contact, Project Name, Project State, Project Item Type, Project Item Name, Item Code, Supplier, Reference, Cost
  * 
  * Only rows with Item Type = "Expense" and Cost != 0 are imported.
  * Costs from the report are ex-GST; we multiply by 1.1 for inc-GST storage.
@@ -21,6 +19,7 @@ import {
   xeroProjectMappings,
   constructionJobs,
   constructionJobFinancials,
+  crmLeads,
 } from "../drizzle/schema";
 import * as XLSX from "xlsx";
 import { createHash } from "crypto";
@@ -60,6 +59,14 @@ function generateImportHash(row: ParsedCostRow, appTenantId?: number | null): st
   return createHash("sha256").update(hashInput).digest("hex").slice(0, 64);
 }
 
+function parseMoney(value: unknown) {
+  const normalised = String(value ?? "")
+    .replace(/[$,\s]/g, "")
+    .replace(/^\((.*)\)$/, "-$1");
+  const amount = Number(normalised);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
 function parseExcelDate(value: any): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
@@ -73,6 +80,122 @@ function parseExcelDate(value: any): Date | null {
     if (!isNaN(d.getTime())) return d;
   }
   return null;
+}
+
+function findHeaderIndex(headers: string[], candidates: string[]) {
+  return candidates
+    .map((candidate) => headers.indexOf(candidate))
+    .find((index) => index !== -1) ?? -1;
+}
+
+function cell(row: any[], index: number) {
+  return index >= 0 ? row[index] : undefined;
+}
+
+function normaliseSearchText(value: string | null | undefined) {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokensFor(value: string | null | undefined) {
+  return normaliseSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+}
+
+function scoreJobCandidate(group: { projectName: string; contactName?: string | null }, job: {
+  id: number;
+  quoteNumber: string | null;
+  clientName: string;
+  siteAddress: string | null;
+}) {
+  const project = normaliseSearchText(group.projectName);
+  const contact = normaliseSearchText(group.contactName);
+  const quote = normaliseSearchText(job.quoteNumber);
+  const client = normaliseSearchText(job.clientName);
+  const address = normaliseSearchText(job.siteAddress);
+  let score = 0;
+
+  if (quote && project.includes(quote)) score += 90;
+  if (quote && group.projectName.toLowerCase().includes(quote.replace(/\s+/g, ""))) score += 70;
+  if (client && contact && (client.includes(contact) || contact.includes(client))) score += 65;
+  if (client && project && (project.includes(client) || client.includes(project))) score += 45;
+
+  for (const token of tokensFor(group.projectName)) {
+    if (quote.includes(token)) score += 12;
+    if (client.includes(token)) score += 8;
+    if (address.includes(token)) score += 6;
+  }
+  for (const token of tokensFor(group.contactName)) {
+    if (client.includes(token)) score += 12;
+    if (address.includes(token)) score += 4;
+  }
+
+  return score;
+}
+
+function resolveCostJobId(
+  row: ParsedCostRow,
+  projectNameToJobId: Map<string, number>,
+  jobs: Array<{ id: number; quoteNumber: string | null; clientName: string; siteAddress: string | null }>,
+) {
+  const projectKey = row.projectName.toLowerCase().trim();
+  const exact = projectNameToJobId.get(projectKey);
+  if (exact) return exact;
+
+  const scored = jobs
+    .map((job) => ({ job, score: scoreJobCandidate({ projectName: row.projectName }, job) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  return best && best.score >= 70 ? best.job.id : null;
+}
+
+function isClosedProjectState(value: string | null | undefined) {
+  return (value || "").trim().toLowerCase() === "closed";
+}
+
+async function completeClosedJobs(
+  db: any,
+  closedJobIds: Set<number>,
+  jobs: Array<{ id: number; status: string; leadId: number | null }>,
+  appTenantId?: number | null,
+) {
+  if (!closedJobIds.size) return { closedJobsUpdated: 0, closedLeadsUpdated: 0 };
+
+  let closedJobsUpdated = 0;
+  const closedIds = Array.from(closedJobIds);
+  const closedJobs = jobs.filter((job) => closedIds.includes(job.id));
+  for (const job of closedJobs) {
+    if (job.status !== "completed") {
+      const [result] = await db.update(constructionJobs)
+        .set({ status: "completed", updatedAt: new Date() })
+        .where(and(
+          eq(constructionJobs.id, job.id),
+          tenantScoped(constructionJobs.tenantId, appTenantId),
+        ));
+      closedJobsUpdated += Number((result as any)?.affectedRows || 0);
+    }
+  }
+
+  let closedLeadsUpdated = 0;
+  const leadIds = Array.from(new Set(
+    closedJobs
+      .map((job) => job.leadId)
+      .filter((id): id is number => Boolean(id))
+  ));
+  if (leadIds.length) {
+    const [leadResult] = await db.update(crmLeads)
+      .set({ status: "completed", updatedAt: new Date() })
+      .where(and(
+        inArray(crmLeads.id, leadIds),
+        tenantScoped(crmLeads.tenantId, appTenantId),
+      ));
+    closedLeadsUpdated = Number((leadResult as any)?.affectedRows || 0);
+  }
+
+  return { closedJobsUpdated, closedLeadsUpdated };
 }
 
 /**
@@ -103,7 +226,7 @@ function parseXeroCostReport(buffer: Buffer): {
 
   // Find the header row (contains "Project Name" or "Date" in first few columns)
   let headerRowIdx = -1;
-  for (let i = 0; i < Math.min(10, rawData.length); i++) {
+  for (let i = 0; i < Math.min(20, rawData.length); i++) {
     const row = rawData[i];
     if (row && row.some((cell: any) => {
       const s = String(cell || "").toLowerCase();
@@ -119,6 +242,26 @@ function parseXeroCostReport(buffer: Buffer): {
     headerRowIdx = 6;
   }
 
+  const headers = (rawData[headerRowIdx] || []).map((h: any) =>
+    String(h || "").toLowerCase().trim()
+  );
+  const dateIdx = findHeaderIndex(headers, ["date"]);
+  const projectNameIdx = findHeaderIndex(headers, ["project name"]);
+  const projectStateIdx = findHeaderIndex(headers, ["project state"]);
+  const itemTypeIdx = findHeaderIndex(headers, ["project item type", "item type"]);
+  const itemNameIdx = findHeaderIndex(headers, ["project item name", "item name"]);
+  const itemCodeIdx = findHeaderIndex(headers, ["item code"]);
+  const supplierIdx = findHeaderIndex(headers, ["supplier"]);
+  const referenceIdx = findHeaderIndex(headers, ["reference"]);
+  const costIdx = findHeaderIndex(headers, ["cost"]);
+  const actualIdx = findHeaderIndex(headers, ["actual"]);
+  const totalInvoicedIdx = findHeaderIndex(headers, ["total invoiced"]);
+
+  if (projectNameIdx === -1 || itemTypeIdx === -1 || costIdx === -1) {
+    errors.push("Missing required columns: Project Name, Project Item Type/Item Type, and Cost");
+    return { rows, dateRangeStart, dateRangeEnd, errors };
+  }
+
   // Process data rows starting after header
   for (let i = headerRowIdx + 1; i < rawData.length; i++) {
     const row = rawData[i];
@@ -126,10 +269,10 @@ function parseXeroCostReport(buffer: Buffer): {
 
     const colA = row[0];
     const colB = row[1];
-    const colD = row[3]; // Item Type column
+    const itemTypeCell = cell(row, itemTypeIdx);
 
-    // Detect supplier header: Column A has text (not a date), columns B-D are empty
-    if (colA && !colB && !colD) {
+    // Detect supplier header for older grouped exports when there is no Supplier column.
+    if (supplierIdx === -1 && colA && !colB && !itemTypeCell) {
       const text = String(colA).trim();
       if (text && !(colA instanceof Date)) {
         if (text.startsWith("Total ")) {
@@ -143,24 +286,25 @@ function parseXeroCostReport(buffer: Buffer): {
     }
 
     // Check if this is an expense data row
-    const itemType = String(colD || "").trim();
+    const itemType = String(itemTypeCell || "").trim();
     if (itemType !== "Expense") continue;
 
-    // Parse the cost value (column I, index 8)
-    const costRaw = row[8];
-    const costExGst = typeof costRaw === "number" ? costRaw : parseFloat(String(costRaw || "0"));
+    const costExGst = parseMoney(cell(row, costIdx));
     
     // Skip rows where cost is 0 or nil
     if (!costExGst || costExGst === 0) continue;
 
-    const date = parseExcelDate(colA);
-    const projectName = String(row[1] || "").trim();
-    const projectState = String(row[2] || "").trim();
-    const itemName = String(row[4] || "").trim();
-    const itemCode = String(row[5] || "").trim();
-    const reference = String(row[6] || "").trim();
-    const actual = typeof row[9] === "number" ? row[9] : parseFloat(String(row[9] || "0"));
-    const totalInvoiced = typeof row[10] === "number" ? row[10] : parseFloat(String(row[10] || "0"));
+    const date = parseExcelDate(cell(row, dateIdx));
+    const projectName = String(cell(row, projectNameIdx) || "").trim();
+    const projectState = String(cell(row, projectStateIdx) || "").trim();
+    const itemName = String(cell(row, itemNameIdx) || "").trim();
+    const itemCode = String(cell(row, itemCodeIdx) || "").trim();
+    const reference = String(cell(row, referenceIdx) || "").trim();
+    const actual = parseMoney(cell(row, actualIdx));
+    const totalInvoiced = parseMoney(cell(row, totalInvoicedIdx));
+    const supplierName = supplierIdx >= 0
+      ? String(cell(row, supplierIdx) || "").trim()
+      : currentSupplier;
 
     if (!projectName) {
       errors.push(`Row ${i + 1}: Missing project name`);
@@ -185,7 +329,7 @@ function parseXeroCostReport(buffer: Buffer): {
       costExGst,
       actual,
       totalInvoiced,
-      supplierName: currentSupplier,
+      supplierName,
     });
   }
 
@@ -291,15 +435,36 @@ export const xeroCostImportRouter = router({
         }
       }
 
+      const jobs = await db
+        .select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+          status: constructionJobs.status,
+          leadId: constructionJobs.leadId,
+        })
+        .from(constructionJobs)
+        .where(tenantScoped(constructionJobs.tenantId, ctx.tenant.id));
+      for (const job of jobs) {
+        if (job.quoteNumber) {
+          projectNameToJobId.set(job.quoteNumber.trim().toLowerCase(), job.id);
+        }
+      }
+
       let importedCount = 0;
       let duplicateCount = 0;
       let skippedCount = 0;
+      const closedJobIds = new Set<number>();
 
       // Pre-compute hashes and filter unmatched projects upfront
       const rowsWithMeta = rows.map(row => {
         const hash = generateImportHash(row, ctx.tenant.id);
         const legacyHash = generateImportHash(row);
-        const jobId = projectNameToJobId.get(row.projectName.toLowerCase()) || null;
+        const jobId = resolveCostJobId(row, projectNameToJobId, jobs);
+        if (jobId && isClosedProjectState(row.projectState)) {
+          closedJobIds.add(jobId);
+        }
         return { row, hash, legacyHash, jobId };
       });
 
@@ -386,6 +551,7 @@ export const xeroCostImportRouter = router({
 
       // Update job financials with new cost totals
       await recalculateJobCostsFromImports(db, ctx.tenant.id);
+      const closedUpdates = await completeClosedJobs(db, closedJobIds, jobs, ctx.tenant.id);
 
       return {
         batchId,
@@ -394,7 +560,9 @@ export const xeroCostImportRouter = router({
         duplicates: duplicateCount,
         skipped: skippedCount,
         chunked: false,
-        unmatchedProjects: Array.from(new Set(rows.filter(r => !projectNameToJobId.get(r.projectName.toLowerCase())).map(r => r.projectName))).slice(0, 50),
+        unmatchedProjects: Array.from(new Set(rowsWithMeta.filter(r => !r.jobId).map(r => r.row.projectName))).slice(0, 50),
+        closedJobsUpdated: closedUpdates.closedJobsUpdated,
+        closedLeadsUpdated: closedUpdates.closedLeadsUpdated,
         dateRange: dateRangeStart && dateRangeEnd ? `${dateRangeStart} to ${dateRangeEnd}` : null,
         errors: errors.slice(0, 10),
       };

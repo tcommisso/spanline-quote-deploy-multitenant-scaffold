@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useParams, useLocation } from "wouter";
 import { toast } from "sonner";
-import { ArrowLeft, Save, CheckCircle, AlertTriangle, Package } from "lucide-react";
+import { ArrowLeft, Save, CheckCircle, AlertTriangle, Smartphone } from "lucide-react";
 
 export default function StocktakeDetail() {
   const { id } = useParams<{ id: string }>();
@@ -127,6 +127,11 @@ export default function StocktakeDetail() {
           }>{data.status.replace(/_/g, " ")}</Badge>
         </div>
         <div className="flex gap-2">
+          {isEditable && (
+            <Button variant="outline" onClick={() => navigate(`/manufacturing/stocktake/${stocktakeId}/count`)}>
+              <Smartphone className="w-4 h-4 mr-2" /> Mobile Count
+            </Button>
+          )}
           {isEditable && Object.keys(counts).length > 0 && (
             <Button onClick={handleSaveCounts} disabled={updateCountsMutation.isPending}>
               <Save className="w-4 h-4 mr-2" /> Save Counts ({Object.keys(counts).length})

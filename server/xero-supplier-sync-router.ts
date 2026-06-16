@@ -1,9 +1,12 @@
 import { router, tenantAdminProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { suppliers } from "../drizzle/schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getValidAccessToken, xeroApiRequest, type XeroContact } from "./xero-client";
 import { tenantScoped } from "./_core/tenant-scope";
+import { z } from "zod";
+
+const supplierScopeSchema = z.enum(["construction", "manufacturing"]).default("construction");
 
 /**
  * Fetch all Xero contacts where IsSupplier=true, paginating through all pages.
@@ -89,14 +92,17 @@ export const xeroSupplierSyncRouter = router({
    * upserts them into the suppliers table matching on xeroContactId.
    * Returns counts of created, updated, and skipped suppliers.
    */
-  syncFromXero: tenantAdminProcedure.mutation(async ({ ctx }) => {
+  syncFromXero: tenantAdminProcedure
+    .input(z.object({ supplierScope: supplierScopeSchema.optional() }).optional())
+    .mutation(async ({ ctx, input }) => {
     const db = await getDb();
     if (!db) throw new Error("Database unavailable");
     const tenantId = ctx.tenant!.id;
     const userId = ctx.user!.id;
+    const supplierScope = input?.supplierScope || "construction";
 
-    const auth = await getValidAccessToken({ appTenantId: tenantId });
-    if (!auth) throw new Error("No active Xero connection for this tenant");
+    const auth = await getValidAccessToken({ appTenantId: tenantId, moduleKey: supplierScope });
+    if (!auth) throw new Error(`No active Xero connection configured for ${supplierScope}`);
 
     // Fetch all suppliers from Xero
     const xeroSuppliers = await fetchAllXeroSuppliers(auth.xeroConnectionId);
@@ -105,15 +111,19 @@ export const xeroSupplierSyncRouter = router({
     const existingSuppliers = await db.select({
       id: suppliers.id,
       xeroContactId: suppliers.xeroContactId,
+      xeroConnectionId: suppliers.xeroConnectionId,
       name: suppliers.name,
     })
       .from(suppliers)
-      .where(tenantScoped(suppliers.tenantId, tenantId));
+      .where(and(
+        tenantScoped(suppliers.tenantId, tenantId),
+        eq(suppliers.supplierScope, supplierScope),
+      ));
 
     const existingByXeroId = new Map(
       existingSuppliers
         .filter(s => s.xeroContactId)
-        .map(s => [s.xeroContactId!, s])
+        .map(s => [`${s.xeroConnectionId || auth.xeroConnectionId}:${s.xeroContactId}`, s])
     );
 
     let created = 0;
@@ -129,7 +139,7 @@ export const xeroSupplierSyncRouter = router({
       }
 
       const parsed = parseXeroSupplier(xeroContact);
-      const existing = existingByXeroId.get(xeroContact.ContactID);
+      const existing = existingByXeroId.get(`${auth.xeroConnectionId}:${xeroContact.ContactID}`);
 
       if (existing) {
         // Update existing supplier with latest Xero data
@@ -140,6 +150,9 @@ export const xeroSupplierSyncRouter = router({
             phone: parsed.phone,
             email: parsed.email,
             address: parsed.address,
+            supplierScope,
+            xeroConnectionId: auth.xeroConnectionId,
+            xeroTenantId: auth.tenantId,
             lastXeroSyncAt: now,
             isActive: true,
           })
@@ -159,6 +172,9 @@ export const xeroSupplierSyncRouter = router({
           await db.update(suppliers)
             .set({
               xeroContactId: parsed.xeroContactId,
+              supplierScope,
+              xeroConnectionId: auth.xeroConnectionId,
+              xeroTenantId: auth.tenantId,
               contactName: parsed.contactName || undefined,
               phone: parsed.phone || undefined,
               email: parsed.email || undefined,
@@ -179,7 +195,10 @@ export const xeroSupplierSyncRouter = router({
             phone: parsed.phone,
             email: parsed.email,
             address: parsed.address,
+            supplierScope,
             xeroContactId: parsed.xeroContactId,
+            xeroConnectionId: auth.xeroConnectionId,
+            xeroTenantId: auth.tenantId,
             lastXeroSyncAt: now,
             isActive: true,
             createdBy: userId,
@@ -195,16 +214,22 @@ export const xeroSupplierSyncRouter = router({
       updated,
       skipped,
       syncedAt: now.toISOString(),
+      supplierScope,
+      xeroConnectionId: auth.xeroConnectionId,
+      xeroTenantId: auth.tenantId,
     };
   }),
 
   /**
    * Get the last sync timestamp for display in the UI.
    */
-  getLastSyncInfo: tenantAdminProcedure.query(async ({ ctx }) => {
+  getLastSyncInfo: tenantAdminProcedure
+    .input(z.object({ supplierScope: supplierScopeSchema.optional() }).optional())
+    .query(async ({ ctx, input }) => {
     const db = await getDb();
     if (!db) return null;
     const tenantId = ctx.tenant!.id;
+    const supplierScope = input?.supplierScope || "construction";
 
     const [row] = await db.select({
       lastSync: suppliers.lastXeroSyncAt,
@@ -212,9 +237,10 @@ export const xeroSupplierSyncRouter = router({
       .from(suppliers)
       .where(and(
         eq(suppliers.isActive, true),
+        eq(suppliers.supplierScope, supplierScope),
         tenantScoped(suppliers.tenantId, tenantId),
       ))
-      .orderBy(suppliers.lastXeroSyncAt)
+      .orderBy(desc(suppliers.lastXeroSyncAt))
       .limit(1);
 
     return row?.lastSync ? { lastSyncedAt: row.lastSync.toISOString() } : null;

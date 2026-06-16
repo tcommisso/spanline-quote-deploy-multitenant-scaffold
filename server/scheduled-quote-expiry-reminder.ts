@@ -5,7 +5,7 @@
  * Runs daily at 9am AEST (23:00 UTC previous day).
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import mysql from "mysql2/promise";
 import { sendNotificationEmail } from "./email";
 
@@ -146,11 +146,8 @@ export function registerScheduledQuoteExpiryReminder(app: Express) {
   app.post("/api/scheduled/quote-expiry-reminder", async (req: Request, res: Response) => {
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const expiringQuotes = await getExpiringQuotes();

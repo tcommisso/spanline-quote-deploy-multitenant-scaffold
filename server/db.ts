@@ -1,6 +1,6 @@
-import { eq, and, desc, like, sql, notInArray, or, gte, lte } from "drizzle-orm";
+import { eq, and, desc, like, sql, notInArray, or, gte, lte, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, quotes, quoteComponents, skyluxEntries, eclipseEntries, masterData, skyluxMatrix, products, deckQuotes, eclipseQuotes, colourGroups, colourGroupMembers, crmLeads, emailImages, quoteRevisions, smsDeliveryLog, userSettings, techLibraryDocuments, practicalCompletionNotices, constructionJobs, constructionKanbanTasks, portalVariations, swmsDocuments, siteInductions, constructionInstallers, constructionAssignments, inductionFormConfig, invitations, tenantMemberships, manufacturingDrivers, tradePortalAccess, quoteItems, type InsertInductionFormConfig } from "../drizzle/schema";
+import { InsertUser, users, quotes, quoteDetails, quoteComponents, skyluxEntries, eclipseEntries, masterData, skyluxMatrix, products, deckQuotes, eclipseQuotes, colourGroups, colourGroupMembers, crmLeads, emailImages, quoteRevisions, smsDeliveryLog, userSettings, tenantSettings, techLibraryDocuments, practicalCompletionNotices, constructionJobs, constructionKanbanTasks, portalVariations, swmsDocuments, siteInductions, constructionInstallers, constructionAssignments, inductionFormConfig, invitations, tenantMemberships, manufacturingDrivers, tradePortalAccess, quoteItems, type InsertInductionFormConfig } from "../drizzle/schema";
 import { randomBytes } from "crypto";
 import type { InsertSwmsDocument, InsertSiteInduction } from "../drizzle/schema";
 import type { InsertPracticalCompletionNotice, InsertPortalVariation } from "../drizzle/schema";
@@ -181,18 +181,78 @@ export async function acceptTerms(userId: number, version: string) {
 }
 
 // ─── Quotes ──────────────────────────────────────────────────────────────────
+const QUOTE_CORE_KEYS = new Set([
+  "tenantId", "userId", "quoteNumber", "clientId", "clientName", "clientPhone", "clientEmail",
+  "siteAddress", "suburb", "localCouncil", "region", "status", "outcomeReason", "archived",
+  "descriptionOfWork", "notes", "includeDelivery", "deliveryAmount", "includeTravelAllowance",
+  "travelAllowance", "travelDistanceKm", "travelBandKey", "travelOverridden", "travelBranchName",
+  "includeSmallJobSurcharge", "smallJobSurcharge", "includeConstructionMgmt", "constructionMgmtAmount",
+  "constructionMgmtPercent", "constructionMgmtOverride", "complexityLoading", "complexityOverride",
+  "discountPercent", "councilFees", "homeWarranty", "designAdvisor", "proposalSentAt",
+  "proposalSentTo", "signwellDocumentId", "signwellStatus", "signedPdfUrl", "signwellSentAt",
+  "signwellCompletedAt", "validUntil", "expiryReminderSentAt",
+]);
+
+function splitQuotePayload(data: Record<string, any>) {
+  const core: Record<string, any> = {};
+  const detail: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data || {})) {
+    if (value === undefined || key === "id" || key === "createdAt" || key === "updatedAt") continue;
+    if (QUOTE_CORE_KEYS.has(key)) core[key] = value;
+    else detail[key] = value;
+  }
+  return { core, detail };
+}
+
+function hasValues(data: Record<string, any>) {
+  return Object.keys(data).length > 0;
+}
+
+function mergeQuoteDetail(row: any, detail?: { data: Record<string, any> | null }) {
+  return { ...row, ...((detail?.data as Record<string, any> | null) || {}) };
+}
+
+async function mergeQuoteDetails(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, rows: any[]) {
+  if (rows.length === 0) return rows;
+  const ids = rows.map((row) => row.id).filter((id): id is number => typeof id === "number");
+  if (ids.length === 0) return rows;
+  const details = await db.select().from(quoteDetails).where(inArray(quoteDetails.quoteId, ids));
+  const byQuoteId = new Map(details.map((detail) => [detail.quoteId, detail]));
+  return rows.map((row) => mergeQuoteDetail(row, byQuoteId.get(row.id)));
+}
+
+async function upsertQuoteDetail(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  quoteId: number,
+  patch: Record<string, any>,
+  replace = false,
+) {
+  if (!hasValues(patch)) return;
+  const [existing] = await db.select().from(quoteDetails).where(eq(quoteDetails.quoteId, quoteId)).limit(1);
+  const data = replace ? patch : { ...((existing?.data as Record<string, any> | null) || {}), ...patch };
+  if (existing) {
+    await db.update(quoteDetails).set({ data }).where(eq(quoteDetails.quoteId, quoteId));
+    return;
+  }
+  await db.insert(quoteDetails).values({ quoteId, data });
+}
+
 export async function createQuote(data: InsertQuote) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const result = await db.insert(quotes).values(data);
-  return result[0].insertId;
+  const { core, detail } = splitQuotePayload(data);
+  const result = await db.insert(quotes).values(core as any);
+  const quoteId = result[0].insertId;
+  await upsertQuoteDetail(db, quoteId, detail, true);
+  return quoteId;
 }
 
 export async function getQuoteById(id: number) {
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return result[0];
+  const [merged] = await mergeQuoteDetails(db, result);
+  return merged;
 }
 
 export async function getQuotesByUser(userId: number, search?: string, status?: string) {
@@ -201,7 +261,8 @@ export async function getQuotesByUser(userId: number, search?: string, status?: 
   const conditions = [eq(quotes.userId, userId)];
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
-  return db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
+  const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
+  return mergeQuoteDetails(db, rows);
 }
 
 export async function getAllQuotes(search?: string, status?: string) {
@@ -210,7 +271,8 @@ export async function getAllQuotes(search?: string, status?: string) {
   const conditions: any[] = [];
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
-  return db.select().from(quotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(quotes.updatedAt));
+  const rows = await db.select().from(quotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(quotes.updatedAt));
+  return mergeQuoteDetails(db, rows);
 }
 export async function getQuotesByDesignAdviser(adviserName: string, search?: string, status?: string) {
   const db = await getDb();
@@ -218,18 +280,22 @@ export async function getQuotesByDesignAdviser(adviserName: string, search?: str
   const conditions: any[] = [eq(quotes.designAdvisor, adviserName)];
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
-  return db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
+  const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
+  return mergeQuoteDetails(db, rows);
 }
 
 export async function updateQuote(id: number, data: Partial<InsertQuote>) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(quotes).set(data).where(eq(quotes.id, id));
+  const { core, detail } = splitQuotePayload(data);
+  if (hasValues(core)) await db.update(quotes).set(core as any).where(eq(quotes.id, id));
+  await upsertQuoteDetail(db, id, detail);
 }
 
 export async function deleteQuote(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  await db.delete(quoteDetails).where(eq(quoteDetails.quoteId, id));
   await db.delete(quoteComponents).where(eq(quoteComponents.quoteId, id));
   await db.delete(skyluxEntries).where(eq(skyluxEntries.quoteId, id));
   await db.delete(eclipseEntries).where(eq(eclipseEntries.quoteId, id));
@@ -1365,11 +1431,114 @@ export async function upsertUserSettings(userId: number, data: {
   return { success: true };
 }
 
+type TenantBrandingRecord = {
+  companyDetails?: any;
+  customLogoUrl?: string | null;
+  appIconUrl?: string | null;
+  faviconUrl?: string | null;
+  companyTheme?: any;
+  branding?: Record<string, any>;
+};
 
-// ─── Company Theme ──────────────────────────────────────────────────────────
-export async function getCompanyTheme() {
+function objectRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
+}
+
+function legacyBrandingFromUserSettings(row: typeof userSettings.$inferSelect | undefined): TenantBrandingRecord | null {
+  if (!row) return null;
+  return {
+    companyDetails: row.companyDetails,
+    customLogoUrl: row.customLogoUrl ?? null,
+    appIconUrl: row.appIconUrl ?? null,
+    faviconUrl: row.faviconUrl ?? null,
+    companyTheme: row.companyTheme,
+    branding: {
+      customLogoUrl: row.customLogoUrl ?? null,
+      appIconUrl: row.appIconUrl ?? null,
+      faviconUrl: row.faviconUrl ?? null,
+      companyTheme: row.companyTheme,
+    },
+  };
+}
+
+export async function getTenantBrandingSettings(tenantId?: number | null): Promise<TenantBrandingRecord | null> {
   const db = await getDb();
   if (!db) return null;
+
+  let tenantRow: typeof tenantSettings.$inferSelect | undefined;
+  if (tenantId) {
+    const rows = await db.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
+    tenantRow = rows[0];
+  } else {
+    const rows = await db.select().from(tenantSettings).limit(1);
+    tenantRow = rows[0];
+  }
+
+  if (tenantRow) {
+    const branding = objectRecord(tenantRow.branding);
+    return {
+      companyDetails: tenantRow.companyDetails,
+      customLogoUrl: (branding.customLogoUrl as string | null | undefined) ?? null,
+      appIconUrl: (branding.appIconUrl as string | null | undefined) ?? null,
+      faviconUrl: (branding.faviconUrl as string | null | undefined) ?? null,
+      companyTheme: branding.companyTheme,
+      branding,
+    };
+  }
+
+  const legacyRows = await db.select().from(userSettings).limit(5);
+  const legacy = legacyRows.find((row) =>
+    row.companyDetails ||
+    row.customLogoUrl ||
+    row.appIconUrl ||
+    row.faviconUrl ||
+    row.companyTheme
+  );
+  return legacyBrandingFromUserSettings(legacy);
+}
+
+export async function upsertTenantBrandingSettings(
+  tenantId: number,
+  data: {
+    companyDetails?: any;
+    branding?: Record<string, any>;
+  },
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const existingRows = await db.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
+  const existing = existingRows[0];
+  if (existing) {
+    const set: Record<string, any> = {};
+    if (Object.prototype.hasOwnProperty.call(data, "companyDetails")) {
+      set.companyDetails = data.companyDetails;
+    }
+    if (data.branding) {
+      set.branding = { ...objectRecord(existing.branding), ...data.branding };
+    }
+    if (Object.keys(set).length > 0) {
+      await db.update(tenantSettings).set(set).where(eq(tenantSettings.tenantId, tenantId));
+    }
+  } else {
+    await db.insert(tenantSettings).values({
+      tenantId,
+      companyDetails: Object.prototype.hasOwnProperty.call(data, "companyDetails") ? data.companyDetails : null,
+      branding: data.branding ?? {},
+    });
+  }
+  return { success: true };
+}
+
+
+// ─── Company Theme ──────────────────────────────────────────────────────────
+export async function getCompanyTheme(tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) return null;
+  const tenantBranding = await getTenantBrandingSettings(tenantId);
+  if (tenantBranding?.companyTheme && typeof tenantBranding.companyTheme === "object") {
+    return tenantBranding.companyTheme as Record<string, unknown>;
+  }
   // Get the first user_settings row that has companyTheme set
   const rows = await db.select({ companyTheme: userSettings.companyTheme }).from(userSettings).limit(5);
   for (const row of rows) {

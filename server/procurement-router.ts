@@ -38,6 +38,12 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function supplierTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 async function requireManufacturingOrderAccess(db: any, ctx: any, orderId: number) {
   const [order] = await db.select({ order: manufacturingOrders })
     .from(manufacturingOrders)
@@ -163,7 +169,7 @@ export const procurementRouter = router({
           if (allReceived && po.supplier) {
             const [supplierRow] = await db.select({ id: suppliers.id })
               .from(suppliers)
-              .where(eq(suppliers.name, po.supplier))
+              .where(and(...supplierTenantConditions(ctx, eq(suppliers.name, po.supplier), eq(suppliers.supplierScope, "manufacturing"))))
               .limit(1);
             supplierId = supplierRow?.id || null;
           }
@@ -576,14 +582,15 @@ export const procurementRouter = router({
       const { getValidAccessToken, createXeroContact, xeroApiRequest } = await import("./xero-client");
       const { suppliers } = await import("../drizzle/schema");
 
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "manufacturing" });
       if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
+      const routing = { connectionId: auth.xeroConnectionId };
 
       // Try to find the supplier in our directory to get xeroContactId
       let xeroContactId: string | null = null;
       if (invoice.supplierName) {
         const [supplier] = await db.select().from(suppliers)
-          .where(like(suppliers.name, `%${invoice.supplierName}%`)).limit(1);
+          .where(and(...supplierTenantConditions(ctx, like(suppliers.name, `%${invoice.supplierName}%`), eq(suppliers.supplierScope, "manufacturing")))).limit(1);
         if (supplier?.xeroContactId) {
           xeroContactId = supplier.xeroContactId;
         }
@@ -593,7 +600,8 @@ export const procurementRouter = router({
       if (!xeroContactId) {
         try {
           const searchResult = await xeroApiRequest<{ Contacts: Array<{ ContactID: string }> }>(
-            `/Contacts?where=Name=="${encodeURIComponent(invoice.supplierName)}"`
+            `/Contacts?where=Name=="${encodeURIComponent(invoice.supplierName)}"`,
+            routing
           );
           if (searchResult.Contacts?.length > 0) {
             xeroContactId = searchResult.Contacts[0].ContactID;
@@ -604,7 +612,7 @@ export const procurementRouter = router({
           const newContact = await createXeroContact({
             Name: invoice.supplierName,
             EmailAddress: invoice.supplierEmail || undefined,
-          } as any);
+          } as any, routing);
           xeroContactId = newContact.Contacts?.[0]?.ContactID || null;
         }
       }

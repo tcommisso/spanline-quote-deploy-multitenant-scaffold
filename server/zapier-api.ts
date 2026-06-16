@@ -21,6 +21,98 @@ import { tenants, type User } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { findTenantByZapierApiKey } from "./tenant-integrations";
 
+const SOURCE_CREATED_FIELD_NAMES = [
+  "sourceCreatedAt",
+  "leadCreatedAt",
+  "lead_created_at",
+  "dateCreated",
+  "date_created",
+  "createdDate",
+  "created_date",
+  "createdAt",
+  "created_at",
+  "created",
+  "Lead Created",
+  "Lead Created Date",
+  "Date Created",
+  "Created Date",
+  "Lead Date",
+  "leadDate",
+  "lead_date",
+];
+
+function normalizePayloadKey(key: string) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function getPayloadValue(body: Record<string, any>, keys: string[]) {
+  for (const key of keys) {
+    if (body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== "") {
+      return body[key];
+    }
+  }
+
+  const normalizedKeys = new Map<string, string>();
+  for (const key of Object.keys(body)) {
+    normalizedKeys.set(normalizePayloadKey(key), key);
+  }
+
+  for (const key of keys) {
+    const actualKey = normalizedKeys.get(normalizePayloadKey(key));
+    if (actualKey && body[actualKey] !== undefined && body[actualKey] !== null && String(body[actualKey]).trim() !== "") {
+      return body[actualKey];
+    }
+  }
+
+  return null;
+}
+
+function parseSourceCreatedAt(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (value === undefined || value === null) return null;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value > 20000 && value < 80000) {
+      return new Date((value - 25569) * 86400000);
+    }
+    return null;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 20000 && numeric < 80000) {
+    return new Date((numeric - 25569) * 86400000);
+  }
+
+  const auMatch = raw.match(/^(\d{1,4})[\/.-](\d{1,2})[\/.-](\d{1,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (auMatch) {
+    const a = Number(auMatch[1]);
+    const b = Number(auMatch[2]);
+    let c = Number(auMatch[3]);
+    const hour = Number(auMatch[4] || 0);
+    const minute = Number(auMatch[5] || 0);
+    const second = Number(auMatch[6] || 0);
+    if (c < 100) c += c >= 70 ? 1900 : 2000;
+
+    const isYearFirst = auMatch[1].length === 4;
+    const year = isYearFirst ? a : c;
+    const month = b;
+    const day = isYearFirst ? c : a;
+    if (year < 1900 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatDateOnly(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
 async function getDefaultApiTenantId() {
   if (ENV.tenancyMode !== "single") return null;
   const drizzleDb = await db.getDb();
@@ -183,7 +275,7 @@ export function registerZapierApi(app: Express) {
   /**
    * POST /api/v1/leads
    * Create a new CRM lead.
-   * Body: { contactFirstName, contactLastName, contactPhone, contactEmail, contactAddress, suburb, state, postcode, productType, leadSource, designAdvisor, notes }
+   * Body: { contactFirstName, contactLastName, contactPhone, contactEmail, contactAddress, suburb, state, postcode, productType, leadSource, designAdvisor, notes, dateCreated/sourceCreatedAt }
    * designAdvisor can be a DA email (e.g. peter.dimock@spanline.com.au) which will be auto-resolved to the DA name
    */
   app.post("/api/v1/leads", authenticateBearer, async (req: Request, res: Response) => {
@@ -204,6 +296,7 @@ export function registerZapierApi(app: Express) {
         designAdvisor,
         notes,
       } = req.body;
+      const sourceCreatedAt = parseSourceCreatedAt(getPayloadValue(req.body, SOURCE_CREATED_FIELD_NAMES));
 
       // ── Smart parsing: handle common Zapier mapping issues ──
 
@@ -359,6 +452,7 @@ export function registerZapierApi(app: Express) {
       if (existingLead) {
         // Build an update payload with only non-empty changed fields
         const updateData: Record<string, any> = {};
+        const existingFull = await crmDb.getLead(existingLead.id, tenantId);
         if (contactFirstName) updateData.contactFirstName = contactFirstName;
         if (contactLastName) updateData.contactLastName = contactLastName;
         if (contactPhone) updateData.contactPhone = contactPhone;
@@ -369,6 +463,7 @@ export function registerZapierApi(app: Express) {
         if (postcode) updateData.postcode = postcode;
         if (productType) updateData.productType = productType;
         if (designAdvisor) updateData.designAdvisor = designAdvisor;
+        if (sourceCreatedAt && !existingFull?.sourceCreatedAt) updateData.sourceCreatedAt = sourceCreatedAt;
         // Append notes rather than overwrite
         if (notes) {
           // We'll append via a separate note rather than overwriting the lead notes field
@@ -381,7 +476,6 @@ export function registerZapierApi(app: Express) {
           const match = await getBranchIdForPostcodeFromDb(postcode);
           if (match) {
             // Only set branch if the existing lead doesn't already have one
-              const existingFull = await crmDb.getLead(existingLead.id, tenantId);
             if (existingFull && !existingFull.branchId) {
               updateData.branchId = match.branchId;
               // Notify branch manager (fire-and-forget)
@@ -412,6 +506,7 @@ export function registerZapierApi(app: Express) {
             postcode: "Postcode",
             productType: "Product Type",
             designAdvisor: "Design Advisor",
+            sourceCreatedAt: "Date Created",
           };
           const changes = Object.entries(updateData)
             .map(([k, v]) => `${fieldLabels[k] || k}: ${v}`)
@@ -435,10 +530,10 @@ export function registerZapierApi(app: Express) {
       }
 
       // ── No duplicate found — create new lead ──
-      const leadNumber = await crmDb.getNextLeadNumber();
+      const leadNumber = await crmDb.getNextLeadNumber(tenantId);
 
       // Accept leadDate from API body, or default to today (YYYY-MM-DD)
-      const leadDate = req.body.leadDate || req.body.lead_date || new Date().toISOString().slice(0, 10);
+      const leadDate = req.body.leadDate || req.body.lead_date || (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
 
       // ── Auto-allocate branch from postcode (DB-backed territory lookup) ──
       const { getBranchIdForPostcodeFromDb, getBranchManager } = await import("./territory-router");
@@ -466,6 +561,7 @@ export function registerZapierApi(app: Express) {
         status: "new",
         createdBy: user.id || null,
         leadDate: leadDate,
+        sourceCreatedAt,
         branchId: autoBranchId,
       });
 
@@ -486,6 +582,7 @@ export function registerZapierApi(app: Express) {
         leadNumber,
         message: "Lead created successfully",
         designAdvisor: designAdvisor,
+        sourceCreatedAt: sourceCreatedAt ? sourceCreatedAt.toISOString() : null,
         branch: autoBranchId ? { id: autoBranchId, territory: territoryMatch!.territory, autoAllocated: true } : null,
         action: "created",
       });
@@ -493,7 +590,7 @@ export function registerZapierApi(app: Express) {
       console.error("[Zapier API] Create lead failed:", error?.message || error);
       res.status(500).json({
         error: "server_error",
-        message: "Failed to create lead",
+        message: error?.message || "Failed to create lead",
       });
     }
   });

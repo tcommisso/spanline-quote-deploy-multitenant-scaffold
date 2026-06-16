@@ -3,6 +3,8 @@ import { z } from "zod";
 import * as deckDb from "./deck-db";
 import { calculateDeckPricing, type DeckCalcInput } from "./deck-calc";
 import { storagePut } from "./storage";
+import { hbcfRequirementFieldsForAmount } from "./hbcf-service";
+import { isAdminRole } from "@shared/const";
 
 export const deckRouter = router({
   // ─── Deck Products ──────────────────────────────────────────────────────
@@ -237,7 +239,7 @@ export const deckRouter = router({
   // ─── Deck Quotes ──────────────────────────────────────────────────────────
   quotes: router({
     list: protectedProcedure.query(async ({ ctx }) => {
-      if (ctx.user.role === "admin") {
+      if (isAdminRole(ctx.user.role)) {
         return deckDb.getDeckQuotes();
       }
       return deckDb.getDeckQuotes(ctx.user.id);
@@ -247,7 +249,7 @@ export const deckRouter = router({
       .query(async ({ ctx, input }) => {
         const quote = await deckDb.getDeckQuoteById(input.id);
         if (!quote) return null;
-        if (ctx.user.role !== "admin" && quote.userId !== ctx.user.id) return null;
+        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) return null;
         return quote;
       }),
     create: protectedProcedure
@@ -290,7 +292,7 @@ export const deckRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await deckDb.getDeckQuoteById(input.id);
         if (!quote) throw new Error("Quote not found");
-        if (ctx.user.role !== "admin" && quote.userId !== ctx.user.id) {
+        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
         }
         // Track override history when selectedAddons changes
@@ -343,7 +345,12 @@ export const deckRouter = router({
             console.error("[DeckQuote] Failed to record override history:", e);
           }
         }
-        return deckDb.updateDeckQuote(input.id, input.data);
+        const amount = input.data.sellPriceExGst ?? (quote as any).sellPriceExGst;
+        const updates = {
+          ...input.data,
+          ...hbcfRequirementFieldsForAmount(amount, "Deck quote"),
+        };
+        return deckDb.updateDeckQuote(input.id, updates);
       }),
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
@@ -358,7 +365,7 @@ export const deckRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await deckDb.getDeckQuoteById(input.id);
         if (!quote) throw new Error("Quote not found");
-        if (ctx.user.role !== "admin" && quote.userId !== ctx.user.id) {
+        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
         }
         await deckDb.updateDeckQuote(input.id, { archived: input.archived });
@@ -369,7 +376,7 @@ export const deckRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await deckDb.getDeckQuoteById(input.id);
         if (!quote) throw new Error("Quote not found");
-        if (ctx.user.role !== "admin" && quote.userId !== ctx.user.id) {
+        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
         }
         const newNumber = await deckDb.getNextDeckQuoteNumber();
@@ -380,7 +387,7 @@ export const deckRouter = router({
       .input(z.object({ deckQuoteId: z.number() }))
       .query(async ({ ctx, input }) => {
         // Only admin can view override history
-        if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+        if (!isAdminRole(ctx.user.role)) {
           throw new Error("Not authorized");
         }
         return deckDb.getOverrideHistoryForQuote(input.deckQuoteId);

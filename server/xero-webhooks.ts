@@ -37,6 +37,7 @@ type XeroConnectionRow = typeof xeroConnections.$inferSelect;
 
 const activeConnectionSyncs = new Set<number>();
 const FINANCIAL_SYNC_WEBHOOK_CATEGORIES = new Set(["INVOICE", "CREDITNOTE", "CREDIT_NOTE"]);
+const WEBHOOK_SYNC_OVERLAP_MS = 24 * 60 * 60 * 1000;
 
 function getSignature(header: Request["headers"][string]) {
   if (Array.isArray(header)) return header[0] || "";
@@ -203,7 +204,11 @@ async function processQueuedWebhookEventsForConnection(connectionId: number) {
     if (!db) return;
 
     while (true) {
-      const queuedEvents = await db.select({ id: xeroWebhookEvents.id })
+      const queuedEvents = await db.select({
+        id: xeroWebhookEvents.id,
+        eventDateUtc: xeroWebhookEvents.eventDateUtc,
+        receivedAt: xeroWebhookEvents.receivedAt,
+      })
         .from(xeroWebhookEvents)
         .where(and(
           eq(xeroWebhookEvents.xeroConnectionId, connectionId),
@@ -264,10 +269,21 @@ async function processQueuedWebhookEventsForConnection(connectionId: number) {
 
       try {
         const maxPages = Math.max(1, Math.min(50, Number(process.env.XERO_WEBHOOK_SYNC_MAX_PAGES || 10)));
+        const eventDates = queuedEvents
+          .map((event: any) => event.eventDateUtc || event.receivedAt)
+          .map((value: any) => value ? new Date(value) : null)
+          .filter((date: Date | null): date is Date => !!date && !Number.isNaN(date.getTime()));
+        const oldestEventDate = eventDates.length
+          ? new Date(Math.min(...eventDates.map((date) => date.getTime())))
+          : null;
+        const modifiedSince = oldestEventDate
+          ? new Date(oldestEventDate.getTime() - WEBHOOK_SYNC_OVERLAP_MS)
+          : new Date(Date.now() - WEBHOOK_SYNC_OVERLAP_MS);
         const result = await syncXeroAccountingTransactionsForMappings(db, auth, mappings, {
           appTenantId: connection.appTenantId,
           maxPages,
-          includeUnmatched: false,
+          includeUnmatched: true,
+          modifiedSince,
         });
         const fetchErrors = result.fetchErrors || [];
 

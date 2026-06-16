@@ -7,6 +7,8 @@ import { TRPCError } from "@trpc/server";
 import crypto from "crypto";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
+const supplierScopeSchema = z.enum(["construction", "manufacturing"]);
+
 async function requireDb() {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
@@ -51,6 +53,7 @@ export const supplierRouter = router({
     .input(z.object({
       search: z.string().optional(),
       category: z.string().optional(),
+      supplierScope: supplierScopeSchema.optional(),
       activeOnly: z.boolean().optional().default(true),
     }).optional())
     .query(async ({ ctx, input }) => {
@@ -69,6 +72,9 @@ export const supplierRouter = router({
       }
       if (input?.category) {
         conditions.push(eq(suppliers.category, input.category));
+      }
+      if (input?.supplierScope) {
+        conditions.push(eq(suppliers.supplierScope, input.supplierScope));
       }
       appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
       return db.select().from(suppliers)
@@ -109,6 +115,7 @@ export const supplierRouter = router({
       email: z.string().optional(),
       address: z.string().optional(),
       category: z.string().optional(),
+      supplierScope: supplierScopeSchema.optional(),
       paymentTerms: z.string().optional(),
       defaultGlCode: z.string().optional(),
       notes: z.string().optional(),
@@ -117,6 +124,7 @@ export const supplierRouter = router({
       const db = await requireDb();
       const [result] = await db.insert(suppliers).values({
         ...input,
+        supplierScope: input.supplierScope || "construction",
         tenantId: tenantIdFromContext(ctx),
         createdBy: ctx.user!.id,
       });
@@ -133,6 +141,7 @@ export const supplierRouter = router({
       email: z.string().nullable().optional(),
       address: z.string().nullable().optional(),
       category: z.string().nullable().optional(),
+      supplierScope: supplierScopeSchema.optional(),
       paymentTerms: z.string().nullable().optional(),
       defaultGlCode: z.string().nullable().optional(),
       notes: z.string().nullable().optional(),

@@ -34,8 +34,10 @@ import { registerScheduledMsGraphSync } from "../scheduled-msgraph-sync";
 import { registerScheduledVocphoneSync } from "../scheduled-vocphone-sync";
 import { registerScheduledMissedCallsDigest } from "../scheduled-missed-calls-digest";
 import { registerStorageProxy } from "./storageProxy";
+import { registerNylasCallbackRoutes } from "../nylas-callback-routes";
 import { validateRequiredEnv } from "./env";
 import { registerHealthRoutes } from "./health";
+import { bootstrapO365MailboxesFromEnv } from "../o365-bootstrap";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -58,6 +60,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   validateRequiredEnv();
+  await bootstrapO365MailboxesFromEnv();
   const app = express();
   const server = createServer(app);
   registerHealthRoutes(app);
@@ -71,6 +74,8 @@ async function startServer() {
   registerStorageProxy(app);
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+  // Nylas hosted-auth callback, forwarded into the SPA profile page
+  registerNylasCallbackRoutes(app);
   // Vocphone webhooks for inbound SMS and call events
   registerVocphoneWebhooks(app);
   // SignWell webhooks for digital signature status updates

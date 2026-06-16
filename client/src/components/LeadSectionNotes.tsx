@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Send, Trash2, Pin, Pencil, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
+import { isAdminRole } from "@shared/const";
 
 const NOTE_CATEGORIES = [
   { value: "general", label: "General", color: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" },
@@ -222,7 +223,7 @@ export default function LeadSectionNotes({ leadId, section, title = "Notes" }: L
                         >
                           <Pin className="h-3 w-3" />
                         </Button>
-                        {(user?.role === "admin" || user?.id === note.userId) && (
+                        {(isAdminRole(user?.role || "") || user?.id === note.userId) && (
                           <>
                             <Button
                               variant="ghost"

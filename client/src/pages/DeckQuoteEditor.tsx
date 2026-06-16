@@ -672,8 +672,19 @@ export default function DeckQuoteEditor() {
             <ArrowLeft className="w-5 h-5" />
           </Button>
           <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl font-bold truncate">{quote.quoteNumber}</h1>
-            <p className="text-xs sm:text-sm text-muted-foreground truncate">{(quote as any).clientName} &middot; Deck Quote</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-bold truncate">{quote.quoteNumber}</h1>
+              {(quote as any).hbcfRequired && (
+                <Badge variant="destructive" className="text-[11px] shrink-0 gap-1">
+                  <Shield className="h-3 w-3" />
+                  HBCF required
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs sm:text-sm text-muted-foreground truncate">
+              {(quote as any).clientName} &middot; Deck Quote
+              {(quote as any).hbcfRequirementReason ? ` · ${(quote as any).hbcfRequirementReason}` : ""}
+            </p>
           </div>
         </div>
         <div className="flex gap-2">

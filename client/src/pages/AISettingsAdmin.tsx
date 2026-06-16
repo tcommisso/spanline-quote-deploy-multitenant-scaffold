@@ -52,8 +52,7 @@ import {
   Eye,
 } from "lucide-react";
 import { useState, useMemo, useRef, useEffect } from "react";
-
-const ENGINI_AVATAR = "/manus-storage/engini-avatar_4dcf30c6.png";
+import { EnginiAvatar } from "@/components/EnginiAvatar";
 
 // ─── Feedback Trends Chart ──────────────────────────────────────────────────
 function FeedbackTrendsChart() {
@@ -953,7 +952,7 @@ export default function AISettingsAdmin() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <img src={ENGINI_AVATAR} alt="Engini" className="h-12 w-12 rounded-full" />
+        <EnginiAvatar size="xl" />
         <div>
           <h1 className="text-2xl font-bold tracking-tight">AI Settings</h1>
           <p className="text-muted-foreground">

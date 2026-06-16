@@ -6,7 +6,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { Resend } from "resend";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import {
   createInboxMessage,
   matchEmailToClient,
@@ -447,11 +447,8 @@ export function registerInboxWebhooks(app: Express) {
   // ─── SLA Check Endpoint (for heartbeat cron) ───────────────────────────
   app.post("/api/scheduled/inbox-sla-check", async (req: Request, res: Response) => {
     try {
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const rule = await getActiveSlaRule();

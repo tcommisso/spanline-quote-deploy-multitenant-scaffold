@@ -17,7 +17,7 @@ export interface UnifiedSendParams {
   /** The "from" mailbox address (must be configured in inbox_addresses) */
   fromAddress?: string;
   /** Module context — used to auto-select the correct mailbox if fromAddress not specified */
-  module?: "sales" | "construction" | "approvals" | "admin";
+  module?: "sales" | "construction" | "approvals" | "admin" | "manufacturing" | "support";
   /** Display name for the sender */
   fromName?: string;
   /** Recipient addresses */
@@ -64,6 +64,7 @@ interface ResolvedMailbox {
  */
 async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: number | null): Promise<ResolvedMailbox> {
   const emailConfig = await getTenantEmailConfig(tenantId);
+  const fallbackSenderAddress = (emailConfig.senderAddress || ENV.emailSenderAddress || "").toLowerCase();
   const db = await getDb();
   if (!db) {
     // Fallback to env-configured sender if DB unavailable
@@ -98,6 +99,25 @@ async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: 
       .from(inboxAddresses)
       .where(and(
         eq((inboxAddresses as any).module, module),
+        eq(inboxAddresses.active, true),
+        ...(tenantId ? [eq(inboxAddresses.tenantId, tenantId)] : []),
+      ));
+    if (addr) {
+      return {
+        address: addr.address,
+        provider: "msgraph",
+        displayName: addr.displayName,
+      };
+    }
+  }
+
+  // Prefer the configured tenant/env sender before falling back to any mailbox.
+  // This avoids stale module mappings taking precedence after mailbox/domain changes.
+  if (fallbackSenderAddress) {
+    const [addr] = await db.select()
+      .from(inboxAddresses)
+      .where(and(
+        eq(inboxAddresses.address, fallbackSenderAddress),
         eq(inboxAddresses.active, true),
         ...(tenantId ? [eq(inboxAddresses.tenantId, tenantId)] : []),
       ));
@@ -212,7 +232,7 @@ export async function sendNotificationViaGraph(params: {
   subject: string;
   htmlBody: string;
   fromName?: string;
-  module?: "sales" | "construction" | "approvals" | "admin";
+  module?: "sales" | "construction" | "approvals" | "admin" | "manufacturing" | "support";
   settingKey?: string;
 }): Promise<SendResult> {
   return sendUnifiedEmail({

@@ -5,7 +5,7 @@
  * Triggered by a Heartbeat cron job at /api/scheduled/cost-import-process (every 2 minutes)
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import {
   xeroCostImportBatches,
@@ -13,6 +13,7 @@ import {
   xeroProjectMappings,
   constructionJobs,
   constructionJobFinancials,
+  crmLeads,
 } from "../drizzle/schema";
 import { eq, and, sql, inArray, isNotNull } from "drizzle-orm";
 import { storageGet } from "./storage";
@@ -49,16 +50,112 @@ function generateImportHash(row: SerializedCostRow, appTenantId?: number | null)
   return createHash("sha256").update(hashInput).digest("hex").slice(0, 64);
 }
 
+function normaliseSearchText(value: string | null | undefined) {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokensFor(value: string | null | undefined) {
+  return normaliseSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+}
+
+function scoreJobCandidate(group: { projectName: string }, job: {
+  id: number;
+  quoteNumber: string | null;
+  clientName: string;
+  siteAddress: string | null;
+}) {
+  const project = normaliseSearchText(group.projectName);
+  const quote = normaliseSearchText(job.quoteNumber);
+  const client = normaliseSearchText(job.clientName);
+  const address = normaliseSearchText(job.siteAddress);
+  let score = 0;
+
+  if (quote && project.includes(quote)) score += 90;
+  if (quote && group.projectName.toLowerCase().includes(quote.replace(/\s+/g, ""))) score += 70;
+  if (client && project && (project.includes(client) || client.includes(project))) score += 45;
+
+  for (const token of tokensFor(group.projectName)) {
+    if (quote.includes(token)) score += 12;
+    if (client.includes(token)) score += 8;
+    if (address.includes(token)) score += 6;
+  }
+
+  return score;
+}
+
+function resolveCostJobId(
+  row: SerializedCostRow,
+  projectNameToJobId: Map<string, number>,
+  jobs: Array<{ id: number; quoteNumber: string | null; clientName: string; siteAddress: string | null }>,
+) {
+  const exact = projectNameToJobId.get(row.projectName.toLowerCase().trim());
+  if (exact) return exact;
+
+  const scored = jobs
+    .map((job) => ({ job, score: scoreJobCandidate({ projectName: row.projectName }, job) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  return best && best.score >= 70 ? best.job.id : null;
+}
+
+function isClosedProjectState(value: string | null | undefined) {
+  return (value || "").trim().toLowerCase() === "closed";
+}
+
+async function completeClosedJobs(
+  db: any,
+  closedJobIds: Set<number>,
+  jobs: Array<{ id: number; status: string; leadId: number | null }>,
+  appTenantId?: number | null,
+) {
+  if (!closedJobIds.size) return { closedJobsUpdated: 0, closedLeadsUpdated: 0 };
+
+  let closedJobsUpdated = 0;
+  const closedIds = Array.from(closedJobIds);
+  const closedJobs = jobs.filter((job) => closedIds.includes(job.id));
+  for (const job of closedJobs) {
+    if (job.status !== "completed") {
+      const [result] = await db.update(constructionJobs)
+        .set({ status: "completed", updatedAt: new Date() })
+        .where(and(
+          eq(constructionJobs.id, job.id),
+          tenantScoped(constructionJobs.tenantId, appTenantId),
+        ));
+      closedJobsUpdated += Number((result as any)?.affectedRows || 0);
+    }
+  }
+
+  let closedLeadsUpdated = 0;
+  const leadIds = Array.from(new Set(
+    closedJobs
+      .map((job) => job.leadId)
+      .filter((id): id is number => Boolean(id))
+  ));
+  if (leadIds.length) {
+    const [leadResult] = await db.update(crmLeads)
+      .set({ status: "completed", updatedAt: new Date() })
+      .where(and(
+        inArray(crmLeads.id, leadIds),
+        tenantScoped(crmLeads.tenantId, appTenantId),
+      ));
+    closedLeadsUpdated = Number((leadResult as any)?.affectedRows || 0);
+  }
+
+  return { closedJobsUpdated, closedLeadsUpdated };
+}
+
 export function registerScheduledCostImportProcess(app: Express) {
   app.post("/api/scheduled/cost-import-process", async (req: Request, res: Response) => {
     const startTime = Date.now();
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();
@@ -141,16 +238,37 @@ export function registerScheduledCostImportProcess(app: Express) {
         }
       }
 
+      const jobs = await db
+        .select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+          status: constructionJobs.status,
+          leadId: constructionJobs.leadId,
+        })
+        .from(constructionJobs)
+        .where(tenantScoped(constructionJobs.tenantId, activeBatch.appTenantId));
+      for (const job of jobs) {
+        if (job.quoteNumber) {
+          projectNameToJobId.set(job.quoteNumber.trim().toLowerCase(), job.id);
+        }
+      }
+
       // Process the chunk
       let chunkImported = 0;
       let chunkDuplicates = 0;
       let chunkSkipped = 0;
+      const closedJobIds = new Set<number>();
 
       // Pre-compute hashes and match projects
       const rowsWithMeta = chunkRows.map(row => {
         const hash = generateImportHash(row, activeBatch.appTenantId);
         const legacyHash = generateImportHash(row);
-        const jobId = projectNameToJobId.get(row.projectName.toLowerCase()) || null;
+        const jobId = resolveCostJobId(row, projectNameToJobId, jobs);
+        if (jobId && isClosedProjectState(row.projectState)) {
+          closedJobIds.add(jobId);
+        }
         return { row, hash, legacyHash, jobId };
       });
 
@@ -226,6 +344,7 @@ export function registerScheduledCostImportProcess(app: Express) {
       const newImported = (activeBatch.importedRows || 0) + chunkImported;
       const newSkipped = (activeBatch.skippedRows || 0) + chunkSkipped;
       const newDuplicates = (activeBatch.duplicateRows || 0) + chunkDuplicates;
+      const closedUpdates = await completeClosedJobs(db, closedJobIds, jobs, activeBatch.appTenantId);
 
       await db.update(xeroCostImportBatches)
         .set({
@@ -244,6 +363,8 @@ export function registerScheduledCostImportProcess(app: Express) {
         chunkImported,
         chunkDuplicates,
         chunkSkipped,
+        closedJobsUpdated: closedUpdates.closedJobsUpdated,
+        closedLeadsUpdated: closedUpdates.closedLeadsUpdated,
         progress: { cursor: newCursor, total: totalRows },
         duration: Date.now() - startTime,
       });

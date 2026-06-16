@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getDb } from "./db";
+import { getDb, getTenantBrandingSettings } from "./db";
 import { eq, and, desc, gte, lte, asc, or, inArray, gt, sql } from "drizzle-orm";
 import {
   tradePortalAccess, tradePortalSessions,
@@ -173,28 +173,14 @@ const protectedTradePortalProcedure = publicProcedure.use(requireTradePortalAcce
 export const tradePortalRouter = router({
 
   // ─── Branding (public — no auth required) ──────────────────────────────────
-  getBranding: publicTradePortalProcedure.query(async () => {
-    const db = await requireDb();
-    const { userSettings: userSettingsTable } = await import("../drizzle/schema");
-    const rows = await db.select({
-      companyDetails: userSettingsTable.companyDetails,
-      customLogoUrl: userSettingsTable.customLogoUrl,
-      appIconUrl: userSettingsTable.appIconUrl,
-    }).from(userSettingsTable).limit(5);
-
-    let logoUrl: string | null = null;
-    let appIconUrl: string | null = null;
-    for (const row of rows) {
-      if (row.customLogoUrl && !logoUrl) logoUrl = row.customLogoUrl;
-      if (row.appIconUrl && !appIconUrl) appIconUrl = row.appIconUrl;
-      if (logoUrl && appIconUrl) break;
-    }
-
-    const companyInfo = await getCompanyName();
+  getBranding: publicTradePortalProcedure.query(async ({ ctx }) => {
+    const tenantId = ctx.tenant?.id ?? null;
+    const branding = await getTenantBrandingSettings(tenantId);
+    const companyInfo = await getCompanyName(tenantId);
     return {
       companyName: companyInfo.displayName,
-      logoUrl,
-      appIconUrl,
+      logoUrl: branding?.customLogoUrl ?? null,
+      appIconUrl: branding?.appIconUrl ?? null,
     };
   }),
 

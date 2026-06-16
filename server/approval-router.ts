@@ -1,4 +1,4 @@
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
 import { z } from "zod";
 import * as approvalDb from "./approval-db";
 import { storagePut } from "./storage";
@@ -7,6 +7,35 @@ import { ALL_TEMPLATES } from "./seed-workflow-templates";
 import { getDb } from "./db";
 import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections } from "../drizzle/schema";
 import { eq, desc, isNull, and, ne, sql } from "drizzle-orm";
+import {
+  HBCF_REQUIRED_THRESHOLD,
+  createOrUpdateHbcfCertificate,
+  getHbcfBuilderProfile,
+  getProjectHbcfGateStatus,
+  listHbcfCertificates,
+  listHbcfCompetitorMatches,
+  runHbcfCompetitorMatching,
+  syncProjectHbcfFromApi,
+  upsertHbcfBuilderProfile,
+} from "./hbcf-service";
+
+function hbcfFlagForValue(value?: string | null) {
+  const amount = Number(value || 0);
+  if (Number.isFinite(amount) && amount >= HBCF_REQUIRED_THRESHOLD) {
+    return {
+      hbcfRequired: true,
+      hbcfStatus: "required",
+      hbcfRequirementReason: `Project value $${amount.toFixed(2)} is at or above the $${HBCF_REQUIRED_THRESHOLD.toLocaleString()} HBCF threshold`,
+      hbcfFlaggedAt: new Date(),
+    };
+  }
+  return {};
+}
+
+function isCommencementCertificateType(certificateType: string) {
+  return /^(CC|CDC|BA|CCC)$/i.test(certificateType) ||
+    /construction certificate|construction commencement|commencement certificate|complying development|building approval/i.test(certificateType);
+}
 
 export const approvalRouter = router({
   // ─── Dashboard ──────────────────────────────────────────────────────────────
@@ -64,6 +93,8 @@ export const approvalRouter = router({
         const projectNumber = await approvalDb.generateProjectNumber();
         const id = await approvalDb.createApprovalProject({
           ...input,
+          tenantId: ctx.tenant?.id ?? null,
+          ...hbcfFlagForValue(input.estimatedCost),
           projectNumber,
           createdByUserId: ctx.user.id,
         });
@@ -85,16 +116,26 @@ export const approvalRouter = router({
         data: z.record(z.string(), z.any()),
       }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateApprovalProject(input.id, input.data as any);
+        const updates = { ...input.data } as any;
+        if (updates.estimatedCost !== undefined) {
+          Object.assign(updates, hbcfFlagForValue(updates.estimatedCost));
+          if (Number(updates.estimatedCost || 0) < HBCF_REQUIRED_THRESHOLD && updates.hbcfRequired !== true) {
+            updates.hbcfRequired = false;
+            updates.hbcfStatus = "not_required";
+            updates.hbcfRequirementReason = null;
+            updates.hbcfFlaggedAt = null;
+          }
+        }
+        await approvalDb.updateApprovalProject(input.id, updates);
         await approvalDb.createAuditEntry({
           projectId: input.id,
           eventType: "project_updated",
           entityType: "project",
           entityId: input.id,
-          summary: `Project updated: ${Object.keys(input.data).join(", ")}`,
+          summary: `Project updated: ${Object.keys(updates).join(", ")}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-          details: input.data,
+          details: updates,
         });
         return { success: true };
       }),
@@ -1084,6 +1125,12 @@ export const approvalRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        if (isCommencementCertificateType(input.certificateType)) {
+          const gateStatus = await getProjectHbcfGateStatus(input.projectId);
+          if (gateStatus.required && !gateStatus.issued) {
+            throw new Error(gateStatus.blockers[0] || "Issued HBCF certificate is required before this certificate can be issued");
+          }
+        }
         const id = await approvalDb.createCertificate({
           ...input,
           issuedAt: input.issuedAt ? new Date(input.issuedAt) : undefined,
@@ -1101,6 +1148,139 @@ export const approvalRouter = router({
         });
         return { id };
       }),
+  }),
+
+  // ─── HBCF ─────────────────────────────────────────────────────────────────
+  hbcf: router({
+    profile: router({
+      get: protectedProcedure.query(async ({ ctx }) => {
+        return getHbcfBuilderProfile(ctx.tenant?.id ?? null);
+      }),
+      update: adminProcedure
+        .input(z.object({
+          builderName: z.string().min(1),
+          tradingName: z.string().nullable().optional(),
+          abn: z.string().nullable().optional(),
+          licenceNumber: z.string().nullable().optional(),
+          insurerName: z.string().nullable().optional(),
+          annualLimit: z.string().optional(),
+          annualLimitUsed: z.string().optional(),
+          annualLimitYear: z.number().int().optional(),
+          apiEnabled: z.boolean().optional(),
+          apiBaseUrl: z.string().nullable().optional(),
+          apiKeyRef: z.string().nullable().optional(),
+          apiMonthlyLimit: z.number().int().min(1).max(2500).optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const id = await upsertHbcfBuilderProfile(ctx.tenant?.id ?? null, {
+            ...input,
+            annualLimit: input.annualLimit || "0",
+            annualLimitUsed: input.annualLimitUsed || "0",
+            updatedByUserId: ctx.user.id,
+          } as any);
+          return { id };
+        }),
+    }),
+
+    gateStatus: protectedProcedure
+      .input(z.object({ projectId: z.number() }))
+      .query(async ({ input }) => getProjectHbcfGateStatus(input.projectId)),
+
+    certificates: router({
+      list: protectedProcedure
+        .input(z.object({
+          projectId: z.number().optional(),
+          quoteId: z.number().optional(),
+          leadId: z.number().optional(),
+        }).optional())
+        .query(async ({ ctx, input }) => {
+          return listHbcfCertificates({
+            tenantId: ctx.tenant?.id ?? null,
+            projectId: input?.projectId,
+            quoteId: input?.quoteId,
+            leadId: input?.leadId,
+          });
+        }),
+      manualUpsert: protectedProcedure
+        .input(z.object({
+          approvalProjectId: z.number().optional(),
+          quoteId: z.number().optional(),
+          crmLeadId: z.number().optional(),
+          certificateNumber: z.string().optional(),
+          policyNumber: z.string().optional(),
+          status: z.string().default("issued"),
+          builderName: z.string().optional(),
+          builderLicenceNumber: z.string().optional(),
+          insurerName: z.string().optional(),
+          ownerName: z.string().optional(),
+          propertyAddress: z.string().optional(),
+          propertySuburb: z.string().optional(),
+          propertyPostcode: z.string().optional(),
+          contractPrice: z.string().optional(),
+          issuedAt: z.string().optional(),
+          expiresAt: z.string().optional(),
+          certificateUrl: z.string().optional(),
+          notes: z.string().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          const id = await createOrUpdateHbcfCertificate({
+            ...input,
+            tenantId: ctx.tenant?.id ?? null,
+            source: "manual",
+            syncStatus: "not_synced",
+            issuedAt: input.issuedAt ? new Date(input.issuedAt) : undefined,
+            expiresAt: input.expiresAt ? new Date(input.expiresAt) : undefined,
+            createdByUserId: ctx.user.id,
+          } as any);
+          if (input.approvalProjectId) {
+            await approvalDb.createAuditEntry({
+              projectId: input.approvalProjectId,
+              eventType: "hbcf_certificate_recorded",
+              entityType: "hbcf_certificate",
+              entityId: id,
+              summary: `HBCF certificate recorded: ${input.certificateNumber || input.policyNumber || "manual entry"}`,
+              userId: ctx.user.id,
+              userName: ctx.user.name || "Unknown",
+              details: input,
+            });
+          }
+          return { id };
+        }),
+      syncProject: protectedProcedure
+        .input(z.object({ projectId: z.number() }))
+        .mutation(async ({ ctx, input }) => {
+          return syncProjectHbcfFromApi(input.projectId, ctx.tenant?.id ?? null, ctx.user.id);
+        }),
+    }),
+
+    competitorMatches: router({
+      run: protectedProcedure
+        .input(z.object({
+          leadIds: z.array(z.number()).optional(),
+          forceRefresh: z.boolean().optional(),
+        }).optional())
+        .mutation(async ({ ctx, input }) => {
+          return runHbcfCompetitorMatching({
+            tenantId: ctx.tenant?.id ?? null,
+            leadIds: input?.leadIds,
+            forceRefresh: input?.forceRefresh,
+          });
+        }),
+      list: protectedProcedure
+        .input(z.object({
+          leadId: z.number().optional(),
+          limit: z.number().min(1).max(200).optional(),
+          offset: z.number().min(0).optional(),
+        }).optional())
+        .query(async ({ ctx, input }) => {
+          return listHbcfCompetitorMatches({
+            tenantId: ctx.tenant?.id ?? null,
+            leadId: input?.leadId,
+            limit: input?.limit,
+            offset: input?.offset,
+          });
+        }),
+    }),
   }),
 
   // ─── Timeline ─────────────────────────────────────────────────────────────

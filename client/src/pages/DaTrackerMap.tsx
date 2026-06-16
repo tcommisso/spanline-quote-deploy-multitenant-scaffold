@@ -8,19 +8,23 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Loader2, MapPin, FileText, Calendar } from "lucide-react";
 
+const DEFAULT_SUBCLASS = "ADDITIONS/ALTERATION";
+
 export default function DaTrackerMap() {
   const [selectedDistrict, setSelectedDistrict] = useState<string>("");
-  const [selectedSubclass, setSelectedSubclass] = useState<string>("");
+  const [selectedSubclass, setSelectedSubclass] = useState<string>(DEFAULT_SUBCLASS);
   const [myProjectsOnly, setMyProjectsOnly] = useState(true);
   const [selectedDa, setSelectedDa] = useState<any>(null);
+  const [mapReadyVersion, setMapReadyVersion] = useState(0);
+  const [mapError, setMapError] = useState<string | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
 
   const { data: stats } = trpc.daTracker.stats.useQuery();
   const { data: filterOptions } = trpc.daTracker.filterOptions.useQuery();
   const { data: mapData, isLoading } = trpc.daTracker.mapData.useQuery({
-    district: selectedDistrict || undefined,
-    subclass: selectedSubclass || undefined,
+    district: selectedDistrict && selectedDistrict !== "all" ? selectedDistrict : undefined,
+    subclass: selectedSubclass && selectedSubclass !== "all" ? selectedSubclass : undefined,
     myProjectsOnly,
   });
 
@@ -78,13 +82,15 @@ export default function DaTrackerMap() {
       map.setCenter({ lat: mapData[0].centroidLat, lng: mapData[0].centroidLng });
       map.setZoom(15);
     }
-  }, [mapData]);
+  }, [mapData, mapReadyVersion]);
 
   const handleMapReady = (map: google.maps.Map) => {
     mapRef.current = map;
+    setMapError(null);
     // Default center on Canberra
     map.setCenter({ lat: -35.2809, lng: 149.1300 });
     map.setZoom(12);
+    setMapReadyVersion((v) => v + 1);
   };
 
   return (
@@ -156,8 +162,22 @@ export default function DaTrackerMap() {
           ) : (
             <MapView
               onMapReady={handleMapReady}
+              onMapError={setMapError}
               className="w-full h-full rounded-lg"
             />
+          )}
+          {!isLoading && mapError && (
+            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/95 p-6 text-center">
+              <div>
+                <p className="font-medium">Map could not be loaded</p>
+                <p className="mt-1 text-sm text-muted-foreground">{mapError}</p>
+              </div>
+            </div>
+          )}
+          {!isLoading && !mapError && mapData && mapData.length === 0 && (
+            <div className="absolute inset-x-4 top-4 rounded-md border bg-background/95 p-3 text-sm text-muted-foreground shadow-sm">
+              No map points for the current filter.
+            </div>
           )}
         </CardContent>
       </Card>

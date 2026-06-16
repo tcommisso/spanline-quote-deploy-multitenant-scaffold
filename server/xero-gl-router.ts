@@ -69,10 +69,10 @@ export const xeroGLRouter = router({
    */
   syncJobGL: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -99,10 +99,10 @@ export const xeroGLRouter = router({
    * Batch sync GL data for all mapped jobs - populates branch, postcode, and enhanced financials.
    * Runs in background to avoid timeout.
    */
-  syncAllGL: protectedProcedure.mutation(async () => {
+  syncAllGL: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -151,12 +151,13 @@ export const xeroGLRouter = router({
    * Populate branch and postcode for all jobs based on existing mapping data.
    * This doesn't call Xero API - it derives from local data.
    */
-  populateBranchPostcode: protectedProcedure.mutation(async () => {
+  populateBranchPostcode: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+    const routing = { connectionId: auth.xeroConnectionId };
 
     // Get all mappings with project names
     const mappings = await db
@@ -179,7 +180,8 @@ export const xeroGLRouter = router({
       if (mapping.xeroContactId) {
         try {
           const contactResult = await xeroApiRequest<{ Contacts: XeroContactDetailed[] }>(
-            `/Contacts/${mapping.xeroContactId}`
+            `/Contacts/${mapping.xeroContactId}`,
+            routing
           );
           if (contactResult.Contacts?.[0]) {
             postcode = extractPostcodeFromContact(contactResult.Contacts[0]);
@@ -210,10 +212,10 @@ export const xeroGLRouter = router({
    * Quick branch population from project names only (no API calls).
    * Safe to run frequently as it only uses local data.
    */
-  populateBranches: protectedProcedure.mutation(async () => {
+  populateBranches: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -366,7 +368,8 @@ async function syncSingleJobGL(
   if (contactId) {
     try {
       const contactResult = await xeroApiRequest<{ Contacts: XeroContactDetailed[] }>(
-        `/Contacts/${contactId}`
+        `/Contacts/${contactId}`,
+        { connectionId: auth.xeroConnectionId }
       );
       if (contactResult.Contacts?.[0]) {
         postcode = extractPostcodeFromContact(contactResult.Contacts[0]);
@@ -382,7 +385,8 @@ async function syncSingleJobGL(
   if (contactId) {
     try {
       const invoicesResult = await xeroApiRequest<{ Invoices: XeroInvoiceDetailed[] }>(
-        `/Invoices?ContactIDs=${contactId}&Statuses=AUTHORISED,PAID`
+        `/Invoices?ContactIDs=${contactId}&Statuses=AUTHORISED,PAID`,
+        { connectionId: auth.xeroConnectionId }
       );
       const accrecInvoices = (invoicesResult.Invoices || []).filter(inv => inv.Type === "ACCREC");
       if (accrecInvoices.length) {
@@ -435,7 +439,7 @@ async function syncSingleJobGL(
       while (billPage <= maxBillPages) {
         const billsResult = await xeroApiRequest<{ Invoices: AccpayBillForCostSync[] }>(
           `/Invoices?where=Type%3D%3D%22ACCPAY%22&Statuses=AUTHORISED,PAID&page=${billPage}`,
-          { timeoutMs: 60000 }
+          { timeoutMs: 60000, connectionId: auth.xeroConnectionId }
         );
         const pageBills = billsResult.Invoices || [];
         

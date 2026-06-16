@@ -267,14 +267,7 @@ export default function DeckDesignPanel({
 
   const updateInput = useCallback(
     <K extends keyof SubfloorInputs>(key: K, value: SubfloorInputs[K]) => {
-      setInputs((prev) => {
-        const next = { ...prev, [key]: value };
-        // Auto-switch away from ClickDeck if height exceeds 200mm
-        if (next.framingSystem === "clickdeck" && next.maxHeight > 200) {
-          next.framingSystem = "spanmor";
-        }
-        return next;
-      });
+      setInputs((prev) => ({ ...prev, [key]: value }));
     },
     []
   );
@@ -393,27 +386,18 @@ export default function DeckDesignPanel({
                 <div>
                   <Label className="text-xs font-semibold">Framing System</Label>
                   <div className="flex flex-wrap gap-1 mt-1">
-                    {FRAMING_SYSTEM_OPTIONS.map((fs) => {
-                      // ClickDeck max height restriction: 200mm
-                      const isClickdeckDisabled = fs.value === "clickdeck" && inputs.maxHeight > 200;
-                      return (
-                        <Button
-                          key={fs.value}
-                          variant={(inputs.framingSystem || "spanmor") === fs.value ? "default" : "outline"}
-                          size="sm"
-                          className={`text-xs h-7 px-2 ${isClickdeckDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                          onClick={() => !isClickdeckDisabled && updateInput("framingSystem", fs.value)}
-                          disabled={isClickdeckDisabled}
-                          title={isClickdeckDisabled ? "ClickDeck max height: 200mm" : undefined}
-                        >
-                          {fs.label}
-                        </Button>
-                      );
-                    })}
+                    {FRAMING_SYSTEM_OPTIONS.map((fs) => (
+                      <Button
+                        key={fs.value}
+                        variant={(inputs.framingSystem || "spanmor") === fs.value ? "default" : "outline"}
+                        size="sm"
+                        className="text-xs h-7 px-2"
+                        onClick={() => updateInput("framingSystem", fs.value)}
+                      >
+                        {fs.label}
+                      </Button>
+                    ))}
                   </div>
-                  {inputs.framingSystem === "clickdeck" && inputs.maxHeight > 200 && (
-                    <p className="text-xs text-amber-600 mt-1">⚠ ClickDeck max height exceeded (200mm). Switching to Spanmor.</p>
-                  )}
                 </div>
               </div>
 

@@ -7,6 +7,7 @@ import { calculateProject, calculateProjectWithLayout, type UnitInput, type Posi
 import { getDefaultPrices, toPricingData, editablePricesToDbRows, dbRowsToEditablePrices } from "../shared/eclipsePricing";
 import { invokeLLM } from "./_core/llm";
 import * as db from "./db";
+import { hbcfRequirementFieldsForAmount } from "./hbcf-service";
 
 const unitInputSchema = z.object({
   bladeWidth: z.number(),
@@ -177,7 +178,11 @@ export const eclipseRouter = router({
         if (data.specData) {
           data.specData = JSON.stringify(data.specData);
         }
-        await eclipseDb.updateEclipseQuote(id, data as any);
+        const amount = data.totalSellPriceEx ?? quote.totalSellPriceEx;
+        await eclipseDb.updateEclipseQuote(id, {
+          ...data,
+          ...hbcfRequirementFieldsForAmount(amount, "Eclipse quote"),
+        } as any);
         return { success: true };
       }),
 

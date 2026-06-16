@@ -9,11 +9,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MapView } from "@/components/Map";
-import { Loader2, Plus, Trash2, Search, Crosshair, MapPin, Building2, AlertTriangle, RefreshCw, Eye } from "lucide-react";
+import { Loader2, Plus, Trash2, Search, Crosshair, MapPin, Building2, AlertTriangle, RefreshCw, Eye, CheckCircle2, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
-export default function DaTrackerCompetitors() {
-  const [branch, setBranch] = useState<"act" | "nsw">("act");
+type CompetitorBranch = "act" | "nsw" | "hbcf" | "watchlist";
+
+export default function DaTrackerCompetitors({ initialBranch = "act" }: { initialBranch?: CompetitorBranch }) {
+  const [branch, setBranch] = useState<CompetitorBranch>(initialBranch);
   const [activeTab, setActiveTab] = useState("search");
   const [searchCompany, setSearchCompany] = useState("");
   const [searchSuburb, setSearchSuburb] = useState("");
@@ -24,7 +26,7 @@ export default function DaTrackerCompetitors() {
 
   // Reset tab when switching branch
   const handleBranchChange = (b: string) => {
-    setBranch(b as "act" | "nsw");
+    setBranch(b as CompetitorBranch);
     if (b === "act") setActiveTab("search");
     else setActiveTab("nsw-lost");
   };
@@ -45,6 +47,7 @@ export default function DaTrackerCompetitors() {
         <TabsList>
           <TabsTrigger value="act" className="font-semibold">ACT</TabsTrigger>
           <TabsTrigger value="nsw" className="font-semibold">NSW</TabsTrigger>
+          <TabsTrigger value="hbcf" className="font-semibold">HBCF</TabsTrigger>
           <TabsTrigger value="watchlist" className="font-semibold">Watchlist</TabsTrigger>
         </TabsList>
 
@@ -78,11 +81,105 @@ export default function DaTrackerCompetitors() {
           <NswCompetitorBranch />
         </TabsContent>
 
+        <TabsContent value="hbcf" className="space-y-4">
+          <HbcfPolicyIntel />
+        </TabsContent>
+
         {/* Shared Watchlist */}
         <TabsContent value="watchlist" className="space-y-4">
           <CompetitorWatchlist />
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function HbcfPolicyIntel() {
+  const utils = trpc.useUtils();
+  const [forceRefresh, setForceRefresh] = useState(false);
+  const { data, isLoading } = trpc.approvals.hbcf.competitorMatches.list.useQuery({ limit: 100 });
+  const runMatch = trpc.approvals.hbcf.competitorMatches.run.useMutation({
+    onSuccess: (result) => {
+      toast.success(`HBCF matching complete: ${result.matched} match${result.matched === 1 ? "" : "es"}, ${result.skipped} skipped`);
+      if (result.errors?.length) toast.warning(`${result.errors.length} HBCF lookup${result.errors.length === 1 ? "" : "s"} failed`);
+      utils.approvals.hbcf.competitorMatches.list.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <div>
+            <CardTitle className="text-base">HBCF Competitor Matches</CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Match HBCF policy records by address against unconverted leads to identify which builder won the job.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant={forceRefresh ? "default" : "outline"}
+              size="sm"
+              onClick={() => setForceRefresh((v) => !v)}
+            >
+              Force refresh
+            </Button>
+            <Button size="sm" onClick={() => runMatch.mutate({ forceRefresh })} disabled={runMatch.isPending}>
+              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${runMatch.isPending ? "animate-spin" : ""}`} />
+              Run HBCF Match
+            </Button>
+          </div>
+        </CardHeader>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="flex justify-center py-8"><Loader2 className="animate-spin" /></div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Policy</TableHead>
+                  <TableHead>Builder</TableHead>
+                  <TableHead>Address</TableHead>
+                  <TableHead>Issued</TableHead>
+                  <TableHead>Value</TableHead>
+                  <TableHead>Confidence</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data?.items?.map((match: any) => (
+                  <TableRow key={match.id}>
+                    <TableCell className="font-mono text-xs">{match.policyNumber || match.certificateNumber || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant="destructive">{match.builderName || "Unknown builder"}</Badge>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {match.propertyAddress || "—"}
+                      {match.propertySuburb && <span className="text-muted-foreground">, {match.propertySuburb}</span>}
+                    </TableCell>
+                    <TableCell className="text-xs">{match.issuedAt ? new Date(match.issuedAt).toLocaleDateString() : "—"}</TableCell>
+                    <TableCell className="text-xs">{match.contractPrice ? `$${Number(match.contractPrice).toLocaleString()}` : "—"}</TableCell>
+                    <TableCell><Badge variant="outline">{match.matchConfidence}</Badge></TableCell>
+                  </TableRow>
+                ))}
+                {(!data?.items || data.items.length === 0) && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                      No HBCF competitor matches yet. Configure the HBCF builder profile, then run matching.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+      <p className="text-xs text-muted-foreground">
+        Showing {data?.items?.length || 0} of {data?.total || 0} HBCF policy matches.
+      </p>
     </div>
   );
 }
@@ -147,18 +244,29 @@ function NswCompetitorBranch() {
 // ─── NSW Lost to Competitor ─────────────────────────────────────────────────
 
 function NswLostToCompetitor() {
-  const [filter, setFilter] = useState<"all" | "unattributed">("all");
+  const [filter, setFilter] = useState<"all" | "unattributed" | "ours">("all");
   const [councilFilter, setCouncilFilter] = useState("");
   const [companyFilter, setCompanyFilter] = useState("");
+  const utils = trpc.useUtils();
 
   const { data, isLoading } = trpc.nswDa.nswLostToCompetitor.useQuery({
     limit: 100,
     unattributed: filter === "unattributed",
+    ours: filter === "ours",
     council: councilFilter || undefined,
-    companyName: companyFilter || undefined,
+    companyName: filter !== "unattributed" ? companyFilter || undefined : undefined,
   });
 
   const filters = trpc.nswDa.filters.useQuery();
+  const setOwnershipMutation = trpc.nswDa.setOwnership.useMutation({
+    onSuccess: (_result, variables) => {
+      utils.nswDa.nswLostToCompetitor.invalidate();
+      utils.nswDa.nswCompetitorStats.invalidate();
+      utils.nswDa.nswSuburbBreakdown.invalidate();
+      toast.success(variables.isOurs ? "NSW DA marked as ours" : "NSW DA restored as competitor");
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   return (
     <div className="space-y-4">
@@ -169,6 +277,15 @@ function NswLostToCompetitor() {
           onClick={() => setFilter("all")}
         >
           Confirmed Competitors
+        </Button>
+        <Button
+          size="sm"
+          variant={filter === "ours" ? "default" : "outline"}
+          className={filter === "ours" ? "bg-green-700 hover:bg-green-800" : "border-green-500 text-green-700"}
+          onClick={() => setFilter("ours")}
+        >
+          <CheckCircle2 className="w-3 h-3 mr-1" />
+          Associated to us
         </Button>
         <Button
           size="sm"
@@ -189,7 +306,7 @@ function NswLostToCompetitor() {
             ))}
           </SelectContent>
         </Select>
-        {filter === "all" && (
+        {filter !== "unattributed" && (
           <Input
             placeholder="Filter by company..."
             value={companyFilter}
@@ -213,12 +330,13 @@ function NswLostToCompetitor() {
                   <TableHead>Applicant</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead>Lodged</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {data?.items?.map((da: any) => (
                   <TableRow key={da.id}>
-                    <TableCell className="font-mono text-xs">{da.daNumber}</TableCell>
+                    <TableCell className="font-mono text-xs">{da.portalAppNumber || da.daNumber}</TableCell>
                     <TableCell className="text-xs">{da.councilName}</TableCell>
                     <TableCell className="text-sm">{da.fullAddress}</TableCell>
                     <TableCell>
@@ -232,13 +350,30 @@ function NswLostToCompetitor() {
                     <TableCell className="text-xs">
                       {da.lodgementDate ? new Date(da.lodgementDate).toLocaleDateString() : '—'}
                     </TableCell>
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant={filter === "ours" ? "outline" : "default"}
+                        className={filter === "ours" ? "" : "bg-green-700 hover:bg-green-800"}
+                        disabled={setOwnershipMutation.isPending}
+                        onClick={() => setOwnershipMutation.mutate({ id: da.id, isOurs: filter !== "ours" })}
+                      >
+                        {filter === "ours" ? (
+                          <><Undo2 className="h-3.5 w-3.5 mr-1" /> Restore competitor</>
+                        ) : (
+                          <><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Mark as ours</>
+                        )}
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {(!data?.items || data.items.length === 0) && (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                       {filter === "unattributed" 
                         ? "No unattributed DAs. All relevant NSW DAs have applicant names."
+                        : filter === "ours"
+                          ? "No NSW DAs have been manually associated to us yet."
                         : "No competitor DAs found. Run a T1Cloud scrape and ensure competitors are in the Watchlist."}
                     </TableCell>
                   </TableRow>
@@ -548,6 +683,7 @@ function CompetitorDaSearch() {
 function LostToCompetitor() {
   const [companyFilter, setCompanyFilter] = useState("");
   const [showUnattributed, setShowUnattributed] = useState(false);
+  const [showOurs, setShowOurs] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [builderInput, setBuilderInput] = useState("");
 
@@ -555,8 +691,9 @@ function LostToCompetitor() {
   const { data: matchStats } = trpc.competitorIntel.clientMatches.stats.useQuery();
   const { data: lostData, isLoading } = trpc.competitorIntel.clientMatches.lostToCompetitor.useQuery({
     limit: 100,
-    companyName: (!showUnattributed && companyFilter) || undefined,
-    unattributed: showUnattributed || undefined,
+    companyName: (!showOurs && !showUnattributed && companyFilter) || undefined,
+    unattributed: (!showOurs && showUnattributed) || undefined,
+    ours: showOurs,
   });
 
   const assignBuilderMutation = trpc.competitorIntel.clientMatches.assignBuilder.useMutation({
@@ -567,6 +704,14 @@ function LostToCompetitor() {
       setBuilderInput("");
       toast.success("Builder assigned");
     },
+  });
+  const setOwnershipMutation = trpc.competitorIntel.clientMatches.setOwnership.useMutation({
+    onSuccess: (_result, variables) => {
+      utils.competitorIntel.clientMatches.lostToCompetitor.invalidate();
+      utils.competitorIntel.clientMatches.stats.invalidate();
+      toast.success(variables.isOurs ? "ACT DA marked as ours" : "ACT DA restored as competitor");
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   return (
@@ -602,34 +747,43 @@ function LostToCompetitor() {
       )}
 
       {/* Top Competitors breakdown */}
-      {matchStats?.topCompetitors && matchStats.topCompetitors.length > 0 && (
+      {matchStats && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Competitors by Lost Jobs</CardTitle>
+            <CardTitle className="text-sm">DA Attribution</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex gap-2 flex-wrap">
               <Button
-                variant={!showUnattributed && companyFilter === "" ? "default" : "outline"}
+                variant={!showOurs && !showUnattributed && companyFilter === "" ? "default" : "outline"}
                 size="sm"
-                onClick={() => { setCompanyFilter(""); setShowUnattributed(false); }}
+                onClick={() => { setCompanyFilter(""); setShowUnattributed(false); setShowOurs(false); }}
               >
                 All ({matchStats.competitorCount})
               </Button>
               <Button
-                variant={showUnattributed ? "default" : "outline"}
+                variant={showOurs ? "default" : "outline"}
                 size="sm"
-                className={showUnattributed ? "bg-amber-600 hover:bg-amber-700" : "border-amber-400 text-amber-700"}
-                onClick={() => { setShowUnattributed(!showUnattributed); setCompanyFilter(""); }}
+                className={showOurs ? "bg-green-700 hover:bg-green-800" : "border-green-500 text-green-700"}
+                onClick={() => { setShowOurs(true); setShowUnattributed(false); setCompanyFilter(""); }}
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                Associated to us ({matchStats.oursCount})
+              </Button>
+              <Button
+                variant={!showOurs && showUnattributed ? "default" : "outline"}
+                size="sm"
+                className={!showOurs && showUnattributed ? "bg-amber-600 hover:bg-amber-700" : "border-amber-400 text-amber-700"}
+                onClick={() => { setShowUnattributed(!showUnattributed); setShowOurs(false); setCompanyFilter(""); }}
               >
                 Unattributed
               </Button>
-              {matchStats.topCompetitors.map(c => (
+              {matchStats.topCompetitors?.map(c => (
                 <Button
                   key={c.companyName}
-                  variant={!showUnattributed && companyFilter === c.companyName ? "default" : "outline"}
+                  variant={!showOurs && !showUnattributed && companyFilter === c.companyName ? "default" : "outline"}
                   size="sm"
-                  onClick={() => { setCompanyFilter(c.companyName || ""); setShowUnattributed(false); }}
+                  onClick={() => { setCompanyFilter(c.companyName || ""); setShowUnattributed(false); setShowOurs(false); }}
                 >
                   {c.companyName} ({c.count})
                 </Button>
@@ -651,6 +805,11 @@ function LostToCompetitor() {
               <CardTitle className="text-sm text-amber-700">Unattributed DAs — assign a builder after analysis</CardTitle>
             </CardHeader>
           )}
+          {showOurs && (
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm text-green-700">Associated DAs — manually marked as ours</CardTitle>
+            </CardHeader>
+          )}
           <CardContent className="p-0">
             <Table>
               <TableHeader>
@@ -663,6 +822,7 @@ function LostToCompetitor() {
                   <TableHead>Stage</TableHead>
                   <TableHead>Match</TableHead>
                   <TableHead>Proposal</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -738,6 +898,21 @@ function LostToCompetitor() {
                     <TableCell className="text-xs max-w-[200px] truncate" title={item.proposalText || ""}>
                       {item.proposalText?.substring(0, 80) || "—"}
                     </TableCell>
+                    <TableCell>
+                      <Button
+                        size="sm"
+                        variant={showOurs ? "outline" : "default"}
+                        className={showOurs ? "" : "bg-green-700 hover:bg-green-800"}
+                        disabled={setOwnershipMutation.isPending}
+                        onClick={() => setOwnershipMutation.mutate({ id: item.id, isOurs: !showOurs })}
+                      >
+                        {showOurs ? (
+                          <><Undo2 className="h-3.5 w-3.5 mr-1" /> Restore competitor</>
+                        ) : (
+                          <><CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Mark as ours</>
+                        )}
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -748,8 +923,8 @@ function LostToCompetitor() {
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
             <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>{showUnattributed ? "No unattributed DAs found." : "No competitor matches found yet."}</p>
-            <p className="text-xs mt-1">{showUnattributed ? "All competitor DAs have a builder assigned." : 'Run client matching from the "Client Matching" tab to discover lost opportunities.'}</p>
+            <p>{showOurs ? "No ACT DAs have been manually associated to us yet." : showUnattributed ? "No unattributed DAs found." : "No competitor matches found yet."}</p>
+            <p className="text-xs mt-1">{showOurs ? "Use Mark as ours on Simple Site Plans or other lodged-on-our-behalf rows." : showUnattributed ? "All competitor DAs have a builder assigned." : 'Run client matching from the "Client Matching" tab to discover lost opportunities.'}</p>
           </CardContent>
         </Card>
       )}

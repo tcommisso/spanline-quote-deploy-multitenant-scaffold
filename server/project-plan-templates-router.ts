@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
+import { tenantAdminProcedure as adminProcedure, tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, desc, and, asc } from "drizzle-orm";
+import { eq, desc, and, asc, sql } from "drizzle-orm";
 import {
   projectPlanTemplates,
   projectPlanTemplateStages,
@@ -10,6 +10,26 @@ import {
   constructionKanbanTasks,
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+
+function templateConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, projectPlanTemplates.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+async function ensureProjectPlanTemplateTenantColumn(db: any) {
+  const [rows] = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'project_plan_templates'
+      AND column_name = 'tenantId'
+  `);
+  if (Number(rows?.[0]?.count || 0) > 0) return;
+  await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD COLUMN `tenantId` int NULL"));
+  await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD KEY `idx_project_plan_templates_tenant` (`tenantId`)"));
+}
 
 // ─── Input Schemas ─────────────────────────────────────────────────────────
 
@@ -39,13 +59,15 @@ const templateInput = z.object({
 
 export const projectPlanTemplatesRouter = router({
   // ─── List all templates (admin) ────────────────────────────────────────────
-  list: adminProcedure.query(async () => {
+  list: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    await ensureProjectPlanTemplateTenantColumn(db);
 
     const templates = await db
       .select()
       .from(projectPlanTemplates)
+      .where(and(...templateConditions(ctx)))
       .orderBy(desc(projectPlanTemplates.createdAt));
 
     return templates;
@@ -54,14 +76,15 @@ export const projectPlanTemplatesRouter = router({
   // ─── Get template with stages and tasks ────────────────────────────────────
   getById: adminProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       const [template] = await db
         .select()
         .from(projectPlanTemplates)
-        .where(eq(projectPlanTemplates.id, input.id));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.id))));
 
       if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
 
@@ -114,13 +137,14 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       // If setting as default, unset other defaults
       if (input.isDefault) {
         await db
           .update(projectPlanTemplates)
           .set({ isDefault: false })
-          .where(eq(projectPlanTemplates.isDefault, true));
+          .where(and(...templateConditions(ctx, eq(projectPlanTemplates.isDefault, true))));
       }
 
       const [result] = await db.insert(projectPlanTemplates).values({
@@ -128,7 +152,8 @@ export const projectPlanTemplatesRouter = router({
         description: input.description || null,
         isDefault: input.isDefault,
         isActive: input.isActive,
-        createdBy: ctx.user.id,
+        createdBy: ctx.user!.id,
+        tenantId: tenantIdFromContext(ctx),
       });
       const templateId = result.insertId;
 
@@ -161,14 +186,15 @@ export const projectPlanTemplatesRouter = router({
   // ─── Update template (full replace of stages/tasks) ────────────────────────
   update: adminProcedure
     .input(z.object({ id: z.number() }).merge(templateInput))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       const [existing] = await db
         .select()
         .from(projectPlanTemplates)
-        .where(eq(projectPlanTemplates.id, input.id));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.id))));
       if (!existing) throw new TRPCError({ code: "NOT_FOUND" });
 
       // If setting as default, unset other defaults
@@ -177,10 +203,7 @@ export const projectPlanTemplatesRouter = router({
           .update(projectPlanTemplates)
           .set({ isDefault: false })
           .where(
-            and(
-              eq(projectPlanTemplates.isDefault, true),
-              // Don't unset self
-            )
+            and(...templateConditions(ctx, eq(projectPlanTemplates.isDefault, true)))
           );
       }
 
@@ -192,7 +215,7 @@ export const projectPlanTemplatesRouter = router({
           isDefault: input.isDefault,
           isActive: input.isActive,
         })
-        .where(eq(projectPlanTemplates.id, input.id));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.id))));
 
       // Delete existing stages (cascades to tasks)
       await db
@@ -231,12 +254,13 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       // Get original template
       const [original] = await db
         .select()
         .from(projectPlanTemplates)
-        .where(eq(projectPlanTemplates.id, input.id));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.id))));
       if (!original) throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
 
       // Get stages
@@ -252,7 +276,8 @@ export const projectPlanTemplatesRouter = router({
         description: original.description,
         isDefault: false,
         isActive: original.isActive,
-        createdBy: ctx.user.id,
+        createdBy: ctx.user!.id,
+        tenantId: tenantIdFromContext(ctx),
       });
       const newTemplateId = newTemplate.insertId;
 
@@ -292,21 +317,23 @@ export const projectPlanTemplatesRouter = router({
   // ─── Delete template ───────────────────────────────────────────────────────
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       await db
         .delete(projectPlanTemplates)
-        .where(eq(projectPlanTemplates.id, input.id));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.id))));
 
       return { success: true };
     }),
 
   // ─── List active templates (for seed-from-template dropdown) ───────────────
-  listActive: protectedProcedure.query(async () => {
+  listActive: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
+    await ensureProjectPlanTemplateTenantColumn(db);
 
     const templates = await db
       .select({
@@ -316,7 +343,7 @@ export const projectPlanTemplatesRouter = router({
         isDefault: projectPlanTemplates.isDefault,
       })
       .from(projectPlanTemplates)
-      .where(eq(projectPlanTemplates.isActive, true))
+      .where(and(...templateConditions(ctx, eq(projectPlanTemplates.isActive, true))))
       .orderBy(desc(projectPlanTemplates.isDefault), asc(projectPlanTemplates.name));
 
     // Enrich with stage/task counts
@@ -353,12 +380,13 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      await ensureProjectPlanTemplateTenantColumn(db);
 
       // Get template with stages and tasks
       const [template] = await db
         .select()
         .from(projectPlanTemplates)
-        .where(eq(projectPlanTemplates.id, input.templateId));
+        .where(and(...templateConditions(ctx, eq(projectPlanTemplates.id, input.templateId))));
 
       if (!template) throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
 

@@ -5,48 +5,10 @@
 import type { Express, Request, Response } from "express";
 import { getDb } from "./db";
 import { smsMessages, callLogs, tenants } from "../drizzle/schema";
-import { and, eq, or, like } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ENV } from "./_core/env";
 import { findTenantByVocphoneNumber } from "./tenant-integrations";
-
-/** Normalize phone number to match lead records (strip +, leading 0, etc.) */
-function normalizePhone(phone: string): string {
-  let n = phone.replace(/[^0-9]/g, "");
-  // Convert Australian numbers: 614xxxxxxxx -> 04xxxxxxxx
-  if (n.startsWith("61") && n.length === 11) {
-    n = "0" + n.slice(2);
-  }
-  return n;
-}
-
-/** Find a lead by phone number (checks phone and mobile fields) */
-async function findLeadByPhone(phone: string, tenantId?: number | null): Promise<number | null> {
-  const normalized = normalizePhone(phone);
-  if (!normalized) return null;
-
-  // Try multiple formats
-  const variants = [normalized];
-  if (normalized.startsWith("0")) {
-    variants.push("61" + normalized.slice(1)); // 04xx -> 614xx
-    variants.push("+61" + normalized.slice(1)); // 04xx -> +614xx
-  }
-
-  const { crmLeads } = await import("../drizzle/schema");
-  const db = (await getDb())!;
-  const phoneCondition = or(
-    ...variants.flatMap((v) => [
-      eq(crmLeads.contactPhone, v),
-      like(crmLeads.contactPhone, `%${v.slice(-8)}`),
-    ])
-  );
-  const results = await db
-    .select({ id: crmLeads.id })
-    .from(crmLeads)
-    .where(tenantId ? and(eq(crmLeads.tenantId, tenantId), phoneCondition) : phoneCondition)
-    .limit(1);
-
-  return results.length > 0 ? results[0].id : null;
-}
+import { findLeadByPhone } from "./phone-match";
 
 async function resolveWebhookTenant(serviceNumber?: string | null) {
   if (serviceNumber) {
@@ -124,7 +86,8 @@ export function registerVocphoneWebhooks(app: Express) {
 
       const direction = event.includes("inbound") ? "inbound" : "outbound";
       const phoneToMatch = direction === "inbound" ? from : to;
-      const tenant = await resolveWebhookTenant(to);
+      const serviceNumber = direction === "inbound" ? to : from;
+      const tenant = await resolveWebhookTenant(serviceNumber);
       const resolvedLeadId = phoneToMatch ? await findLeadByPhone(phoneToMatch, tenant?.id) : null;
       // Drizzle requires explicit null for nullable int columns, not undefined
       const leadId = resolvedLeadId ?? null;

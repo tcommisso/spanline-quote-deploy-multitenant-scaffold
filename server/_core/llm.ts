@@ -209,15 +209,84 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-    : "https://forge.manus.im/v1/chat/completions";
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+const FALLBACK_OPENAI_MODELS = ["gpt-5-mini", "gpt-4o-mini", "gpt-4o"];
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
+  if (!ENV.openAiApiKey) {
     throw new Error("OPENAI_API_KEY is not configured");
   }
+};
+
+async function bufferFromUrl(url: string): Promise<Buffer> {
+  if (url.startsWith("/manus-storage/")) {
+    const { storageDownload } = await import("../storage");
+    return storageDownload(url.replace(/^\/manus-storage\//, ""));
+  }
+  const fetchUrl = url.startsWith("/") && ENV.publicAppUrl
+    ? new URL(url, ENV.publicAppUrl).toString()
+    : url;
+  const response = await fetch(fetchUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch LLM input file (${response.status}): ${url}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+const toOpenAiContentPart = async (
+  part: MessageContent
+): Promise<
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string; detail?: "auto" | "low" | "high" }
+  | { type: "input_file"; filename: string; file_data: string }
+> => {
+  if (typeof part === "string") {
+    return { type: "input_text", text: part };
+  }
+
+  if (part.type === "text") {
+    return { type: "input_text", text: part.text };
+  }
+
+  if (part.type === "image_url") {
+    if (part.image_url.url.startsWith("/")) {
+      const buffer = await bufferFromUrl(part.image_url.url);
+      return {
+        type: "input_image",
+        image_url: `data:image/png;base64,${buffer.toString("base64")}`,
+        ...(part.image_url.detail ? { detail: part.image_url.detail } : {}),
+      };
+    }
+    return {
+      type: "input_image",
+      image_url: part.image_url.url,
+      ...(part.image_url.detail ? { detail: part.image_url.detail } : {}),
+    };
+  }
+
+  if (part.type === "file_url") {
+    const buffer = await bufferFromUrl(part.file_url.url);
+    const mimeType = part.file_url.mime_type || "application/pdf";
+    return {
+      type: "input_file",
+      filename: `input.${mimeType.includes("pdf") ? "pdf" : "bin"}`,
+      file_data: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    };
+  }
+
+  throw new Error("Unsupported message content part");
+};
+
+const toOpenAiInputMessage = async (message: Message) => {
+  const role = message.role === "function" || message.role === "tool"
+    ? "user"
+    : message.role;
+  const contentParts = await Promise.all(ensureArray(message.content).map(toOpenAiContentPart));
+  return {
+    role,
+    content: contentParts,
+  };
 };
 
 const normalizeResponseFormat = ({
@@ -270,9 +339,6 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
 
   const {
     messages,
-    tools,
-    toolChoice,
-    tool_choice,
     outputSchema,
     output_schema,
     responseFormat,
@@ -280,26 +346,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
-    messages: messages.map(normalizeMessage),
+    model: ENV.openAiModel || DEFAULT_OPENAI_MODEL,
+    input: await Promise.all(messages.map(toOpenAiInputMessage)),
   };
 
-  if (tools && tools.length > 0) {
-    payload.tools = tools;
-  }
-
-  const normalizedToolChoice = normalizeToolChoice(
-    toolChoice || tool_choice,
-    tools
-  );
-  if (normalizedToolChoice) {
-    payload.tool_choice = normalizedToolChoice;
-  }
-
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
-  }
+  payload.max_output_tokens = params.maxTokens ?? params.max_tokens ?? 4096;
 
   const normalizedResponseFormat = normalizeResponseFormat({
     responseFormat,
@@ -309,24 +360,85 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   });
 
   if (normalizedResponseFormat) {
-    payload.response_format = normalizedResponseFormat;
+    if (normalizedResponseFormat.type === "json_schema") {
+      payload.text = {
+        format: {
+          type: "json_schema",
+          name: normalizedResponseFormat.json_schema.name,
+          schema: normalizedResponseFormat.json_schema.schema,
+          strict: normalizedResponseFormat.json_schema.strict ?? true,
+        },
+      };
+    } else if (normalizedResponseFormat.type === "json_object") {
+      payload.text = { format: { type: "json_object" } };
+    }
   }
 
-  const response = await fetch(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  let response: Response | undefined;
+  let lastErrorText = "";
+  const requestedModel = String(payload.model || DEFAULT_OPENAI_MODEL);
+  const modelCandidates = Array.from(new Set([
+    requestedModel,
+    ...FALLBACK_OPENAI_MODELS,
+  ].filter(Boolean)));
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
-    );
+  for (const model of modelCandidates) {
+    payload.model = model;
+    response = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.openAiApiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.ok) break;
+
+    lastErrorText = await response.text();
+    const canRetryWithFallback = response.status === 403 || response.status === 404 || lastErrorText.includes("model_not_found");
+    const hasMoreModels = model !== modelCandidates[modelCandidates.length - 1];
+    if (!canRetryWithFallback || !hasMoreModels) {
+      throw new Error(
+        `LLM invoke failed: ${response.status} ${response.statusText} – ${lastErrorText}`
+      );
+    }
+    console.warn(`[OpenAI] Model ${model} unavailable; retrying with fallback model`);
   }
 
-  return (await response.json()) as InvokeResult;
+  if (!response?.ok) {
+    throw new Error(`LLM invoke failed: ${lastErrorText || "OpenAI request failed"}`);
+  }
+
+  const data = await response.json() as any;
+  const content = typeof data.output_text === "string"
+    ? data.output_text
+    : (data.output || [])
+      .flatMap((item: any) => item.content || [])
+      .map((part: any) => part.text || "")
+      .join("\n")
+      .trim();
+
+  return {
+    id: data.id || "",
+    created: data.created_at || Math.floor(Date.now() / 1000),
+    model: data.model || String(payload.model),
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: content || "",
+        },
+        finish_reason: data.status === "completed" ? "stop" : data.status || null,
+      },
+    ],
+    usage: data.usage
+      ? {
+        prompt_tokens: data.usage.input_tokens || 0,
+        completion_tokens: data.usage.output_tokens || 0,
+        total_tokens: data.usage.total_tokens || ((data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)),
+      }
+      : undefined,
+  };
 }

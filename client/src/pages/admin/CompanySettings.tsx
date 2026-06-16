@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { MapPin, Plus, Trash2, Save, Building2, Image, Upload, Pencil, Phone, Mail, MessageSquare, DollarSign, Menu, Palette } from "lucide-react";
+import { MapPin, Plus, Trash2, Save, Building2, Image, Upload, Pencil, Phone, Mail, MessageSquare, Menu, Palette } from "lucide-react";
 import { toast } from "sonner";
 import {
   loadCompanyDetails,
@@ -48,7 +48,6 @@ const SECTIONS = [
   { id: "app-icon", label: "App Logo", icon: Upload },
   { id: "favicon", label: "Favicon", icon: Image },
   { id: "branches", label: "Branch Offices", icon: MapPin },
-  { id: "render-pricing", label: "AI Render Pricing", icon: DollarSign },
   { id: "login-background", label: "Login Background", icon: Image },
 ];
 
@@ -111,37 +110,6 @@ export default function CompanySettings() {
   const [newBranch, setNewBranch] = useState({ name: "", address: "", phone: "", email: "", smsNumber: "", managerName: "", managerEmail: "" });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editBranch, setEditBranch] = useState({ name: "", address: "", phone: "", email: "", smsNumber: "", managerName: "", managerEmail: "" });
-
-  // AI Render Pricing state
-  const { data: renderPricing } = trpc.globalSettings.getRenderPricing.useQuery();
-  const setRenderPricing = trpc.globalSettings.setRenderPricing.useMutation();
-  const [pricingForm, setPricingForm] = useState({
-    fullRenderCostAud: 0.08,
-    quickRenderCostAud: 0.04,
-    batchRenderCostAud: 0.06,
-    monthlyBudgetAud: 10.0,
-  });
-  const [pricingLoaded, setPricingLoaded] = useState(false);
-
-  // Load pricing from server
-  if (renderPricing && !pricingLoaded) {
-    setPricingForm({
-      fullRenderCostAud: renderPricing.fullRenderCostAud,
-      quickRenderCostAud: renderPricing.quickRenderCostAud,
-      batchRenderCostAud: renderPricing.batchRenderCostAud,
-      monthlyBudgetAud: renderPricing.monthlyBudgetAud,
-    });
-    setPricingLoaded(true);
-  }
-
-  const handleSaveRenderPricing = async () => {
-    try {
-      await setRenderPricing.mutateAsync(pricingForm);
-      toast.success("AI render pricing saved");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to save pricing");
-    }
-  };
 
   // Login Background state
   const { data: loginBgData } = trpc.globalSettings.getLoginBackground.useQuery();
@@ -888,89 +856,6 @@ export default function CompanySettings() {
                 </AccordionContent>
               </div>
             </AccordionItem>
-            {/* AI Render Pricing */}
-            <AccordionItem value="render-pricing" className="border rounded-lg px-4">
-              <div ref={(el) => { sectionRefs.current["render-pricing"] = el; }}>
-                <AccordionTrigger className="text-base font-semibold py-4">
-                  <div className="flex items-center gap-2">
-                    <DollarSign className="h-4 w-4 text-green-600" />
-                    AI Render Pricing
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent>
-                  <div className="space-y-4 pb-4">
-                    <p className="text-sm text-muted-foreground">
-                      Set the cost per render type (AUD) and monthly budget. These rates are used to track AI render generation costs.
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <Label className="text-xs">Full Render Cost (AUD)</Label>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="10"
-                          value={pricingForm.fullRenderCostAud}
-                          onChange={(e) => setPricingForm({ ...pricingForm, fullRenderCostAud: parseFloat(e.target.value) || 0 })}
-                          className="h-8 text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">High-quality detailed render</p>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Quick Render Cost (AUD)</Label>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="10"
-                          value={pricingForm.quickRenderCostAud}
-                          onChange={(e) => setPricingForm({ ...pricingForm, quickRenderCostAud: parseFloat(e.target.value) || 0 })}
-                          className="h-8 text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">Fast preview render</p>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Batch Render Cost (AUD)</Label>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="10"
-                          value={pricingForm.batchRenderCostAud}
-                          onChange={(e) => setPricingForm({ ...pricingForm, batchRenderCostAud: parseFloat(e.target.value) || 0 })}
-                          className="h-8 text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">Per render in batch mode</p>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Monthly Budget (AUD)</Label>
-                        <Input
-                          type="number"
-                          step="1"
-                          min="0"
-                          max="10000"
-                          value={pricingForm.monthlyBudgetAud}
-                          onChange={(e) => setPricingForm({ ...pricingForm, monthlyBudgetAud: parseFloat(e.target.value) || 0 })}
-                          className="h-8 text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">Alert threshold for monthly spending</p>
-                      </div>
-                    </div>
-                    <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        className="h-8 text-xs gap-1"
-                        onClick={handleSaveRenderPricing}
-                        disabled={setRenderPricing.isPending}
-                      >
-                        <Save className="h-3 w-3" /> Save Pricing
-                      </Button>
-                    </div>
-                  </div>
-                </AccordionContent>
-              </div>
-            </AccordionItem>
-
             {/* Login Background */}
             <AccordionItem value="login-background" className="border rounded-lg px-4">
               <div ref={(el) => { sectionRefs.current["login-background"] = el; }}>

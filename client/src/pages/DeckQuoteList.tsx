@@ -23,11 +23,12 @@ import { Label } from "@/components/ui/label";
 import ClientPicker from "@/components/ClientPicker";
 import AddressAutocomplete from "@/components/AddressAutocomplete";
 import DesignAdvisorSelect from "@/components/DesignAdvisorSelect";
+import { isAdminRole } from "@shared/const";
 
 export default function DeckQuoteList() {
   const [, navigate] = useLocation();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminRole(user?.role || "");
   const [search, setSearch] = useState("");
   const [advisorFilter, setAdvisorFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);

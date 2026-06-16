@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, mediumtext, timestamp, varchar, decimal, json, boolean, double, tinyint, uniqueIndex, bigint, index } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, mediumtext, timestamp, varchar, decimal, json, boolean, double, tinyint, uniqueIndex, bigint, index, foreignKey } from "drizzle-orm/mysql-core";
 
 // ─── Tenancy ────────────────────────────────────────────────────────────────
 export const tenants = mysqlTable("tenants", {
@@ -75,6 +75,23 @@ export const tenantIntegrationSettings = mysqlTable("tenant_integration_settings
 export type TenantIntegrationSetting = typeof tenantIntegrationSettings.$inferSelect;
 export type InsertTenantIntegrationSetting = typeof tenantIntegrationSettings.$inferInsert;
 
+export const permissionOverrides = mysqlTable("permission_overrides", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  role: varchar("role", { length: 64 }).notNull(),
+  permissionKey: varchar("permissionKey", { length: 128 }).notNull(),
+  allowed: boolean("allowed").notNull(),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedByName: varchar("updatedByName", { length: 255 }),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_permission_override_tenant_role_key").on(table.tenantId, table.role, table.permissionKey),
+  index("idx_permission_override_tenant").on(table.tenantId),
+]);
+export type PermissionOverride = typeof permissionOverrides.$inferSelect;
+export type InsertPermissionOverride = typeof permissionOverrides.$inferInsert;
+
 
 // ─── Quotes ──────────────────────────────────────────────────────────────────
 export const quotes = mysqlTable("quotes", {
@@ -83,27 +100,26 @@ export const quotes = mysqlTable("quotes", {
   userId: int("userId").notNull(),
   quoteNumber: varchar("quoteNumber", { length: 32 }).notNull().unique(),
   clientId: int("clientId"),
-  clientName: varchar("clientName", { length: 255 }).notNull(),
-  clientPhone: varchar("clientPhone", { length: 64 }),
-  clientEmail: varchar("clientEmail", { length: 320 }),
+  clientName: text("clientName").notNull(),
+  clientPhone: text("clientPhone"),
+  clientEmail: text("clientEmail"),
   siteAddress: text("siteAddress"),
-  suburb: varchar("suburb", { length: 128 }),
-  localCouncil: varchar("localCouncil", { length: 128 }),
+  suburb: text("suburb"),
+  localCouncil: text("localCouncil"),
   region: varchar("region", { length: 64 }).default("Canberra"),
   status: mysqlEnum("status", ["draft", "sent", "accepted", "lost"]).default("draft").notNull(),
-  outcomeReason: varchar("outcomeReason", { length: 255 }),
+  outcomeReason: text("outcomeReason"),
   archived: boolean("archived").default(false).notNull(),
   descriptionOfWork: text("descriptionOfWork"),
   notes: text("notes"),
-  // Adjustments
   includeDelivery: boolean("includeDelivery").default(false),
   deliveryAmount: decimal("deliveryAmount", { precision: 12, scale: 2 }).default("0"),
   includeTravelAllowance: boolean("includeTravelAllowance").default(false),
   travelAllowance: decimal("travelAllowance", { precision: 12, scale: 2 }).default("0"),
   travelDistanceKm: decimal("travelDistanceKm", { precision: 8, scale: 1 }),
-  travelBandKey: varchar("travelBandKey", { length: 32 }),
+  travelBandKey: text("travelBandKey"),
   travelOverridden: boolean("travelOverridden").default(false),
-  travelBranchName: varchar("travelBranchName", { length: 128 }),
+  travelBranchName: text("travelBranchName"),
   includeSmallJobSurcharge: boolean("includeSmallJobSurcharge").default(false),
   smallJobSurcharge: decimal("smallJobSurcharge", { precision: 12, scale: 2 }).default("0"),
   includeConstructionMgmt: boolean("includeConstructionMgmt").default(false),
@@ -115,262 +131,37 @@ export const quotes = mysqlTable("quotes", {
   discountPercent: decimal("discountPercent", { precision: 5, scale: 2 }).default("0"),
   councilFees: decimal("councilFees", { precision: 12, scale: 2 }).default("0"),
   homeWarranty: decimal("homeWarranty", { precision: 12, scale: 2 }).default("0"),
-  // Spec sheet fields
-  specWidth: decimal("specWidth", { precision: 8, scale: 2 }),
-  specLength: decimal("specLength", { precision: 8, scale: 2 }),
-  specFloorHeight: varchar("specFloorHeight", { length: 64 }),
-  specRoofToFloor: varchar("specRoofToFloor", { length: 64 }),
-  specFloorToGround: varchar("specFloorToGround", { length: 64 }),
-  specHouseEave: varchar("specHouseEave", { length: 64 }),
-  specJobEave: varchar("specJobEave", { length: 64 }),
-  specWindCat: varchar("specWindCat", { length: 32 }),
-  specCpn: varchar("specCpn", { length: 64 }),
-  specFall: varchar("specFall", { length: 64 }),
-  specSiteAccess: varchar("specSiteAccess", { length: 4 }),
-  specSiteRestricted: varchar("specSiteRestricted", { length: 4 }),
-  specSiteConditions: varchar("specSiteConditions", { length: 4 }),
-  specSiteOther: varchar("specSiteOther", { length: 4 }),
-  specSiteMixed: varchar("specSiteMixed", { length: 4 }),
-  specSiteNotes: text("specSiteNotes"),
-  specAttachmentMethod: varchar("specAttachmentMethod", { length: 128 }),
-  specFasciaBrackets: varchar("specFasciaBrackets", { length: 128 }),
-  specExtendaBrackets: varchar("specExtendaBrackets", { length: 128 }),
-  specGableBrackets: varchar("specGableBrackets", { length: 128 }),
-  specOversizedDGutter: varchar("specOversizedDGutter", { length: 64 }),
-  specBracketsType: varchar("specBracketsType", { length: 128 }), // e.g. Fascia, Extenda, Gable, Pop-up, Free Standing, Wall Fixing
-  specBracketCover: varchar("specBracketCover", { length: 64 }),
-  specBracketColour: varchar("specBracketColour", { length: 64 }),
-  specPopupBrackets: varchar("specPopupBrackets", { length: 128 }),
-  specPopupColour: varchar("specPopupColour", { length: 64 }),
-  specFreeStanding: varchar("specFreeStanding", { length: 64 }),
-  specWallFixingBeam: varchar("specWallFixingBeam", { length: 64 }),
-  specWallFixingBracket: varchar("specWallFixingBracket", { length: 64 }),
-  specFoamCut: varchar("specFoamCut", { length: 64 }),
-  specPostsNumber: varchar("specPostsNumber", { length: 32 }),
-  specPostsType: varchar("specPostsType", { length: 64 }),
-  specPostsColour: varchar("specPostsColour", { length: 64 }),
-  specPostsFixing: varchar("specPostsFixing", { length: 128 }),
-  specGutterType: varchar("specGutterType", { length: 128 }),
-  specGutterColour: varchar("specGutterColour", { length: 64 }),
-  specBoxGutter: varchar("specBoxGutter", { length: 64 }),
-  specOverflow: varchar("specOverflow", { length: 64 }),
-  specDownpipeType: varchar("specDownpipeType", { length: 64 }),
-  specDownpipeColour: varchar("specDownpipeColour", { length: 64 }),
-  specDownpipeLocation: varchar("specDownpipeLocation", { length: 64 }),
-  specGutterSides: varchar("specGutterSides", { length: 64 }), // comma-separated: A-B,C-D
-  specDownpipeMarkers: varchar("specDownpipeMarkers", { length: 256 }), // comma-separated: A-B:25,C-D:75
-  specWallType: varchar("specWallType", { length: 128 }),
-  specWallColour: varchar("specWallColour", { length: 64 }),
-  specWallPanels: varchar("specWallPanels", { length: 64 }),
-  specWallLM: varchar("specWallLM", { length: 32 }),
-  specIwpEntries: json("specIwpEntries"), // [{type:string, width:number, height:number, qty:number, outsideColour:string, outsideFinish:string, insideColour:string, insideFinish:string}]
-  specWallWorkItems: json("specWallWorkItems"), // [{item:string, checked:boolean, notes:string, responsibility:string}]
-  specWallNotes: varchar("specWallNotes", { length: 512 }),
-  specBeamSize: varchar("specBeamSize", { length: 64 }),
-  specBeamColour: varchar("specBeamColour", { length: 64 }),
-  specBeamEntries: json("specBeamEntries"),
-  specBeamPositions: text("specBeamPositions"), // semicolon-separated beam positions e.g. "0:35;1:65" (beamIndex:percentFromHouseWall)
-  specSpanlitesType: varchar("specSpanlitesType", { length: 128 }),
-  specSpanlitesFinish: varchar("specSpanlitesFinish", { length: 64 }),
-  specSkylightLm: varchar("specSkylightLm", { length: 32 }),
-  specSkylightQty: varchar("specSkylightQty", { length: 16 }),
-  specPostPositions: text("specPostPositions"),
-  specPostSpacing: varchar("specPostSpacing", { length: 64 }),
-  specRoofOverhang: varchar("specRoofOverhang", { length: 64 }),
-  specBackChannelColour: varchar("specBackChannelColour", { length: 64 }),
-  specSideChannelsColour: varchar("specSideChannelsColour", { length: 64 }),
-  specFlashingsColour: varchar("specFlashingsColour", { length: 64 }),
-  specFlashingsType: varchar("specFlashingsType", { length: 128 }), // e.g. Apron, Barge, Step, Valley, Ridge Cap
-  specTwinwallColour: varchar("specTwinwallColour", { length: 64 }),
-  specRoofType: varchar("specRoofType", { length: 128 }),
-  specRoofShape: varchar("specRoofShape", { length: 64 }),
-  specRoofTopColour: varchar("specRoofTopColour", { length: 64 }),
-  specRoofBottomColour: varchar("specRoofBottomColour", { length: 64 }),
-  specFinishSheetSize: varchar("specFinishSheetSize", { length: 64 }),
-  specFinishType: varchar("specFinishType", { length: 128 }),
-  specFallDirection: varchar("specFallDirection", { length: 16 }),
-  specHouseWalls: varchar("specHouseWalls", { length: 32 }),
-  specAngleCutting: varchar("specAngleCutting", { length: 64 }),
-  specAngleCuttingMetres: varchar("specAngleCuttingMetres", { length: 32 }),
-  specGableInfill: varchar("specGableInfill", { length: 256 }),
-  specGableStyle: varchar("specGableStyle", { length: 256 }),
-  specRafterSize: varchar("specRafterSize", { length: 128 }),
-  specRafterMaterial: varchar("specRafterMaterial", { length: 128 }),
-  specPolyType: varchar("specPolyType", { length: 256 }),
-  specPolyRafters: varchar("specPolyRafters", { length: 256 }),
-  specWindowType: varchar("specWindowType", { length: 128 }), // e.g. Sliding, Awning, Fixed, Louvre, Casement
-  specDoorType: varchar("specDoorType", { length: 128 }), // e.g. Sliding, Hinged, Bi-fold, Stacker, French
-  specScreenType: varchar("specScreenType", { length: 128 }), // e.g. Fly, Pet, Diamond, Security, Invis-gard
-  specWindowsFrameColour: varchar("specWindowsFrameColour", { length: 64 }),
-  specWindowsTint: varchar("specWindowsTint", { length: 64 }),
-  specDoorsFrameColour: varchar("specDoorsFrameColour", { length: 64 }),
-  specDoorsTint: varchar("specDoorsTint", { length: 64 }),
-  specIwpColour: varchar("specIwpColour", { length: 64 }),
-  specIwpFinish: varchar("specIwpFinish", { length: 128 }),
-  specCeilingColour: varchar("specCeilingColour", { length: 64 }),
-  specCeilingFinish: varchar("specCeilingFinish", { length: 128 }),
-  specColourGroup: varchar("specColourGroup", { length: 64 }),
-  specColourGroupOverrides: json("specColourGroupOverrides"),  // { brackets: "groupName", posts: "groupName", ... }
-  specProgressPayments: json("specProgressPayments"),
-  specDesignAdviser: varchar("specDesignAdviser", { length: 128 }),
-  // ─── Internal Floor ───
-  specFlooringType: varchar("specFlooringType", { length: 128 }), // e.g. Timber, Vinyl, Tile, Carpet, Laminate, Concrete
-  specFloorPrep: varchar("specFloorPrep", { length: 128 }),
-  specFloorFrame: varchar("specFloorFrame", { length: 128 }),
-  specFloorFinish: varchar("specFloorFinish", { length: 128 }),
-  specFloorNotes: varchar("specFloorNotes", { length: 512 }),
-  specSubfloorM2: varchar("specSubfloorM2", { length: 32 }),
-  specFloorWorkItems: json("specFloorWorkItems"), // [{task:string, checked:boolean, responsibility:''|'By Builder'|'By Client'}]
-  // ─── Stairs ───
-  specStairsType: varchar("specStairsType", { length: 128 }), // e.g. Steel, Aluminium, Timber, Spiral, Floating
-  specStairsSteps: varchar("specStairsSteps", { length: 32 }),
-  specStairsStringer: varchar("specStairsStringer", { length: 64 }),
-  specStairsTreads: varchar("specStairsTreads", { length: 64 }),
-  specStairsRiser: varchar("specStairsRiser", { length: 64 }),
-  specStairsGate: varchar("specStairsGate", { length: 64 }),
-  specStairsNotes: varchar("specStairsNotes", { length: 512 }),
-  specStairsChecks: json("specStairsChecks"), // [{item:string, checked:boolean, notes:string}]
-  // ─── Balustrade ───
-  specBalustradeType: varchar("specBalustradeType", { length: 128 }), // e.g. Glass, Tubular, Wire, Privacy Screen
-  specBalustradeTubular: varchar("specBalustradeTubular", { length: 64 }),
-  specBalustradeGlass: varchar("specBalustradeGlass", { length: 64 }),
-  specBalustradeWire: varchar("specBalustradeWire", { length: 64 }),
-  specBalustradePrivacy: varchar("specBalustradePrivacy", { length: 64 }),
-  specBalustradePosts: varchar("specBalustradePosts", { length: 128 }),
-  specBalustradeRails: varchar("specBalustradeRails", { length: 128 }),
-  specBalustradeCompliance: varchar("specBalustradeCompliance", { length: 64 }),
-  specBalustradeLM: varchar("specBalustradeLM", { length: 32 }),
-  specBalustradeNotes: varchar("specBalustradeNotes", { length: 512 }),
-  specBalustradeHeight: varchar("specBalustradeHeight", { length: 32 }),
-  specBalTubularVertical: varchar("specBalTubularVertical", { length: 128 }),
-  specBalTubularHorizSlat: varchar("specBalTubularHorizSlat", { length: 128 }),
-  specBalTubularVertSlat: varchar("specBalTubularVertSlat", { length: 128 }),
-  specBalTubularStairs: varchar("specBalTubularStairs", { length: 64 }),
-  specBalGlassType: varchar("specBalGlassType", { length: 128 }),
-  specBalGlassTint: varchar("specBalGlassTint", { length: 128 }),
-  specBalGlassSpigots: varchar("specBalGlassSpigots", { length: 128 }),
-  specBalGlassStairs: varchar("specBalGlassStairs", { length: 64 }),
-  specBalWireType: varchar("specBalWireType", { length: 128 }),
-  specBalWireFinish: varchar("specBalWireFinish", { length: 128 }),
-  specBalWireFrame: varchar("specBalWireFrame", { length: 128 }),
-  specBalWireStairs: varchar("specBalWireStairs", { length: 128 }),
-  specBalPrivacy: varchar("specBalPrivacy", { length: 256 }),
-  specBalPostType: varchar("specBalPostType", { length: 128 }),
-  specBalPostMount: varchar("specBalPostMount", { length: 256 }),
-  specBalPostColour: varchar("specBalPostColour", { length: 128 }),
-  specBalRailTopStyle: varchar("specBalRailTopStyle", { length: 128 }),
-  specBalRailTopColour: varchar("specBalRailTopColour", { length: 128 }),
-  specBalRailBottomStyle: varchar("specBalRailBottomStyle", { length: 128 }),
-  specBalRailBottomColour: varchar("specBalRailBottomColour", { length: 128 }),
-  specBalCertification: varchar("specBalCertification", { length: 16 }),
-  // ─── Electrical ───
-  specElecLights: varchar("specElecLights", { length: 32 }),
-  specElecLightType: varchar("specElecLightType", { length: 128 }),
-  specElecSwitches: varchar("specElecSwitches", { length: 32 }),
-  specElecPowerPoints: varchar("specElecPowerPoints", { length: 32 }),
-  specElecCabling: varchar("specElecCabling", { length: 128 }),
-  specElecFan: varchar("specElecFan", { length: 32 }),
-  specElecRemoveReinstall: varchar("specElecRemoveReinstall", { length: 256 }),
-  specElecNotes: varchar("specElecNotes", { length: 512 }),
-  specElecFrameType: varchar("specElecFrameType", { length: 128 }),
-  specElecSwitchOneWay: varchar("specElecSwitchOneWay", { length: 32 }),
-  specElecSwitchTwoWay: varchar("specElecSwitchTwoWay", { length: 32 }),
-  specElecSwitchDimmer: varchar("specElecSwitchDimmer", { length: 32 }),
-  specElecLightTypes: json("specElecLightTypes"), // [{type:string, qty:number}]
-  specElecGpos: json("specElecGpos"), // [{type:'Single GPO'|'Double GPO', location:'Indoor'|'Outdoor', qty:number}]
-  specElecExtraWork: json("specElecExtraWork"), // [{task:string, checked:boolean, responsibility:''|'By Owner'|'By Builder'|'By Client'}]
-  specElecCablingOptions: varchar("specElecCablingOptions", { length: 512 }),
-  // ─── Windows ───
-  specWindowEntries: json("specWindowEntries"), // [{style:'Sliding'|'Awning'|'Fixed', height:number, width:number, qty:number}]
-  specDoorEntries: json("specDoorEntries"), // [{style:'Sliding'|'Hinged'|'Bi-fold'|'Stacker', height:number, width:number, qty:number}]
-  // ─── Concreting ───
-  specConcreteType: varchar("specConcreteType", { length: 64 }),
-  specConcreteFinish: varchar("specConcreteFinish", { length: 64 }),
-  specConcreteThickness: varchar("specConcreteThickness", { length: 32 }),
-  specConcreteArea: varchar("specConcreteArea", { length: 32 }),
-  specConcretePolished: varchar("specConcretePolished", { length: 64 }),
-  specConcreteExtras: varchar("specConcreteExtras", { length: 256 }),
-  specConcreteNotes: varchar("specConcreteNotes", { length: 512 }),
-  specConcreteChecks: varchar("specConcreteChecks", { length: 512 }),
-  specConcreteItemChecks: json("specConcreteItemChecks"), // [{item:string, checked:boolean, notes:string}]
-  specConcreteColour: varchar("specConcreteColour", { length: 64 }),
-  // ─── Work on Existing House ───
-  specExistingEave: varchar("specExistingEave", { length: 256 }),
-  specExistingWalls: varchar("specExistingWalls", { length: 256 }),
-  specExistingFascia: varchar("specExistingFascia", { length: 256 }),
-  specExistingBeams: varchar("specExistingBeams", { length: 256 }),
-  specExistingDemo: varchar("specExistingDemo", { length: 256 }),
-  specExistingNotes: varchar("specExistingNotes", { length: 512 }),
-  specExistingChecks: json("specExistingChecks"), // [{item:string, checked:boolean, notes:string}]
-  // ─── Demolition Works ───
-  specDemolitionWorkItems: json("specDemolitionWorkItems"), // [{item:string, checked:boolean, notes:string, responsibility:string}]
-  specDemolitionNotes: varchar("specDemolitionNotes", { length: 512 }),
-  // ─── Plumbing & Drainage ───
-  specPlumbType: varchar("specPlumbType", { length: 128 }), // e.g. Stormwater, Gas, Sewer, Hot Water, Cold Water
-  specPlumbStormwater: varchar("specPlumbStormwater", { length: 256 }),
-  specPlumbGas: varchar("specPlumbGas", { length: 128 }),
-  specPlumbPipes: varchar("specPlumbPipes", { length: 256 }),
-  specPlumbFitoffs: varchar("specPlumbFitoffs", { length: 256 }),
-  specPlumbNotes: varchar("specPlumbNotes", { length: 512 }),
-  specPlumbChecks: json("specPlumbChecks"), // [{item:string, checked:boolean, notes:string}]
-  // ─── Glass - Windows & Doors ───
-  specWindowGlassType: varchar("specWindowGlassType", { length: 64 }),
-  specDoorGlassType: varchar("specDoorGlassType", { length: 64 }),
-  specGlassWindows: varchar("specGlassWindows", { length: 256 }),
-  specGlassDoors: varchar("specGlassDoors", { length: 256 }),
-  specGlassToning: varchar("specGlassToning", { length: 64 }),
-  specGlassObscurity: varchar("specGlassObscurity", { length: 128 }),
-  specGlassTint: varchar("specGlassTint", { length: 128 }),
-  specGlassEtched: varchar("specGlassEtched", { length: 128 }),
-  specGlassScreens: varchar("specGlassScreens", { length: 64 }),
-  specGlassPetDoor: varchar("specGlassPetDoor", { length: 64 }),
-  specGlassNotes: varchar("specGlassNotes", { length: 512 }),
-  // ─── Site Plan & Setbacks ───
-  specSetbackFront: varchar("specSetbackFront", { length: 32 }),
-  specSetbackRear: varchar("specSetbackRear", { length: 32 }),
-  specSetbackLeft: varchar("specSetbackLeft", { length: 32 }),
-  specSetbackRight: varchar("specSetbackRight", { length: 32 }),
-  specStructurePosX: varchar("specStructurePosX", { length: 32 }),
-  specStructurePosY: varchar("specStructurePosY", { length: 32 }),
-  specStructureRotation: varchar("specStructureRotation", { length: 32 }),
-  specSetbackColor: varchar("specSetbackColor", { length: 32 }),
-  // ─── Cross-Section Diagram ───
-  specHouseRoofType: varchar("specHouseRoofType", { length: 64 }),
-  specCutBackEave: varchar("specCutBackEave", { length: 64 }),
-  specRemoveGutterFlash: varchar("specRemoveGutterFlash", { length: 16 }),
-  specHouseWallType: varchar("specHouseWallType", { length: 64 }),
-  specFallOnGround: varchar("specFallOnGround", { length: 64 }),
-  specGroundLevel: varchar("specGroundLevel", { length: 64 }),
-  specDiagramAnnotations: json("specDiagramAnnotations"), // JSON array of annotations [{id, x, y, text, color, diagram}]
-  // ─── Section Preferences (per-quote) ───
-  specSectionPrefs: json("specSectionPrefs"), // {sectionOrder: string[], hiddenSections: string[], templateId?: number}
-  // ─── Satellite Image Cache ───
-  parcelDataJson: json("parcelDataJson"), // cached parcel/boundary data from ACTmapi/NSW
-  satelliteImageUrl: text("satelliteImageUrl"), // cached satellite data URL for PDF export
-  // ─── Notes / Special Instructions ───
-  specNotes: text("specNotes"),
-  designAdvisor: varchar("designAdvisor", { length: 128 }),
+  hbcfRequired: boolean("hbcfRequired").default(false).notNull(),
+  hbcfRequirementReason: varchar("hbcfRequirementReason", { length: 255 }),
+  hbcfFlaggedAt: timestamp("hbcfFlaggedAt"),
+  designAdvisor: text("designAdvisor"),
   proposalSentAt: timestamp("proposalSentAt"),
-  proposalSentTo: varchar("proposalSentTo", { length: 320 }),
-  // ─── Proposal Photo Gallery ───
-  proposalPhotos: json("proposalPhotos").$type<{ url: string; caption?: string }[]>(),
-  // ─── SignWell Digital Signature ───
-  signwellDocumentId: varchar("signwellDocumentId", { length: 128 }),
-  signwellStatus: varchar("signwellStatus", { length: 32 }), // draft, pending, completed, expired, declined
-  signedPdfUrl: varchar("signedPdfUrl", { length: 512 }),
+  proposalSentTo: text("proposalSentTo"),
+  signwellDocumentId: text("signwellDocumentId"),
+  signwellStatus: varchar("signwellStatus", { length: 32 }),
+  signedPdfUrl: text("signedPdfUrl"),
   signwellSentAt: timestamp("signwellSentAt"),
   signwellCompletedAt: timestamp("signwellCompletedAt"),
-  // ─── Checklist Pricing Selections ───
-  specChecklistSelections: json("specChecklistSelections"), // [{itemId:number, label:string, unitPrice:number, qty:number, total:number, section:string, unit:string}]
-  // ─── Quote Expiry ───
   validUntil: timestamp("validUntil"),
   expiryReminderSentAt: timestamp("expiryReminderSentAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
-export type Quote = typeof quotes.$inferSelect;
-export type InsertQuote = typeof quotes.$inferInsert;
+export type Quote = typeof quotes.$inferSelect & Record<string, any>;
+export type InsertQuote = typeof quotes.$inferInsert & Record<string, any>;
+
+export const quoteDetails = mysqlTable("quote_details", {
+  id: int("id").autoincrement().primaryKey(),
+  quoteId: int("quoteId").notNull().references(() => quotes.id, { onDelete: "cascade" }).unique(),
+  data: json("data").$type<Record<string, any>>(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_quote_details_quote").on(table.quoteId),
+]);
+export type QuoteDetail = typeof quoteDetails.$inferSelect;
+export type InsertQuoteDetail = typeof quoteDetails.$inferInsert;
 
 // ─── Signature Audit Log ────────────────────────────────────────────────────
 export const signatureAuditLog = mysqlTable("signature_audit_log", {
@@ -687,6 +478,9 @@ export const deckQuotes = mysqlTable("deck_quotes", {
   baseDeliveryFee: decimal("baseDeliveryFee", { precision: 10, scale: 2 }),
   councilFees: decimal("councilFees", { precision: 10, scale: 2 }).default("0"),
   homeWarranty: decimal("homeWarranty", { precision: 10, scale: 2 }).default("0"),
+  hbcfRequired: boolean("hbcfRequired").default(false).notNull(),
+  hbcfRequirementReason: varchar("hbcfRequirementReason", { length: 255 }),
+  hbcfFlaggedAt: timestamp("hbcfFlaggedAt"),
   // Adjustments
   deliveryAmount: decimal("deliveryAmount", { precision: 12, scale: 2 }).default("0"),
   deliveryOverride: boolean("deliveryOverride").default(false),
@@ -797,6 +591,9 @@ export const eclipseQuotes = mysqlTable("eclipse_quotes", {
   otherCostDescription: varchar("otherCostDescription", { length: 256 }),
   councilFees: decimal("councilFees", { precision: 12, scale: 2 }).default("0"),
   homeWarranty: decimal("homeWarranty", { precision: 12, scale: 2 }).default("0"),
+  hbcfRequired: boolean("hbcfRequired").default(false).notNull(),
+  hbcfRequirementReason: varchar("hbcfRequirementReason", { length: 255 }),
+  hbcfFlaggedAt: timestamp("hbcfFlaggedAt"),
   // Adjustments (same pattern as OPQ)
   deliveryAmount: decimal("deliveryAmount", { precision: 12, scale: 2 }).default("0"),
   deliveryOverride: boolean("deliveryOverride").default(false),
@@ -931,14 +728,20 @@ export const crmLeads = mysqlTable("crm_leads", {
   contactPhone: varchar("contactPhone", { length: 50 }),
   contactEmail: varchar("contactEmail", { length: 320 }),
   contactAddress: text("contactAddress"),
+  clientNumber: varchar("clientNumber", { length: 64 }),
   company: varchar("company", { length: 255 }),
   suburb: varchar("suburb", { length: 128 }),
   state: varchar("state", { length: 32 }),
   postcode: varchar("postcode", { length: 16 }),
   productType: varchar("productType", { length: 100 }),
   leadSource: varchar("leadSource", { length: 100 }),
-  status: mysqlEnum("status", ["new", "assigned", "appointment_set", "quoted", "contract", "building_authority", "construction", "completed", "won", "cancelled"]).default("new").notNull(),
+  status: mysqlEnum("status", ["new", "assigned", "appointment_set", "quoted", "contract", "building_authority", "construction", "completed", "won", "lost", "cancelled"]).default("new").notNull(),
   outcome: varchar("outcome", { length: 100 }),
+  lostReason: varchar("lostReason", { length: 255 }),
+  lostSource: varchar("lostSource", { length: 32 }),
+  lostCompetitorName: varchar("lostCompetitorName", { length: 255 }),
+  lostAutoSetAt: timestamp("lostAutoSetAt"),
+  lostPreviousStatus: varchar("lostPreviousStatus", { length: 64 }),
   designAdvisor: varchar("designAdvisor", { length: 100 }),
   franchiseNumber: varchar("franchiseNumber", { length: 20 }),
   franchiseType: varchar("franchiseType", { length: 50 }),
@@ -950,6 +753,7 @@ export const crmLeads = mysqlTable("crm_leads", {
   branchId: int("branchId"),
   constructionJobNumber: varchar("constructionJobNumber", { length: 64 }),
   leadDate: varchar("leadDate", { length: 10 }),
+  sourceCreatedAt: timestamp("sourceCreatedAt"),
   externalLeadNumber: varchar("externalLeadNumber", { length: 32 }),
   sourceUrl: text("sourceUrl"),
   assignedTo: int("assignedTo"),
@@ -1019,7 +823,11 @@ export const crmAppointments = mysqlTable("crm_appointments", {
   location: text("location"),
   notes: text("notes"),
   outcome: varchar("outcome", { length: 100 }),
+  participants: json("participants").$type<Array<{ name?: string; email: string }>>(),
   nylasEventId: varchar("nylasEventId", { length: 255 }),
+  calendarSyncStatus: varchar("calendarSyncStatus", { length: 32 }).default("not_synced").notNull(),
+  calendarSyncError: text("calendarSyncError"),
+  calendarSyncedAt: timestamp("calendarSyncedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("idx_crm_appointments_tenant").on(table.tenantId),
@@ -1363,11 +1171,17 @@ export type InsertConstructionJob = typeof constructionJobs.$inferInsert;
 export const constructionAssignments = mysqlTable("construction_assignments", {
   id: int("id").autoincrement().primaryKey(),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
-  installerId: int("installerId").notNull().references(() => constructionInstallers.id),
+  installerId: int("installerId").notNull(),
   role: varchar("role", { length: 64 }).default("installer"), // e.g. "lead", "installer", "electrician"
   confirmedAt: timestamp("confirmedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_con_assign_installer",
+    columns: [table.installerId],
+    foreignColumns: [constructionInstallers.id],
+  }),
+]);
 export type ConstructionAssignment = typeof constructionAssignments.$inferSelect;
 export type InsertConstructionAssignment = typeof constructionAssignments.$inferInsert;
 
@@ -1456,7 +1270,7 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
   endTime: timestamp("endTime"),
   allDay: boolean("allDay").default(false).notNull(),
   eventType: mysqlEnum("eventType", ["installation", "inspection", "meeting", "delivery", "other"]).default("installation").notNull(),
-  assignedInstallerId: int("assignedInstallerId").references(() => constructionInstallers.id, { onDelete: "set null" }),
+  assignedInstallerId: int("assignedInstallerId"),
   notifyClient: boolean("notifyClient").default(false).notNull(),
   notifyInstaller: boolean("notifyInstaller").default(false).notNull(),
   clientNotifiedAt: timestamp("clientNotifiedAt"),
@@ -1465,7 +1279,13 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_sched_event_installer",
+    columns: [table.assignedInstallerId],
+    foreignColumns: [constructionInstallers.id],
+  }).onDelete("set null"),
+]);
 export type ConstructionScheduleEvent = typeof constructionScheduleEvents.$inferSelect;
 export type InsertConstructionScheduleEvent = typeof constructionScheduleEvents.$inferInsert;
 
@@ -1477,16 +1297,99 @@ export const constructionKanbanTasks = mysqlTable("construction_kanban_tasks", {
   description: text("description"),
   column: mysqlEnum("column", ["backlog", "todo", "in_progress", "review", "done"]).default("backlog").notNull(),
   position: int("position").default(0).notNull(),
-  assignedTo: int("assignedTo").references(() => constructionInstallers.id, { onDelete: "set null" }),
+  assignedTo: int("assignedTo"),
   dueDate: timestamp("dueDate"),
   templateKey: varchar("templateKey", { length: 64 }),
   priority: mysqlEnum("taskPriority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_kanban_task_installer",
+    columns: [table.assignedTo],
+    foreignColumns: [constructionInstallers.id],
+  }).onDelete("set null"),
+]);
 export type ConstructionKanbanTask = typeof constructionKanbanTasks.$inferSelect;
 export type InsertConstructionKanbanTask = typeof constructionKanbanTasks.$inferInsert;
+
+export const taskTags = mysqlTable("task_tags", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  name: varchar("name", { length: 80 }).notNull(),
+  colour: varchar("colour", { length: 20 }).default("#64748b").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_task_tags_tenant").on(table.tenantId),
+  uniqueIndex("uq_task_tags_tenant_name").on(table.tenantId, table.name),
+]);
+export type TaskTag = typeof taskTags.$inferSelect;
+export type InsertTaskTag = typeof taskTags.$inferInsert;
+
+export const taskTagAssignments = mysqlTable("task_tag_assignments", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  tagId: int("tagId").notNull().references(() => taskTags.id, { onDelete: "cascade" }),
+  module: mysqlEnum("module", ["approvals", "construction", "manufacturing"]).notNull(),
+  taskId: int("taskId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_task_tag_assignments_tenant").on(table.tenantId),
+  index("idx_task_tag_assignments_task").on(table.module, table.taskId),
+  uniqueIndex("uq_task_tag_assignment").on(table.tenantId, table.tagId, table.module, table.taskId),
+]);
+export type TaskTagAssignment = typeof taskTagAssignments.$inferSelect;
+export type InsertTaskTagAssignment = typeof taskTagAssignments.$inferInsert;
+
+export const taskComments = mysqlTable("task_comments", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  module: mysqlEnum("module", ["approvals", "construction", "manufacturing"]).notNull(),
+  taskId: int("taskId").notNull(),
+  body: text("body").notNull(),
+  createdByUserId: int("createdByUserId").references(() => users.id),
+  createdByName: varchar("createdByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_task_comments_tenant").on(table.tenantId),
+  index("idx_task_comments_task").on(table.module, table.taskId),
+]);
+export type TaskComment = typeof taskComments.$inferSelect;
+export type InsertTaskComment = typeof taskComments.$inferInsert;
+
+export const taskTemplates = mysqlTable("task_templates", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  module: mysqlEnum("module", ["approvals", "construction", "manufacturing"]).notNull(),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description"),
+  priority: varchar("priority", { length: 32 }).default("normal").notNull(),
+  assignedToUserId: int("assignedToUserId").references(() => users.id),
+  assignedToName: varchar("assignedToName", { length: 255 }),
+  constructionInstallerId: int("constructionInstallerId"),
+  approvalProjectId: int("approvalProjectId"),
+  constructionJobId: int("constructionJobId"),
+  manufacturingOrderId: int("manufacturingOrderId"),
+  dueOffsetDays: int("dueOffsetDays").default(0).notNull(),
+  recurrence: mysqlEnum("recurrence", ["daily", "weekly", "monthly"]).default("daily").notNull(),
+  active: boolean("active").default(true).notNull(),
+  lastCreatedAt: timestamp("lastCreatedAt"),
+  createdByUserId: int("createdByUserId").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_task_templates_tenant").on(table.tenantId),
+  index("idx_task_templates_active").on(table.active),
+  foreignKey({
+    name: "fk_task_templates_installer",
+    columns: [table.constructionInstallerId],
+    foreignColumns: [constructionInstallers.id],
+  }).onDelete("set null"),
+]);
+export type TaskTemplate = typeof taskTemplates.$inferSelect;
+export type InsertTaskTemplate = typeof taskTemplates.$inferInsert;
 
 // ─── Construction Kanban Templates ─────────────────────────────────────────
 export const constructionKanbanTemplates = mysqlTable("construction_kanban_templates", {
@@ -1554,6 +1457,44 @@ export const xeroConnections = mysqlTable("xero_connections", {
 });
 export type XeroConnection = typeof xeroConnections.$inferSelect;
 export type InsertXeroConnection = typeof xeroConnections.$inferInsert;
+
+export const xeroEntityDefaults = mysqlTable("xero_entity_defaults", {
+  id: int("id").autoincrement().primaryKey(),
+  appTenantId: int("appTenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  moduleKey: mysqlEnum("moduleKey", ["global", "crm", "construction", "manufacturing", "approvals", "trade_portal", "portal", "scheduled_sync"]).notNull(),
+  xeroConnectionId: int("xeroConnectionId").references(() => xeroConnections.id, { onDelete: "set null" }),
+  updatedBy: int("updatedBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (t) => [
+  uniqueIndex("uq_xero_entity_default_scope").on(t.appTenantId, t.moduleKey),
+  index("idx_xero_entity_defaults_tenant").on(t.appTenantId),
+  index("idx_xero_entity_defaults_connection").on(t.xeroConnectionId),
+]);
+export type XeroEntityDefault = typeof xeroEntityDefaults.$inferSelect;
+export type InsertXeroEntityDefault = typeof xeroEntityDefaults.$inferInsert;
+
+export const xeroRoutingRules = mysqlTable("xero_routing_rules", {
+  id: int("id").autoincrement().primaryKey(),
+  appTenantId: int("appTenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  moduleKey: mysqlEnum("moduleKey", ["global", "crm", "construction", "manufacturing", "approvals", "trade_portal", "portal", "scheduled_sync"]).notNull(),
+  targetXeroConnectionId: int("targetXeroConnectionId").notNull().references(() => xeroConnections.id, { onDelete: "cascade" }),
+  priority: int("priority").default(100).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  conditions: json("conditions").$type<Array<{ field: string; operator: string; value: string }>>(),
+  notes: text("notes"),
+  createdBy: int("createdBy").references(() => users.id),
+  updatedBy: int("updatedBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (t) => [
+  index("idx_xero_routing_rules_tenant").on(t.appTenantId),
+  index("idx_xero_routing_rules_module").on(t.appTenantId, t.moduleKey),
+  index("idx_xero_routing_rules_target").on(t.targetXeroConnectionId),
+]);
+export type XeroRoutingRule = typeof xeroRoutingRules.$inferSelect;
+export type InsertXeroRoutingRule = typeof xeroRoutingRules.$inferInsert;
 
 export const xeroContactMappings = mysqlTable("xero_contact_mappings", {
   id: int("id").autoincrement().primaryKey(),
@@ -1630,8 +1571,8 @@ export type InsertXeroProjectCost = typeof xeroProjectCosts.$inferInsert;
 export const xeroAccountingTransactions = mysqlTable("xero_accounting_transactions", {
   id: int("id").autoincrement().primaryKey(),
   appTenantId: int("appTenantId").references(() => tenants.id),
-  xeroConnectionId: int("xeroConnectionId").notNull().references(() => xeroConnections.id, { onDelete: "cascade" }),
-  mappingId: int("mappingId").references(() => xeroProjectMappings.id, { onDelete: "set null" }),
+  xeroConnectionId: int("xeroConnectionId").notNull(),
+  mappingId: int("mappingId"),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
   sourceKey: varchar("sourceKey", { length: 255 }).notNull(),
   sourceType: mysqlEnum("xeroAccountingSourceType", ["invoice", "bill", "bank_transaction", "payment", "credit_note", "manual_journal"]).notNull(),
@@ -1659,6 +1600,9 @@ export const xeroAccountingTransactions = mysqlTable("xero_accounting_transactio
   isCost: boolean("isCost").default(false).notNull(),
   isRevenue: boolean("isRevenue").default(false).notNull(),
   raw: json("raw"),
+  ignoredAt: timestamp("ignoredAt"),
+  ignoredByUserId: int("ignoredByUserId"),
+  ignoreReason: varchar("ignoreReason", { length: 255 }),
   syncedAt: timestamp("syncedAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (t) => [
@@ -1667,6 +1611,17 @@ export const xeroAccountingTransactions = mysqlTable("xero_accounting_transactio
   index("idx_xero_accounting_transactions_mapping").on(t.mappingId),
   index("idx_xero_accounting_transactions_job").on(t.jobId),
   index("idx_xero_accounting_transactions_tenant").on(t.appTenantId),
+  index("idx_xero_accounting_transactions_ignored").on(t.ignoredAt),
+  foreignKey({
+    name: "fk_xero_tx_connection",
+    columns: [t.xeroConnectionId],
+    foreignColumns: [xeroConnections.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "fk_xero_tx_mapping",
+    columns: [t.mappingId],
+    foreignColumns: [xeroProjectMappings.id],
+  }).onDelete("set null"),
 ]);
 export type XeroAccountingTransaction = typeof xeroAccountingTransactions.$inferSelect;
 export type InsertXeroAccountingTransaction = typeof xeroAccountingTransactions.$inferInsert;
@@ -1979,6 +1934,7 @@ export type InsertPortalProduct = typeof portalProducts.$inferInsert;
 
 export const projectPlanTemplates = mysqlTable("project_plan_templates", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   isDefault: boolean("isDefault").default(false).notNull(),
@@ -1986,34 +1942,48 @@ export const projectPlanTemplates = mysqlTable("project_plan_templates", {
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_project_plan_templates_tenant").on(table.tenantId),
+]);
 export type ProjectPlanTemplate = typeof projectPlanTemplates.$inferSelect;
 export type InsertProjectPlanTemplate = typeof projectPlanTemplates.$inferInsert;
 
 // Each template has ordered stages (e.g. "Site Prep", "Footings", "Frame", etc.)
 export const projectPlanTemplateStages = mysqlTable("project_plan_template_stages", {
   id: int("id").autoincrement().primaryKey(),
-  templateId: int("templateId").notNull().references(() => projectPlanTemplates.id, { onDelete: "cascade" }),
+  templateId: int("templateId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   sortOrder: int("sortOrder").default(0).notNull(),
   estimatedDays: int("estimatedDays"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_plan_stage_template",
+    columns: [table.templateId],
+    foreignColumns: [projectPlanTemplates.id],
+  }).onDelete("cascade"),
+]);
 export type ProjectPlanTemplateStage = typeof projectPlanTemplateStages.$inferSelect;
 export type InsertProjectPlanTemplateStage = typeof projectPlanTemplateStages.$inferInsert;
 
 // Each stage can have default tasks that get created as kanban tasks when seeded
 export const projectPlanTemplateTasks = mysqlTable("project_plan_template_tasks", {
   id: int("id").autoincrement().primaryKey(),
-  stageId: int("stageId").notNull().references(() => projectPlanTemplateStages.id, { onDelete: "cascade" }),
+  stageId: int("stageId").notNull(),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
   sortOrder: int("sortOrder").default(0).notNull(),
   defaultColumn: mysqlEnum("defaultColumn", ["backlog", "todo", "in_progress", "review", "done"]).default("todo").notNull(),
   priority: mysqlEnum("taskPriority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_plan_task_stage",
+    columns: [table.stageId],
+    foreignColumns: [projectPlanTemplateStages.id],
+  }).onDelete("cascade"),
+]);
 export type ProjectPlanTemplateTask = typeof projectPlanTemplateTasks.$inferSelect;
 export type InsertProjectPlanTemplateTask = typeof projectPlanTemplateTasks.$inferInsert;
 
@@ -2290,7 +2260,7 @@ export type InsertEquipment = typeof equipment.$inferInsert;
 export const equipmentBookings = mysqlTable("equipment_bookings", {
   id: int("id").autoincrement().primaryKey(),
   equipmentId: int("equipmentId").notNull().references(() => equipment.id, { onDelete: "cascade" }),
-  scheduleEventId: int("scheduleEventId").references(() => constructionScheduleEvents.id, { onDelete: "cascade" }),
+  scheduleEventId: int("scheduleEventId"),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
   startDate: timestamp("startDate").notNull(),
   endDate: timestamp("endDate").notNull(),
@@ -2298,7 +2268,13 @@ export const equipmentBookings = mysqlTable("equipment_bookings", {
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_equipment_booking_event",
+    columns: [table.scheduleEventId],
+    foreignColumns: [constructionScheduleEvents.id],
+  }).onDelete("cascade"),
+]);
 export type EquipmentBooking = typeof equipmentBookings.$inferSelect;
 export type InsertEquipmentBooking = typeof equipmentBookings.$inferInsert;
 
@@ -2320,13 +2296,19 @@ export type TradePortalAccess = typeof tradePortalAccess.$inferSelect;
 // ─── Trade Portal Sessions ──────────────────────────────────────────────────
 export const tradePortalSessions = mysqlTable("trade_portal_sessions", {
   id: int("id").autoincrement().primaryKey(),
-  tradePortalAccessId: int("tradePortalAccessId").notNull().references(() => tradePortalAccess.id, { onDelete: "cascade" }),
+  tradePortalAccessId: int("tradePortalAccessId").notNull(),
   sessionToken: varchar("sessionToken", { length: 128 }).notNull().unique(),
   magicLinkToken: varchar("magicLinkToken", { length: 128 }).unique(),
   magicLinkExpiresAt: timestamp("magicLinkExpiresAt"),
   expiresAt: timestamp("expiresAt").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_trade_session_access",
+    columns: [table.tradePortalAccessId],
+    foreignColumns: [tradePortalAccess.id],
+  }).onDelete("cascade"),
+]);
 export type TradePortalSession = typeof tradePortalSessions.$inferSelect;
 
 // ─── Trade Availabilities ───────────────────────────────────────────────────
@@ -2618,12 +2600,13 @@ export type InsertXeroBudgetImportBatch = typeof xeroBudgetImportBatches.$inferI
 export const xeroBudgetImportItems = mysqlTable("xero_budget_import_items", {
   id: int("id").autoincrement().primaryKey(),
   appTenantId: int("appTenantId").references(() => tenants.id),
-  batchId: int("batchId").notNull().references(() => xeroBudgetImportBatches.id, { onDelete: "cascade" }),
+  batchId: int("batchId").notNull(),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
   importHash: varchar("budgetImportHash", { length: 64 }).notNull().unique(),
   // Data from the report
   contactName: varchar("contactName", { length: 255 }),
   projectName: varchar("projectName", { length: 255 }).notNull(),
+  projectState: varchar("projectState", { length: 64 }),
   rawCategory: text("rawCategory"), // Original category name from spreadsheet
   category: mysqlEnum("budgetCategory", [
     "authorities_councils_certifiers",
@@ -2636,7 +2619,13 @@ export const xeroBudgetImportItems = mysqlTable("xero_budget_import_items", {
   estimatedCostExGst: decimal("estimatedCostExGst", { precision: 12, scale: 2 }).default("0"),
   estimatedCostIncGst: decimal("estimatedCostIncGst", { precision: 12, scale: 2 }).default("0"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_xero_budget_item_batch",
+    columns: [table.batchId],
+    foreignColumns: [xeroBudgetImportBatches.id],
+  }).onDelete("cascade"),
+]);
 export type XeroBudgetImportItem = typeof xeroBudgetImportItems.$inferSelect;
 export type InsertXeroBudgetImportItem = typeof xeroBudgetImportItems.$inferInsert;
 
@@ -3016,10 +3005,13 @@ export const suppliers = mysqlTable("suppliers", {
   email: varchar("email", { length: 320 }),
   address: text("address"),
   category: varchar("category", { length: 128 }), // e.g. "Roofing", "Electrical", "Steel"
+  supplierScope: varchar("supplierScope", { length: 32 }).default("construction").notNull(), // construction or manufacturing
   paymentTerms: varchar("paymentTerms", { length: 100 }), // e.g. "Net 30", "COD", "Net 14"
   defaultGlCode: varchar("defaultGlCode", { length: 50 }),
   notes: text("notes"),
   xeroContactId: varchar("xeroContactId", { length: 128 }), // Xero Contact UUID for dedup
+  xeroConnectionId: int("xeroConnectionId").references(() => xeroConnections.id, { onDelete: "set null" }),
+  xeroTenantId: varchar("xeroTenantId", { length: 128 }),
   lastXeroSyncAt: timestamp("lastXeroSyncAt"),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").references(() => users.id),
@@ -3048,9 +3040,15 @@ export type InsertSupplierCategory = typeof supplierCategories.$inferInsert;
 export const supplierCategoryAssignments = mysqlTable("supplier_category_assignments", {
   id: int("id").autoincrement().primaryKey(),
   supplierId: int("supplierId").notNull().references(() => suppliers.id, { onDelete: "cascade" }),
-  categoryId: int("categoryId").notNull().references(() => supplierCategories.id, { onDelete: "cascade" }),
+  categoryId: int("categoryId").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_supplier_assignment_category",
+    columns: [table.categoryId],
+    foreignColumns: [supplierCategories.id],
+  }).onDelete("cascade"),
+]);
 export type SupplierCategoryAssignment = typeof supplierCategoryAssignments.$inferSelect;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3184,7 +3182,7 @@ export type InsertOrderTemplate = typeof orderTemplates.$inferInsert;
 export const orderTemplateItems = mysqlTable("order_template_items", {
   id: int("id").autoincrement().primaryKey(),
   templateId: int("templateId").notNull().references(() => orderTemplates.id, { onDelete: "cascade" }),
-  catalogueProductId: int("catalogueProductId").references(() => componentCatalogueProducts.id),
+  catalogueProductId: int("catalogueProductId"),
   spaCode: varchar("spaCode", { length: 100 }).notNull(),
   description: text("description").notNull(),
   category: varchar("category", { length: 100 }).notNull(),
@@ -3195,7 +3193,13 @@ export const orderTemplateItems = mysqlTable("order_template_items", {
   notes: text("notes"),
   sortOrder: int("sortOrder").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_order_item_catalogue_product",
+    columns: [table.catalogueProductId],
+    foreignColumns: [componentCatalogueProducts.id],
+  }),
+]);
 export type OrderTemplateItem = typeof orderTemplateItems.$inferSelect;
 export type InsertOrderTemplateItem = typeof orderTemplateItems.$inferInsert;
 
@@ -3846,17 +3850,40 @@ export type InsertManufacturingScheduleEntry = typeof manufacturingSchedule.$inf
  */
 export const manufacturingPurchaseOrders = mysqlTable("manufacturing_purchase_orders", {
   id: int("id").autoincrement().primaryKey(),
-  orderId: int("orderId").notNull().references(() => manufacturingOrders.id, { onDelete: "cascade" }),
+  tenantId: int("tenantId").references(() => tenants.id),
+  orderId: int("orderId").references(() => manufacturingOrders.id, { onDelete: "set null" }),
   poNumber: varchar("poNumber", { length: 64 }),
   supplier: varchar("supplier", { length: 255 }).notNull(),
   supplierEmail: varchar("supplierEmail", { length: 320 }),
   supplierPhone: varchar("supplierPhone", { length: 64 }),
-  status: mysqlEnum("status", ["draft", "issued", "confirmed", "received", "cancelled"]).default("draft").notNull(),
+  supplierAddress: text("supplierAddress"),
+  supplierAbn: varchar("supplierAbn", { length: 64 }),
+  paymentTermsDays: int("paymentTermsDays").default(14),
+  status: mysqlEnum("status", ["draft", "issued", "confirmed", "partially_received", "received", "paid", "cancelled"]).default("draft").notNull(),
   lineItems: json("lineItems"), // Array of { productName, productCode, quantity, unit, unitPrice, totalPrice, colour, description }
   totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }),
   requiredByDate: timestamp("requiredByDate"),
   issuedAt: timestamp("issuedAt"),
   receivedAt: timestamp("receivedAt"),
+  paidAt: timestamp("paidAt"),
+  invoiceDueAt: timestamp("invoiceDueAt"),
+  lastSentAt: timestamp("lastSentAt"),
+  confirmationToken: varchar("confirmationToken", { length: 128 }),
+  confirmationStatus: mysqlEnum("confirmationStatus", ["pending", "confirmed", "declined"]).default("pending").notNull(),
+  supplierEta: timestamp("supplierEta"),
+  supplierConfirmationName: varchar("supplierConfirmationName", { length: 255 }),
+  supplierConfirmationNotes: text("supplierConfirmationNotes"),
+  confirmedAt: timestamp("confirmedAt"),
+  approvalStatus: mysqlEnum("approvalStatus", ["not_required", "pending", "approved", "rejected"]).default("not_required").notNull(),
+  approvalRequiredAt: timestamp("approvalRequiredAt"),
+  approvedBy: int("approvedBy").references(() => users.id),
+  approvedByName: varchar("approvedByName", { length: 255 }),
+  approvedAt: timestamp("approvedAt"),
+  rejectedBy: int("rejectedBy").references(() => users.id),
+  rejectedByName: varchar("rejectedByName", { length: 255 }),
+  rejectedAt: timestamp("rejectedAt"),
+  approvalNotes: text("approvalNotes"),
+  grnUrl: text("grnUrl"),
   notes: text("notes"),
   xeroPoId: varchar("xeroPoId", { length: 255 }),
   xeroContactId: varchar("xeroContactId", { length: 255 }),
@@ -3868,6 +3895,92 @@ export const manufacturingPurchaseOrders = mysqlTable("manufacturing_purchase_or
 });
 export type ManufacturingPurchaseOrder = typeof manufacturingPurchaseOrders.$inferSelect;
 export type InsertManufacturingPurchaseOrder = typeof manufacturingPurchaseOrders.$inferInsert;
+
+export const manufacturingPoAuditTrail = mysqlTable("manufacturing_po_audit_trail", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  purchaseOrderId: int("purchaseOrderId").notNull(),
+  action: mysqlEnum("action", ["create", "approve", "reject", "issue", "send", "confirm", "receive", "return", "mark_paid", "escalate", "update", "xero_sync"]).notNull(),
+  userId: int("userId").references(() => users.id),
+  userName: varchar("userName", { length: 255 }),
+  notes: text("notes"),
+  metadata: json("metadata").$type<Record<string, any>>().default({}),
+  stockMovements: json("stockMovements").$type<Array<{
+    itemName: string;
+    productCode?: string | null;
+    quantity: number;
+    unit?: string | null;
+    unitPrice?: number | null;
+    stockItemId?: number | null;
+    inventoryMovementId?: number | null;
+  }>>().default([]),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_manufacturing_po_audit_po").on(table.purchaseOrderId),
+  index("idx_manufacturing_po_audit_tenant").on(table.tenantId),
+  foreignKey({
+    name: "fk_manufacturing_po_audit_po",
+    columns: [table.purchaseOrderId],
+    foreignColumns: [manufacturingPurchaseOrders.id],
+  }).onDelete("cascade"),
+]);
+export type ManufacturingPoAuditTrail = typeof manufacturingPoAuditTrail.$inferSelect;
+export type InsertManufacturingPoAuditTrail = typeof manufacturingPoAuditTrail.$inferInsert;
+
+export const manufacturingPoAttachments = mysqlTable("manufacturing_po_attachments", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  purchaseOrderId: int("purchaseOrderId").notNull(),
+  fileName: varchar("fileName", { length: 255 }).notNull(),
+  contentType: varchar("contentType", { length: 128 }),
+  fileSize: int("fileSize"),
+  storageKey: text("storageKey").notNull(),
+  url: text("url").notNull(),
+  attachmentType: mysqlEnum("attachmentType", ["delivery_docket", "photo", "other"]).default("other").notNull(),
+  uploadedBy: int("uploadedBy").references(() => users.id),
+  uploadedByName: varchar("uploadedByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_manufacturing_po_attachments_po").on(table.purchaseOrderId),
+  index("idx_manufacturing_po_attachments_tenant").on(table.tenantId),
+  foreignKey({
+    name: "fk_manufacturing_po_attachments_po",
+    columns: [table.purchaseOrderId],
+    foreignColumns: [manufacturingPurchaseOrders.id],
+  }).onDelete("cascade"),
+]);
+export type ManufacturingPoAttachment = typeof manufacturingPoAttachments.$inferSelect;
+export type InsertManufacturingPoAttachment = typeof manufacturingPoAttachments.$inferInsert;
+
+export const manufacturingPoReturns = mysqlTable("manufacturing_po_returns", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  purchaseOrderId: int("purchaseOrderId").notNull(),
+  poLineItemId: int("poLineItemId"),
+  productCode: varchar("productCode", { length: 128 }),
+  productName: varchar("productName", { length: 255 }),
+  returnQty: decimal("returnQty", { precision: 12, scale: 4 }).notNull(),
+  unit: varchar("unit", { length: 32 }),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 4 }),
+  creditAmount: decimal("creditAmount", { precision: 12, scale: 2 }),
+  reason: text("reason"),
+  conditionStatus: mysqlEnum("conditionStatus", ["damaged", "incorrect_item", "over_supply", "other"]).default("other").notNull(),
+  stockItemId: int("stockItemId"),
+  inventoryMovementId: int("inventoryMovementId"),
+  returnedBy: varchar("returnedBy", { length: 255 }),
+  returnedAt: timestamp("returnedAt").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_manufacturing_po_returns_po").on(table.purchaseOrderId),
+  index("idx_manufacturing_po_returns_tenant").on(table.tenantId),
+  foreignKey({
+    name: "fk_manufacturing_po_returns_po",
+    columns: [table.purchaseOrderId],
+    foreignColumns: [manufacturingPurchaseOrders.id],
+  }).onDelete("cascade"),
+]);
+export type ManufacturingPoReturn = typeof manufacturingPoReturns.$inferSelect;
+export type InsertManufacturingPoReturn = typeof manufacturingPoReturns.$inferInsert;
 
 /**
  * Drivers available for manufacturing dispatch deliveries.
@@ -3938,11 +4051,17 @@ export const inventoryStockItems = mysqlTable("inventory_stock_items", {
   description: text("description"),
   supplier: varchar("supplier", { length: 255 }),
   costPrice: decimal("cost_price", { precision: 12, scale: 2 }),
-  catalogueItemId: int("catalogue_item_id").references(() => componentCatalogueProducts.id),
+  catalogueItemId: int("catalogue_item_id"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_inventory_item_catalogue",
+    columns: [table.catalogueItemId],
+    foreignColumns: [componentCatalogueProducts.id],
+  }),
+]);
 export type InventoryStockItem = typeof inventoryStockItems.$inferSelect;
 export type InsertInventoryStockItem = typeof inventoryStockItems.$inferInsert;
 
@@ -3951,7 +4070,7 @@ export const inventoryMovements = mysqlTable("inventory_movements", {
   tenantId: int("tenantId").references(() => tenants.id),
   stockItemId: int("stock_item_id").notNull(),
   branchId: int("branch_id").notNull(),
-  movementType: mysqlEnum("movement_type", ["purchase", "allocation", "manufacture_use", "adjustment_waste", "transfer_in", "transfer_out"]).notNull(),
+  movementType: mysqlEnum("movement_type", ["purchase", "purchase_return", "allocation", "manufacture_use", "adjustment_waste", "transfer_in", "transfer_out"]).notNull(),
   quantity: decimal("quantity", { precision: 12, scale: 2 }).notNull(),
   unitType: mysqlEnum("unit_type", ["unit", "lm"]).notNull().default("unit"),
   referenceType: varchar("reference_type", { length: 50 }),
@@ -4036,9 +4155,18 @@ export type InsertStocktakeLine = typeof stocktakeLines.$inferInsert;
 // ─── Manufacturing PO Receipts (Goods Received Notes) ─────────────────────────
 export const manufacturingPoReceipts = mysqlTable("manufacturing_po_receipts", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   purchaseOrderId: int("purchase_order_id").notNull(),
   poLineItemId: int("po_line_item_id"),
+  productCode: varchar("product_code", { length: 128 }),
+  productName: varchar("product_name", { length: 255 }),
+  orderedQty: decimal("ordered_qty", { precision: 12, scale: 4 }),
+  previouslyReceivedQty: decimal("previously_received_qty", { precision: 12, scale: 4 }),
   receivedQty: decimal("received_qty", { precision: 12, scale: 4 }).notNull().default("0"),
+  unit: varchar("unit", { length: 32 }),
+  unitPrice: decimal("unit_price", { precision: 12, scale: 4 }),
+  stockItemId: int("stock_item_id"),
+  inventoryMovementId: int("inventory_movement_id"),
   receivedBy: varchar("received_by", { length: 255 }),
   receivedAt: timestamp("received_at").defaultNow().notNull(),
   conditionStatus: mysqlEnum("condition_status", ["good", "damaged", "partial_damage"]).notNull().default("good"),
@@ -4352,7 +4480,7 @@ export const rainDayJobImpacts = mysqlTable("rain_day_job_impacts", {
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   clientName: varchar("clientName", { length: 255 }),
   siteAddress: text("siteAddress"),
-  scheduleEventId: int("scheduleEventId").references(() => constructionScheduleEvents.id, { onDelete: "set null" }),
+  scheduleEventId: int("scheduleEventId"),
   originalDate: varchar("originalDate", { length: 10 }).notNull(), // YYYY-MM-DD
   newDate: varchar("newDate", { length: 10 }), // YYYY-MM-DD, set after approval
   tradeIds: json("tradeIds"), // array of installer IDs assigned to the event
@@ -4361,7 +4489,13 @@ export const rainDayJobImpacts = mysqlTable("rain_day_job_impacts", {
   tradesNotified: boolean("tradesNotified").default(false).notNull(),
   tradesNotifiedAt: timestamp("tradesNotifiedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_rain_impact_event",
+    columns: [table.scheduleEventId],
+    foreignColumns: [constructionScheduleEvents.id],
+  }).onDelete("set null"),
+]);
 export type RainDayJobImpact = typeof rainDayJobImpacts.$inferSelect;
 export type InsertRainDayJobImpact = typeof rainDayJobImpacts.$inferInsert;
 
@@ -4452,7 +4586,12 @@ export const approvalProjects = mysqlTable("approval_projects", {
   confirmedPathway: varchar("confirmedPathway", { length: 64 }),
   pathwayConfidence: mysqlEnum("pathwayConfidence", ["high", "medium", "low"]),
   pathwayAssumptions: text("pathwayAssumptions"),
-  workflowTemplateId: int("workflowTemplateId").references(() => approvalWorkflowTemplates.id),
+  workflowTemplateId: int("workflowTemplateId"),
+  hbcfRequired: boolean("hbcfRequired").default(false).notNull(),
+  hbcfRequirementReason: varchar("hbcfRequirementReason", { length: 255 }),
+  hbcfStatus: varchar("hbcfStatus", { length: 32 }).default("not_required").notNull(),
+  hbcfCertificateId: int("hbcfCertificateId"),
+  hbcfFlaggedAt: timestamp("hbcfFlaggedAt"),
   // Current state
   currentState: varchar("currentState", { length: 64 }).default("intake"),
   currentGate: int("currentGate").default(0),
@@ -4470,6 +4609,11 @@ export const approvalProjects = mysqlTable("approval_projects", {
   createdByUserId: int("createdByUserId").references(() => users.id),
 }, (table) => [
   index("idx_approval_projects_tenant").on(table.tenantId),
+  foreignKey({
+    name: "fk_approval_project_workflow",
+    columns: [table.workflowTemplateId],
+    foreignColumns: [approvalWorkflowTemplates.id],
+  }),
 ]);
 export type ApprovalProject = typeof approvalProjects.$inferSelect;
 export type InsertApprovalProject = typeof approvalProjects.$inferInsert;
@@ -4735,7 +4879,7 @@ export type InsertApprovalInspection = typeof approvalInspections.$inferInsert;
 // ─── Approval Inspection Defects ────────────────────────────────────────────
 export const approvalInspectionDefects = mysqlTable("approval_inspection_defects", {
   id: int("id").autoincrement().primaryKey(),
-  inspectionId: int("inspectionId").notNull().references(() => approvalInspections.id, { onDelete: "cascade" }),
+  inspectionId: int("inspectionId").notNull(),
   projectId: int("projectId").notNull().references(() => approvalProjects.id, { onDelete: "cascade" }),
   // Defect details
   title: varchar("title", { length: 255 }).notNull(),
@@ -4753,7 +4897,13 @@ export const approvalInspectionDefects = mysqlTable("approval_inspection_defects
   // Timestamps
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  foreignKey({
+    name: "fk_approval_defect_inspection",
+    columns: [table.inspectionId],
+    foreignColumns: [approvalInspections.id],
+  }).onDelete("cascade"),
+]);
 export type ApprovalInspectionDefect = typeof approvalInspectionDefects.$inferSelect;
 export type InsertApprovalInspectionDefect = typeof approvalInspectionDefects.$inferInsert;
 
@@ -4856,7 +5006,7 @@ export type InsertApprovalIntegrationCredential = typeof approvalIntegrationCred
 export const approvalSyncLogs = mysqlTable("approval_sync_logs", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id),
-  credentialId: int("credentialId").references(() => approvalIntegrationCredentials.id, { onDelete: "set null" }),
+  credentialId: int("credentialId"),
   lodgementId: int("lodgementId").references(() => approvalLodgements.id, { onDelete: "set null" }),
   projectId: int("projectId").references(() => approvalProjects.id, { onDelete: "cascade" }),
   // Sync details
@@ -4869,9 +5019,144 @@ export const approvalSyncLogs = mysqlTable("approval_sync_logs", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("idx_approval_sync_logs_tenant").on(table.tenantId),
+  foreignKey({
+    name: "fk_approval_sync_credential",
+    columns: [table.credentialId],
+    foreignColumns: [approvalIntegrationCredentials.id],
+  }).onDelete("set null"),
 ]);
 export type ApprovalSyncLog = typeof approvalSyncLogs.$inferSelect;
 export type InsertApprovalSyncLog = typeof approvalSyncLogs.$inferInsert;
+
+// ─── HBCF Builder Profile, Certificates, and Policy Matches ─────────────────
+export const hbcfBuilderProfiles = mysqlTable("hbcf_builder_profiles", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  builderName: varchar("builderName", { length: 255 }).notNull(),
+  tradingName: varchar("tradingName", { length: 255 }),
+  abn: varchar("abn", { length: 32 }),
+  licenceNumber: varchar("licenceNumber", { length: 64 }),
+  insurerName: varchar("insurerName", { length: 255 }),
+  annualLimit: decimal("annualLimit", { precision: 14, scale: 2 }).default("0").notNull(),
+  annualLimitUsed: decimal("annualLimitUsed", { precision: 14, scale: 2 }).default("0").notNull(),
+  annualLimitYear: int("annualLimitYear"),
+  apiEnabled: boolean("apiEnabled").default(false).notNull(),
+  apiBaseUrl: text("apiBaseUrl"),
+  apiKeyRef: varchar("apiKeyRef", { length: 255 }),
+  apiMonthlyLimit: int("apiMonthlyLimit").default(2500).notNull(),
+  apiCallsThisMonth: int("apiCallsThisMonth").default(0).notNull(),
+  apiCallMonth: varchar("apiCallMonth", { length: 7 }),
+  lastSyncAt: timestamp("lastSyncAt"),
+  lastSyncStatus: varchar("lastSyncStatus", { length: 32 }),
+  lastSyncError: text("lastSyncError"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  updatedByUserId: int("updatedByUserId").references(() => users.id),
+}, (table) => [
+  uniqueIndex("uq_hbcf_builder_profiles_tenant").on(table.tenantId),
+  index("idx_hbcf_builder_profiles_tenant").on(table.tenantId),
+]);
+export type HbcfBuilderProfile = typeof hbcfBuilderProfiles.$inferSelect;
+export type InsertHbcfBuilderProfile = typeof hbcfBuilderProfiles.$inferInsert;
+
+export const hbcfCertificates = mysqlTable("hbcf_certificates", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  approvalProjectId: int("approvalProjectId").references(() => approvalProjects.id, { onDelete: "set null" }),
+  quoteId: int("quoteId").references(() => quotes.id, { onDelete: "set null" }),
+  crmLeadId: int("crmLeadId").references(() => crmLeads.id, { onDelete: "set null" }),
+  certificateNumber: varchar("certificateNumber", { length: 128 }),
+  policyNumber: varchar("policyNumber", { length: 128 }),
+  status: varchar("status", { length: 32 }).default("draft").notNull(),
+  builderName: varchar("builderName", { length: 255 }),
+  builderLicenceNumber: varchar("builderLicenceNumber", { length: 64 }),
+  insurerName: varchar("insurerName", { length: 255 }),
+  ownerName: varchar("ownerName", { length: 255 }),
+  propertyAddress: text("propertyAddress"),
+  propertySuburb: varchar("propertySuburb", { length: 128 }),
+  propertyPostcode: varchar("propertyPostcode", { length: 10 }),
+  contractPrice: decimal("contractPrice", { precision: 14, scale: 2 }),
+  issuedAt: timestamp("issuedAt"),
+  expiresAt: timestamp("expiresAt"),
+  certificateUrl: text("certificateUrl"),
+  source: varchar("source", { length: 32 }).default("manual").notNull(),
+  externalId: varchar("externalId", { length: 255 }),
+  rawPayload: json("rawPayload"),
+  lastSyncedAt: timestamp("lastSyncedAt"),
+  syncStatus: varchar("syncStatus", { length: 32 }).default("not_synced").notNull(),
+  syncError: text("syncError"),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdByUserId: int("createdByUserId").references(() => users.id),
+}, (table) => [
+  index("idx_hbcf_certificates_tenant").on(table.tenantId),
+  index("idx_hbcf_certificates_project").on(table.approvalProjectId),
+  index("idx_hbcf_certificates_quote").on(table.quoteId),
+  index("idx_hbcf_certificates_lead").on(table.crmLeadId),
+  index("idx_hbcf_certificates_policy").on(table.policyNumber),
+  index("idx_hbcf_certificates_status").on(table.status),
+]);
+export type HbcfCertificate = typeof hbcfCertificates.$inferSelect;
+export type InsertHbcfCertificate = typeof hbcfCertificates.$inferInsert;
+
+export const hbcfPolicyMatches = mysqlTable("hbcf_policy_matches", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  leadId: int("leadId").references(() => crmLeads.id, { onDelete: "set null" }),
+  quoteId: int("quoteId").references(() => quotes.id, { onDelete: "set null" }),
+  policyNumber: varchar("policyNumber", { length: 128 }),
+  certificateNumber: varchar("certificateNumber", { length: 128 }),
+  builderName: varchar("builderName", { length: 255 }),
+  builderLicenceNumber: varchar("builderLicenceNumber", { length: 64 }),
+  insurerName: varchar("insurerName", { length: 255 }),
+  ownerName: varchar("ownerName", { length: 255 }),
+  propertyAddress: text("propertyAddress"),
+  propertySuburb: varchar("propertySuburb", { length: 128 }),
+  propertyPostcode: varchar("propertyPostcode", { length: 10 }),
+  contractPrice: decimal("contractPrice", { precision: 14, scale: 2 }),
+  issuedAt: timestamp("issuedAt"),
+  isOurs: boolean("isOurs").default(false).notNull(),
+  matchConfidence: mysqlEnum("matchConfidence", ["high", "medium", "low"]).default("medium").notNull(),
+  matchReason: varchar("matchReason", { length: 255 }),
+  source: varchar("source", { length: 32 }).default("api").notNull(),
+  rawPayload: json("rawPayload"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_hbcf_policy_matches_tenant").on(table.tenantId),
+  index("idx_hbcf_policy_matches_lead").on(table.leadId),
+  index("idx_hbcf_policy_matches_quote").on(table.quoteId),
+  index("idx_hbcf_policy_matches_policy").on(table.policyNumber),
+  index("idx_hbcf_policy_matches_builder").on(table.builderName),
+  index("idx_hbcf_policy_matches_is_ours").on(table.isOurs),
+]);
+export type HbcfPolicyMatch = typeof hbcfPolicyMatches.$inferSelect;
+export type InsertHbcfPolicyMatch = typeof hbcfPolicyMatches.$inferInsert;
+
+export const hbcfSyncLogs = mysqlTable("hbcf_sync_logs", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  syncType: varchar("syncType", { length: 64 }).default("manual").notNull(),
+  certificatesChecked: int("certificatesChecked").default(0).notNull(),
+  certificatesUpdated: int("certificatesUpdated").default(0).notNull(),
+  competitorMatchesFound: int("competitorMatchesFound").default(0).notNull(),
+  errors: int("errors").default(0).notNull(),
+  errorDetails: text("errorDetails"),
+  startedAt: timestamp("startedAt"),
+  completedAt: timestamp("completedAt"),
+  status: varchar("status", { length: 32 }).default("pending").notNull(),
+  source: varchar("source", { length: 32 }).default("api").notNull(),
+  externalId: varchar("externalId", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_hbcf_sync_logs_tenant").on(table.tenantId),
+  index("idx_hbcf_sync_logs_status").on(table.status),
+  index("idx_hbcf_sync_logs_completed").on(table.completedAt),
+]);
+export type HbcfSyncLog = typeof hbcfSyncLogs.$inferSelect;
+export type InsertHbcfSyncLog = typeof hbcfSyncLogs.$inferInsert;
 
 // ============================================================
 // PUBLIC DA TRACKER (ACT ArcGIS)
@@ -5049,6 +5334,7 @@ export const nswDaApplications = mysqlTable("nsw_da_applications", {
   applicantSource: varchar("applicant_source", { length: 50 }), // 'portal_api' | 't1cloud_qprc' | 't1cloud_wagga'
   description: text("description"), // DA description from T1Cloud
   isCompetitor: boolean("is_competitor").default(false).notNull(),
+  isOurs: boolean("is_ours").default(false).notNull(),
   matchedCompetitorId: int("matched_competitor_id"),
 }, (table) => [
   index("idx_nsw_da_tenant").on(table.tenantId),
@@ -5061,6 +5347,7 @@ export const nswDaApplications = mysqlTable("nsw_da_applications", {
   index("idx_nsw_da_centroid").on(table.centroidLat, table.centroidLng),
   index("idx_nsw_da_applicant").on(table.applicantName),
   index("idx_nsw_da_competitor").on(table.isCompetitor),
+  index("idx_nsw_da_is_ours").on(table.isOurs),
 ]);
 export type NswDaApplication = typeof nswDaApplications.$inferSelect;
 export type InsertNswDaApplication = typeof nswDaApplications.$inferInsert;

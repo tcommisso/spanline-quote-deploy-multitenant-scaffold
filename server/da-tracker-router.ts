@@ -6,7 +6,228 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { daTrackerApplications, daTrackerWebhookSubscriptions, daTrackerWebhookDeliveries, daTrackerPollLog, approvalLodgements, approvalProjects } from "../drizzle/schema";
-import { eq, and, isNull, isNotNull, desc, like, sql, inArray, gte, lte } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, desc, like, sql, inArray, gte, lte, or } from "drizzle-orm";
+
+const DA_TRACKER_DEFAULT_START_DATE = "2022-09-01";
+const DAFINDER_LIST_URL = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_DAFINDER_LIST_VIEW/FeatureServer/0";
+const DAFINDER_BATCH_SIZE = 75;
+const APPLICANT_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const daTrackerTenantScope = (tenantId: number) => or(
+  eq(daTrackerApplications.tenantId, tenantId),
+  isNull(daTrackerApplications.tenantId)
+);
+
+const daTrackerPollTenantScope = (tenantId: number) => or(
+  eq(daTrackerPollLog.tenantId, tenantId),
+  isNull(daTrackerPollLog.tenantId)
+);
+
+type ActBlockParcel = {
+  address: string | null;
+  centroidLat: number | null;
+  centroidLng: number | null;
+  polygonJson: number[][][] | null;
+};
+
+type DaFinderApplicantInfo = {
+  daNumber: string;
+  companyName: string | null;
+  applicantName: string | null;
+};
+
+let applicantOptionsCache: { key: string; expiresAt: number; applicants: string[] } | null = null;
+
+function escapeArcgisSql(value: string) {
+  return value.replace(/'/g, "''");
+}
+
+function normaliseDaNumber(value: string | number | null | undefined): string {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function dateFromInput(value?: string | null): Date {
+  return new Date(`${value || DA_TRACKER_DEFAULT_START_DATE}T00:00:00.000Z`);
+}
+
+function applicantDisplayName(info?: DaFinderApplicantInfo | null): string | null {
+  const companyName = info?.companyName?.trim();
+  if (companyName) return companyName;
+  const applicantName = info?.applicantName?.trim();
+  return applicantName || null;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function fetchDaFinderApplicantInfo(where: string, limit = 2000): Promise<DaFinderApplicantInfo[]> {
+  const params = new URLSearchParams({
+    where,
+    outFields: "DA_NUMBER,COMPANYORG_NAME,APPLICANT_NAME",
+    returnGeometry: "false",
+    resultRecordCount: String(limit),
+    orderByFields: "LODGEMENT_DATE DESC",
+    f: "json",
+  });
+
+  const response = await fetch(`${DAFINDER_LIST_URL}/query?${params.toString()}`);
+  if (!response.ok) {
+    console.warn(`[DaTracker] DAFINDER applicant lookup failed: ${response.status}`);
+    return [];
+  }
+  const data = await response.json();
+  if (data.error) {
+    console.warn(`[DaTracker] DAFINDER applicant lookup error: ${data.error.message}`);
+    return [];
+  }
+
+  return (data.features || []).map((feature: any) => {
+    const attributes = feature.attributes || {};
+    return {
+      daNumber: String(attributes.DA_NUMBER || ""),
+      companyName: attributes.COMPANYORG_NAME || null,
+      applicantName: attributes.APPLICANT_NAME || null,
+    };
+  });
+}
+
+async function fetchApplicantsByDaNumbers(daNumbers: Array<string | number>): Promise<Map<string, DaFinderApplicantInfo>> {
+  const numbers = Array.from(new Set(daNumbers.map(normaliseDaNumber).filter(Boolean)));
+  const applicants = new Map<string, DaFinderApplicantInfo>();
+
+  for (const chunk of chunkArray(numbers, DAFINDER_BATCH_SIZE)) {
+    const where = `DA_NUMBER IN (${chunk.join(",")})`;
+    const rows = await fetchDaFinderApplicantInfo(where, chunk.length * 3);
+    for (const row of rows) {
+      const daNumber = normaliseDaNumber(row.daNumber);
+      if (!daNumber) continue;
+      const existing = applicants.get(daNumber);
+      if (!existing || (!applicantDisplayName(existing) && applicantDisplayName(row))) {
+        applicants.set(daNumber, row);
+      }
+    }
+  }
+
+  return applicants;
+}
+
+async function fetchDaNumbersByApplicant(applicant: string): Promise<number[]> {
+  const escapedApplicant = escapeArcgisSql(applicant);
+  const rows = await fetchDaFinderApplicantInfo(
+    `(COMPANYORG_NAME = '${escapedApplicant}' OR APPLICANT_NAME = '${escapedApplicant}')`,
+    2000
+  );
+  return Array.from(new Set(rows.map((row) => Number(normaliseDaNumber(row.daNumber))).filter(Number.isFinite)));
+}
+
+async function fetchApplicantOptionsForDaNumbers(daNumbers: Array<string | number>): Promise<string[]> {
+  const now = Date.now();
+  const numbers = Array.from(new Set(daNumbers.map(normaliseDaNumber).filter(Boolean))).sort();
+  const key = `${numbers.length}:${numbers[0] || ""}:${numbers[numbers.length - 1] || ""}`;
+  if (applicantOptionsCache && applicantOptionsCache.key === key && applicantOptionsCache.expiresAt > now) {
+    return applicantOptionsCache.applicants;
+  }
+
+  const applicantsByDa = await fetchApplicantsByDaNumbers(numbers);
+  const applicants = Array.from(new Set(
+    Array.from(applicantsByDa.values()).map(applicantDisplayName).filter((value): value is string => !!value)
+  )).sort((a, b) => a.localeCompare(b));
+
+  applicantOptionsCache = { key, applicants, expiresAt: now + APPLICANT_CACHE_TTL_MS };
+  return applicants;
+}
+
+function dedupeActDaRows<T extends { daNumber: number | string; lodgementDate: Date | string | null; subclass?: string | null; id: number }>(rows: T[]): T[] {
+  const byDaNumber = new Map<string, T>();
+  for (const row of rows) {
+    const key = normaliseDaNumber(row.daNumber);
+    const existing = byDaNumber.get(key);
+    if (!existing) {
+      byDaNumber.set(key, row);
+      continue;
+    }
+
+    const rowHasSubclass = !!row.subclass;
+    const existingHasSubclass = !!existing.subclass;
+    const rowLodged = row.lodgementDate ? new Date(row.lodgementDate).getTime() : 0;
+    const existingLodged = existing.lodgementDate ? new Date(existing.lodgementDate).getTime() : 0;
+    if (
+      (rowHasSubclass && !existingHasSubclass) ||
+      rowLodged > existingLodged ||
+      (rowLodged === existingLodged && row.id < existing.id)
+    ) {
+      byDaNumber.set(key, row);
+    }
+  }
+  return Array.from(byDaNumber.values());
+}
+
+function calculateRingCentroid(ring: number[][] | undefined): { lat: number; lng: number } | null {
+  if (!ring?.length) return null;
+  let sumLng = 0;
+  let sumLat = 0;
+  let count = 0;
+  for (const point of ring) {
+    const [lng, lat] = point;
+    if (Number.isFinite(lng) && Number.isFinite(lat)) {
+      sumLng += lng;
+      sumLat += lat;
+      count++;
+    }
+  }
+  if (count === 0) return null;
+  return { lng: sumLng / count, lat: sumLat / count };
+}
+
+async function lookupActBlockParcel(da: {
+  division: string | null;
+  section: number | null;
+  block: number | null;
+}): Promise<ActBlockParcel | null> {
+  if (!da.division || da.section == null || da.block == null) return null;
+
+  const where = [
+    `BLOCK_NUMBER = ${Number(da.block)}`,
+    `SECTION_NUMBER = ${Number(da.section)}`,
+    `DIVISION_NAME = '${escapeArcgisSql(da.division.toUpperCase())}'`,
+  ].join(" AND ");
+
+  const params = new URLSearchParams({
+    where,
+    outFields: "BLOCK_NUMBER,SECTION_NUMBER,DIVISION_NAME,ADDRESSES,BLOCK_DERIVED_AREA",
+    returnGeometry: "true",
+    outSR: "4326",
+    f: "json",
+    resultRecordCount: "1",
+  });
+
+  try {
+    const response = await fetch(`https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query?${params.toString()}`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const feature = data.features?.[0];
+    if (!feature) return null;
+
+    const rings = Array.isArray(feature.geometry?.rings) ? feature.geometry.rings as number[][][] : null;
+    const centroid = calculateRingCentroid(rings?.[0]);
+    const rawAddress = typeof feature.attributes?.ADDRESSES === "string" ? feature.attributes.ADDRESSES.trim() : "";
+
+    return {
+      address: rawAddress || null,
+      centroidLat: centroid?.lat ?? null,
+      centroidLng: centroid?.lng ?? null,
+      polygonJson: rings,
+    };
+  } catch (error) {
+    console.warn("[DaTracker] ACT block parcel lookup failed:", error);
+    return null;
+  }
+}
 
 export const daTrackerRouter = router({
   // List DAs with filters
@@ -16,6 +237,7 @@ export const daTrackerRouter = router({
       division: z.string().optional(),
       subclass: z.string().optional(),
       applicationType: z.string().optional(),
+      applicant: z.string().optional(),
       search: z.string().optional(),
       dateFrom: z.string().optional(),
       dateTo: z.string().optional(),
@@ -27,7 +249,8 @@ export const daTrackerRouter = router({
       const db = await getDb();
       if (!db) return { items: [], total: 0 };
 
-      const conditions: any[] = [eq(daTrackerApplications.tenantId, ctx.tenant!.id)];
+      const conditions: any[] = [daTrackerTenantScope(ctx.tenant!.id)];
+      conditions.push(gte(daTrackerApplications.lodgementDate, dateFromInput(input.dateFrom)));
 
       if (!input.includeRemoved) {
         conditions.push(isNull(daTrackerApplications.removedAt));
@@ -47,17 +270,20 @@ export const daTrackerRouter = router({
       if (input.search) {
         conditions.push(like(daTrackerApplications.division, `%${input.search}%`));
       }
-      if (input.dateFrom) {
-        conditions.push(gte(daTrackerApplications.lodgementDate, new Date(input.dateFrom)));
-      }
       if (input.dateTo) {
         conditions.push(lte(daTrackerApplications.lodgementDate, new Date(input.dateTo)));
+      }
+      if (input.applicant) {
+        const daNumbers = await fetchDaNumbersByApplicant(input.applicant);
+        if (daNumbers.length === 0) {
+          return { items: [], total: 0 };
+        }
+        conditions.push(inArray(daTrackerApplications.daNumber, daNumbers));
       }
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-      const [items, countResult] = await Promise.all([
-        db.select({
+      const rows = await db.select({
           id: daTrackerApplications.id,
           daNumber: daTrackerApplications.daNumber,
           objectId: daTrackerApplications.objectId,
@@ -77,14 +303,22 @@ export const daTrackerRouter = router({
           .from(daTrackerApplications)
           .where(where)
           .orderBy(desc(daTrackerApplications.lodgementDate))
-          .limit(input.limit)
-          .offset(input.offset),
-        db.select({ count: sql<number>`count(*)` })
-          .from(daTrackerApplications)
-          .where(where),
-      ]);
+          .limit(5000);
 
-      return { items, total: countResult[0]?.count || 0 };
+      const deduped = dedupeActDaRows(rows);
+      const applicantsByDa = await fetchApplicantsByDaNumbers(deduped.map((da) => da.daNumber));
+      const enriched = deduped.map((da) => {
+        const applicantInfo = applicantsByDa.get(normaliseDaNumber(da.daNumber));
+        return {
+          ...da,
+          applicantName: applicantInfo?.applicantName ?? null,
+          companyName: applicantInfo?.companyName ?? null,
+          applicantDisplayName: applicantDisplayName(applicantInfo),
+        };
+      });
+      const items = enriched.slice(input.offset, input.offset + input.limit);
+
+      return { items, total: enriched.length };
     }),
 
   // Get single DA detail with polygon
@@ -97,10 +331,19 @@ export const daTrackerRouter = router({
         .from(daTrackerApplications)
         .where(and(
           eq(daTrackerApplications.id, input.id),
-          eq(daTrackerApplications.tenantId, ctx.tenant!.id),
+          daTrackerTenantScope(ctx.tenant!.id),
         ))
         .limit(1);
-      return da || null;
+      if (!da) return null;
+
+      const parcel = await lookupActBlockParcel(da);
+      return {
+        ...da,
+        parcelAddress: parcel?.address ?? null,
+        parcelCentroidLat: parcel?.centroidLat ?? null,
+        parcelCentroidLng: parcel?.centroidLng ?? null,
+        parcelPolygonJson: parcel?.polygonJson ?? null,
+      };
     }),
 
   // Get map data (all active DAs with centroid only)
@@ -114,11 +357,12 @@ export const daTrackerRouter = router({
       const db = await getDb();
       if (!db) return [];
       const conditions: any[] = [
-        eq(daTrackerApplications.tenantId, ctx.tenant!.id),
+        daTrackerTenantScope(ctx.tenant!.id),
         isNull(daTrackerApplications.removedAt),
+        gte(daTrackerApplications.lodgementDate, dateFromInput()),
       ];
-      if (input.district) conditions.push(eq(daTrackerApplications.district, input.district));
-      if (input.subclass) conditions.push(eq(daTrackerApplications.subclass, input.subclass));
+      if (input.district && input.district !== "all") conditions.push(eq(daTrackerApplications.district, input.district));
+      if (input.subclass && input.subclass !== "all") conditions.push(eq(daTrackerApplications.subclass, input.subclass));
 
       // Filter to only DAs linked to approval projects via lodgement external reference numbers
       if (input.myProjectsOnly) {
@@ -152,15 +396,25 @@ export const daTrackerRouter = router({
     }),
 
   // Get filter options (distinct values)
-  filterOptions: protectedProcedure.query(async ({ ctx }) => {
+  filterOptions: protectedProcedure
+    .input(z.object({
+      dateFrom: z.string().optional(),
+      dateTo: z.string().optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
     const db = await getDb();
-    if (!db) return { districts: [], divisions: [], subclasses: [], applicationTypes: [] };
-    const activeTenantWhere = and(
-      eq(daTrackerApplications.tenantId, ctx.tenant!.id),
+    if (!db) return { districts: [], divisions: [], subclasses: [], applicationTypes: [], applicants: [], defaultDateFrom: DA_TRACKER_DEFAULT_START_DATE };
+    const activeConditions: any[] = [
+      daTrackerTenantScope(ctx.tenant!.id),
       isNull(daTrackerApplications.removedAt),
-    );
+      gte(daTrackerApplications.lodgementDate, dateFromInput(input?.dateFrom)),
+    ];
+    if (input?.dateTo) {
+      activeConditions.push(lte(daTrackerApplications.lodgementDate, new Date(input.dateTo)));
+    }
+    const activeTenantWhere = and(...activeConditions);
 
-    const [districts, divisions, subclasses, appTypes] = await Promise.all([
+    const [districts, divisions, subclasses, appTypes, daNumbers] = await Promise.all([
       db.selectDistinct({ value: daTrackerApplications.district })
         .from(daTrackerApplications)
         .where(activeTenantWhere),
@@ -173,13 +427,19 @@ export const daTrackerRouter = router({
       db.selectDistinct({ value: daTrackerApplications.applicationType })
         .from(daTrackerApplications)
         .where(activeTenantWhere),
+      db.selectDistinct({ value: daTrackerApplications.daNumber })
+        .from(daTrackerApplications)
+        .where(activeTenantWhere),
     ]);
+    const applicants = await fetchApplicantOptionsForDaNumbers(daNumbers.map((d) => d.value));
 
     return {
       districts: districts.map((d: any) => d.value).filter(Boolean).sort() as string[],
       divisions: divisions.map((d: any) => d.value).filter(Boolean).sort() as string[],
       subclasses: subclasses.map((d: any) => d.value).filter(Boolean).sort() as string[],
       applicationTypes: appTypes.map((d: any) => d.value).filter(Boolean).sort() as string[],
+      applicants,
+      defaultDateFrom: DA_TRACKER_DEFAULT_START_DATE,
     };
   }),
 
@@ -191,20 +451,22 @@ export const daTrackerRouter = router({
     const [activeCount] = await db.select({ count: sql<number>`count(*)` })
       .from(daTrackerApplications)
       .where(and(
-        eq(daTrackerApplications.tenantId, ctx.tenant!.id),
+        daTrackerTenantScope(ctx.tenant!.id),
         isNull(daTrackerApplications.removedAt),
+        gte(daTrackerApplications.lodgementDate, dateFromInput()),
       ));
 
     const [lastPoll] = await db.select()
       .from(daTrackerPollLog)
-      .where(eq(daTrackerPollLog.tenantId, ctx.tenant!.id))
+      .where(daTrackerPollTenantScope(ctx.tenant!.id))
       .orderBy(desc(daTrackerPollLog.startedAt))
       .limit(1);
 
     const [newThisWeek] = await db.select({ count: sql<number>`count(*)` })
       .from(daTrackerApplications)
       .where(and(
-        eq(daTrackerApplications.tenantId, ctx.tenant!.id),
+        daTrackerTenantScope(ctx.tenant!.id),
+        gte(daTrackerApplications.lodgementDate, dateFromInput()),
         gte(daTrackerApplications.firstSeenAt, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)),
       ));
 

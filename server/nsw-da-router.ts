@@ -6,9 +6,25 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { nswDaApplications, nswDaPollLog } from "../drizzle/schema";
-import { eq, and, desc, like, sql, gte, lte } from "drizzle-orm";
-import { NSW_TARGET_COUNCILS, pollNswDaApplications, getNswDaStats, getNswDaBySuburb } from "./nsw-da-service";
+import { eq, and, desc, like, sql, gte, lte, isNull, or } from "drizzle-orm";
+import { NSW_DA_DEFAULT_START_DATE, NSW_TARGET_COUNCILS, pollNswDaApplications, getNswDaStats, getNswDaBySuburb } from "./nsw-da-service";
 import { scrapeAndStoreT1CloudDas, reMatchCompetitors, T1CLOUD_COUNCILS } from "./t1cloud-scraper-service";
+
+const nswDaTenantScope = (tenantId: number) => or(
+  eq(nswDaApplications.tenantId, tenantId),
+  isNull(nswDaApplications.tenantId)
+);
+
+const nswPollTenantScope = (tenantId: number) => or(
+  eq(nswDaPollLog.tenantId, tenantId),
+  isNull(nswDaPollLog.tenantId)
+);
+
+const nswValidApplicationCondition = sql`length(${nswDaApplications.portalAppNumber}) > 3`;
+
+function nswDateFrom(value?: string | null): Date {
+  return new Date(`${value || NSW_DA_DEFAULT_START_DATE}T00:00:00.000Z`);
+}
 
 export const nswDaRouter = router({
   // List NSW DAs with filters
@@ -28,7 +44,11 @@ export const nswDaRouter = router({
       const db = await getDb();
       if (!db) return { items: [], total: 0 };
 
-      const conditions: any[] = [eq(nswDaApplications.tenantId, ctx.tenant!.id)];
+      const conditions: any[] = [
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom(input.dateFrom)),
+      ];
 
       if (input.council) {
         conditions.push(eq(nswDaApplications.councilName, input.council));
@@ -44,9 +64,6 @@ export const nswDaRouter = router({
       }
       if (input.search) {
         conditions.push(like(nswDaApplications.fullAddress, `%${input.search}%`));
-      }
-      if (input.dateFrom) {
-        conditions.push(gte(nswDaApplications.lodgementDate, new Date(input.dateFrom)));
       }
       if (input.dateTo) {
         conditions.push(lte(nswDaApplications.lodgementDate, new Date(input.dateTo)));
@@ -86,7 +103,7 @@ export const nswDaRouter = router({
       return getNswDaBySuburb({
         councilName: input.council,
         relevantOnly: input.relevantOnly,
-        dateFrom: input.dateFrom,
+        dateFrom: input.dateFrom || NSW_DA_DEFAULT_START_DATE,
         tenantId: ctx.tenant!.id,
       });
     }),
@@ -102,7 +119,7 @@ export const nswDaRouter = router({
 
       return db.select()
         .from(nswDaPollLog)
-        .where(eq(nswDaPollLog.tenantId, ctx.tenant!.id))
+        .where(nswPollTenantScope(ctx.tenant!.id))
         .orderBy(desc(nswDaPollLog.startedAt))
         .limit(input.limit);
     }),
@@ -150,8 +167,11 @@ export const nswDaRouter = router({
       if (!db) return [];
 
       const conditions: any[] = [
-        eq(nswDaApplications.tenantId, ctx.tenant!.id),
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom()),
         eq(nswDaApplications.isCompetitor, true),
+        eq(nswDaApplications.isOurs, false),
       ];
       if (input.council) {
         conditions.push(eq(nswDaApplications.councilName, input.council));
@@ -174,15 +194,21 @@ export const nswDaRouter = router({
     const [totalResult] = await db.select({ count: sql<number>`count(*)` })
       .from(nswDaApplications)
       .where(and(
-        eq(nswDaApplications.tenantId, ctx.tenant!.id),
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom()),
         eq(nswDaApplications.isCompetitor, true),
+        eq(nswDaApplications.isOurs, false),
       ));
 
     const [uniqueResult] = await db.select({ count: sql<number>`count(distinct ${nswDaApplications.applicantName})` })
       .from(nswDaApplications)
       .where(and(
-        eq(nswDaApplications.tenantId, ctx.tenant!.id),
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom()),
         eq(nswDaApplications.isCompetitor, true),
+        eq(nswDaApplications.isOurs, false),
         sql`${nswDaApplications.applicantName} IS NOT NULL AND ${nswDaApplications.applicantName} != ''`
       ));
 
@@ -192,8 +218,9 @@ export const nswDaRouter = router({
     })
       .from(nswDaApplications)
       .where(and(
-        eq(nswDaApplications.tenantId, ctx.tenant!.id),
+        nswDaTenantScope(ctx.tenant!.id),
         eq(nswDaApplications.isCompetitor, true),
+        eq(nswDaApplications.isOurs, false),
         sql`${nswDaApplications.applicantName} IS NOT NULL AND ${nswDaApplications.applicantName} != ''`
       ))
       .groupBy(nswDaApplications.applicantName)
@@ -215,19 +242,31 @@ export const nswDaRouter = router({
       companyName: z.string().optional(),
       council: z.string().optional(),
       unattributed: z.boolean().optional(),
+      ours: z.boolean().optional().default(false),
     }))
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { items: [], total: 0 };
 
-      const conditions: any[] = [eq(nswDaApplications.tenantId, ctx.tenant!.id)];
+      const conditions: any[] = [
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom()),
+      ];
       
-      if (input.unattributed) {
+      if (input.ours) {
+        conditions.push(eq(nswDaApplications.isOurs, true));
+        if (input.companyName) {
+          conditions.push(like(nswDaApplications.applicantName, `%${input.companyName}%`));
+        }
+      } else if (input.unattributed) {
         // Show DAs that are relevant but have no applicant name (potential competitor DAs to investigate)
+        conditions.push(eq(nswDaApplications.isOurs, false));
         conditions.push(eq(nswDaApplications.isRelevant, true));
         conditions.push(sql`(${nswDaApplications.applicantName} IS NULL OR ${nswDaApplications.applicantName} = '')`);
       } else {
         // Show confirmed competitor DAs
+        conditions.push(eq(nswDaApplications.isOurs, false));
         conditions.push(eq(nswDaApplications.isCompetitor, true));
         if (input.companyName) {
           conditions.push(like(nswDaApplications.applicantName, `%${input.companyName}%`));
@@ -265,8 +304,11 @@ export const nswDaRouter = router({
       if (!db) return [];
 
       const conditions: any[] = [
-        eq(nswDaApplications.tenantId, ctx.tenant!.id),
+        nswDaTenantScope(ctx.tenant!.id),
+        nswValidApplicationCondition,
+        gte(nswDaApplications.lodgementDate, nswDateFrom()),
         eq(nswDaApplications.isCompetitor, true),
+        eq(nswDaApplications.isOurs, false),
         sql`${nswDaApplications.applicantName} IS NOT NULL AND ${nswDaApplications.applicantName} != ''`,
         sql`${nswDaApplications.suburb} IS NOT NULL AND ${nswDaApplications.suburb} != ''`,
       ];
@@ -301,19 +343,27 @@ export const nswDaRouter = router({
     const [councils, suburbs, categories] = await Promise.all([
       db.selectDistinct({ value: nswDaApplications.councilName })
         .from(nswDaApplications)
-        .where(eq(nswDaApplications.tenantId, ctx.tenant!.id))
+        .where(and(
+          nswDaTenantScope(ctx.tenant!.id),
+          nswValidApplicationCondition,
+          gte(nswDaApplications.lodgementDate, nswDateFrom()),
+        ))
         .orderBy(nswDaApplications.councilName),
       db.selectDistinct({ value: nswDaApplications.suburb })
         .from(nswDaApplications)
         .where(and(
-          eq(nswDaApplications.tenantId, ctx.tenant!.id),
+          nswDaTenantScope(ctx.tenant!.id),
+          nswValidApplicationCondition,
+          gte(nswDaApplications.lodgementDate, nswDateFrom()),
           eq(nswDaApplications.isRelevant, true),
         ))
         .orderBy(nswDaApplications.suburb),
       db.selectDistinct({ value: nswDaApplications.relevantCategory })
         .from(nswDaApplications)
         .where(and(
-          eq(nswDaApplications.tenantId, ctx.tenant!.id),
+          nswDaTenantScope(ctx.tenant!.id),
+          nswValidApplicationCondition,
+          gte(nswDaApplications.lodgementDate, nswDateFrom()),
           eq(nswDaApplications.isRelevant, true),
         ))
         .orderBy(nswDaApplications.relevantCategory),
@@ -325,4 +375,27 @@ export const nswDaRouter = router({
       categories: categories.map(c => c.value).filter(Boolean) as string[],
     };
   }),
+
+  // Manually override whether a NSW DA should be counted as ours.
+  setOwnership: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      isOurs: z.boolean(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      await db.update(nswDaApplications)
+        .set({
+          isOurs: input.isOurs,
+          isCompetitor: input.isOurs ? false : true,
+        })
+        .where(and(
+          eq(nswDaApplications.id, input.id),
+          nswDaTenantScope(ctx.tenant!.id),
+        ));
+
+      return { ok: true };
+    }),
 });

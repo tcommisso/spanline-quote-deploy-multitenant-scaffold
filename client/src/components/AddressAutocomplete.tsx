@@ -1,7 +1,6 @@
 /**
- * AddressAutocomplete — Google Places address autocomplete input.
- * Uses server-side tRPC procedures that call the Google Maps REST API
- * through the Manus proxy (no client-side Google Maps JS SDK needed).
+ * AddressAutocomplete — address autocomplete input.
+ * Uses server-side tRPC procedures backed by the configured geocoder provider.
  */
 
 import { useState, useRef, useCallback } from "react";

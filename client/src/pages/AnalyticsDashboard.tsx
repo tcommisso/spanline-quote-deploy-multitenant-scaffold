@@ -37,6 +37,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useMemo } from "react";
+import { isAdminRole } from "@shared/const";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "oklch(0.65 0.05 250)",
@@ -64,7 +65,7 @@ function formatMonth(ym: string): string {
 export default function AnalyticsDashboard() {
   const { user } = useAuth();
   const { data, isLoading, error, refetch } = trpc.analytics.dashboard.useQuery();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminRole(user?.role || "");
 
   // Compute KPI metrics
   const kpis = useMemo(() => {

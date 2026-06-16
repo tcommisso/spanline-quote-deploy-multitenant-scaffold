@@ -7,14 +7,41 @@ import { z } from "zod";
 import { superAdminProcedure, protectedProcedure, adminProcedure, sensitiveSuperAdminProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { tenantMemberships, users, permissionAuditLog } from "../drizzle/schema";
-import { eq, desc } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { USER_ROLES } from "./user-roles-const";
 import { IMPERSONATE_COOKIE_NAME, EIGHT_HOURS_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { ENV } from "./_core/env";
 
 export const userManagementRouter = router({
   list: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = (await getDb())!;
+    if (ENV.tenancyMode === "single") {
+      const allUsers = await db
+        .select({
+          id: users.id,
+          openId: users.openId,
+          name: users.name,
+          email: users.email,
+          role: users.role,
+          canViewAllQuotes: users.canViewAllQuotes,
+          canViewAllLeads: users.canViewAllLeads,
+          lastSignedIn: users.lastSignedIn,
+          createdAt: users.createdAt,
+          tenantRole: sql<string>`COALESCE(${tenantMemberships.role}, CASE WHEN ${users.role} = 'super_admin' THEN 'owner' WHEN ${users.role} = 'admin' THEN 'admin' ELSE 'member' END)`,
+        })
+        .from(users)
+        .leftJoin(
+          tenantMemberships,
+          and(
+            eq(users.id, tenantMemberships.userId),
+            eq(tenantMemberships.tenantId, ctx.tenant!.id),
+          ),
+        )
+        .orderBy(desc(users.lastSignedIn));
+      return allUsers;
+    }
+
     const allUsers = await db
       .select({
         id: users.id,

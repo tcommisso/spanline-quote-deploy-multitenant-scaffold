@@ -10,9 +10,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import {
-  Users, Search, MapPin, Phone, Mail, ArrowRight, DollarSign,
+  Users, Search, Phone, Mail,
   HardHat, CheckCircle2, Clock, AlertTriangle, Ban, Calendar, ChevronDown, Loader2,
-  TrendingUp, Receipt, Wallet, ArrowUpDown, ArrowUp, ArrowDown, Download, Building, CheckSquare,
+  ArrowUpDown, ArrowUp, ArrowDown, Download, CheckSquare,
 } from "lucide-react";
 import { PullToRefresh } from "@/components/PullToRefresh";
 import CollapsibleFilters from "@/components/CollapsibleFilters";
@@ -43,6 +43,10 @@ export default function ConstructionClients() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
   const [baFilter, setBaFilter] = useState<string>("all");
+  const [scheduledFilter, setScheduledFilter] = useState<string>("all");
+  const [installerFilter, setInstallerFilter] = useState<string>("all");
+  const [branchFilter, setBranchFilter] = useState<string>("all");
+  const [suburbFilter, setSuburbFilter] = useState<string>("all");
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBaStatus, setBulkBaStatus] = useState<string>("");
@@ -60,10 +64,17 @@ export default function ConstructionClients() {
 
   // Use currentFy as default only when user hasn't made a selection yet
   const activeFy = fyFilter === "unset" ? (currentFy ?? null) : fyFilter;
+  const filterOptionsQuery = trpc.constructionClients.filterOptions.useQuery(undefined, {
+    enabled: fyFilter === "unset" ? currentFy != null : true,
+  });
 
   const clientsQuery = trpc.constructionClients.list.useQuery({
     search: search || undefined,
     status: (statusFilter !== "all" && statusFilter !== "all_incl_completed") ? statusFilter as any : undefined,
+    scheduled: scheduledFilter !== "all" ? scheduledFilter as any : undefined,
+    installerId: installerFilter !== "all" ? Number(installerFilter) : undefined,
+    branch: branchFilter !== "all" ? branchFilter : undefined,
+    suburb: suburbFilter !== "all" ? suburbFilter : undefined,
     fyStartYear: activeFy ?? undefined,
     month: monthFilter ?? undefined,
     limit: PAGE_SIZE,
@@ -90,7 +101,7 @@ export default function ConstructionClients() {
   useEffect(() => {
     setOffset(0);
     setAllClients([]);
-  }, [search, statusFilter, activeFy, monthFilter, baFilter]);
+  }, [search, statusFilter, activeFy, monthFilter, baFilter, scheduledFilter, installerFilter, branchFilter, suburbFilter]);
 
   const total = clientsQuery.data?.total || 0;
   const hasMore = allClients.length < total;
@@ -114,30 +125,21 @@ export default function ConstructionClients() {
   }, [activeFy]);
 
   // Summary stats from server (counts ALL jobs in the FY, not just paginated page)
-  const statusCounts: Record<string, number> = (statusCountsQuery.data || {}) as Record<string, number>;
   const totalCount = statusCountsQuery.data?.total || total;
 
   const fyOptions = fysQuery.data?.years || [];
 
-  // Compute FY-scoped financial summary from ALL loaded clients
-  // We use the full list query data (not paginated) for accurate totals
-  const financialSummary = useMemo(() => {
+  const paymentCounts = useMemo(() => {
     const clients = allClients;
-    let contractTotal = 0;
-    let invoicedTotal = 0;
-    let paidTotal = 0;
     let paymentCounts = { paid: 0, partial: 0, invoiced: 0, unpaid: 0 };
 
     clients.forEach((c: any) => {
-      contractTotal += c.contractValue || 0;
-      invoicedTotal += c.invoicedAmount || 0;
-      paidTotal += c.paidAmount || 0;
       if (c.paymentStatus && paymentCounts.hasOwnProperty(c.paymentStatus)) {
         paymentCounts[c.paymentStatus as keyof typeof paymentCounts]++;
       }
     });
 
-    return { contractTotal, invoicedTotal, paidTotal, paymentCounts };
+    return paymentCounts;
   }, [allClients]);
 
   // Filter by payment status and Approvals status client-side
@@ -166,7 +168,7 @@ export default function ConstructionClients() {
       }
     }
     return filtered;
-  }, [allClients, paymentFilter, baFilter]);
+  }, [allClients, paymentFilter, baFilter, overdueDays]);
 
   // ─── Bulk Approvals Update ────────────────────────────────────────────────────────
   const utils = trpc.useUtils();
@@ -247,10 +249,12 @@ export default function ConstructionClients() {
   const handleExportCsv = useCallback(() => {
     const rows = sortedClients;
     if (rows.length === 0) return;
-    const headers = ["Client Name", "Quote #", "Status", "Priority", "Scheduled Start", "Site Address", "Contract Value", "Invoiced", "Paid", "Progress %", "Installers", "Phone", "Email"];
+    const headers = ["Client Name", "Account Number", "Branch", "Construction Manager", "Status", "Priority", "Scheduled Start", "Site Address", "Contract Value", "Invoiced", "Paid", "Progress %", "Installers", "Phone", "Email"];
     const csvRows = rows.map((c: any) => [
       c.clientName || "",
-      c.quoteNumber || "",
+      c.clientNumber || "",
+      c.branch || "",
+      c.constructionManagerName || c.supervisorName || "",
       STATUS_CONFIG[c.status]?.label || c.status || "",
       c.priority || "normal",
       c.scheduledStart ? new Date(c.scheduledStart).toLocaleDateString("en-AU") : "",
@@ -279,6 +283,7 @@ export default function ConstructionClients() {
     await Promise.all([
       utils.constructionClients.list.invalidate(),
       utils.constructionClients.statusCounts.invalidate(),
+      utils.constructionClients.filterOptions.invalidate(),
     ]);
   }, [utils]);
 
@@ -334,75 +339,12 @@ export default function ConstructionClients() {
         </div>
       </div>
 
-      {/* FY Financial Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <Card className="border-l-4 border-l-primary">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2">
-              <DollarSign className="h-4 w-4 text-primary" />
-              <span className="text-xs text-muted-foreground">Contract Value</span>
-            </div>
-            <p className="text-2xl font-bold mt-1">{formatCurrency(financialSummary.contractTotal)}</p>
-            <p className="text-[11px] text-muted-foreground">{totalCount} projects</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-blue-500">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2">
-              <Receipt className="h-4 w-4 text-blue-500" />
-              <span className="text-xs text-muted-foreground">Total Invoiced</span>
-            </div>
-            <p className="text-2xl font-bold mt-1">{formatCurrency(financialSummary.invoicedTotal)}</p>
-            <p className="text-[11px] text-muted-foreground">
-              {financialSummary.contractTotal > 0
-                ? `${Math.round((financialSummary.invoicedTotal / financialSummary.contractTotal) * 100)}% of contract value`
-                : "—"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-green-500 col-span-2 md:col-span-1">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2">
-              <Wallet className="h-4 w-4 text-green-500" />
-              <span className="text-xs text-muted-foreground">Total Paid</span>
-            </div>
-            <p className="text-2xl font-bold mt-1">{formatCurrency(financialSummary.paidTotal)}</p>
-            <p className="text-[11px] text-muted-foreground">
-              {financialSummary.invoicedTotal > 0
-                ? `${Math.round((financialSummary.paidTotal / financialSummary.invoicedTotal) * 100)}% of invoiced`
-                : "—"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Status Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {Object.entries(STATUS_CONFIG).map(([key, config]) => {
-          const Icon = config.icon;
-          const count = statusCounts[key] || 0;
-          return (
-            <button
-              key={key}
-              onClick={() => setStatusFilter(statusFilter === key ? "all" : key)}
-              className={`rounded-lg border p-3 text-left transition-all hover:shadow-sm ${statusFilter === key ? "ring-2 ring-primary" : ""}`}
-            >
-              <div className="flex items-center gap-2">
-                <Icon className="h-4 w-4 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">{config.label}</span>
-              </div>
-              <p className="text-2xl font-bold mt-1">{count}</p>
-            </button>
-          );
-        })}
-      </div>
-
       {/* Search & Filters */}
       <div className="space-y-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search by client name, address, or quote number..."
+            placeholder="Search by client name, address, or account number..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
@@ -430,9 +372,9 @@ export default function ConstructionClients() {
               {Object.entries(PAYMENT_STATUS_CONFIG).map(([key, config]) => (
                 <SelectItem key={key} value={key}>
                   {config.label}
-                  {financialSummary.paymentCounts[key as keyof typeof financialSummary.paymentCounts] > 0 && (
+                  {paymentCounts[key as keyof typeof paymentCounts] > 0 && (
                     <span className="ml-1 text-muted-foreground">
-                      ({financialSummary.paymentCounts[key as keyof typeof financialSummary.paymentCounts]})
+                      ({paymentCounts[key as keyof typeof paymentCounts]})
                     </span>
                   )}
                 </SelectItem>
@@ -454,6 +396,55 @@ export default function ConstructionClients() {
               <SelectItem value="overdue">Overdue (&gt;{overdueDays} days)</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={scheduledFilter} onValueChange={setScheduledFilter}>
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="Scheduled" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Scheduling</SelectItem>
+              <SelectItem value="scheduled">Scheduled</SelectItem>
+              <SelectItem value="unscheduled">Unscheduled</SelectItem>
+              <SelectItem value="overdue">Schedule Overdue</SelectItem>
+              <SelectItem value="today">Due Today</SelectItem>
+              <SelectItem value="next_7_days">Next 7 Days</SelectItem>
+              <SelectItem value="future">Future</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={installerFilter} onValueChange={setInstallerFilter}>
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="Installers" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Installers</SelectItem>
+              {(filterOptionsQuery.data?.installers || []).map((installer: any) => (
+                <SelectItem key={installer.id} value={String(installer.id)}>
+                  {installer.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={branchFilter} onValueChange={setBranchFilter}>
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="Branch" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Branches</SelectItem>
+              {(filterOptionsQuery.data?.branches || []).map((branch: string) => (
+                <SelectItem key={branch} value={branch}>{branch}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={suburbFilter} onValueChange={setSuburbFilter}>
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="Suburb" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Suburbs</SelectItem>
+              {(filterOptionsQuery.data?.suburbs || []).map((suburb: string) => (
+                <SelectItem key={suburb} value={suburb}>{suburb}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </CollapsibleFilters>
       </div>
 
@@ -464,6 +455,9 @@ export default function ConstructionClients() {
             Showing {displayClients.length} of {total} project{total !== 1 ? "s" : ""}
             {statusFilter !== "all" && statusFilter !== "all_incl_completed" && ` (${STATUS_CONFIG[statusFilter]?.label})`}
             {paymentFilter !== "all" && ` · ${PAYMENT_STATUS_CONFIG[paymentFilter]?.label}`}
+            {scheduledFilter !== "all" && ` · ${scheduledFilter.replace(/_/g, " ")}`}
+            {branchFilter !== "all" && ` · ${branchFilter}`}
+            {suburbFilter !== "all" && ` · ${suburbFilter}`}
           </p>
         )}
         <div className="flex items-center gap-2">
@@ -535,7 +529,7 @@ export default function ConstructionClients() {
             <Users className="h-12 w-12 mx-auto mb-4 opacity-30" />
             <p className="text-lg">No clients found</p>
             <p className="text-sm mt-1">
-              {search || paymentFilter !== "all"
+              {search || paymentFilter !== "all" || baFilter !== "all" || scheduledFilter !== "all" || installerFilter !== "all" || branchFilter !== "all" || suburbFilter !== "all"
                 ? "Try adjusting your search or filter criteria"
                 : `No construction jobs in ${activeFy ? `FY ${activeFy}-${String(activeFy + 1).slice(-2)}` : "this period"}`}
             </p>
@@ -552,12 +546,17 @@ export default function ConstructionClients() {
                     <th className="text-left py-3 px-4 font-medium cursor-pointer select-none" onClick={() => toggleSort("clientName")}>
                       <span className="flex items-center gap-1">Client <SortIcon field="clientName" /></span>
                     </th>
-                    <th className="text-left py-3 px-3 font-medium hidden md:table-cell">Quote #</th>
+                    <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none" onClick={() => toggleSort("clientNumber")}>
+                      <span className="flex items-center gap-1">Account # <SortIcon field="clientNumber" /></span>
+                    </th>
                     <th className="text-left py-3 px-3 font-medium cursor-pointer select-none" onClick={() => toggleSort("status")}>
                       <span className="flex items-center gap-1">Status <SortIcon field="status" /></span>
                     </th>
                     <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none" onClick={() => toggleSort("scheduledStart")}>
                       <span className="flex items-center gap-1">Scheduled <SortIcon field="scheduledStart" /></span>
+                    </th>
+                    <th className="text-left py-3 px-3 font-medium hidden xl:table-cell cursor-pointer select-none" onClick={() => toggleSort("constructionManagerName")}>
+                      <span className="flex items-center gap-1">Construction Manager <SortIcon field="constructionManagerName" /></span>
                     </th>
                     <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Site Address</th>
                     <th className="text-right py-3 px-3 font-medium cursor-pointer select-none" onClick={() => toggleSort("contractValue")}>
@@ -597,6 +596,9 @@ export default function ConstructionClients() {
                             {client.priority === "medium" && (
                               <Badge variant="outline" className="text-[10px] px-1 py-0 border-amber-300 text-amber-600">!!</Badge>
                             )}
+                            {client.branch && (
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">{client.branch}</Badge>
+                            )}
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
                             {client.clientPhone && (
@@ -622,7 +624,7 @@ export default function ConstructionClients() {
                           </div>
                         </td>
                         <td className="py-3 px-3 hidden md:table-cell">
-                          <span className="text-xs text-muted-foreground font-mono">{client.quoteNumber || '—'}</span>
+                          <span className="text-xs text-muted-foreground font-mono">{client.clientNumber || '—'}</span>
                         </td>
                         <td className="py-3 px-3">
                           <Badge className={statusCfg.color} variant="secondary">
@@ -638,6 +640,11 @@ export default function ConstructionClients() {
                           ) : (
                             <span className="text-[10px] text-muted-foreground italic">Not set</span>
                           )}
+                        </td>
+                        <td className="py-3 px-3 hidden xl:table-cell">
+                          <span className="text-xs text-muted-foreground truncate max-w-[150px] block">
+                            {client.constructionManagerName || client.supervisorName || '—'}
+                          </span>
                         </td>
                         <td className="py-3 px-3 hidden lg:table-cell">
                           <span className="text-xs text-muted-foreground truncate max-w-[200px] block">

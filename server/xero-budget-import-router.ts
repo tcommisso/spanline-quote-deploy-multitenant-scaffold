@@ -1,8 +1,8 @@
 /**
  * Xero Budget Import Router
  * 
- * Handles importing Xero "Project Financials" (budget) Excel exports.
- * The report has columns: Contact, Project Name, Project Item Type, Project Item Name, Estimated Cost
+ * Handles importing Xero "Project Details" budget/task exports.
+ * The report has columns: Contact, Project Name, Project State, Project Item Type, Project Item Name, Estimate
  * 
  * Budget categories are normalised from the raw "Project Item Name" column:
  *   - Authorities, Councils & Certifiers
@@ -13,10 +13,10 @@
  *   - Other (catch-all for unmatched)
  * 
  * Values from the spreadsheet are ex-GST; we multiply by 1.1 for inc-GST storage.
- * Each import replaces ALL budget data (full refresh, not incremental).
+ * Imports are cumulative and deduplicated by hash, so an initial baseline and later exports can coexist.
  */
 import { z } from "zod";
-import { eq, and, sql, inArray } from "drizzle-orm";
+import { eq, and, sql, inArray, isNull, like, or } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
@@ -26,6 +26,7 @@ import {
   xeroProjectMappings,
   constructionJobs,
   constructionJobFinancials,
+  crmLeads,
 } from "../drizzle/schema";
 import * as XLSX from "xlsx";
 import { createHash } from "crypto";
@@ -36,6 +37,7 @@ import { tenantScoped } from "./_core/tenant-scope";
 interface ParsedBudgetRow {
   contactName: string;
   projectName: string;
+  projectState: string;
   itemType: string;
   itemName: string;
   estimatedCostExGst: number;
@@ -60,6 +62,20 @@ function generateBudgetHash(row: ParsedBudgetRow, appTenantId?: number | null): 
     row.estimatedCostExGst.toFixed(4),
   ].join("|");
   return createHash("sha256").update(hashInput).digest("hex").slice(0, 64);
+}
+
+function parseMoney(value: unknown) {
+  const normalised = String(value ?? "")
+    .replace(/[$,\s]/g, "")
+    .replace(/^\((.*)\)$/, "-$1");
+  const amount = Number(normalised);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
+function findHeaderIndex(headers: string[], candidates: string[]) {
+  return candidates
+    .map((candidate) => headers.indexOf(candidate))
+    .find((index) => index !== -1) ?? -1;
 }
 
 /**
@@ -108,7 +124,7 @@ function classifyCategory(rawName: string): BudgetCategory {
 }
 
 /**
- * Parse the Xero Project Financials (budget) Excel file.
+ * Parse the Xero Project Details budget/task export.
  * Expected columns: Contact, Project Name, Project Item Type, Project Item Name, Estimated Cost
  */
 function parseXeroBudgetReport(buffer: Buffer): {
@@ -151,12 +167,13 @@ function parseXeroBudgetReport(buffer: Buffer): {
   );
   const contactIdx = headers.indexOf("contact");
   const projectNameIdx = headers.indexOf("project name");
+  const projectStateIdx = headers.indexOf("project state");
   const itemTypeIdx = headers.indexOf("project item type");
   const itemNameIdx = headers.indexOf("project item name");
-  const costIdx = headers.indexOf("estimated cost");
+  const costIdx = findHeaderIndex(headers, ["estimated cost", "estimate"]);
 
   if (contactIdx === -1 || projectNameIdx === -1 || costIdx === -1) {
-    errors.push("Missing required columns: Contact, Project Name, Estimated Cost");
+    errors.push("Missing required columns: Contact, Project Name, Estimated Cost or Estimate");
     return { rows, errors };
   }
 
@@ -167,9 +184,10 @@ function parseXeroBudgetReport(buffer: Buffer): {
 
     const contact = String(row[contactIdx] || "").trim();
     const projectName = String(row[projectNameIdx] || "").trim();
+    const projectState = projectStateIdx >= 0 ? String(row[projectStateIdx] || "").trim() : "";
     const itemType = itemTypeIdx >= 0 ? String(row[itemTypeIdx] || "").trim() : "";
     const itemName = itemNameIdx >= 0 ? String(row[itemNameIdx] || "").trim() : "";
-    const cost = parseFloat(String(row[costIdx] || "0")) || 0;
+    const cost = parseMoney(row[costIdx]);
 
     // Skip total rows and empty rows
     if (contact.toLowerCase() === "total" || projectName.toLowerCase() === "total") continue;
@@ -178,6 +196,7 @@ function parseXeroBudgetReport(buffer: Buffer): {
     rows.push({
       contactName: contact,
       projectName,
+      projectState,
       itemType,
       itemName,
       estimatedCostExGst: cost,
@@ -187,18 +206,89 @@ function parseXeroBudgetReport(buffer: Buffer): {
   return { rows, errors };
 }
 
+function normaliseSearchText(value: string | null | undefined) {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function tokensFor(value: string | null | undefined) {
+  return normaliseSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+}
+
+function scoreJobCandidate(group: { projectName: string; contactName: string | null }, job: {
+  id: number;
+  quoteNumber: string | null;
+  clientName: string;
+  siteAddress: string | null;
+}) {
+  const project = normaliseSearchText(group.projectName);
+  const contact = normaliseSearchText(group.contactName);
+  const quote = normaliseSearchText(job.quoteNumber);
+  const client = normaliseSearchText(job.clientName);
+  const address = normaliseSearchText(job.siteAddress);
+  let score = 0;
+
+  if (quote && project.includes(quote)) score += 90;
+  if (quote && group.projectName.toLowerCase().includes(quote.replace(/\s+/g, ""))) score += 70;
+  if (client && contact && (client.includes(contact) || contact.includes(client))) score += 65;
+  if (client && project && (project.includes(client) || client.includes(project))) score += 45;
+
+  for (const token of tokensFor(group.projectName)) {
+    if (quote.includes(token)) score += 12;
+    if (client.includes(token)) score += 8;
+    if (address.includes(token)) score += 6;
+  }
+  for (const token of tokensFor(group.contactName)) {
+    if (client.includes(token)) score += 12;
+    if (address.includes(token)) score += 4;
+  }
+
+  return score;
+}
+
+function resolveBudgetJobId(
+  row: ParsedBudgetRow,
+  projectNameToJobId: Map<string, number>,
+  jobs: Array<{ id: number; quoteNumber: string | null; clientName: string; siteAddress: string | null }>,
+) {
+  const projectKey = row.projectName.toLowerCase().trim();
+  const exact = projectNameToJobId.get(projectKey);
+  if (exact) return exact;
+
+  const scored = jobs
+    .map((job) => ({ job, score: scoreJobCandidate(row, job) }))
+    .sort((a, b) => b.score - a.score);
+  const best = scored[0];
+  return best && best.score >= 70 ? best.job.id : null;
+}
+
+function isClosedProjectState(value: string | null | undefined) {
+  return (value || "").trim().toLowerCase() === "closed";
+}
+
+function clampMarginPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-999.99, Math.min(999.99, value));
+}
+
 // ─── Router ─────────────────────────────────────────────────────────────────
 
 export const xeroBudgetImportRouter = router({
   /**
    * Import a budget report Excel file.
-   * This is a FULL REFRESH — all existing budget items are deleted and replaced.
+   * Default behaviour is cumulative: rows are upserted by hash so multiple Xero exports
+   * can be loaded without duplicating the existing Manus/import baseline.
    */
   importBudgetReport: protectedProcedure
     .input(
       z.object({
         filename: z.string(),
         fileBase64: z.string(),
+        replaceExisting: z.boolean().default(false),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -248,7 +338,14 @@ export const xeroBudgetImportRouter = router({
 
       // Also try matching by quoteNumber from construction_jobs
       const jobs = await db
-        .select({ id: constructionJobs.id, quoteNumber: constructionJobs.quoteNumber })
+        .select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+          status: constructionJobs.status,
+          leadId: constructionJobs.leadId,
+        })
         .from(constructionJobs)
         .where(tenantScoped(constructionJobs.tenantId, ctx.tenant.id));
       for (const j of jobs) {
@@ -257,25 +354,29 @@ export const xeroBudgetImportRouter = router({
         }
       }
 
-      // Delete this tenant's existing budget items (full refresh for the current tenant only)
-      await db.delete(xeroBudgetImportItems)
-        .where(tenantScoped(xeroBudgetImportItems.appTenantId, ctx.tenant.id));
+      if (input.replaceExisting) {
+        await db.delete(xeroBudgetImportItems)
+          .where(tenantScoped(xeroBudgetImportItems.appTenantId, ctx.tenant.id));
+      }
 
       let importedCount = 0;
       let skippedCount = 0;
+      let duplicateCount = 0;
       const unmatchedProjects = new Set<string>();
+      const closedJobIds = new Set<number>();
 
       // Insert in batches of 100
       const batchSize = 100;
       for (let i = 0; i < rows.length; i += batchSize) {
         const chunk = rows.slice(i, i + batchSize);
         const values = chunk.map((row) => {
-          const jobId = projectNameToJobId.get(row.projectName.toLowerCase().trim()) || null;
+          const jobId = resolveBudgetJobId(row, projectNameToJobId, jobs);
           if (!jobId) {
             unmatchedProjects.add(row.projectName);
             skippedCount++;
           } else {
             importedCount++;
+            if (isClosedProjectState(row.projectState)) closedJobIds.add(jobId);
           }
 
           const category = classifyCategory(row.itemName);
@@ -289,6 +390,7 @@ export const xeroBudgetImportRouter = router({
             importHash: generateBudgetHash(row, ctx.tenant.id),
             contactName: row.contactName,
             projectName: row.projectName,
+            projectState: row.projectState || null,
             rawCategory: row.itemName,
             category,
             estimatedCostExGst: costExGst.toFixed(2),
@@ -302,12 +404,14 @@ export const xeroBudgetImportRouter = router({
             await db.insert(xeroBudgetImportItems).values(val);
           } catch (e: any) {
             if (e.code === "ER_DUP_ENTRY") {
+              duplicateCount++;
               // Update existing row
               await db
                 .update(xeroBudgetImportItems)
                 .set({
                   jobId: val.jobId,
                   contactName: val.contactName,
+                  projectState: val.projectState,
                   rawCategory: val.rawCategory,
                   category: val.category,
                   estimatedCostExGst: val.estimatedCostExGst,
@@ -327,9 +431,43 @@ export const xeroBudgetImportRouter = router({
         .set({
           importedRows: importedCount,
           skippedRows: skippedCount,
+          duplicateRows: duplicateCount,
           status: "completed",
         })
         .where(eq(xeroBudgetImportBatches.id, Number(batchId)));
+
+      let closedJobsUpdated = 0;
+      let closedLeadsUpdated = 0;
+      if (closedJobIds.size) {
+        const closedIds = Array.from(closedJobIds);
+        const closedJobs = jobs.filter((job) => closedIds.includes(job.id));
+        for (const job of closedJobs) {
+          if (job.status !== "completed") {
+            const [result] = await db.update(constructionJobs)
+              .set({ status: "completed", updatedAt: new Date() })
+              .where(and(
+                eq(constructionJobs.id, job.id),
+                tenantScoped(constructionJobs.tenantId, ctx.tenant.id),
+              ));
+            closedJobsUpdated += Number((result as any)?.affectedRows || 0);
+          }
+        }
+
+        const leadIds = Array.from(new Set(
+          closedJobs
+            .map((job) => job.leadId)
+            .filter((id): id is number => Boolean(id))
+        ));
+        if (leadIds.length) {
+          const [leadResult] = await db.update(crmLeads)
+            .set({ status: "completed", updatedAt: new Date() })
+            .where(and(
+              inArray(crmLeads.id, leadIds),
+              tenantScoped(crmLeads.tenantId, ctx.tenant.id),
+            ));
+          closedLeadsUpdated = Number((leadResult as any)?.affectedRows || 0);
+        }
+      }
 
       // Recalculate budget totals on constructionJobFinancials
       await recalculateBudgetsFromImports(db, ctx.tenant.id);
@@ -339,6 +477,9 @@ export const xeroBudgetImportRouter = router({
         totalRows: rows.length,
         imported: importedCount,
         skipped: skippedCount,
+        duplicates: duplicateCount,
+        closedJobsUpdated,
+        closedLeadsUpdated,
         unmatchedProjects: Array.from(unmatchedProjects),
         errors: errors.slice(0, 10),
       };
@@ -358,6 +499,168 @@ export const xeroBudgetImportRouter = router({
       .limit(20);
     return batches;
   }),
+
+  /**
+   * Summarise imported budget rows that could not be linked to a construction job.
+   * These rows still have value, so admins can manually attach them after import.
+   */
+  getUnmatchedSummary: protectedProcedure
+    .input(z.object({
+      search: z.string().trim().optional(),
+      limit: z.number().min(1).max(100).default(25),
+      offset: z.number().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) return { rows: [], totalGroups: 0, totalItems: 0, totalIncGst: 0 };
+
+      const search = input?.search?.trim();
+      const where = [
+        tenantScoped(xeroBudgetImportItems.appTenantId, ctx.tenant.id),
+        isNull(xeroBudgetImportItems.jobId),
+      ];
+      if (search) {
+        const pattern = `%${search}%`;
+        where.push(or(
+          like(xeroBudgetImportItems.projectName, pattern),
+          like(xeroBudgetImportItems.contactName, pattern),
+        ) as any);
+      }
+
+      const groups = await db
+        .select({
+          projectName: xeroBudgetImportItems.projectName,
+          contactName: xeroBudgetImportItems.contactName,
+          itemCount: sql<number>`COUNT(*)`,
+          totalExGst: sql<string>`SUM(${xeroBudgetImportItems.estimatedCostExGst})`,
+          totalIncGst: sql<string>`SUM(${xeroBudgetImportItems.estimatedCostIncGst})`,
+          firstSeen: sql<Date>`MIN(${xeroBudgetImportItems.createdAt})`,
+        })
+        .from(xeroBudgetImportItems)
+        .where(and(...where))
+        .groupBy(xeroBudgetImportItems.projectName, xeroBudgetImportItems.contactName)
+        .orderBy(sql`SUM(${xeroBudgetImportItems.estimatedCostIncGst}) DESC`)
+        .limit(input?.limit ?? 25)
+        .offset(input?.offset ?? 0);
+
+      const [totals] = await db
+        .select({
+          totalGroups: sql<number>`COUNT(DISTINCT CONCAT(${xeroBudgetImportItems.projectName}, '|', COALESCE(${xeroBudgetImportItems.contactName}, '')))`,
+          totalItems: sql<number>`COUNT(*)`,
+          totalIncGst: sql<string>`SUM(${xeroBudgetImportItems.estimatedCostIncGst})`,
+        })
+        .from(xeroBudgetImportItems)
+        .where(and(...where));
+
+      const jobs = await db
+        .select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+        })
+        .from(constructionJobs)
+        .where(tenantScoped(constructionJobs.tenantId, ctx.tenant.id));
+
+      return {
+        rows: groups.map((group) => {
+          const suggestions = jobs
+            .map((job) => ({ ...job, score: scoreJobCandidate(group, job) }))
+            .filter((job) => job.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 3);
+
+          return {
+            projectName: group.projectName,
+            contactName: group.contactName,
+            itemCount: Number(group.itemCount || 0),
+            totalExGst: parseFloat(group.totalExGst || "0"),
+            totalIncGst: parseFloat(group.totalIncGst || "0"),
+            firstSeen: group.firstSeen,
+            suggestions,
+          };
+        }),
+        totalGroups: Number(totals?.totalGroups || 0),
+        totalItems: Number(totals?.totalItems || 0),
+        totalIncGst: parseFloat(totals?.totalIncGst || "0"),
+      };
+    }),
+
+  searchJobs: protectedProcedure
+    .input(z.object({
+      search: z.string().trim().min(2),
+      limit: z.number().min(1).max(20).default(8),
+    }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) return [];
+
+      const pattern = `%${input.search}%`;
+      return db
+        .select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          clientName: constructionJobs.clientName,
+          siteAddress: constructionJobs.siteAddress,
+          status: constructionJobs.status,
+        })
+        .from(constructionJobs)
+        .where(and(
+          tenantScoped(constructionJobs.tenantId, ctx.tenant.id),
+          or(
+            like(constructionJobs.quoteNumber, pattern),
+            like(constructionJobs.clientName, pattern),
+            like(constructionJobs.siteAddress, pattern),
+          ),
+        ))
+        .limit(input.limit);
+    }),
+
+  attachUnmatchedProject: protectedProcedure
+    .input(z.object({
+      projectName: z.string().trim().min(1),
+      contactName: z.string().trim().nullable().optional(),
+      jobId: z.number(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+
+      const [job] = await db
+        .select({ id: constructionJobs.id, clientName: constructionJobs.clientName, quoteNumber: constructionJobs.quoteNumber })
+        .from(constructionJobs)
+        .where(and(
+          eq(constructionJobs.id, input.jobId),
+          tenantScoped(constructionJobs.tenantId, ctx.tenant.id),
+        ))
+        .limit(1);
+
+      if (!job) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Construction job not found for this tenant." });
+      }
+
+      const conditions = [
+        tenantScoped(xeroBudgetImportItems.appTenantId, ctx.tenant.id),
+        isNull(xeroBudgetImportItems.jobId),
+        eq(xeroBudgetImportItems.projectName, input.projectName),
+      ];
+      if (input.contactName) {
+        conditions.push(eq(xeroBudgetImportItems.contactName, input.contactName));
+      }
+
+      const [result] = await db
+        .update(xeroBudgetImportItems)
+        .set({ jobId: input.jobId })
+        .where(and(...conditions));
+
+      await recalculateBudgetsFromImports(db, ctx.tenant.id);
+
+      return {
+        success: true,
+        attachedRows: (result as any)?.affectedRows ?? 0,
+        job,
+      };
+    }),
 
   /**
    * Get budget breakdown for a specific job
@@ -495,7 +798,7 @@ async function recalculateBudgetsFromImports(db: any, appTenantId?: number | nul
     if (existing) {
       const contractValue = parseFloat(existing.contractValue || "0");
       const margin = contractValue - total;
-      const marginPercent = contractValue > 0 ? (margin / contractValue) * 100 : 0;
+      const marginPercent = clampMarginPercent(contractValue > 0 ? (margin / contractValue) * 100 : 0);
 
       await db
         .update(constructionJobFinancials)

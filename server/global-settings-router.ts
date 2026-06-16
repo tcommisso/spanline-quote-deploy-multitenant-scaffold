@@ -3,8 +3,15 @@ import { z } from "zod";
 import { getDb } from "./db";
 import { globalSettings } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
-import { storagePut } from "./storage";
+import { getActiveStorageProvider, isStorageConfigured, storagePut } from "./storage";
 import crypto from "crypto";
+
+const LOGIN_BACKGROUND_MAX_BYTES = 1.5 * 1024 * 1024;
+const LOGIN_BACKGROUND_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+function loginBackgroundDataUrl(mimeType: string, base64: string) {
+  return `data:${mimeType};base64,${base64}`;
+}
 
 export const globalSettingsRouter = router({
   // Get a setting by key (any authenticated user can read)
@@ -143,14 +150,24 @@ export const globalSettingsRouter = router({
       if (!db) throw new Error("Database unavailable");
 
       const fileBuffer = Buffer.from(input.fileBase64, "base64");
+      if (!LOGIN_BACKGROUND_ALLOWED_MIME_TYPES.has(input.mimeType)) {
+        throw new Error("Unsupported image type. Please upload a JPEG, PNG, or WebP image.");
+      }
+      if (fileBuffer.byteLength > LOGIN_BACKGROUND_MAX_BYTES) {
+        throw new Error("Login background is too large after compression. Please choose a smaller image.");
+      }
+
       const suffix = crypto.randomBytes(4).toString("hex");
       const ext = input.fileName.split(".").pop() || "jpg";
       const key = `company/login-background-${suffix}.${ext}`;
-      const { url } = await storagePut(key, fileBuffer, input.mimeType);
+      const storageResult = isStorageConfigured()
+        ? await storagePut(key, fileBuffer, input.mimeType)
+        : { key, url: loginBackgroundDataUrl(input.mimeType, input.fileBase64) };
 
       const value = {
-        url,
-        key,
+        url: storageResult.url,
+        key: storageResult.key,
+        storageProvider: getActiveStorageProvider() ?? "database",
         originalName: input.fileName,
         uploadedAt: new Date().toISOString(),
       };

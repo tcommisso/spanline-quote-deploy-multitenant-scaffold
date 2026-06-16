@@ -404,8 +404,17 @@ export default function QuoteEditor({ id }: { id: number }) {
               <Badge variant="outline" className={`text-[11px] shrink-0 ${statusCfg?.class || ""}`}>
                 {statusCfg?.label || status}
               </Badge>
+              {quote.hbcfRequired && (
+                <Badge variant="destructive" className="text-[11px] shrink-0 gap-1">
+                  <AlertTriangle className="h-3 w-3" />
+                  HBCF required
+                </Badge>
+              )}
             </div>
-            <p className="text-sm text-muted-foreground truncate">{clientName || "Untitled"}</p>
+            <p className="text-sm text-muted-foreground truncate">
+              {clientName || "Untitled"}
+              {quote.hbcfRequirementReason ? ` · ${quote.hbcfRequirementReason}` : ""}
+            </p>
           </div>
           {/* Save button + auto-save status */}
           <div className="flex items-center gap-2 shrink-0">
@@ -901,5 +910,4 @@ export default function QuoteEditor({ id }: { id: number }) {
     </div>
   );
 }
-
 

@@ -75,6 +75,7 @@ ALTER TABLE `xero_cost_import_batches` ADD COLUMN `appTenantId` int NULL, ADD KE
 ALTER TABLE `xero_cost_import_items` ADD COLUMN `appTenantId` int NULL, ADD KEY `idx_xero_cost_import_items_appTenantId` (`appTenantId`);
 ALTER TABLE `xero_budget_import_batches` ADD COLUMN `appTenantId` int NULL, ADD KEY `idx_xero_budget_import_batches_appTenantId` (`appTenantId`);
 ALTER TABLE `xero_budget_import_items` ADD COLUMN `appTenantId` int NULL, ADD KEY `idx_xero_budget_import_items_appTenantId` (`appTenantId`);
+ALTER TABLE `xero_budget_import_items` ADD COLUMN `projectState` varchar(64) NULL;
 ALTER TABLE `user_dashboard_config` ADD COLUMN `tenantId` int NULL, ADD KEY `idx_user_dashboard_config_tenantId` (`tenantId`);
 ALTER TABLE `sms_messages` ADD COLUMN `tenantId` int NULL, ADD KEY `idx_sms_messages_tenant` (`tenantId`), ADD KEY `idx_sms_messages_lead_tenant` (`tenantId`, `leadId`);
 ALTER TABLE `call_logs` ADD COLUMN `tenantId` int NULL, ADD KEY `idx_call_logs_tenant` (`tenantId`), ADD KEY `idx_call_logs_lead_tenant` (`tenantId`, `leadId`), ADD KEY `idx_call_logs_call_tenant` (`tenantId`, `vocphoneCallId`);
@@ -180,6 +181,9 @@ CREATE TABLE `xero_accounting_transactions` (
   `isCost` boolean NOT NULL DEFAULT false,
   `isRevenue` boolean NOT NULL DEFAULT false,
   `raw` json,
+  `ignoredAt` timestamp NULL,
+  `ignoredByUserId` int NULL,
+  `ignoreReason` varchar(255),
   `syncedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -188,6 +192,7 @@ CREATE TABLE `xero_accounting_transactions` (
   KEY `idx_xero_accounting_transactions_mapping` (`mappingId`),
   KEY `idx_xero_accounting_transactions_job` (`jobId`),
   KEY `idx_xero_accounting_transactions_tenant` (`appTenantId`),
+  KEY `idx_xero_accounting_transactions_ignored` (`ignoredAt`),
   CONSTRAINT `fk_xero_accounting_transactions_app_tenant` FOREIGN KEY (`appTenantId`) REFERENCES `tenants` (`id`),
   CONSTRAINT `fk_xero_accounting_transactions_connection` FOREIGN KEY (`xeroConnectionId`) REFERENCES `xero_connections` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_xero_accounting_transactions_mapping` FOREIGN KEY (`mappingId`) REFERENCES `xero_project_mappings` (`id`) ON DELETE SET NULL,

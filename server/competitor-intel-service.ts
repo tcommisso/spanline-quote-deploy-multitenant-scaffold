@@ -209,7 +209,7 @@ export async function runClientDaMatching(options?: {
         const isAlwaysOurs = alwaysOursNames.some(name => companyLower.includes(name) || name.includes(companyLower));
         const isConditionalOurs = conditionalOursNames.some(name => companyLower.includes(name) || name.includes(companyLower));
         const leadConverted = CONVERTED_STATUSES.includes(lead.status);
-        const isOurs = isAlwaysOurs || (isConditionalOurs && leadConverted);
+        const computedIsOurs = isAlwaysOurs || (isConditionalOurs && leadConverted);
 
         // Determine match type and confidence
         let matchType: "address" | "name" | "both" = "address";
@@ -232,7 +232,11 @@ export async function runClientDaMatching(options?: {
         }
 
         // Upsert into client_das
-        const existingMatch = await db.select({ id: clientDas.id })
+        const existingMatch = await db.select({
+          id: clientDas.id,
+          isOurs: clientDas.isOurs,
+          matchType: clientDas.matchType,
+        })
           .from(clientDas)
           .where(and(
             eq(clientDas.leadId, lead.id),
@@ -255,7 +259,7 @@ export async function runClientDaMatching(options?: {
             daStage: da.daStage,
             decision: da.decision,
             decisionDate: da.decisionDate ? new Date(da.decisionDate) : null,
-            isOurs,
+            isOurs: computedIsOurs,
             matchType,
             matchConfidence,
             centroidLat: da.centroidLat,
@@ -264,7 +268,7 @@ export async function runClientDaMatching(options?: {
           matched++;
 
           // Track new competitor matches for notification
-          if (!isOurs) {
+          if (!computedIsOurs) {
             newCompetitorMatches.push({
               leadId: lead.id,
               leadName: `${lead.firstName || ""} ${lead.lastName || ""}`.trim(),
@@ -276,6 +280,7 @@ export async function runClientDaMatching(options?: {
             });
           }
         } else {
+          const hasManualOwnership = existingMatch[0].matchType === "manual";
           // Update existing
           await db.update(clientDas)
             .set({
@@ -285,8 +290,8 @@ export async function runClientDaMatching(options?: {
               daStage: da.daStage,
               decision: da.decision,
               decisionDate: da.decisionDate ? new Date(da.decisionDate) : null,
-              isOurs,
-              matchType,
+              isOurs: hasManualOwnership ? existingMatch[0].isOurs : computedIsOurs,
+              matchType: hasManualOwnership ? "manual" : matchType,
               matchConfidence,
               updatedAt: new Date(),
             })

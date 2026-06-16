@@ -15,6 +15,39 @@ async function assertLeadAccess(ctx: any, leadId: number) {
   return lead;
 }
 
+async function assertAppointmentAccess(ctx: any, appointmentId: number) {
+  const appointment = await crmDb.getAppointment(appointmentId, tenantIdFromContext(ctx));
+  if (!appointment) throw new Error("Appointment not found");
+  await assertLeadAccess(ctx, appointment.leadId);
+  return appointment;
+}
+
+const appointmentParticipantSchema = z.object({
+  name: z.string().trim().optional(),
+  email: z.string().trim().email(),
+});
+
+function syncErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Calendar sync failed";
+}
+
+function normalizeParticipants(participants?: Array<{ name?: string; email: string }>) {
+  return (participants || [])
+    .map((participant) => ({
+      name: participant.name?.trim() || undefined,
+      email: participant.email.trim(),
+    }))
+    .filter((participant) => participant.email);
+}
+
+async function markAppointmentSyncFailed(appointmentId: number, error: unknown, tenantId?: number | null) {
+  await crmDb.updateAppointmentSyncStatus(appointmentId, {
+    status: "failed",
+    error: syncErrorMessage(error),
+    syncedAt: null,
+  }, tenantId);
+}
+
 export const crmRouter = router({
   // ─── Dashboard ──────────────────────────────────────────────────────────
   dashboard: router({
@@ -115,6 +148,7 @@ export const crmRouter = router({
   leads: router({
     list: protectedProcedure.input(z.object({
       status: z.string().optional(),
+      lifecycleView: z.enum(["pipeline", "clients", "all"]).optional(),
       productType: z.string().optional(),
       leadSource: z.string().optional(),
       designAdvisor: z.string().optional(),
@@ -142,6 +176,12 @@ export const crmRouter = router({
       return crmDb.listLeads({ ...filters, tenantId });
     }),
 
+    postConstructionStatuses: protectedProcedure.input(z.object({
+      leadIds: z.array(z.number().int().positive()).max(500),
+    })).query(async ({ ctx, input }) => {
+      return crmDb.getPostConstructionStatuses(input.leadIds, tenantIdFromContext(ctx));
+    }),
+
     get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
       return crmDb.getLead(input.id, tenantIdFromContext(ctx));
     }),
@@ -152,6 +192,7 @@ export const crmRouter = router({
       contactPhone: z.string().optional(),
       contactEmail: z.string().optional(),
       contactAddress: z.string().optional(),
+      clientNumber: z.string().optional(),
       suburb: z.string().optional(),
       state: z.string().optional(),
       postcode: z.string().optional(),
@@ -163,6 +204,7 @@ export const crmRouter = router({
       designAdvisor: z.string().optional(),
       franchiseNumber: z.string().optional(),
       franchiseType: z.string().optional(),
+      sourceCreatedAt: z.coerce.date().nullable().optional(),
       notes: z.string().optional(),
       branchId: z.number().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
@@ -241,6 +283,7 @@ export const crmRouter = router({
       contactPhone: z.string().optional(),
       contactEmail: z.string().optional(),
       contactAddress: z.string().optional(),
+      clientNumber: z.string().nullable().optional(),
       suburb: z.string().optional(),
       state: z.string().optional(),
       postcode: z.string().optional(),
@@ -254,6 +297,7 @@ export const crmRouter = router({
       designAdvisor: z.string().optional(),
       franchiseNumber: z.string().optional(),
       franchiseType: z.string().optional(),
+      sourceCreatedAt: z.coerce.date().nullable().optional(),
       assignedDate: z.string().optional(),
       notes: z.string().optional(),
       branchId: z.number().nullable().optional(),
@@ -429,6 +473,7 @@ export const crmRouter = router({
 
     listIds: protectedProcedure.input(z.object({
       status: z.string().optional(),
+      lifecycleView: z.enum(["pipeline", "clients", "all"]).optional(),
       productType: z.string().optional(),
       leadSource: z.string().optional(),
       designAdvisor: z.string().optional(),
@@ -566,6 +611,7 @@ export const crmRouter = router({
         contactPhone: z.string().optional(),
         contactEmail: z.string().optional(),
         contactAddress: z.string().optional(),
+        clientNumber: z.string().optional(),
         suburb: z.string().optional(),
         state: z.string().optional(),
         postcode: z.string().optional(),
@@ -814,7 +860,7 @@ export const crmRouter = router({
   appointments: router({
     list: protectedProcedure.input(z.object({ leadId: z.number() })).query(async ({ ctx, input }) => {
       await assertLeadAccess(ctx, input.leadId);
-      return crmDb.getAppointments(input.leadId);
+      return crmDb.getAppointments(input.leadId, tenantIdFromContext(ctx));
     }),
 
     create: protectedProcedure.input(z.object({
@@ -827,10 +873,15 @@ export const crmRouter = router({
       notes: z.string().optional(),
       outcome: z.string().optional(),
       assignedUserId: z.number().optional(),
+      participants: z.array(appointmentParticipantSchema).optional(),
       syncToCalendar: z.boolean().optional().default(true),
     })).mutation(async ({ ctx, input }) => {
       await assertLeadAccess(ctx, input.leadId);
+      const tenantId = tenantIdFromContext(ctx);
+      const participants = normalizeParticipants(input.participants);
+      const shouldSync = !!(input.syncToCalendar && input.appointmentDate && input.appointmentTime);
       const result = await crmDb.createAppointment({
+        tenantId,
         leadId: input.leadId,
         appointmentType: input.appointmentType,
         appointmentDate: input.appointmentDate,
@@ -840,24 +891,30 @@ export const crmRouter = router({
         notes: input.notes,
         outcome: input.outcome,
         assignedUserId: input.assignedUserId || ctx.user.id,
+        participants,
+        calendarSyncStatus: shouldSync ? "pending" : "not_synced",
+        calendarSyncError: null,
       });
 
       // Sync to Nylas calendar if user has a connected grant
-      if (input.syncToCalendar && input.appointmentDate && input.appointmentTime) {
+      if (shouldSync) {
         try {
           const { syncAppointmentToCalendar } = await import("./nylas-sync");
           await syncAppointmentToCalendar({
+            tenantId,
             appointmentId: result.id,
             userId: input.assignedUserId || ctx.user.id,
             leadId: input.leadId,
-            date: input.appointmentDate,
-            time: input.appointmentTime,
+            date: input.appointmentDate!,
+            time: input.appointmentTime!,
             duration: input.duration || 60,
             location: input.location,
             notes: input.notes,
+            participants,
           });
         } catch (err: any) {
           console.error("[Nylas] Calendar sync failed:", err.message);
+          await markAppointmentSyncFailed(result.id, err, tenantId);
         }
       }
 
@@ -869,17 +926,121 @@ export const crmRouter = router({
       appointmentType: z.string().optional(),
       appointmentDate: z.string().optional(),
       appointmentTime: z.string().optional(),
+      duration: z.number().optional(),
       location: z.string().optional(),
       notes: z.string().optional(),
       outcome: z.string().optional(),
-    })).mutation(async ({ input }) => {
-      const { id, ...data } = input;
-      await crmDb.updateAppointment(id, data as any);
+      participants: z.array(appointmentParticipantSchema).optional(),
+      syncToCalendar: z.boolean().optional().default(true),
+    })).mutation(async ({ ctx, input }) => {
+      const tenantId = tenantIdFromContext(ctx);
+      const existing = await assertAppointmentAccess(ctx, input.id);
+      const { id, syncToCalendar, participants: rawParticipants, ...data } = input;
+      const participants = rawParticipants ? normalizeParticipants(rawParticipants) : undefined;
+      const nextAppointment = {
+        ...existing,
+        ...data,
+        participants: participants ?? (existing.participants as any),
+      };
+      const shouldSync = !!(syncToCalendar && nextAppointment.appointmentDate && nextAppointment.appointmentTime);
+
+      await crmDb.updateAppointment(id, {
+        ...data,
+        ...(participants !== undefined ? { participants } : {}),
+        ...(shouldSync ? { calendarSyncStatus: "pending", calendarSyncError: null } : {}),
+      } as any, tenantId);
+
+      if (shouldSync) {
+        try {
+          const { updateCalendarEvent, syncAppointmentToCalendar } = await import("./nylas-sync");
+          const ownerUserId = nextAppointment.assignedUserId || ctx.user.id;
+          const updatedExistingEvent = existing.nylasEventId
+            ? await updateCalendarEvent(id, ownerUserId, {
+                date: nextAppointment.appointmentDate || undefined,
+                time: nextAppointment.appointmentTime || undefined,
+                duration: nextAppointment.duration || 60,
+                location: nextAppointment.location || undefined,
+                notes: nextAppointment.notes || undefined,
+                participants: (nextAppointment.participants as any) || [],
+              }, tenantId)
+            : false;
+
+          if (!updatedExistingEvent) {
+            await syncAppointmentToCalendar({
+              tenantId,
+              appointmentId: id,
+              userId: ownerUserId,
+              leadId: nextAppointment.leadId,
+              date: nextAppointment.appointmentDate!,
+              time: nextAppointment.appointmentTime!,
+              duration: nextAppointment.duration || 60,
+              location: nextAppointment.location || undefined,
+              notes: nextAppointment.notes || undefined,
+              participants: (nextAppointment.participants as any) || [],
+            });
+          }
+        } catch (err: any) {
+          console.error("[Nylas] Calendar update failed:", err.message);
+          await markAppointmentSyncFailed(id, err, tenantId);
+        }
+      }
+
       return { success: true };
     }),
 
-    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
-      await crmDb.deleteAppointment(input.id);
+    retryCalendarSync: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const tenantId = tenantIdFromContext(ctx);
+      const appointment = await assertAppointmentAccess(ctx, input.id);
+      if (!appointment.appointmentDate || !appointment.appointmentTime) {
+        throw new Error("Appointment date and time are required before calendar sync can run");
+      }
+
+      await crmDb.updateAppointmentSyncStatus(input.id, {
+        status: "pending",
+        error: null,
+        syncedAt: null,
+      }, tenantId);
+
+      try {
+        const { updateCalendarEvent, syncAppointmentToCalendar } = await import("./nylas-sync");
+        const ownerUserId = appointment.assignedUserId || ctx.user.id;
+        const participants = (appointment.participants as any) || [];
+        const updatedExistingEvent = appointment.nylasEventId
+          ? await updateCalendarEvent(input.id, ownerUserId, {
+              date: appointment.appointmentDate,
+              time: appointment.appointmentTime,
+              duration: appointment.duration || 60,
+              location: appointment.location || undefined,
+              notes: appointment.notes || undefined,
+              participants,
+            }, tenantId)
+          : false;
+
+        if (!updatedExistingEvent) {
+          await syncAppointmentToCalendar({
+            tenantId,
+            appointmentId: input.id,
+            userId: ownerUserId,
+            leadId: appointment.leadId,
+            date: appointment.appointmentDate,
+            time: appointment.appointmentTime,
+            duration: appointment.duration || 60,
+            location: appointment.location || undefined,
+            notes: appointment.notes || undefined,
+            participants,
+          });
+        }
+
+        return { success: true };
+      } catch (err) {
+        await markAppointmentSyncFailed(input.id, err, tenantId);
+        throw err;
+      }
+    }),
+
+    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      await assertAppointmentAccess(ctx, input.id);
+      await crmDb.deleteAppointment(input.id, tenantIdFromContext(ctx));
       return { success: true };
     }),
   }),

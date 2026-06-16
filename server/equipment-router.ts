@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
+import { router, tenantAdminProcedure, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { equipment, equipmentBookings, constructionJobs, constructionScheduleEvents } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray } from "drizzle-orm";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { eq, and, gte, lte, inArray, isNull, sql } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
+import { ENV } from "./_core/env";
 
 async function requireDb() {
   const db = await getDb();
@@ -54,6 +55,48 @@ async function requireBookingAccess(db: any, ctx: any, bookingId: number) {
 
 export const equipmentRouter = router({
   // ─── Equipment CRUD ─────────────────────────────────────────────────────────
+  tenantSummary: tenantAdminProcedure
+    .query(async ({ ctx }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdFromContext(ctx);
+      const visibleWhere = tenantScoped(equipment.tenantId, tenantId);
+      const [total] = await db.select({ count: sql<number>`count(*)` }).from(equipment);
+      const [visible] = await db.select({ count: sql<number>`count(*)` }).from(equipment).where(visibleWhere);
+      const [unassigned] = await db.select({ count: sql<number>`count(*)` }).from(equipment).where(isNull(equipment.tenantId));
+      const [otherTenants] = await db.select({ count: sql<number>`count(*)` }).from(equipment)
+        .where(sql`${equipment.tenantId} IS NOT NULL AND ${equipment.tenantId} <> ${tenantId}`);
+
+      return {
+        tenantId,
+        tenancyMode: ENV.tenancyMode,
+        total: Number(total?.count || 0),
+        visible: Number(visible?.count || 0),
+        unassigned: Number(unassigned?.count || 0),
+        otherTenants: Number(otherTenants?.count || 0),
+      };
+    }),
+
+  repairTenantAssignments: tenantAdminProcedure
+    .mutation(async ({ ctx }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdFromContext(ctx);
+      const where = ENV.tenancyMode === "single"
+        ? sql`${equipment.tenantId} IS NULL OR ${equipment.tenantId} <> ${tenantId}`
+        : isNull(equipment.tenantId);
+
+      const [before] = await db.select({ count: sql<number>`count(*)` }).from(equipment).where(where);
+      if (Number(before?.count || 0) > 0) {
+        await db.update(equipment).set({ tenantId }).where(where);
+      }
+      const [visible] = await db.select({ count: sql<number>`count(*)` }).from(equipment)
+        .where(tenantScoped(equipment.tenantId, tenantId));
+
+      return {
+        reassigned: Number(before?.count || 0),
+        visible: Number(visible?.count || 0),
+      };
+    }),
+
   list: protectedProcedure
     .input(z.object({ activeOnly: z.boolean().optional() }).optional())
     .query(async ({ ctx, input }) => {

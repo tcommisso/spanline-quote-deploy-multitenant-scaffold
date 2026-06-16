@@ -809,12 +809,13 @@ export const manufacturingRouter = router({
         const po = await requirePurchaseOrderAccess(db, ctx, input.poId);
         // Dynamically import xero-client to avoid circular deps
         const { getXeroContacts, createXeroContact, createXeroPurchaseOrder, getValidAccessToken } = await import("./xero-client");
-        const auth = await getValidAccessToken();
+        const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "manufacturing" });
         if (!auth) throw new Error("No active Xero connection. Please connect to Xero first.");
+        const routing = { connectionId: auth.xeroConnectionId };
         // Find or create supplier contact in Xero
         let xeroContactId = po.xeroContactId;
         if (!xeroContactId) {
-          const contactSearch = await getXeroContacts({ where: `Name=="${po.supplier.replace(/"/g, "\\\"")}"` });
+          const contactSearch = await getXeroContacts({ where: `Name=="${po.supplier.replace(/"/g, "\\\"")}"` }, routing);
           if (contactSearch.Contacts && contactSearch.Contacts.length > 0) {
             xeroContactId = contactSearch.Contacts[0].ContactID;
           } else {
@@ -822,7 +823,7 @@ export const manufacturingRouter = router({
               Name: po.supplier,
               EmailAddress: po.supplierEmail || undefined,
               IsSupplier: true,
-            });
+            }, routing);
             xeroContactId = newContact.Contacts[0].ContactID;
           }
           await db.update(manufacturingPurchaseOrders).set({ xeroContactId }).where(eq(manufacturingPurchaseOrders.id, input.poId));
@@ -844,7 +845,7 @@ export const manufacturingRouter = router({
           DeliveryDate: po.requiredByDate ? new Date(po.requiredByDate).toISOString().split("T")[0] : undefined,
           Reference: `Manufacturing PO - ${po.poNumber}`,
           Status: "DRAFT",
-        });
+        }, routing);
         const xeroPO = xeroResult.PurchaseOrders?.[0];
         if (xeroPO?.PurchaseOrderID) {
           await db.update(manufacturingPurchaseOrders).set({

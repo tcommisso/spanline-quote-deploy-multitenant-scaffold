@@ -37,6 +37,12 @@ function movementTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function decimalToNumber(value: unknown): number | null {
+  if (value == null) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 async function requireStocktakeAccess(db: any, ctx: any, stocktakeId: number) {
   const [stocktake] = await db.select()
     .from(stocktakes)
@@ -92,6 +98,11 @@ export const stocktakeRouter = router({
       ...stocktake,
       lines: lines.map(l => ({
         ...l,
+        systemQty: decimalToNumber(l.systemQty) ?? 0,
+        countedQty: decimalToNumber(l.countedQty),
+        variance: decimalToNumber(l.variance) ?? 0,
+        unitCost: decimalToNumber(l.unitCost) ?? 0,
+        varianceValue: decimalToNumber(l.varianceValue) ?? 0,
         stockItem: itemsMap[l.stockItemId] || null,
       })),
     };
@@ -118,7 +129,7 @@ export const stocktakeRouter = router({
     for (const item of items) {
       const [result] = await db.select({
         totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase', 'transfer_in') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
-        totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
+        totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase_return', 'allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
       }).from(inventoryMovements)
         .where(and(...movementTenantConditions(ctx,
           eq(inventoryMovements.stockItemId, item.id),
@@ -173,27 +184,22 @@ export const stocktakeRouter = router({
     await requireStocktakeAccess(db, ctx, input.stocktakeId);
 
     for (const count of input.counts) {
-      const countedQty = parseFloat(count.countedQty);
-      // Get the line to calculate variance
       const [line] = await db.select().from(stocktakeLines).where(and(
         eq(stocktakeLines.id, count.lineId),
         eq(stocktakeLines.stocktakeId, input.stocktakeId)
       ));
       if (!line) continue;
 
-      const systemQty = parseFloat(line.systemQty || "0");
-      const variance = countedQty - systemQty;
-      const unitCost = parseFloat(line.unitCost || "0");
-      const varianceValue = variance * unitCost;
-
-      await db.update(stocktakeLines).set({
+      const updates: any = {
         countedQty: count.countedQty,
-        variance: String(variance),
-        varianceValue: String(Math.round(varianceValue * 100) / 100),
         countedAt: new Date(),
         countedBy: ctx.user?.name || null,
-        notes: count.notes || null,
-      }).where(and(
+      };
+      if (count.notes !== undefined) {
+        updates.notes = count.notes || null;
+      }
+
+      await db.update(stocktakeLines).set(updates).where(and(
         eq(stocktakeLines.id, count.lineId),
         eq(stocktakeLines.stocktakeId, input.stocktakeId)
       ));
@@ -390,7 +396,7 @@ export const stocktakeRouter = router({
 
       const [result] = await db.select({
         totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase', 'transfer_in') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
-        totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
+        totalOut: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase_return', 'allocation', 'manufacture_use', 'adjustment_waste', 'transfer_out') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
       }).from(inventoryMovements).where(and(...movementTenantConditions(ctx, ...branchConditions)));
 
       const onHand = Number(result.totalIn) - Number(result.totalOut);

@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Save, RotateCcw, Mail, Eye, Plus, Pencil, Trash2, Wrench, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
+import { isAdminRole } from "@shared/const";
 const RichTextEditor = lazy(() => import("@/components/RichTextEditor"));
 
 // ─── CRM Letter Types ────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ export default function AdminEmailTemplates() {
   const { user } = useAuth();
   const [mainTab, setMainTab] = useState<"crm" | "construction" | "sales">("crm");
 
-  if (user?.role !== "admin") {
+  if (!isAdminRole(user?.role || "")) {
     return <div className="p-8 text-center text-muted-foreground">Admin access required.</div>;
   }
 

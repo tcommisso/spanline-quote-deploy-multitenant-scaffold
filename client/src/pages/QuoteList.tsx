@@ -21,6 +21,7 @@ import AddressAutocomplete, { type AddressResult } from "@/components/AddressAut
 import { detectRegion } from "@shared/regionDetection";
 import DesignAdvisorSelect from "@/components/DesignAdvisorSelect";
 import RegionSelect from "@/components/RegionSelect";
+import { isAdminRole } from "@shared/const";
 
 import { Building2 } from "lucide-react";
 
@@ -35,7 +36,7 @@ export default function QuoteList() {
   const [, setLocation] = useLocation();
   const searchParams = useSearch();
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminRole(user?.role || "");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [advisorFilter, setAdvisorFilter] = useState("all");

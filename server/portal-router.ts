@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { getDb } from "./db";
+import { getDb, getTenantBrandingSettings } from "./db";
 import { eq, and, desc, or, gt } from "drizzle-orm";
 import {
   portalAccess, portalSessions, portalContacts, portalDocuments,
@@ -73,29 +73,14 @@ function requirePortalAccessVisible(
 
 export const portalRouter = router({
   // ─── Branding (public — no auth required) ──────────────────────────────────
-  getBranding: publicPortalProcedure.query(async () => {
-    const db = await requireDb();
-    const { userSettings: userSettingsTable } = await import("../drizzle/schema");
-    // Get the first user settings row that has companyDetails or customLogoUrl
-    const rows = await db.select({
-      companyDetails: userSettingsTable.companyDetails,
-      customLogoUrl: userSettingsTable.customLogoUrl,
-      appIconUrl: userSettingsTable.appIconUrl,
-    }).from(userSettingsTable).limit(5);
-
-    let logoUrl: string | null = null;
-    let appIconUrl: string | null = null;
-    for (const row of rows) {
-      if (row.customLogoUrl && !logoUrl) logoUrl = row.customLogoUrl;
-      if (row.appIconUrl && !appIconUrl) appIconUrl = row.appIconUrl;
-      if (logoUrl && appIconUrl) break;
-    }
-
-    const companyInfo = await getCompanyName();
+  getBranding: publicPortalProcedure.query(async ({ ctx }) => {
+    const tenantId = ctx.tenant?.id ?? null;
+    const branding = await getTenantBrandingSettings(tenantId);
+    const companyInfo = await getCompanyName(tenantId);
     return {
       companyName: companyInfo.displayName,
-      logoUrl,
-      appIconUrl,
+      logoUrl: branding?.customLogoUrl ?? null,
+      appIconUrl: branding?.appIconUrl ?? null,
     };
   }),
 
@@ -796,8 +781,9 @@ export const portalRouter = router({
     const jobId = ctx.portalAccess.constructionJobId;
     if (!jobId) return { hasXeroProject: false, schedule: [], summary: null, error: null };
 
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id ?? ctx.portalAccess.tenantId, moduleKey: "portal" });
     if (!auth) return { hasXeroProject: false, schedule: [], summary: null, error: "Xero not connected" };
+    const routing = { connectionId: auth.xeroConnectionId };
 
     // Find the project mapping for this job
     const [mapping] = await db
@@ -812,7 +798,7 @@ export const portalRouter = router({
 
     try {
       // Fetch tasks for the project (FIXED tasks = payment milestones)
-      const tasksResult = await getXeroProjectTasks(mapping.xeroProjectId, { pageSize: 100 });
+      const tasksResult = await getXeroProjectTasks(mapping.xeroProjectId, { pageSize: 100 }, routing);
       const milestones = (tasksResult.items || [])
         .filter((t: XeroProjectTask) => t.chargeType === "FIXED")
         .map((t: XeroProjectTask) => ({
@@ -830,7 +816,8 @@ export const portalRouter = router({
       if (mapping.xeroContactId) {
         try {
           const invResult = await xeroApiRequest<{ Invoices: Array<{ InvoiceID: string; Reference: string; Status: string; AmountPaid: number; Total: number }> }>(
-            `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`
+            `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`,
+            routing
           );
           const paidInvoices = (invResult.Invoices || []).filter((inv) => inv.Status === "PAID");
           const totalPaidFromInvoices = paidInvoices.reduce((sum, inv) => sum + (inv.AmountPaid || 0), 0);

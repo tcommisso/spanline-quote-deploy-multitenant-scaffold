@@ -89,10 +89,12 @@ export default function PatioEditorPage() {
   const [beamType, setBeamType] = useState<BeamType>("edge-single");
   const [postSize, setPostSize] = useState<PostSize>("65x65x2.0");
   const [engineeringLocked, setEngineeringLocked] = useState(false);
+  const [currentPhotoUrl, setCurrentPhotoUrl] = useState<string | null>(null);
 
   // Sync from server data
   useEffect(() => {
     if (!project) return;
+    setCurrentPhotoUrl((project.photoUrl as string | null) || null);
     setOverlayState({
       x: Number(project.overlayX) || 50,
       y: Number(project.overlayY) || 50,
@@ -174,6 +176,11 @@ export default function PatioEditorPage() {
     ? Math.round(structureState.width / (structureState.postCount - 1))
     : structureState.width;
 
+  const handlePhotoUploaded = useCallback((url: string) => {
+    setCurrentPhotoUrl(url);
+    void refetch();
+  }, [refetch]);
+
   // Save all state
   const handleSave = useCallback(() => {
     updateProject.mutate({
@@ -250,7 +257,7 @@ export default function PatioEditorPage() {
           <span data-tour="patio-photo-guide"><PatioPhotoGuide /></span>
           <span data-tour="patio-export"><PatioPresentationExport
              projectName={project.name}
-             photoUrl={project.photoUrl}
+             photoUrl={currentPhotoUrl}
              structureState={structureState}
              colours={colours}
              placedElements={placedElements}
@@ -271,7 +278,7 @@ export default function PatioEditorPage() {
         <div className="flex-1 p-3 overflow-auto" data-tour="patio-canvas">
           <PatioCanvasEditor
             projectId={projectId}
-            photoUrl={project.photoUrl}
+            photoUrl={currentPhotoUrl}
             overlayState={overlayState}
             structureState={structureState}
             colours={colours}
@@ -284,6 +291,7 @@ export default function PatioEditorPage() {
             onOverlayChange={setOverlayState}
             onStructureChange={setStructureState}
             onColoursChange={setColours}
+            onPhotoUploaded={handlePhotoUploaded}
           >
             <PatioPlacedElements
               elements={placedElements}
@@ -571,8 +579,8 @@ export default function PatioEditorPage() {
             <TabsContent value="ai-render" className="mt-3" data-tour="patio-ai-render">
               <PatioAIRender
                 projectId={projectId}
-                hasPhoto={!!project.photoUrl}
-                photoUrl={project.photoUrl as string | null}
+                hasPhoto={!!currentPhotoUrl}
+                photoUrl={currentPhotoUrl}
               />
             </TabsContent>
           </Tabs>

@@ -506,7 +506,7 @@ function ComponentOrdersTab({
   const [quickAddForm, setQuickAddForm] = useState({ name: "", contactName: "", phone: "", email: "", category: "" });
 
   const ordersQuery = trpc.construction.jobComponentOrders.list.useQuery({ jobId });
-  const suppliersQuery = trpc.suppliers.list.useQuery({ activeOnly: true });
+  const suppliersQuery = trpc.suppliers.list.useQuery({ activeOnly: true, supplierScope: "construction" });
   const utils = trpc.useUtils();
 
   const createMutation = trpc.construction.jobComponentOrders.create.useMutation({
@@ -629,6 +629,7 @@ function ComponentOrdersTab({
       phone: quickAddForm.phone || undefined,
       email: quickAddForm.email || undefined,
       category: quickAddForm.category || undefined,
+      supplierScope: "construction",
     });
   }
 

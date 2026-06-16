@@ -1362,8 +1362,17 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               <Badge variant="outline" className={statusOptions.find(s => s.value === status)?.class}>
                 {status}
               </Badge>
+              {(quote as any).hbcfRequired && (
+                <Badge variant="destructive" className="text-[11px] shrink-0 gap-1">
+                  <AlertTriangle className="h-3 w-3" />
+                  HBCF required
+                </Badge>
+              )}
             </div>
-            <p className="text-sm text-muted-foreground truncate">{clientName || "Eclipse Opening Roof Quote"}</p>
+            <p className="text-sm text-muted-foreground truncate">
+              {clientName || "Eclipse Opening Roof Quote"}
+              {(quote as any).hbcfRequirementReason ? ` · ${(quote as any).hbcfRequirementReason}` : ""}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1526,7 +1535,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               {[
                 { id: "client", label: "Client", icon: ArrowLeft },
                 { id: "units", label: "Units", icon: Ruler },
-                ...(user?.role === "admin" ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
+                ...(isAdmin ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
                 { id: "checklist", label: "Checklist Pricing", icon: DollarSign },
                 { id: "additional", label: "Add. Costs", icon: Plus },
                 ...(units.length > 1 ? [{ id: "sitelayout", label: "Site Layout", icon: Sun }] : []),
@@ -1535,7 +1544,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
                 { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
                 { id: "notes", label: "Notes", icon: StickyNote },
                 ...(clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
-                ...(user?.role === "admin" ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
+                ...(isAdmin ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
               ].map(section => {
                 const Icon = section.icon;
                 const isActive = activeSection === section.id;
@@ -1603,7 +1612,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
             {[
               { id: "client", label: "Client", icon: ArrowLeft },
               { id: "units", label: "Units", icon: Ruler },
-              ...(user?.role === "admin" ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
+              ...(isAdmin ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
               { id: "checklist", label: "Checklist Pricing", icon: DollarSign },
               { id: "additional", label: "Add. Costs", icon: Plus },
               ...(units.length > 1 ? [{ id: "sitelayout", label: "Site Layout", icon: Sun }] : []),
@@ -1612,7 +1621,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
               { id: "notes", label: "Notes", icon: StickyNote },
               ...(clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
-              ...(user?.role === "admin" ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
+              ...(isAdmin ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
             ].map(section => {
               const Icon = section.icon;
               const isActive = activeSection === section.id;
@@ -1914,7 +1923,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
             </AccordionItem>
 
             {/* Materials (admin only) */}
-            {user?.role === "admin" && <AccordionItem value="materials" id="eclipse-section-materials" className="border rounded-lg px-4">
+            {isAdmin && <AccordionItem value="materials" id="eclipse-section-materials" className="border rounded-lg px-4">
               <AccordionTrigger className="text-sm font-medium">Materials</AccordionTrigger>
               <AccordionContent className="space-y-3">
           {!calcResult ? (
@@ -2316,7 +2325,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
             )}
 
             {/* Summary (admin only) - at bottom */}
-            {user?.role === "admin" && <AccordionItem value="summary" id="eclipse-section-summary" className="border rounded-lg px-4">
+            {isAdmin && <AccordionItem value="summary" id="eclipse-section-summary" className="border rounded-lg px-4">
               <AccordionTrigger className="text-sm font-medium">Summary</AccordionTrigger>
               <AccordionContent>
           <Card>

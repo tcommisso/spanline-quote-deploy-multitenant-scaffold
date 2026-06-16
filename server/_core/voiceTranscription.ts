@@ -1,5 +1,5 @@
 /**
- * Voice transcription helper using internal Speech-to-Text service
+ * Voice transcription helper using OpenAI Speech-to-Text.
  *
  * Frontend implementation guide:
  * 1. Capture audio using MediaRecorder API
@@ -65,7 +65,7 @@ export type TranscriptionError = {
 };
 
 /**
- * Transcribe audio to text using the internal Speech-to-Text service
+ * Transcribe audio to text using OpenAI.
  * 
  * @param options - Audio data and metadata
  * @returns Transcription result or error
@@ -75,18 +75,11 @@ export async function transcribeAudio(
 ): Promise<TranscriptionResponse | TranscriptionError> {
   try {
     // Step 1: Validate environment configuration
-    if (!ENV.forgeApiUrl) {
-      return {
-        error: "Voice transcription service is not configured",
-        code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_URL is not set"
-      };
-    }
-    if (!ENV.forgeApiKey) {
+    if (!ENV.openAiApiKey) {
       return {
         error: "Voice transcription service authentication is missing",
         code: "SERVICE_ERROR",
-        details: "BUILT_IN_FORGE_API_KEY is not set"
+        details: "OPENAI_API_KEY is not set"
       };
     }
 
@@ -123,7 +116,7 @@ export async function transcribeAudio(
       };
     }
 
-    // Step 3: Create FormData for multipart upload to Whisper API
+    // Step 3: Create FormData for multipart upload to OpenAI transcription API
     const formData = new FormData();
     
     // Create a Blob from the buffer and append to form
@@ -131,8 +124,11 @@ export async function transcribeAudio(
     const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
     formData.append("file", audioBlob, filename);
     
-    formData.append("model", "whisper-1");
+    formData.append("model", ENV.openAiTranscriptionModel || "gpt-4o-mini-transcribe");
     formData.append("response_format", "verbose_json");
+    if (options.language) {
+      formData.append("language", options.language);
+    }
     
     // Add prompt - use custom prompt if provided, otherwise generate based on language
     const prompt = options.prompt || (
@@ -142,20 +138,11 @@ export async function transcribeAudio(
     );
     formData.append("prompt", prompt);
 
-    // Step 4: Call the transcription service
-    const baseUrl = ENV.forgeApiUrl.endsWith("/")
-      ? ENV.forgeApiUrl
-      : `${ENV.forgeApiUrl}/`;
-    
-    const fullUrl = new URL(
-      "v1/audio/transcriptions",
-      baseUrl
-    ).toString();
-
-    const response = await fetch(fullUrl, {
+    // Step 4: Call OpenAI transcription service
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${ENV.forgeApiKey}`,
+        authorization: `Bearer ${ENV.openAiApiKey}`,
         "Accept-Encoding": "identity",
       },
       body: formData,

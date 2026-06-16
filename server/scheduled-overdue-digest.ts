@@ -5,7 +5,7 @@
  * Triggered by a Heartbeat cron job at /api/scheduled/overdue-digest
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { constructionJobs } from "../drizzle/schema";
 import { eq, and, lt } from "drizzle-orm";
@@ -18,12 +18,8 @@ export function registerScheduledOverdueDigest(app: Express) {
     const startTime = Date.now();
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        // Also allow from admin for testing
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();

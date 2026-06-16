@@ -30,6 +30,11 @@ const DEFAULT_STATUS_COLOURS: Record<string, { name: string; hex: string; purpos
   error: { name: "Error", hex: "#DC2626", purpose: "Critical items" },
 };
 
+const DEFAULT_SIDEBAR_SETTINGS = {
+  sidebarSectionHeader: "#C9AB57",
+  sidebarSectionHeaderFontSize: "12",
+};
+
 type ModuleAccentDef = {
   key: string;
   module: string;
@@ -57,6 +62,7 @@ function buildDefaults(): Record<string, string> {
   const map: Record<string, string> = {};
   for (const [key, val] of Object.entries(DEFAULT_BRAND_PALETTE)) map[key] = val.hex;
   for (const [key, val] of Object.entries(DEFAULT_STATUS_COLOURS)) map[key] = val.hex;
+  for (const [key, val] of Object.entries(DEFAULT_SIDEBAR_SETTINGS)) map[key] = val;
   for (const m of MODULE_ACCENT_DEFS) map[m.key] = m.defaultHex;
   return map;
 }
@@ -269,6 +275,51 @@ export default function AdminColourScheme() {
                 onChange={handleChange}
               />
             ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Sidebar Readability */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Sidebar Readability</CardTitle>
+          <p className="text-xs text-[#6B7280] mt-1">
+            Controls the uppercase section header shown at the top of the sidebar, such as Construction, CRM, and Admin.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
+            <EditableColourSwatch
+              colourKey="sidebarSectionHeader"
+              name="Section Header Colour"
+              purpose="Sidebar section header text and fallback accent"
+              hex={colours.sidebarSectionHeader || DEFAULT_SIDEBAR_SETTINGS.sidebarSectionHeader}
+              onChange={handleChange}
+            />
+            <div className="space-y-1.5 py-2">
+              <span className="text-sm font-semibold text-[#1F2937]">Section Header Size</span>
+              <p className="text-xs text-[#6B7280]">Font size in pixels. Recommended range: 11-14.</p>
+              <Input
+                type="number"
+                min={10}
+                max={16}
+                step={1}
+                value={colours.sidebarSectionHeaderFontSize || DEFAULT_SIDEBAR_SETTINGS.sidebarSectionHeaderFontSize}
+                onChange={(e) => handleChange("sidebarSectionHeaderFontSize", e.target.value)}
+                className="w-28 h-8 text-xs"
+              />
+              <div
+                className="rounded-md bg-[#06162D] px-4 py-3 border border-[#102544]"
+                style={{ color: colours.sidebarSectionHeader || DEFAULT_SIDEBAR_SETTINGS.sidebarSectionHeader }}
+              >
+                <span
+                  className="font-semibold uppercase tracking-widest"
+                  style={{ fontSize: `${Number(colours.sidebarSectionHeaderFontSize || DEFAULT_SIDEBAR_SETTINGS.sidebarSectionHeaderFontSize)}px` }}
+                >
+                  Construction
+                </span>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

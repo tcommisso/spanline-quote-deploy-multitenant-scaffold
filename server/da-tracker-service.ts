@@ -11,6 +11,7 @@ import crypto from "crypto";
 
 const ARCGIS_BASE = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_ACTIVE_DEVELOPMENT_APPLICATIONS/FeatureServer/0";
 const PAGE_SIZE = 1000;
+const DA_TRACKER_DEFAULT_START_DATE = new Date("2022-09-01T00:00:00.000Z");
 
 interface ArcGISFeature {
   attributes: {
@@ -114,7 +115,11 @@ export async function pollDaApplications(options?: { tenantId?: number | null })
 
   try {
     // Fetch all features from ArcGIS
-    const features = await fetchAllFeatures();
+    const features = (await fetchAllFeatures()).filter((feature) => {
+      const value = feature.attributes?.LODGEMENT_DATE;
+      if (!value) return false;
+      return new Date(value) >= DA_TRACKER_DEFAULT_START_DATE;
+    });
     const totalFetched = features.length;
 
     // Get existing records (keyed by objectId)

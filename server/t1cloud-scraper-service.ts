@@ -13,6 +13,7 @@ import { eq, and, like, sql, isNull } from "drizzle-orm";
 import { getTenantPlanningConfig } from "./tenant-integrations";
 
 // ─── Configuration ───────────────────────────────────────────────────────────
+const DA_TRACKER_DEFAULT_START_DATE = new Date("2022-09-01T00:00:00.000Z");
 
 interface T1CloudCouncilConfig {
   name: string;
@@ -303,6 +304,9 @@ export async function scrapeAndStoreT1CloudDas(options?: {
         try {
           // Normalise the DA number for matching
           const normalisedDaNumber = da.daNumber.replace(/\./g, "/");
+          if (!normalisedDaNumber || normalisedDaNumber.trim().length <= 3) {
+            continue;
+          }
 
           // Check if this DA already exists (by DA number + council)
           const [existing] = await db.select({
@@ -329,6 +333,9 @@ export async function scrapeAndStoreT1CloudDas(options?: {
             if (parts.length === 3) {
               lodgementDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
             }
+          }
+          if (!lodgementDate || lodgementDate < DA_TRACKER_DEFAULT_START_DATE) {
+            continue;
           }
 
           const suburb = extractSuburbFromT1Address(da.address);
@@ -424,7 +431,10 @@ export async function reMatchCompetitors(tenantId?: number | null): Promise<{ ma
   if (!db) return { matched: 0, total: 0 };
 
   // Get all DAs with applicant names
-  const conditions: any[] = [sql`${nswDaApplications.applicantName} IS NOT NULL`];
+  const conditions: any[] = [
+    sql`${nswDaApplications.applicantName} IS NOT NULL`,
+    eq(nswDaApplications.isOurs, false),
+  ];
   if (tenantId) conditions.push(eq(nswDaApplications.tenantId, tenantId));
 
   const das = await db.select({

@@ -13,6 +13,7 @@ import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { isAdminRole } from "@shared/const";
 
 const TAB_LABELS: Record<string, string> = {
   roof: "Roof", channel: "Channel", beam: "Beam", post: "Post",
@@ -28,7 +29,7 @@ interface QuoteItemsTabProps {
 
 export default function QuoteItemsTab({ quoteId }: QuoteItemsTabProps) {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = isAdminRole(user?.role || "");
   const utils = trpc.useUtils();
 
   // Fetch quote items

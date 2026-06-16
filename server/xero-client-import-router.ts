@@ -42,8 +42,10 @@ function parseXeroContact(contact: XeroContact): {
   postcode: string | null;
   suburb: string | null;
   state: string | null;
+  accountNumber: string | null;
 } {
   const email = contact.EmailAddress || null;
+  const accountNumber = contact.AccountNumber || null;
 
   let phone: string | null = null;
   if (contact.Phones?.length) {
@@ -69,12 +71,13 @@ function parseXeroContact(contact: XeroContact): {
     state = addr.Region || null;
   }
 
-  return { email, phone, address, postcode, suburb, state };
+  return { email, phone, address, postcode, suburb, state, accountNumber };
 }
 
 // ─── Helper: fetch Xero contacts in batch (up to 50 per call) ───────────────
 async function fetchXeroContactsBatch(
-  contactIds: string[]
+  contactIds: string[],
+  connectionId: number,
 ): Promise<Map<string, ReturnType<typeof parseXeroContact>>> {
   const map = new Map<string, ReturnType<typeof parseXeroContact>>();
   if (contactIds.length === 0) return map;
@@ -86,7 +89,8 @@ async function fetchXeroContactsBatch(
       // Xero supports filtering by IDs: /Contacts?IDs=id1,id2,...
       const idsParam = batch.join(",");
       const result = await xeroApiRequest<{ Contacts: XeroContact[] }>(
-        `/Contacts?IDs=${idsParam}`
+        `/Contacts?IDs=${idsParam}`,
+        { connectionId }
       );
       for (const contact of (result.Contacts || [])) {
         map.set(contact.ContactID, parseXeroContact(contact));
@@ -150,7 +154,7 @@ export const xeroClientImportRouter = router({
     if (!db) throw new Error("Database not available");
 
     // Ensure Xero connection is available for fetching contact details
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
 
     // Find all construction jobs without a lead, join with xeroProjectMappings
     const orphanJobs = await db
@@ -189,13 +193,16 @@ export const xeroClientImportRouter = router({
         let postcode: string | undefined;
         let suburb: string | undefined;
         let state: string | undefined;
+        let clientNumber: string | undefined;
         let branchId: number | undefined;
         let constructionJobNumber: string | undefined;
 
         if (auth && job.xeroContactId) {
-          let details: ReturnType<typeof parseXeroContact> = { email: null, phone: null, address: null, postcode: null, suburb: null, state: null };
+          let details: ReturnType<typeof parseXeroContact> = { email: null, phone: null, address: null, postcode: null, suburb: null, state: null, accountNumber: null };
           try {
-            const result = await xeroApiRequest<{ Contacts: XeroContact[] }>(`/Contacts/${job.xeroContactId}`);
+            const result = await xeroApiRequest<{ Contacts: XeroContact[] }>(`/Contacts/${job.xeroContactId}`, {
+              connectionId: auth.xeroConnectionId,
+            });
             const contact = result.Contacts?.[0];
             if (contact) details = parseXeroContact(contact);
           } catch (err) {
@@ -204,6 +211,7 @@ export const xeroClientImportRouter = router({
           contactEmail = details.email || undefined;
           contactPhone = details.phone || undefined;
           contactAddress = details.address || job.siteAddress || undefined;
+          clientNumber = details.accountNumber || undefined;
           postcode = details.postcode || undefined;
           suburb = details.suburb || undefined;
           state = details.state || undefined;
@@ -229,6 +237,7 @@ export const xeroClientImportRouter = router({
           contactEmail,
           contactPhone,
           contactAddress,
+          clientNumber,
           suburb,
           state,
           postcode,
@@ -268,11 +277,11 @@ export const xeroClientImportRouter = router({
    * contact details (email, phone, address, branch, constructionJobNumber).
    * Looks up the Xero contact via xeroProjectMappings and populates missing fields.
    */
-  backfillContactDetails: protectedProcedure.mutation(async () => {
+  backfillContactDetails: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection — needed to fetch contact details." });
 
@@ -284,6 +293,7 @@ export const xeroClientImportRouter = router({
         leadEmail: crmLeads.contactEmail,
         leadPhone: crmLeads.contactPhone,
         leadAddress: crmLeads.contactAddress,
+        clientNumber: crmLeads.clientNumber,
         leadPostcode: crmLeads.postcode,
         leadBranchId: crmLeads.branchId,
         leadJobNumber: crmLeads.constructionJobNumber,
@@ -298,7 +308,7 @@ export const xeroClientImportRouter = router({
         and(
           eq(crmLeads.leadSource, "Xero Import"),
           isNotNull(xeroProjectMappings.xeroContactId),
-          sql`(${crmLeads.contactEmail} IS NULL OR ${crmLeads.contactPhone} IS NULL OR ${crmLeads.contactAddress} IS NULL OR ${crmLeads.postcode} IS NULL OR ${crmLeads.branchId} IS NULL OR ${crmLeads.constructionJobNumber} IS NULL)`
+          sql`(${crmLeads.contactEmail} IS NULL OR ${crmLeads.contactPhone} IS NULL OR ${crmLeads.contactAddress} IS NULL OR ${crmLeads.clientNumber} IS NULL OR ${crmLeads.postcode} IS NULL OR ${crmLeads.branchId} IS NULL OR ${crmLeads.constructionJobNumber} IS NULL)`
         )
       );
 
@@ -316,7 +326,7 @@ export const xeroClientImportRouter = router({
     ));
 
     console.log(`[Backfill] Fetching ${uniqueContactIds.length} unique Xero contacts in batches of 50`);
-    const contactMap = await fetchXeroContactsBatch(uniqueContactIds);
+    const contactMap = await fetchXeroContactsBatch(uniqueContactIds, auth.xeroConnectionId);
     console.log(`[Backfill] Got details for ${contactMap.size} contacts`);
 
     let updated = 0;
@@ -333,6 +343,7 @@ export const xeroClientImportRouter = router({
         if (!lead.leadEmail && details?.email) updates.contactEmail = details.email;
         if (!lead.leadPhone && details?.phone) updates.contactPhone = details.phone;
         if (!lead.leadAddress && details?.address) updates.contactAddress = details.address;
+        if (!lead.clientNumber && details?.accountNumber) updates.clientNumber = details.accountNumber;
         if (!lead.leadPostcode && details?.postcode) updates.postcode = details.postcode;
         if (!lead.leadBranchId && lead.xeroProjectName) {
           const branchName = deriveBranchFromProjectName(lead.xeroProjectName);

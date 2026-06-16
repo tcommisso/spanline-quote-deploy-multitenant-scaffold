@@ -273,7 +273,7 @@ function ReceiveGoodsDialog({ open, onOpenChange, purchaseOrderId, po }: {
   const [feedbackPrompt, setFeedbackPrompt] = useState<{ supplierId: number; supplierName: string; poId: number } | null>(null);
 
   const utils = trpc.useUtils();
-  const { data: suppliersData } = trpc.suppliers.list.useQuery({ activeOnly: true });
+  const { data: suppliersData } = trpc.suppliers.list.useQuery({ activeOnly: true, supplierScope: "manufacturing" });
 
   const createReceipt = trpc.procurement.receipts.create.useMutation({
     onSuccess: (data) => {

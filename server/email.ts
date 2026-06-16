@@ -26,7 +26,7 @@ export interface SendNotificationEmailParams {
   htmlBody: string;
   fromName?: string;
   attachments?: EmailAttachment[];
-  module?: "sales" | "construction" | "approvals" | "admin";
+  module?: "sales" | "construction" | "approvals" | "admin" | "manufacturing" | "support";
 }
 
 export async function sendNotificationEmail(params: SendNotificationEmailParams & { settingKey?: string }): Promise<{ success: boolean; error?: string; emailId?: string }> {

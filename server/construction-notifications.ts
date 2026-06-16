@@ -10,7 +10,7 @@
 import * as vocphone from "./vocphone";
 import { sendNotificationEmail } from "./email";
 import { createSmsDeliveryLog, getDb } from "./db";
-import { constructionJobs, constructionInstallers, constructionScheduleEvents, crmLeads } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, constructionScheduleEvents, crmLeads, constructionJobFinancials, quotes, tenantSettings } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
 import { triggerPushScheduleEvent } from "./push-triggers";
@@ -30,6 +30,126 @@ export function normaliseAuPhone(phone: string): string | null {
 
 function getSender(): string {
   return process.env.VOCPHONE_SMS_SENDER || "61480855750";
+}
+
+type TradeNotificationTemplateContext = {
+  job: any;
+  installer?: any | null;
+  event?: any | null;
+};
+
+type TradeNotificationTemplateVariables = Record<string, string>;
+
+function asText(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function formatDate(value: unknown): string {
+  if (!value) return "";
+  const date = new Date(value as any);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-AU", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function formatTime(value: unknown): string {
+  if (!value) return "";
+  const date = new Date(value as any);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function estimateJobDays(job: any, event?: any | null): string {
+  const start = job?.scheduledStart || event?.startTime;
+  const end = job?.scheduledEnd || event?.endTime;
+  if (!start || !end) return "";
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return "";
+  const diffMs = endDate.getTime() - startDate.getTime();
+  if (diffMs < 0) return "";
+  return String(Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000))));
+}
+
+async function getClientPhoneForJob(db: any, job: any): Promise<string> {
+  if (job?.leadId) {
+    const [lead] = await db.select({ phone: crmLeads.contactPhone })
+      .from(crmLeads)
+      .where(eq(crmLeads.id, job.leadId));
+    if (lead?.phone) return lead.phone;
+  }
+
+  if (job?.quoteId) {
+    const [quote] = await db.select({ phone: quotes.clientPhone })
+      .from(quotes)
+      .where(eq(quotes.id, job.quoteId));
+    if (quote?.phone) return quote.phone;
+  }
+
+  return "";
+}
+
+async function getOfficePhoneForTenant(db: any, tenantId?: number | null): Promise<string> {
+  if (!tenantId) return "";
+  const [settings] = await db.select({ companyDetails: tenantSettings.companyDetails })
+    .from(tenantSettings)
+    .where(eq(tenantSettings.tenantId, tenantId));
+  const company = settings?.companyDetails as Record<string, any> | null | undefined;
+  return asText(company?.officePhone || company?.phone || company?.mainPhone || "");
+}
+
+async function getConstructionManagerForJob(db: any, job: any): Promise<string> {
+  if (job?.supervisorName) return job.supervisorName;
+  if (!job?.id) return "";
+  const [financial] = await db.select({ constructionManagerName: constructionJobFinancials.constructionManagerName })
+    .from(constructionJobFinancials)
+    .where(eq(constructionJobFinancials.jobId, job.id));
+  return asText(financial?.constructionManagerName);
+}
+
+export async function buildTradeNotificationTemplateVariables(
+  context: TradeNotificationTemplateContext,
+): Promise<TradeNotificationTemplateVariables> {
+  const db = await getDb();
+  const job = context.job || {};
+  const event = context.event || {};
+  const installer = context.installer || {};
+  const start = event.startTime || job.scheduledStart;
+
+  const [clientPhone, officePhone, constructionManager] = db
+    ? await Promise.all([
+        getClientPhoneForJob(db, job),
+        getOfficePhoneForTenant(db, job.tenantId),
+        getConstructionManagerForJob(db, job),
+      ])
+    : ["", "", ""];
+
+  return {
+    trade_name: asText(installer.name),
+    job_number: asText(job.quoteNumber || job.id),
+    client_name: asText(job.clientName),
+    client_phone: clientPhone,
+    office_phone: officePhone,
+    cm: constructionManager,
+    est_days: estimateJobDays(job, event),
+    site_address: asText(job.siteAddress),
+    start_date: formatDate(start),
+    start_time: event.allDay ? "All day" : formatTime(start),
+  };
+}
+
+export async function renderTradeNotificationTemplate(
+  template: string,
+  context: TradeNotificationTemplateContext,
+): Promise<string> {
+  const variables = await buildTradeNotificationTemplateVariables(context);
+  return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => (
+    Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : match
+  ));
 }
 
 // ─── SMS helpers ──────────────────────────────────────────────────────────────

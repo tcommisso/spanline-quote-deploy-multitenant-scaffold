@@ -623,8 +623,8 @@ export const tradeInvoiceRouter = router({
       }
 
       // Create bill in Xero
-      const accessToken = await getValidAccessToken();
-      if (!accessToken) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
+      if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
 
       const xeroLineItems = lines.map(line => ({
         Description: line.description,
@@ -648,7 +648,8 @@ export const tradeInvoiceRouter = router({
       const response = await fetch("https://api.xero.com/api.xro/2.0/Invoices", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${accessToken}`,
+          "Authorization": `Bearer ${auth.accessToken}`,
+          "Xero-Tenant-Id": auth.tenantId,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -927,7 +928,7 @@ export const tradeInvoiceRouter = router({
     .input(z.object({ invoiceId: z.number().optional() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
 
       // Get invoices with Xero bill IDs that aren't yet paid

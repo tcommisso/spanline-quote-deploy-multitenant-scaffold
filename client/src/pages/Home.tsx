@@ -39,7 +39,7 @@ export default function Home() {
             Welcome back{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {user?.role === "admin" ? "Admin overview of all quotes" : "Your quoting dashboard"}
+            {user && isAdminRole(user.role) ? "Admin overview of all quotes" : "Your quoting dashboard"}
           </p>
         </div>
         <Button onClick={() => setLocation("/quotes?new=1")} variant="brand" size="sm" className="gap-2">

@@ -208,12 +208,21 @@ export async function getEvent(grantId: string, eventId: string, calendarId: str
 /**
  * Create an event.
  */
-export async function createEvent(grantId: string, event: NylasEventInput, calendarId: string = "primary", tenantId?: number | null): Promise<NylasEvent> {
+export async function createEvent(
+  grantId: string,
+  event: NylasEventInput,
+  calendarId: string = "primary",
+  tenantId?: number | null,
+  options?: { notifyParticipants?: boolean },
+): Promise<NylasEvent> {
+  const params: Record<string, string> = { calendar_id: calendarId };
+  if (options?.notifyParticipants) params.notify_participants = "true";
+
   const result = await nylasRequest<{ data: NylasEvent }>({
     tenantId,
     method: "POST",
     path: `/v3/grants/${grantId}/events`,
-    params: { calendar_id: calendarId },
+    params,
     body: event,
   });
   return result.data;
@@ -228,12 +237,16 @@ export async function updateEvent(
   updates: Partial<NylasEventInput>,
   calendarId: string = "primary",
   tenantId?: number | null,
+  options?: { notifyParticipants?: boolean },
 ): Promise<NylasEvent> {
+  const params: Record<string, string> = { calendar_id: calendarId };
+  if (options?.notifyParticipants) params.notify_participants = "true";
+
   const result = await nylasRequest<{ data: NylasEvent }>({
     tenantId,
     method: "PUT",
     path: `/v3/grants/${grantId}/events/${eventId}`,
-    params: { calendar_id: calendarId },
+    params,
     body: updates,
   });
   return result.data;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import { protectedProcedure, adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { invitations, users } from "../drizzle/schema";
 import { and, desc, eq } from "drizzle-orm";
@@ -9,6 +9,12 @@ import { buildTrustedAppUrl } from "./_core/url";
 
 function generateToken(): string {
   return randomBytes(32).toString("hex");
+}
+
+function assertEmailSent(result: { success: boolean; error?: string }) {
+  if (!result.success) {
+    throw new Error(result.error || "Invitation email could not be sent");
+  }
 }
 
 export const invitationsRouter = router({
@@ -54,34 +60,41 @@ export const invitationsRouter = router({
       // Send invitation email
       const inviteUrl = buildTrustedAppUrl(ctx.req, `/invite/${encodeURIComponent(token)}`);
 
-      await sendNotificationEmail({
-        to: input.email,
-        subject: `You're invited to join AltaSpan`,
-        htmlBody: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #1e293b;">Hi ${input.name},</h2>
-            <p style="color: #334155; line-height: 1.6;">
-              ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${input.role.replace(/_/g, " ")}</strong>.
-            </p>
-            <p style="color: #334155; line-height: 1.6;">
-              Click the button below to accept your invitation and set up your account:
-            </p>
-            <div style="text-align: center; margin: 32px 0;">
-              <a href="${inviteUrl}" style="background-color: #1e40af; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                Accept Invitation
-              </a>
+      try {
+        const emailResult = await sendNotificationEmail({
+          tenantId: ctx.tenant?.id ?? null,
+          to: input.email,
+          subject: `You're invited to join AltaSpan`,
+          htmlBody: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2 style="color: #1e293b;">Hi ${input.name},</h2>
+              <p style="color: #334155; line-height: 1.6;">
+                ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${input.role.replace(/_/g, " ")}</strong>.
+              </p>
+              <p style="color: #334155; line-height: 1.6;">
+                Click the button below to accept your invitation and set up your account:
+              </p>
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${inviteUrl}" style="background-color: #1e40af; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+                  Accept Invitation
+                </a>
+              </div>
+              <p style="color: #64748b; font-size: 14px; line-height: 1.5;">
+                This invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.
+              </p>
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+              <p style="color: #94a3b8; font-size: 12px;">
+                If the button doesn't work, copy and paste this link into your browser:<br/>
+                <a href="${inviteUrl}" style="color: #3b82f6;">${inviteUrl}</a>
+              </p>
             </div>
-            <p style="color: #64748b; font-size: 14px; line-height: 1.5;">
-              This invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.
-            </p>
-            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-            <p style="color: #94a3b8; font-size: 12px;">
-              If the button doesn't work, copy and paste this link into your browser:<br/>
-              <a href="${inviteUrl}" style="color: #3b82f6;">${inviteUrl}</a>
-            </p>
-          </div>
-        `,
-      });
+          `,
+        });
+        assertEmailSent(emailResult);
+      } catch (err) {
+        await db.delete(invitations).where(eq(invitations.id, result.insertId));
+        throw err;
+      }
 
       return { success: true, id: result.insertId };
     }),
@@ -145,10 +158,10 @@ export const invitationsRouter = router({
         .set({ expiresAt: newExpiry })
         .where(eq(invitations.id, input.id));
 
-      const origin = ctx.req.headers.origin || ctx.req.headers.referer?.replace(/\/$/, "") || "https://altaspan.manus.space";
-      const inviteUrl = `${origin}/invite/${invite.token}`;
+      const inviteUrl = buildTrustedAppUrl(ctx.req, `/invite/${encodeURIComponent(invite.token)}`);
 
-      await sendNotificationEmail({
+      const emailResult = await sendNotificationEmail({
+        tenantId: invite.tenantId ?? ctx.tenant?.id ?? null,
         to: invite.email,
         subject: `Reminder: You're invited to join AltaSpan`,
         htmlBody: `
@@ -166,6 +179,7 @@ export const invitationsRouter = router({
           </div>
         `,
       });
+      assertEmailSent(emailResult);
 
       return { success: true };
     }),
@@ -183,7 +197,6 @@ export const invitationsRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
-      const origin = ctx.req.headers.origin || ctx.req.headers.referer?.replace(/\/$/, "") || "https://altaspan.manus.space";
       const results: { email: string; success: boolean; error?: string }[] = [];
 
       for (const invite of input.invites) {
@@ -205,7 +218,7 @@ export const invitationsRouter = router({
           const token = generateToken();
           const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-          await db.insert(invitations).values({
+          const [insertResult] = await db.insert(invitations).values({
             email: invite.email,
             name: invite.name,
             role: invite.role,
@@ -216,25 +229,32 @@ export const invitationsRouter = router({
             expiresAt,
           });
 
-          const inviteUrl = `${origin}/invite/${token}`;
-          await sendNotificationEmail({
-            to: invite.email,
-            subject: `You're invited to join AltaSpan`,
-            htmlBody: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h2 style="color: #1e293b;">Hi ${invite.name},</h2>
-                <p style="color: #334155; line-height: 1.6;">
-                  ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${invite.role.replace(/_/g, " ")}</strong>.
-                </p>
-                <div style="text-align: center; margin: 32px 0;">
-                  <a href="${inviteUrl}" style="background-color: #1e40af; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-                    Accept Invitation
-                  </a>
+          const inviteUrl = buildTrustedAppUrl(ctx.req, `/invite/${encodeURIComponent(token)}`);
+          try {
+            const emailResult = await sendNotificationEmail({
+              tenantId: ctx.tenant?.id ?? null,
+              to: invite.email,
+              subject: `You're invited to join AltaSpan`,
+              htmlBody: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                  <h2 style="color: #1e293b;">Hi ${invite.name},</h2>
+                  <p style="color: #334155; line-height: 1.6;">
+                    ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${invite.role.replace(/_/g, " ")}</strong>.
+                  </p>
+                  <div style="text-align: center; margin: 32px 0;">
+                    <a href="${inviteUrl}" style="background-color: #1e40af; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+                      Accept Invitation
+                    </a>
+                  </div>
+                  <p style="color: #64748b; font-size: 14px;">This invitation expires in 7 days.</p>
                 </div>
-                <p style="color: #64748b; font-size: 14px;">This invitation expires in 7 days.</p>
-              </div>
-            `,
-          });
+              `,
+            });
+            assertEmailSent(emailResult);
+          } catch (err) {
+            await db.delete(invitations).where(eq(invitations.id, insertResult.insertId));
+            throw err;
+          }
 
           results.push({ email: invite.email, success: true });
         } catch (err: any) {
@@ -247,7 +267,7 @@ export const invitationsRouter = router({
     }),
 
   // ─── Validate Token (Public - for invite landing page) ─────────────────────
-  validateToken: protectedProcedure
+  validateToken: publicProcedure
     .input(z.object({ token: z.string() }))
     .query(async ({ input }) => {
       const db = await getDb();

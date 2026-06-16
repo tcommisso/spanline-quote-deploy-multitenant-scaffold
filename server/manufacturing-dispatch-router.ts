@@ -36,6 +36,12 @@ function driverTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function supplierTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 async function requireDriverAccess(db: any, ctx: any, driverId: number) {
   const [driver] = await db.select()
     .from(manufacturingDrivers)
@@ -369,7 +375,7 @@ export const manufacturingDispatchRouter = router({
               supplierName = compOrder.supplier;
               const [supplierRow] = await db.select({ id: suppliers.id })
                 .from(suppliers)
-                .where(eq(suppliers.name, compOrder.supplier))
+                .where(and(...supplierTenantConditions(ctx, eq(suppliers.name, compOrder.supplier), eq(suppliers.supplierScope, "manufacturing"))))
                 .limit(1);
               supplierId = supplierRow?.id || null;
             }

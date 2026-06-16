@@ -13,6 +13,7 @@ import { useState, useEffect, useRef } from "react";
 import { useIsMobile } from "@/hooks/useMobile";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { toast } from "sonner";
+import { isAdminRole } from "@shared/const";
 import {
   loadProposalText,
   saveProposalText,
@@ -212,7 +213,7 @@ export default function AdminSettings() {
     }, 100);
   };
 
-  if (user?.role !== "admin") {
+  if (!isAdminRole(user?.role || "")) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <Shield className="h-12 w-12 text-muted-foreground/30 mb-4" />

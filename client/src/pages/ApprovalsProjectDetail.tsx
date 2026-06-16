@@ -101,6 +101,14 @@ export default function ApprovalsProjectDetail() {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => navigate(`/approvals/projects/${projectId}/pathway`)}
+          >
+            <Play className="h-3.5 w-3.5 mr-1" />
+            Pathway Assessment
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => {
               if (confirm("Clone this project? A new project will be created with the same details, contacts, and document checklist.")) {
                 cloneProject.mutate({ sourceProjectId: projectId });

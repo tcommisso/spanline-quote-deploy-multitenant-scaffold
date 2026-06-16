@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS `hbcf_sync_logs` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `tenantId` int NULL,
+  `syncType` varchar(64) NOT NULL DEFAULT 'manual',
+  `certificatesChecked` int NOT NULL DEFAULT 0,
+  `certificatesUpdated` int NOT NULL DEFAULT 0,
+  `competitorMatchesFound` int NOT NULL DEFAULT 0,
+  `errors` int NOT NULL DEFAULT 0,
+  `errorDetails` text NULL,
+  `startedAt` timestamp NULL,
+  `completedAt` timestamp NULL,
+  `status` varchar(32) NOT NULL DEFAULT 'pending',
+  `source` varchar(32) NOT NULL DEFAULT 'api',
+  `externalId` varchar(255) NULL,
+  `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_hbcf_sync_logs_tenant` (`tenantId`),
+  KEY `idx_hbcf_sync_logs_status` (`status`),
+  KEY `idx_hbcf_sync_logs_completed` (`completedAt`),
+  CONSTRAINT `fk_hbcf_sync_logs_tenant` FOREIGN KEY (`tenantId`) REFERENCES `tenants` (`id`) ON DELETE SET NULL
+);

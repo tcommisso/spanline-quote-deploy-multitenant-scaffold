@@ -14,6 +14,7 @@ import {
   type InsertApprovalCertificate, type InsertApprovalAuditLogEntry,
   type InsertApprovalPathwayAssessment, type InsertApprovalWorkflowTemplate,
 } from "../drizzle/schema";
+import { getProjectHbcfGateStatus } from "./hbcf-service";
 
 // ─── Project Number Generator ───────────────────────────────────────────────
 export async function generateProjectNumber(): Promise<string> {
@@ -519,6 +520,26 @@ export async function checkGateReadiness(projectId: number, gateNumber: number) 
   if (blockingConditions.length > 0) blockers.push(`${blockingConditions.length} unsatisfied condition(s) blocking Gate ${gateNumber}`);
   if (blockingInspections.length > 0) blockers.push(`${blockingInspections.length} pending inspection(s) blocking Gate ${gateNumber}`);
   if (blockingTasks.length > 0) blockers.push(`${blockingTasks.length} incomplete task(s) at Gate ${gateNumber}`);
+
+  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  let isConstructionCommencementGate = gateNumber >= 3;
+  if (project?.workflowTemplateId) {
+    const [template] = await db.select().from(approvalWorkflowTemplates)
+      .where(eq(approvalWorkflowTemplates.id, project.workflowTemplateId))
+      .limit(1);
+    const gate = ((template?.gates as any[]) || []).find((item: any) => Number(item.gateNumber) === gateNumber);
+    const gateText = [
+      gate?.name,
+      gate?.description,
+      ...((gate?.blockingConditions as string[]) || []),
+    ].join(" ").toLowerCase();
+    isConstructionCommencementGate = /cc issued|cdc issued|ba issued|construction authorised|construction authorized|commencement|construction certificate/.test(gateText);
+  }
+
+  if (isConstructionCommencementGate) {
+    const hbcfStatus = await getProjectHbcfGateStatus(projectId);
+    blockers.push(...hbcfStatus.blockers);
+  }
 
   return { ready: blockers.length === 0, blockers };
 }

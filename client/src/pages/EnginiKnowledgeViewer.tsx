@@ -18,8 +18,7 @@ import {
   Eye,
 } from "lucide-react";
 import { toast } from "sonner";
-
-const ENGINI_AVATAR = "/manus-storage/engini-avatar_4dcf30c6.png";
+import { EnginiAvatar } from "@/components/EnginiAvatar";
 
 export default function EnginiKnowledgeViewer() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -92,7 +91,7 @@ export default function EnginiKnowledgeViewer() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <img src={ENGINI_AVATAR} alt="Engini" className="h-12 w-12 rounded-full" />
+          <EnginiAvatar size="xl" />
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Engini's Knowledge Base</h1>
             <p className="text-muted-foreground">

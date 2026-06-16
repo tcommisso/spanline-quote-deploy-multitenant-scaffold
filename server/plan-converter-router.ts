@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import * as planDb from "./plan-converter-db";
 import { storagePut } from "./storage";
 import { invokeLLM, type Message } from "./_core/llm";
+import { isAdminRole } from "@shared/const";
 
 const diagramTypeEnum = z.enum(["floor_plan", "elevation_front", "elevation_side", "elevation_rear"]);
 
@@ -72,7 +73,7 @@ export const planConverterRouter = router({
   }),
 
   adminList: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+    if (!isAdminRole(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN" });
     }
     return planDb.listAllPlanConversions();
@@ -132,7 +133,7 @@ export const planConverterRouter = router({
   adminDelete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
       await planDb.adminDeletePlanConversion(input.id);

@@ -10,21 +10,19 @@ import { eq, and, isNotNull, lt, isNull } from "drizzle-orm";
 import { getMasterDataValue } from "./db";
 import { sendNotificationEmail } from "./email";
 import * as signwell from "./signwell";
-import { createContext } from "./_core/context";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 
 export function registerSignatureReminderRoutes(app: Express) {
   /**
    * POST /api/scheduled/signature-reminders
    * Checks for documents sent for signature that haven't been signed
    * within the configured reminder days, and sends reminder emails.
-   * Protected by OAuth session (scheduled task cookie).
+   * Protected by the app-owned scheduled job secret.
    */
   app.post("/api/scheduled/signature-reminders", async (req: Request, res: Response) => {
     try {
-      // Authenticate the request via session context
-      const ctx = await createContext({ req, res } as any);
-      if (!ctx.user) {
-        return res.status(401).json({ error: "Unauthorized" });
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();

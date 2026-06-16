@@ -115,7 +115,7 @@ import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState, type 
 import { useLocation, Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
-import { getSectionForPath, APP_SECTIONS } from "@/pages/AppCentral";
+import { getSectionForPath, APP_SECTIONS } from "@/lib/appSections";
 import {
   Breadcrumb,
   BreadcrumbList,
@@ -143,7 +143,7 @@ type MenuItem = { icon: LucideIcon; label: string; path: string; badge?: number 
 
 const crmItems: MenuItem[] = [
   { icon: Contact, label: "CRM Dashboard", path: "/crm" },
-  { icon: ClipboardList, label: "Leads", path: "/crm/leads" },
+  { icon: ClipboardList, label: "Pipeline & Clients", path: "/crm/leads" },
   { icon: Phone, label: "Call Logs", path: "/calls" },
 ];
 
@@ -157,7 +157,7 @@ const salesItems: MenuItem[] = [
 ];
 
 const constructionItems: MenuItem[] = [
-  { icon: Users, label: "Clients", path: "/construction/clients" },
+  { icon: Users, label: "Active Jobs", path: "/construction/clients" },
   { icon: HardHat, label: "Construction Dashboard", path: "/construction" },
   { icon: CalendarDays, label: "Work Schedule", path: "/construction/schedule" },
   { icon: CalendarDays, label: "Calendar Availability", path: "/calendar-availability" },
@@ -180,6 +180,7 @@ const manufacturingItems: MenuItem[] = [
   { icon: CalendarDays, label: "Calendar", path: "/manufacturing/calendar" },
   { icon: BarChart3, label: "Reports", path: "/manufacturing/reports" },
   { icon: Receipt, label: "Purchase Orders", path: "/manufacturing/purchase-orders" },
+  { icon: Building2, label: "Supplier Directory", path: "/manufacturing/suppliers" },
   { icon: FileText, label: "Procurement", path: "/manufacturing/procurement" },
   { icon: Truck, label: "Dispatch", path: "/manufacturing/dispatch" },
   { icon: Users, label: "Drivers", path: "/manufacturing/drivers" },
@@ -208,6 +209,10 @@ const approvalsItems: MenuItem[] = [
   { icon: ShieldCheck, label: "Inspections", path: "/approvals/inspections" },
 
   { icon: Cog, label: "Workflow Templates", path: "/approvals/workflow-templates" },
+  { icon: LayoutDashboard, label: "HBCF Dashboard", path: "/approvals/hbcf/dashboard" },
+  { icon: Files, label: "HBCF Certificates", path: "/approvals/hbcf/certificates" },
+  { icon: Crosshair, label: "HBCF Competitors", path: "/approvals/hbcf/competitors" },
+  { icon: Shield, label: "HBCF Builder Profile", path: "/approvals/hbcf/builder-profile" },
 ];
 
 const daTrackerItems: MenuItem[] = [
@@ -222,6 +227,23 @@ const inboxItems: MenuItem[] = [
   { icon: Inbox, label: "Inbox", path: "/inbox" },
 ];
 
+const financeItems: MenuItem[] = [
+  { icon: DollarSign, label: "Construction Overview", path: "/construction/financials" },
+  { icon: DollarSign, label: "DA Commissions", path: "/admin/da-commissions" },
+  { icon: FileCheck, label: "DA Invoice Approval", path: "/admin/da-invoices" },
+  { icon: CreditCard, label: "Subscriptions", path: "/admin/subscriptions" },
+  { icon: Sparkles, label: "Render Costs", path: "/admin/render-costs" },
+  { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
+  { icon: ThumbsUp, label: "Supplier Feedback", path: "/admin/supplier-feedback" },
+];
+
+const reportingItems: MenuItem[] = [
+  { icon: BarChart3, label: "Sales Analytics", path: "/analytics" },
+  { icon: BarChart3, label: "Construction Analytics", path: "/construction/analytics" },
+  { icon: TrendingUp, label: "Manufacturing KPIs", path: "/manufacturing/kpi" },
+  { icon: BarChart3, label: "CRM Reports", path: "/crm/reports" },
+];
+
 // ─── Admin groups ─────────────────────────────────────────────────────────────
 type AdminGroup = { label: string; icon: LucideIcon; items: MenuItem[] };
 
@@ -234,6 +256,7 @@ const adminGroups: AdminGroup[] = [
       { icon: Shield, label: "Proposal & Notifications", path: "/admin/settings" },
       { icon: Bell, label: "Notification Log", path: "/admin/notification-log" },
       { icon: Inbox, label: "Inbox Settings", path: "/admin/inbox-settings" },
+      { icon: Globe, label: "API Health", path: "/admin/api-health" },
       { icon: Link2, label: "Xero Integration", path: "/xero-settings" },
       { icon: Star, label: "Climbo / Reviews", path: "/admin/climbo-settings" },
       { icon: MapPin, label: "Territory Management", path: "/admin/territories" },
@@ -250,33 +273,10 @@ const adminGroups: AdminGroup[] = [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
       { icon: Package, label: "Construction Data", path: "/admin/component-catalogue" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
+      { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
       { icon: History, label: "Import History", path: "/admin/import-history" },
       { icon: Files, label: "Templates & Documents", path: "/admin/master-data/general/descriptions-of-work" },
       { icon: Settings, label: "General", path: "/admin/master-data/general/colour" },
-    ],
-  },
-
-  {
-    label: "Finance",
-    icon: Wallet,
-    items: [
-      { icon: DollarSign, label: "Construction Overview", path: "/construction/financials" },
-      { icon: DollarSign, label: "DA Commissions", path: "/admin/da-commissions" },
-      { icon: FileCheck, label: "DA Invoice Approval", path: "/admin/da-invoices" },
-      { icon: CreditCard, label: "Subscriptions", path: "/admin/subscriptions" },
-      { icon: Sparkles, label: "Render Costs", path: "/admin/render-costs" },
-      { icon: Building2, label: "Supplier Directory", path: "/admin/suppliers" },
-      { icon: ThumbsUp, label: "Supplier Feedback", path: "/admin/supplier-feedback" },
-    ],
-  },
-  {
-    label: "Reporting",
-    icon: BarChart3,
-    items: [
-      { icon: BarChart3, label: "Sales Analytics", path: "/analytics" },
-      { icon: BarChart3, label: "Construction Analytics", path: "/construction/analytics" },
-      { icon: TrendingUp, label: "Manufacturing KPIs", path: "/manufacturing/kpi" },
-      { icon: BarChart3, label: "CRM Reports", path: "/crm/reports" },
     ],
   },
   {
@@ -308,6 +308,7 @@ const adminItems: MenuItem[] = adminGroups.flatMap(g => g.items);
 // Help is available to all users, not just admins
 const helpItems: MenuItem[] = [
   { icon: HelpCircle, label: "Help Guide", path: "/help" },
+  { icon: Layers, label: "Process Flows", path: "/process-flows" },
   { icon: Bug, label: "Report a Bug", path: "/support/bug" },
   { icon: Lightbulb, label: "Make a Suggestion", path: "/support/suggestion" },
   { icon: ClipboardList, label: "Manage Submissions", path: "/admin/support-submissions" },
@@ -315,7 +316,7 @@ const helpItems: MenuItem[] = [
 
 // All menu items for favourites lookup
 const allMenuItems: MenuItem[] = [
-  ...crmItems, ...salesItems, ...constructionItems, ...approvalsItems, ...daTrackerItems, ...manufacturingItems, ...inventoryItems, ...inboxItems, ...adminItems, ...helpItems,
+  ...crmItems, ...salesItems, ...constructionItems, ...approvalsItems, ...daTrackerItems, ...manufacturingItems, ...inventoryItems, ...inboxItems, ...financeItems, ...reportingItems, ...adminItems, ...helpItems,
 ];
 
 // ─── Favourites persistence ─────────────────────────────────────────────────
@@ -400,6 +401,13 @@ function getWeatherLabel(code: number): string {
 function getShortDay(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
   return d.toLocaleDateString("en-AU", { weekday: "short" });
+}
+
+function appSectionIdFromSidebarSection(sectionKey: string | null) {
+  if (sectionKey === "communications") return "inbox";
+  if (sectionKey === "daTracker") return "da_tracker";
+  if (sectionKey === "support") return null;
+  return sectionKey;
 }
 
 function useWeather(): WeatherData | null {
@@ -629,6 +637,7 @@ function DashboardLayoutContent({
     refetchInterval: 60000,
   });
   const overdueCount = overdueQuery.data?.count || 0;
+  const { data: colourScheme } = trpc.globalSettings.getColourScheme.useQuery();
 
   // ─── Chat unread count for sidebar badge ──────────────────────────────
   const chatUnreadQuery = trpc.chat.getUnreadTotal.useQuery(undefined, {
@@ -665,17 +674,17 @@ function DashboardLayoutContent({
   // ─── Collapsible section state (accordion: only one open at a time) ────────
   const SECTION_KEY = "sidebar-expanded-section";
   const sectionForPath = useCallback((path: string): string | null => {
-    if (path === "/crm/reports") return "admin"; // CRM Reports lives under Reporting
+    if (financeItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "finance";
+    if (reportingItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "reporting";
     if (crmItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "crm";
     if (path === "/sales" || salesItems.some(i => i.path !== "/" && i.path !== "/sales" && path.startsWith(i.path))) return "sales";
     if (approvalsItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "approvals";
     if (daTrackerItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path))) || path.startsWith("/da-tracker")) return "daTracker";
     if (constructionItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "construction";
     if (manufacturingItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "manufacturing";
-    if (inventoryItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path))) || path.startsWith("/admin/suppliers") || path.startsWith("/admin/supplier-feedback")) return "inventory";
+    if (inventoryItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "inventory";
     if (inboxItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "communications";
     if (helpItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "support";
-    // Finance & Reporting paths resolve to admin section (they're admin sub-groups)
     if (adminItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "admin";
     return null;
   }, []);
@@ -684,6 +693,12 @@ function DashboardLayoutContent({
   const activeSection = useMemo(() => sectionForPath(location), [location, sectionForPath]);
   const isOnAppCentral = location === "/";
   const scopedMode = !isOnAppCentral && activeSection !== null;
+  const activeAppSectionId = appSectionIdFromSidebarSection(activeSection);
+  const activeAppSection = activeAppSectionId
+    ? APP_SECTIONS.find(section => section.id === activeAppSectionId)
+    : null;
+  const sidebarNavColor = "#FFFFFF";
+  const sidebarSectionHeaderFontSize = Math.min(16, Math.max(10, Number(colourScheme?.sidebarSectionHeaderFontSize || 12)));
 
   const [expandedSection, setExpandedSection] = useState<string | null>(() => {
     // Auto-expand section for current path, or restore from localStorage
@@ -831,7 +846,7 @@ function DashboardLayoutContent({
             className="h-9 text-[13px] font-normal pr-8"
           >
             <div className="relative">
-              <item.icon className={`h-4 w-4 ${active ? "text-[#C9AB57]" : "text-sidebar-foreground/60"}`} />
+              <item.icon className={`h-4 w-4 ${active ? "text-white" : "text-sidebar-foreground/60"}`} />
               {item.badge != null && item.badge > 0 && isCollapsed && (
                 <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none">
                   {item.badge > 99 ? "99+" : item.badge}
@@ -850,12 +865,12 @@ function DashboardLayoutContent({
               onClick={(e) => { e.stopPropagation(); toggleFavourite(item.path); }}
               className={`absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded transition-all ${
                 isFav
-                  ? "text-amber-400 opacity-100"
-                  : "text-sidebar-foreground/30 opacity-0 group-hover/fav:opacity-100 hover:text-amber-400"
+                  ? "text-white opacity-100"
+                  : "text-sidebar-foreground/30 opacity-0 group-hover/fav:opacity-100 hover:text-white"
               }`}
               title={isFav ? "Remove from favourites" : "Add to favourites"}
             >
-              <Star className={`h-3.5 w-3.5 ${isFav ? "fill-amber-400" : ""}`} />
+              <Star className={`h-3.5 w-3.5 ${isFav ? "fill-white" : ""}`} />
             </button>
           )}
         </div>
@@ -874,12 +889,14 @@ function DashboardLayoutContent({
   // Render a collapsible section of menu items
   const renderCollapsibleSection = (sectionKey: string, label: string, items: MenuItem[], icon: LucideIcon) => {
     const isOpen = expandedSection === sectionKey;
+    const hideSectionHeader = scopedMode && activeSection === sectionKey && !isCollapsed;
     const hasActive = items.some(i => isActive(i.path));
     const badge = sectionBadges[sectionKey];
     const SectionIcon = icon;
+    const sectionHeaderAccent = sidebarNavColor;
     return (
       <div className="mb-0.5">
-        {!isCollapsed ? (
+        {hideSectionHeader ? null : !isCollapsed ? (
           <button
             onClick={() => toggleSection(sectionKey)}
             className={`flex items-center justify-between w-full px-3 py-2 group/section hover:bg-sidebar-accent/30 rounded-md transition-colors ${
@@ -887,10 +904,14 @@ function DashboardLayoutContent({
             }`}
           >
             <div className="flex items-center gap-2">
-              <SectionIcon className={`h-3.5 w-3.5 ${hasActive ? "text-[#C9AB57]" : "text-[#C9AB57]/40"}`} />
-              <p className={`text-[10px] font-medium uppercase tracking-wider ${
-                hasActive ? "text-[#C9AB57]" : "text-[#C9AB57]/40"
-              }`}>
+              <SectionIcon
+                className="h-3.5 w-3.5"
+                style={{ color: sectionHeaderAccent }}
+              />
+              <p
+                className="font-medium uppercase tracking-wider"
+                style={{ color: sectionHeaderAccent, fontSize: `${sidebarSectionHeaderFontSize}px` }}
+              >
                 {label}
               </p>
               {badge != null && badge > 0 && !isOpen && (
@@ -899,13 +920,17 @@ function DashboardLayoutContent({
                 </span>
               )}
             </div>
-            <ChevronRight className={`h-3 w-3 text-sidebar-foreground/40 transition-transform duration-200 ${
-              isOpen ? "rotate-90" : ""
-            }`} />
+            <ChevronRight
+              className={`h-3 w-3 transition-transform duration-200 ${isOpen ? "rotate-90" : ""}`}
+              style={{ color: sectionHeaderAccent }}
+            />
           </button>
         ) : (
           <div className="flex justify-center py-1.5 relative" title={label}>
-            <SectionIcon className={`h-4 w-4 ${hasActive ? "text-[#C9AB57]" : "text-[#C9AB57]/40"}`} />
+            <SectionIcon
+              className="h-4 w-4"
+              style={{ color: sectionHeaderAccent }}
+            />
             {badge != null && badge > 0 && (
               <span className="absolute top-0.5 right-1 min-w-[14px] h-3.5 px-0.5 flex items-center justify-center rounded-full bg-red-500 text-white text-[8px] font-bold leading-none">
                 {badge > 9 ? "9+" : badge}
@@ -913,7 +938,7 @@ function DashboardLayoutContent({
             )}
           </div>
         )}
-        {(isOpen || isCollapsed) && (
+        {(hideSectionHeader || isOpen || isCollapsed) && (
           <SidebarMenu>
             {items.map(item => renderMenuItem(item, true))}
           </SidebarMenu>
@@ -921,6 +946,10 @@ function DashboardLayoutContent({
       </div>
     );
   };
+
+  const adminHasActive = adminItems.some(i => isActive(i.path));
+  const adminHeaderAccent = sidebarNavColor;
+  const hideAdminHeader = scopedMode && activeSection === "admin" && !isCollapsed;
 
   const WeatherIcon = weather ? getWeatherIcon(weather.weatherCode) : Thermometer;
 
@@ -977,8 +1006,11 @@ function DashboardLayoutContent({
             {/* ─── Sticky section header (shows current section when scoped) ─── */}
             {scopedMode && activeSection && !isCollapsed && (
               <div className="sticky top-0 z-10 -mx-2 px-4 py-1.5 bg-sidebar/95 backdrop-blur-sm border-b border-sidebar-border/50 mb-1">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-[#C9AB57]/90">
-                  {activeSection === "crm" ? "CRM" : activeSection === "admin" ? "Admin" : activeSection.charAt(0).toUpperCase() + activeSection.slice(1)}
+                <p
+                  className="font-semibold uppercase tracking-widest"
+                  style={{ color: sidebarNavColor, fontSize: `${sidebarSectionHeaderFontSize}px` }}
+                >
+                  {activeAppSection?.label || (activeSection === "crm" ? "CRM" : activeSection.charAt(0).toUpperCase() + activeSection.slice(1))}
                 </p>
               </div>
             )}
@@ -986,8 +1018,8 @@ function DashboardLayoutContent({
             {/* ─── Favourites Section ─── */}
             {favouriteItems.length > 0 && !isCollapsed && (
               <div className="mb-1">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-amber-400/70 px-3 py-2 flex items-center gap-1">
-                  <Star className="h-3 w-3 fill-amber-400/70" />
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white px-3 py-2 flex items-center gap-1">
+                  <Star className="h-3 w-3 fill-white" />
                   Favourites
                 </p>
                 <SidebarMenu>
@@ -1002,15 +1034,15 @@ function DashboardLayoutContent({
                             tooltip={item.label}
                             className="h-9 text-[13px] font-normal pr-8"
                           >
-                            <item.icon className={`h-4 w-4 ${active ? "text-[#C9AB57]" : "text-sidebar-foreground/60"}`} />
+                            <item.icon className={`h-4 w-4 ${active ? "text-white" : "text-sidebar-foreground/60"}`} />
                             <span>{item.label}</span>
                           </SidebarMenuButton>
                           <button
                             onClick={(e) => { e.stopPropagation(); toggleFavourite(item.path); }}
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded text-amber-400 opacity-60 hover:opacity-100 transition-opacity"
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 h-6 w-6 flex items-center justify-center rounded text-white opacity-70 hover:opacity-100 transition-opacity"
                             title="Remove from favourites"
                           >
-                            <Star className="h-3.5 w-3.5 fill-amber-400" />
+                            <Star className="h-3.5 w-3.5 fill-white" />
                           </button>
                         </div>
                       </SidebarMenuItem>
@@ -1047,7 +1079,7 @@ function DashboardLayoutContent({
                           tooltip={item.label}
                           className="h-8 text-[12px] font-normal"
                         >
-                          <item.icon className={`h-3.5 w-3.5 ${active ? "text-[#C9AB57]" : "text-sidebar-foreground/50"}`} />
+                          <item.icon className={`h-3.5 w-3.5 ${active ? "text-white" : "text-sidebar-foreground/50"}`} />
                           <span className="truncate">{item.label}</span>
                         </SidebarMenuButton>
                       </SidebarMenuItem>
@@ -1104,6 +1136,18 @@ function DashboardLayoutContent({
               </>
             )}
 
+            {isOfficeOrAdmin && (!scopedMode || activeSection === "finance") && (
+              <>{/* ─── Finance ─── */}
+              {renderCollapsibleSection("finance", "Finance", financeItems, Wallet)}
+              </>
+            )}
+
+            {isOfficeOrAdmin && (!scopedMode || activeSection === "reporting") && (
+              <>{/* ─── Reporting ─── */}
+              {renderCollapsibleSection("reporting", "Reporting", reportingItems, BarChart3)}
+              </>
+            )}
+
             {(!scopedMode || activeSection === "communications") && (
               <>{/* ─── Communications ─── */}
               {renderCollapsibleSection("communications", "Communications", inboxItems.map(item =>
@@ -1121,39 +1165,43 @@ function DashboardLayoutContent({
             )}
 
             {/* ─── Admin (collapsible with grouped submenus) ─── */}
-            {isOfficeOrAdmin && (!scopedMode || activeSection === "admin") && (
+            {isAdmin && (!scopedMode || activeSection === "admin") && (
               <div className="mb-0.5">
-                {!isCollapsed ? (
+                {hideAdminHeader ? null : !isCollapsed ? (
                   <button
                     onClick={() => setAdminExpanded(!adminExpanded)}
                     className={`flex items-center justify-between w-full px-3 py-2 group/admin hover:bg-sidebar-accent/30 rounded-md transition-colors ${
-                      adminItems.some(i => isActive(i.path)) && !adminExpanded ? "bg-sidebar-accent/20" : ""
+                      adminHasActive && !adminExpanded ? "bg-sidebar-accent/20" : ""
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      <Shield className={`h-3.5 w-3.5 ${adminItems.some(i => isActive(i.path)) ? "text-[#C9AB57]" : "text-sidebar-foreground/50"}`} />
-                      <p className={`text-[10px] font-medium uppercase tracking-wider ${
-                        adminItems.some(i => isActive(i.path)) ? "text-[#C9AB57]" : "text-sidebar-foreground/40"
-                      }`}>
+                      <Shield
+                        className="h-3.5 w-3.5"
+                        style={{ color: adminHeaderAccent }}
+                      />
+                      <p
+                        className="font-medium uppercase tracking-wider"
+                        style={{ color: adminHeaderAccent, fontSize: `${sidebarSectionHeaderFontSize}px` }}
+                      >
                         Admin
                       </p>
                     </div>
-                    <ChevronRight className={`h-3 w-3 text-sidebar-foreground/40 transition-transform duration-200 ${
-                      adminExpanded ? "rotate-90" : ""
-                    }`} />
+                    <ChevronRight
+                      className={`h-3 w-3 transition-transform duration-200 ${adminExpanded ? "rotate-90" : ""}`}
+                      style={{ color: adminHeaderAccent }}
+                    />
                   </button>
                 ) : (
                   <div className="flex justify-center py-1.5" title="Admin">
-                    <Shield className={`h-4 w-4 ${adminItems.some(i => isActive(i.path)) ? "text-[#C9AB57]" : "text-sidebar-foreground/50"}`} />
+                    <Shield
+                      className="h-4 w-4"
+                      style={{ color: adminHeaderAccent }}
+                    />
                   </div>
                 )}
-                {(adminExpanded || isCollapsed) && (
+                {(hideAdminHeader || adminExpanded || isCollapsed) && (
                   <SidebarMenu>
-                    {adminGroups.filter(group => {
-                      // Office users only see Finance and Reporting groups
-                      if (!isAdmin) return ["Finance", "Reporting"].includes(group.label);
-                      return true;
-                    }).map(group => {
+                    {adminGroups.map(group => {
                       const groupExpanded = expandedAdminGroups.includes(group.label);
                       const groupHasActive = group.items.some(i => isActive(i.path));
                       return (
@@ -1168,14 +1216,14 @@ function DashboardLayoutContent({
                               <SidebarMenuButton
                                 tooltip={group.label}
                                 className={`h-9 text-[13px] font-normal ${
-                                  groupHasActive ? "text-[#C9AB57] font-medium" : ""
+                                  groupHasActive ? "text-white font-medium" : ""
                                 }`}
                               >
                                 <group.icon className={`h-4 w-4 ${
-                                  groupHasActive ? "text-[#C9AB57]" : "text-sidebar-foreground/60"
+                                  groupHasActive ? "text-white" : "text-sidebar-foreground/80"
                                 }`} />
                                 <span className="flex-1">{group.label}</span>
-                                <ChevronRight className={`h-3 w-3 text-sidebar-foreground/40 transition-transform duration-200 ${
+                                <ChevronRight className={`h-3 w-3 text-sidebar-foreground/70 transition-transform duration-200 ${
                                   groupExpanded ? "rotate-90" : ""
                                 }`} />
                               </SidebarMenuButton>
@@ -1199,7 +1247,7 @@ function DashboardLayoutContent({
                                           className="cursor-pointer pr-7"
                                         >
                                           <item.icon className={`h-3.5 w-3.5 ${
-                                            active ? "text-[#C9AB57]" : "text-sidebar-foreground/50"
+                                            active ? "text-white" : "text-sidebar-foreground/50"
                                           }`} />
                                           <span>{item.label}</span>
                                         </SidebarMenuSubButton>
@@ -1208,12 +1256,12 @@ function DashboardLayoutContent({
                                             onClick={(e) => { e.stopPropagation(); toggleFavourite(item.path); }}
                                             className={`absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded transition-all ${
                                               isFav
-                                                ? "text-amber-400 opacity-100"
-                                                : "text-sidebar-foreground/30 opacity-0 group-hover/fav:opacity-100 hover:text-amber-400"
+                                                ? "text-white opacity-100"
+                                                : "text-sidebar-foreground/30 opacity-0 group-hover/fav:opacity-100 hover:text-white"
                                             }`}
                                             title={isFav ? "Remove from favourites" : "Add to favourites"}
                                           >
-                                            <Star className={`h-3 w-3 ${isFav ? "fill-amber-400" : ""}`} />
+                                            <Star className={`h-3 w-3 ${isFav ? "fill-white" : ""}`} />
                                           </button>
                                         )}
                                       </div>
@@ -1490,7 +1538,7 @@ function DashboardLayoutContent({
             <div className="flex items-center justify-around h-14">
               {[
                 { href: "/", label: "App Central", icon: LayoutDashboard },
-                { href: "/construction/clients", label: "Clients", icon: Users },
+                { href: "/construction/clients", label: "Active Jobs", icon: Users },
                 { href: "/construction", label: "Construction", icon: HardHat },
                 { href: "/inbox", label: "Inbox", icon: Inbox },
               ].map((item) => {

@@ -41,6 +41,7 @@ interface PatioCanvasEditorProps {
   onOverlayChange: (state: PatioCanvasEditorProps["overlayState"]) => void;
   onStructureChange: (state: PatioCanvasEditorProps["structureState"]) => void;
   onColoursChange: (colours: PatioCanvasEditorProps["colours"]) => void;
+  onPhotoUploaded?: (url: string) => void;
   flipped?: boolean;
   structureType?: StructureType;
   gutterStyle?: GutterStyle;
@@ -61,6 +62,7 @@ export default function PatioCanvasEditor({
   onOverlayChange,
   onStructureChange,
   onColoursChange,
+  onPhotoUploaded,
   flipped,
   structureType,
   gutterStyle,
@@ -97,17 +99,18 @@ export default function PatioCanvasEditor({
         );
       }
 
-      await uploadPhoto.mutateAsync({
+      const uploaded = await uploadPhoto.mutateAsync({
         id: projectId,
         base64: compressed.base64,
         mimeType: "image/jpeg",
         fileName: file.name.replace(/\.[^.]+$/, ".jpg"),
       });
+      onPhotoUploaded?.(uploaded.url);
       toast.success("Photo uploaded");
     } catch (e: any) {
       toast.error(`Upload failed: ${e.message}`);
     }
-  }, [projectId, uploadPhoto]);
+  }, [projectId, uploadPhoto, onPhotoUploaded]);
 
   // Drag handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -289,7 +292,8 @@ export default function PatioCanvasEditor({
                 className="absolute inset-0 opacity-0 cursor-pointer"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) handlePhotoUpload(file);
+                  if (file) void handlePhotoUpload(file);
+                  e.currentTarget.value = "";
                 }}
               />
             </div>
@@ -351,7 +355,8 @@ export default function PatioCanvasEditor({
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) handlePhotoUpload(file);
+                  if (file) void handlePhotoUpload(file);
+                  e.currentTarget.value = "";
                 }}
               />
             </label>

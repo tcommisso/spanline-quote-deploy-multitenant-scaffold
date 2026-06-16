@@ -34,6 +34,7 @@ export default function AdminEquipment() {
   const [search, setSearch] = useState("");
 
   const equipmentQuery = trpc.equipment.list.useQuery();
+  const tenantSummaryQuery = trpc.equipment.tenantSummary.useQuery();
   const createMutation = trpc.equipment.create.useMutation({
     onSuccess: () => {
       equipmentQuery.refetch();
@@ -57,6 +58,14 @@ export default function AdminEquipment() {
     },
     onError: (err) => toast.error(err.message),
   });
+  const repairTenantMutation = trpc.equipment.repairTenantAssignments.useMutation({
+    onSuccess: (result) => {
+      equipmentQuery.refetch();
+      tenantSummaryQuery.refetch();
+      toast.success(`Repaired ${result.reassigned} equipment record${result.reassigned === 1 ? "" : "s"}`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const items = (equipmentQuery.data || []).filter(
     (e) =>
@@ -64,6 +73,11 @@ export default function AdminEquipment() {
       e.name.toLowerCase().includes(search.toLowerCase()) ||
       (e.category || "").toLowerCase().includes(search.toLowerCase()) ||
       (e.serialNumber || "").toLowerCase().includes(search.toLowerCase())
+  );
+  const tenantSummary = tenantSummaryQuery.data;
+  const canRepairImportedEquipment = !!tenantSummary && (
+    tenantSummary.unassigned > 0 ||
+    (tenantSummary.tenancyMode === "single" && tenantSummary.otherTenants > 0)
   );
 
   return (
@@ -106,7 +120,22 @@ export default function AdminEquipment() {
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
               <Package className="h-10 w-10 mx-auto mb-3 opacity-40" />
-              <p>No equipment found. Add your first piece of equipment to get started.</p>
+              {canRepairImportedEquipment ? (
+                <div className="space-y-3">
+                  <p>
+                    Imported equipment exists outside this tenant. Repair the tenant assignment to show it here.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => repairTenantMutation.mutate()}
+                    disabled={repairTenantMutation.isPending}
+                  >
+                    {repairTenantMutation.isPending ? "Repairing..." : "Repair imported equipment"}
+                  </Button>
+                </div>
+              ) : (
+                <p>No equipment found. Add your first piece of equipment to get started.</p>
+              )}
             </CardContent>
           </Card>
         )}

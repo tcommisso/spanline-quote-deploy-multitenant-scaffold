@@ -65,6 +65,19 @@ function installerScope(ctx: any, installerId?: number) {
   return conditions;
 }
 
+function constructionJobDateExpr() {
+  return sql<Date>`COALESCE(${constructionJobs.actualEnd}, ${constructionJobs.actualStart}, ${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart}, ${constructionJobs.createdAt})`;
+}
+
+function appendConstructionFyScope(conditions: any[], fyStartYear?: number) {
+  if (fyStartYear == null) return;
+  const from = new Date(Date.UTC(fyStartYear, 6, 1));
+  const to = new Date(Date.UTC(fyStartYear + 1, 6, 1));
+  const jobDate = constructionJobDateExpr();
+  conditions.push(sql`${jobDate} >= ${from}`);
+  conditions.push(sql`${jobDate} < ${to}`);
+}
+
 async function assertJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select().from(constructionJobs).where(and(...jobScope(ctx, jobId))).limit(1);
   if (!job) throw new Error("Job not found");
@@ -161,12 +174,7 @@ export const constructionRouter = router({
           conditions.push(sql`${constructionJobs.status} != 'completed'`);
         }
         // FY date filter
-        if (input?.fyStartYear != null) {
-          const from = new Date(Date.UTC(input.fyStartYear, 6, 1));
-          const to = new Date(Date.UTC(input.fyStartYear + 1, 6, 1));
-          conditions.push(gte(constructionJobs.createdAt, from));
-          conditions.push(lt(constructionJobs.createdAt, to));
-        }
+        appendConstructionFyScope(conditions, input?.fyStartYear);
         const jobs = await db.select().from(constructionJobs)
           .where(conditions.length ? and(...conditions) : undefined)
           .orderBy(desc(constructionJobs.updatedAt));
@@ -390,12 +398,7 @@ export const constructionRouter = router({
       if (!db) return { total: 0, scheduled: 0, inProgress: 0, onHold: 0, completed: 0 };
       const conditions: any[] = [];
       appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
-      if (input?.fyStartYear != null) {
-        const from = new Date(Date.UTC(input.fyStartYear, 6, 1));
-        const to = new Date(Date.UTC(input.fyStartYear + 1, 6, 1));
-        conditions.push(gte(constructionJobs.createdAt, from));
-        conditions.push(lt(constructionJobs.createdAt, to));
-      }
+      appendConstructionFyScope(conditions, input?.fyStartYear);
       const where = conditions.length ? and(...conditions) : undefined;
       const allJobs = await db.select({ status: constructionJobs.status }).from(constructionJobs).where(where);
       const total = allJobs.length;
@@ -1503,12 +1506,7 @@ export const constructionRouter = router({
 
         const conditions: any[] = [];
         appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
-        if (input?.fyStartYear != null) {
-          const from = new Date(Date.UTC(input.fyStartYear, 6, 1));
-          const to = new Date(Date.UTC(input.fyStartYear + 1, 6, 1));
-          conditions.push(gte(constructionJobs.createdAt, from));
-          conditions.push(lt(constructionJobs.createdAt, to));
-        }
+        appendConstructionFyScope(conditions, input?.fyStartYear);
         const where = conditions.length ? and(...conditions) : undefined;
 
         // By design adviser

@@ -8,9 +8,12 @@ import { X, Send, Loader2, User, BookOpen, ExternalLink, ArrowDown, Trash2, Thum
 import { trpc } from "@/lib/trpc";
 import { Streamdown } from "streamdown";
 import { useIsMobile } from "@/hooks/useMobile";
+import { EnginiAvatar } from "@/components/EnginiAvatar";
 
-const ENGINI_AVATAR = "/manus-storage/engini-avatar_4dcf30c6.png";
 const STORAGE_KEY = "engini-chat-history";
+const POSITION_KEY = "engini-launcher-position";
+const LAUNCHER_SIZE = 56;
+const EDGE_GAP = 12;
 
 interface Message {
   role: "user" | "assistant";
@@ -97,19 +100,32 @@ function FeedbackButtons({ messageIndex, feedbackGiven, onFeedback }: {
   );
 }
 
-function EnginiAvatar({ size = "sm" }: { size?: "sm" | "md" | "lg" }) {
-  const sizeClasses = {
-    sm: "h-6 w-6",
-    md: "h-8 w-8",
-    lg: "h-14 w-14",
+function clampLauncherPosition(position: { x: number; y: number }) {
+  if (typeof window === "undefined") return position;
+  return {
+    x: Math.min(Math.max(position.x, EDGE_GAP), Math.max(EDGE_GAP, window.innerWidth - LAUNCHER_SIZE - EDGE_GAP)),
+    y: Math.min(Math.max(position.y, EDGE_GAP), Math.max(EDGE_GAP, window.innerHeight - LAUNCHER_SIZE - EDGE_GAP)),
   };
-  return (
-    <img
-      src={ENGINI_AVATAR}
-      alt="Engini"
-      className={cn("rounded-full object-cover shrink-0", sizeClasses[size])}
-    />
-  );
+}
+
+function getDefaultLauncherPosition() {
+  if (typeof window === "undefined") return { x: EDGE_GAP, y: EDGE_GAP };
+  const stored = window.localStorage.getItem(POSITION_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+        return clampLauncherPosition(parsed);
+      }
+    } catch {
+      window.localStorage.removeItem(POSITION_KEY);
+    }
+  }
+  const bottomOffset = window.innerWidth < 768 ? 80 : 24;
+  return clampLauncherPosition({
+    x: window.innerWidth - LAUNCHER_SIZE - 24,
+    y: window.innerHeight - LAUNCHER_SIZE - bottomOffset,
+  });
 }
 
 export function FloatingAIChat() {
@@ -118,8 +134,18 @@ export function FloatingAIChat() {
   const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState("");
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [launcherPosition, setLauncherPosition] = useState(getDefaultLauncherPosition);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
   const isMobile = useIsMobile();
 
   // Fetch technical library documents dynamically
@@ -143,6 +169,18 @@ export function FloatingAIChat() {
   useEffect(() => {
     saveMessages(messages);
   }, [messages]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setLauncherPosition((current) => {
+        const next = clampLauncherPosition(current);
+        window.localStorage.setItem(POSITION_KEY, JSON.stringify(next));
+        return next;
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Get the scroll viewport element
   const getViewport = useCallback(() => {
@@ -265,6 +303,40 @@ export function FloatingAIChat() {
     localStorage.removeItem(STORAGE_KEY);
   };
 
+  const handleLauncherPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: launcherPosition.x,
+      originY: launcherPosition.y,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleLauncherPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
+    setLauncherPosition(clampLauncherPosition({ x: drag.originX + dx, y: drag.originY + dy }));
+  };
+
+  const handleLauncherPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.moved) {
+      suppressClickRef.current = true;
+      const next = clampLauncherPosition(launcherPosition);
+      window.localStorage.setItem(POSITION_KEY, JSON.stringify(next));
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+    }
+    dragRef.current = null;
+  };
+
   const activeDocs = techDocs ?? [];
 
   return (
@@ -273,14 +345,20 @@ export function FloatingAIChat() {
       {!isOpen && (
         <button
           onClick={() => {
+            if (suppressClickRef.current) return;
             if (isMobile && navigator.vibrate) navigator.vibrate(10);
             setIsOpen(true);
           }}
+          onPointerDown={handleLauncherPointerDown}
+          onPointerMove={handleLauncherPointerMove}
+          onPointerUp={handleLauncherPointerUp}
+          onPointerCancel={handleLauncherPointerUp}
+          style={{ left: launcherPosition.x, top: launcherPosition.y }}
           className={cn(
-            "fixed z-50 h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-105 flex items-center justify-center group overflow-hidden border-2 border-amber-400",
-            isMobile ? "bottom-20 right-4" : "bottom-6 right-6"
+            "fixed z-[90] h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-shadow duration-200 flex items-center justify-center group overflow-hidden border-2 border-amber-400 cursor-grab active:cursor-grabbing touch-none"
           )}
-          aria-label="Open Engini"
+          aria-label="Open Engini. Drag to reposition."
+          title="Open Engini. Drag to move."
         >
           <EnginiAvatar size="lg" />
           {/* Pulse indicator */}

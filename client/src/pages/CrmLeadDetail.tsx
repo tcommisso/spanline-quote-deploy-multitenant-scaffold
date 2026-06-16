@@ -10,7 +10,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocation, useParams, Link } from "wouter";
 import { toast } from "sonner";
-import { ArrowLeft, Save, Star, Trash2, Plus, ExternalLink, Mail, UserCheck, Send, Pin, CheckCircle2, Circle, MessageSquare, Archive, ArchiveRestore, Loader2, GitMerge, Phone, AtSign, Search, UserCog, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Save, Star, Trash2, Plus, ExternalLink, Mail, UserCheck, Send, Pin, CheckCircle2, Circle, MessageSquare, Archive, ArchiveRestore, Loader2, GitMerge, Phone, AtSign, Search, UserCog, AlertTriangle, Pencil, RefreshCw, Users } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { isAdminRole } from "@shared/const";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -32,8 +32,10 @@ const FALLBACK_STATUS_OPTIONS = [
   { value: "appointment_set", label: "Appointment Set" },
   { value: "quoted", label: "Quoted" },
   { value: "contract", label: "Contract" },
+  { value: "building_authority", label: "Approvals" },
   { value: "construction", label: "Construction" },
   { value: "completed", label: "Completed" },
+  { value: "won", label: "Won / Client" },
   { value: "cancelled", label: "Cancelled" },
 ];
 const FALLBACK_PRODUCT_TYPES = [
@@ -48,6 +50,12 @@ const FALLBACK_OUTCOMES = [
   "Sale", "No Sale - Price", "No Sale - Design", "No Sale - Timing",
   "No Sale - Competitor", "No Sale - Changed Mind", "No Sale - Other", "Pending"
 ];
+
+function toDateInputValue(value?: string | Date | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
 
 // Section definitions for sidebar nav
 const SECTIONS = [
@@ -93,18 +101,23 @@ export default function CrmLeadDetail() {
   // Form state
   const [form, setForm] = useState({
     contactFirstName: "", contactLastName: "", contactPhone: "", contactEmail: "",
-    contactAddress: "", suburb: "", state: "", postcode: "",
+    contactAddress: "", clientNumber: "", suburb: "", state: "", postcode: "",
     latitude: null as number | null, longitude: null as number | null,
     detectedRegion: "",
     productType: "", leadSource: "", status: "new",
     outcome: "", designAdvisor: "", branchId: "" as string,
+    sourceCreatedAt: "",
   });
   // Dynamic CRM dropdown options
   const { statusOptions } = useLeadStatusOptions();
   const { productTypes } = useProductTypeOptions();
   const { leadSources } = useLeadSourceOptions();
   const { outcomes } = useOutcomeOptions();
-  const STATUS_OPTIONS = statusOptions.length > 0 ? statusOptions : FALLBACK_STATUS_OPTIONS;
+  const STATUS_OPTIONS = useMemo(() => {
+    const byValue = new Map(FALLBACK_STATUS_OPTIONS.map((option) => [option.value, option]));
+    for (const option of statusOptions) byValue.set(option.value, option);
+    return Array.from(byValue.values());
+  }, [statusOptions]);
   const PRODUCT_TYPES = productTypes.length > 0 ? productTypes : FALLBACK_PRODUCT_TYPES;
   const LEAD_SOURCES = leadSources.length > 0 ? leadSources : FALLBACK_LEAD_SOURCES;
   const OUTCOMES = outcomes.length > 0 ? outcomes : FALLBACK_OUTCOMES;
@@ -122,6 +135,7 @@ export default function CrmLeadDetail() {
         contactPhone: lead.contactPhone || "",
         contactEmail: lead.contactEmail || "",
         contactAddress: lead.contactAddress || "",
+        clientNumber: lead.clientNumber || "",
         suburb: lead.suburb || "",
         state: lead.state || "",
         postcode: lead.postcode || "",
@@ -134,6 +148,7 @@ export default function CrmLeadDetail() {
         outcome: lead.outcome || "",
         designAdvisor: lead.designAdvisor || "",
         branchId: lead.branchId ? String(lead.branchId) : "",
+        sourceCreatedAt: toDateInputValue(lead.sourceCreatedAt),
       });
       if (lead.latitude && lead.longitude) {
         setMapCoords({ lat: lead.latitude, lng: lead.longitude });
@@ -224,7 +239,11 @@ export default function CrmLeadDetail() {
   });
 
   const handleSave = () => {
-    const payload = { ...form, branchId: form.branchId ? Number(form.branchId) : null };
+    const payload = {
+      ...form,
+      branchId: form.branchId ? Number(form.branchId) : null,
+      sourceCreatedAt: form.sourceCreatedAt ? new Date(`${form.sourceCreatedAt}T00:00:00Z`) : null,
+    };
     if (isNew) {
       createMut.mutate(payload as any);
     } else {
@@ -468,7 +487,9 @@ export default function CrmLeadDetail() {
                             </Badge>
                           </td>
                           <td className="py-2 px-3 text-xs text-muted-foreground">
-                            {dupe.createdAt ? new Date(dupe.createdAt).toLocaleDateString("en-AU") : "—"}
+                            {(dupe as any).sourceCreatedAt || dupe.createdAt
+                              ? new Date((dupe as any).sourceCreatedAt || dupe.createdAt).toLocaleDateString("en-AU")
+                              : "—"}
                           </td>
                         </tr>
                       ))}
@@ -577,6 +598,15 @@ export default function CrmLeadDetail() {
                         <div>
                           <label className="text-xs font-medium">Email</label>
                           <Input type="email" value={form.contactEmail} onChange={(e) => setForm(f => ({ ...f, contactEmail: e.target.value }))} />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">Client Number</label>
+                          <Input
+                            value={form.clientNumber}
+                            onChange={(e) => setForm(f => ({ ...f, clientNumber: e.target.value }))}
+                            placeholder="e.g. RIV-190116"
+                          />
+                          <p className="mt-1 text-[11px] text-muted-foreground">Xero contact account number.</p>
                         </div>
                         <div>
                           <label className="text-xs font-medium">Address</label>
@@ -706,6 +736,15 @@ export default function CrmLeadDetail() {
                         <div>
                           <label className="text-xs font-medium">Design Advisor</label>
                           <DesignAdvisorSelect value={form.designAdvisor} onChange={(v) => setForm(f => ({ ...f, designAdvisor: v }))} />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">Date Created</label>
+                          <Input
+                            type="date"
+                            value={form.sourceCreatedAt}
+                            onChange={(e) => setForm(f => ({ ...f, sourceCreatedAt: e.target.value }))}
+                          />
+                          <p className="mt-1 text-[11px] text-muted-foreground">Created date from the inbound lead sheet/Zapier feed.</p>
                         </div>
                         <div>
                           <label className="text-xs font-medium">Branch</label>
@@ -1049,28 +1088,140 @@ function NotesSection({ leadId }: { leadId: number }) {
   );
 }
 
+type AppointmentParticipant = { name?: string; email: string };
+
+const emptyAppointmentForm = {
+  appointmentType: "",
+  appointmentDate: "",
+  appointmentTime: "",
+  duration: "60",
+  location: "",
+  notes: "",
+  outcome: "",
+  participantsText: "",
+};
+
+function parseParticipants(value: string): AppointmentParticipant[] {
+  return value
+    .split(/\n|;/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const angleMatch = line.match(/^(.*?)<([^>]+)>$/);
+      if (angleMatch) {
+        return { name: angleMatch[1].trim() || undefined, email: angleMatch[2].trim() };
+      }
+
+      const commaMatch = line.match(/^(.+),\s*([^,\s]+@[^,\s]+)$/);
+      if (commaMatch) {
+        return { name: commaMatch[1].trim() || undefined, email: commaMatch[2].trim() };
+      }
+
+      return { email: line };
+    });
+}
+
+function formatParticipants(participants?: AppointmentParticipant[] | null) {
+  return (participants || [])
+    .map((participant) => participant.name ? `${participant.name} <${participant.email}>` : participant.email)
+    .join("\n");
+}
+
 // ─── Appointment Tab ────────────────────────────────────────────────────────
 function AppointmentTab({ leadId }: { leadId: number }) {
   const { data: appointments, isLoading } = trpc.crm.appointments.list.useQuery({ leadId });
   const utils = trpc.useUtils();
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ appointmentType: "", appointmentDate: "", appointmentTime: "", location: "", notes: "", outcome: "" });
+  const [editingAppointmentId, setEditingAppointmentId] = useState<number | null>(null);
+  const [form, setForm] = useState(emptyAppointmentForm);
   const { appointmentTypes } = useAppointmentTypeOptions();
 
+  const resetForm = () => {
+    setForm(emptyAppointmentForm);
+    setEditingAppointmentId(null);
+    setShowForm(false);
+  };
+
   const createMut = trpc.crm.appointments.create.useMutation({
-    onSuccess: () => { toast.success("Appointment added"); utils.crm.appointments.list.invalidate({ leadId }); setShowForm(false); setForm({ appointmentType: "", appointmentDate: "", appointmentTime: "", location: "", notes: "", outcome: "" }); }
+    onSuccess: () => {
+      toast.success("Appointment added");
+      utils.crm.appointments.list.invalidate({ leadId });
+      resetForm();
+    },
+  });
+  const updateMut = trpc.crm.appointments.update.useMutation({
+    onSuccess: () => {
+      toast.success("Appointment updated");
+      utils.crm.appointments.list.invalidate({ leadId });
+      resetForm();
+    },
+  });
+  const retryMut = trpc.crm.appointments.retryCalendarSync.useMutation({
+    onSuccess: () => {
+      toast.success("Calendar sync retried");
+      utils.crm.appointments.list.invalidate({ leadId });
+    },
+    onError: (error) => {
+      toast.error(error.message || "Calendar retry failed");
+      utils.crm.appointments.list.invalidate({ leadId });
+    },
   });
   const deleteMut = trpc.crm.appointments.delete.useMutation({
     onSuccess: () => { toast.success("Deleted"); utils.crm.appointments.list.invalidate({ leadId }); }
   });
   const [deleteAptTarget, setDeleteAptTarget] = useState<number | null>(null);
 
+  const openNewForm = () => {
+    setEditingAppointmentId(null);
+    setForm(emptyAppointmentForm);
+    setShowForm(true);
+  };
+
+  const openEditForm = (apt: any) => {
+    setEditingAppointmentId(apt.id);
+    setForm({
+      appointmentType: apt.appointmentType || "",
+      appointmentDate: apt.appointmentDate || "",
+      appointmentTime: apt.appointmentTime || "",
+      duration: String(apt.duration || 60),
+      location: apt.location || "",
+      notes: apt.notes || "",
+      outcome: apt.outcome || "",
+      participantsText: formatParticipants(apt.participants as AppointmentParticipant[] | null),
+    });
+    setShowForm(true);
+  };
+
+  const handleSaveAppointment = () => {
+    const duration = Number(form.duration) > 0 ? Number(form.duration) : 60;
+    const participants = parseParticipants(form.participantsText);
+    const payload = {
+      appointmentType: form.appointmentType || undefined,
+      appointmentDate: form.appointmentDate || undefined,
+      appointmentTime: form.appointmentTime || undefined,
+      duration,
+      location: form.location || undefined,
+      notes: form.notes || undefined,
+      outcome: form.outcome || undefined,
+      participants,
+    };
+
+    if (editingAppointmentId) {
+      updateMut.mutate({ id: editingAppointmentId, ...payload });
+      return;
+    }
+
+    createMut.mutate({ leadId, ...payload });
+  };
+
+  const saving = createMut.isPending || updateMut.isPending;
+
   return (
     <>
     <div className="space-y-3 pb-4">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-medium">Appointments</h4>
-        <Button size="sm" onClick={() => setShowForm(!showForm)}><Plus className="h-3 w-3 mr-1" /> Add</Button>
+        <Button size="sm" onClick={openNewForm}><Plus className="h-3 w-3 mr-1" /> Add</Button>
       </div>
       {showForm && (
         <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
@@ -1085,36 +1236,90 @@ function AppointmentTab({ leadId }: { leadId: number }) {
               </SelectContent>
             </Select>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <Input type="date" value={form.appointmentDate} onChange={(e) => setForm(f => ({ ...f, appointmentDate: e.target.value }))} placeholder="Date" />
             <Input type="time" value={form.appointmentTime} onChange={(e) => setForm(f => ({ ...f, appointmentTime: e.target.value }))} placeholder="Time" />
+            <Input type="number" min="15" step="15" value={form.duration} onChange={(e) => setForm(f => ({ ...f, duration: e.target.value }))} placeholder="Duration" />
           </div>
           <Input value={form.location} onChange={(e) => setForm(f => ({ ...f, location: e.target.value }))} placeholder="Location" />
+          <Textarea
+            value={form.participantsText}
+            onChange={(e) => setForm(f => ({ ...f, participantsText: e.target.value }))}
+            placeholder="Jane Client <jane@example.com>&#10;john@example.com"
+            rows={3}
+          />
           <Textarea value={form.notes} onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Notes" rows={2} />
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => createMut.mutate({ leadId, ...form })}>Save</Button>
-            <Button size="sm" variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleSaveAppointment} disabled={saving}>
+              {saving ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+              {editingAppointmentId ? "Update" : "Save"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={resetForm}>Cancel</Button>
           </div>
         </div>
       )}
       {isLoading ? <p className="text-sm text-muted-foreground">Loading...</p> :
         !appointments || appointments.length === 0 ? <p className="text-sm text-muted-foreground">No appointments yet.</p> :
-        appointments.map((apt) => (
-          <div key={apt.id} className="border rounded-lg p-3 flex justify-between items-start">
-            <div>
-              <div className="font-medium text-sm">
-                {apt.appointmentType && <Badge variant="outline" className="mr-2 text-xs">{appointmentTypes.find(t => t.value === apt.appointmentType)?.label || apt.appointmentType}</Badge>}
-                {apt.appointmentDate} {apt.appointmentTime && `at ${apt.appointmentTime}`}
+        appointments.map((apt) => {
+          const participants = (apt.participants || []) as AppointmentParticipant[];
+          const syncFailed = apt.calendarSyncStatus === "failed";
+          const syncPending = apt.calendarSyncStatus === "pending";
+
+          return (
+            <div key={apt.id} className="border rounded-lg p-3 space-y-3">
+              <div className="flex justify-between items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">
+                    {apt.appointmentType && <Badge variant="outline" className="mr-2 text-xs">{appointmentTypes.find(t => t.value === apt.appointmentType)?.label || apt.appointmentType}</Badge>}
+                    {apt.appointmentDate} {apt.appointmentTime && `at ${apt.appointmentTime}`}
+                  </div>
+                  {apt.location && <div className="text-xs text-muted-foreground">{apt.location}</div>}
+                  {participants.length > 0 && (
+                    <div className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+                      <Users className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                      <span className="break-words">
+                        {participants.map((participant) => participant.name ? `${participant.name} <${participant.email}>` : participant.email).join(", ")}
+                      </span>
+                    </div>
+                  )}
+                  {apt.notes && <div className="text-xs mt-1">{apt.notes}</div>}
+                  {apt.outcome && <Badge className="mt-1 text-xs">{apt.outcome}</Badge>}
+                  {syncPending && (
+                    <Badge variant="outline" className="mt-2 text-xs border-amber-300 text-amber-700">
+                      Calendar sync pending
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => openEditForm(apt)} title="Edit appointment">
+                    <Pencil className="h-3 w-3" />
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDeleteAptTarget(apt.id)} title="Delete appointment">
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
               </div>
-              {apt.location && <div className="text-xs text-muted-foreground">{apt.location}</div>}
-              {apt.notes && <div className="text-xs mt-1">{apt.notes}</div>}
-              {apt.outcome && <Badge className="mt-1 text-xs">{apt.outcome}</Badge>}
+              {syncFailed && (
+                <div className="flex flex-col gap-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 sm:flex-row sm:items-center">
+                  <div className="flex min-w-0 flex-1 items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    <span className="break-words">{apt.calendarSyncError || "Calendar sync failed"}</span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => retryMut.mutate({ id: apt.id })}
+                    disabled={retryMut.isPending}
+                    className="h-8 border-red-200 bg-white text-red-700 hover:bg-red-100 dark:bg-red-950"
+                  >
+                    {retryMut.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                    Retry
+                  </Button>
+                </div>
+              )}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setDeleteAptTarget(apt.id)}>
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </div>
-        ))
+          );
+        })
       }
       <LeadSectionNotes leadId={leadId} section="appointment" />
     </div>

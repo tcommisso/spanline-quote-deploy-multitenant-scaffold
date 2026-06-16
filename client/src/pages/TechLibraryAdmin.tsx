@@ -41,8 +41,7 @@ import {
   CheckCircle2,
   XCircle,
 } from "lucide-react";
-
-const ENGINI_AVATAR = "/manus-storage/engini-avatar_4dcf30c6.png";
+import { EnginiAvatar } from "@/components/EnginiAvatar";
 
 interface DocFormData {
   title: string;
@@ -195,12 +194,12 @@ export default function TechLibraryAdmin() {
         <Label htmlFor="url">Document URL *</Label>
         <Input
           id="url"
-          placeholder="/manus-storage/filename.pdf or https://..."
+          placeholder="/manus-storage/filename.pdf, /assets/filename.pdf, or https://..."
           value={form.url}
           onChange={(e) => setForm({ ...form, url: e.target.value })}
         />
         <p className="text-xs text-muted-foreground">
-          Upload PDFs via the file manager, then paste the /manus-storage/ path here
+          Upload PDFs via app storage, then paste the stored file path here
         </p>
       </div>
       <div className="grid grid-cols-2 gap-4">
@@ -232,7 +231,7 @@ export default function TechLibraryAdmin() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <img src={ENGINI_AVATAR} alt="Engini" className="h-12 w-12 rounded-full" />
+          <EnginiAvatar size="xl" />
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Technical Library</h1>
             <p className="text-muted-foreground">

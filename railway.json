@@ -5,6 +5,9 @@
     "buildCommand": "corepack enable && pnpm install --frozen-lockfile && pnpm build"
   },
   "deploy": {
+    "preDeployCommand": [
+      "pnpm exec drizzle-kit push --force"
+    ],
     "startCommand": "pnpm start",
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 300,

@@ -5,6 +5,7 @@ import { getDb } from "./db";
 import { renderCostLogs, users, patioPlanner, globalSettings } from "../drizzle/schema";
 import { eq, and, sql, gte, lte, desc } from "drizzle-orm";
 import { getDefaultRenderPricing, getRenderCostAud, type RenderPricingSettings } from "./global-settings-router";
+import { isAdminRole } from "@shared/const";
 
 // ─── Fetch Pricing from DB ──────────────────────────────────────────────────
 async function fetchRenderPricing(): Promise<RenderPricingSettings> {
@@ -57,7 +58,7 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
       }
 
@@ -145,7 +146,7 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
       }
 
@@ -199,7 +200,7 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
       }
 
@@ -245,7 +246,7 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
       }
 
@@ -293,7 +294,7 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.user.role !== "admin" && ctx.user.role !== "super_admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
       }
 

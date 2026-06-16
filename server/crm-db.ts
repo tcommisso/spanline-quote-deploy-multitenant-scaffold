@@ -27,19 +27,23 @@ function tenantClause(alias: string, tenantId?: number | null) {
 export async function getNextLeadNumber(tenantId?: number | null): Promise<string> {
   const [rows] = await pool.execute(
     tenantId
-      ? "SELECT leadNumber FROM crm_leads WHERE tenantId = ? OR tenantId IS NULL ORDER BY id DESC LIMIT 1"
-      : "SELECT leadNumber FROM crm_leads ORDER BY id DESC LIMIT 1",
+      ? `SELECT MAX(CAST(SUBSTRING(leadNumber, 3) AS UNSIGNED)) AS maxNumber
+         FROM crm_leads
+         WHERE (tenantId = ? OR tenantId IS NULL)
+           AND leadNumber REGEXP '^L-[0-9]+$'`
+      : `SELECT MAX(CAST(SUBSTRING(leadNumber, 3) AS UNSIGNED)) AS maxNumber
+         FROM crm_leads
+         WHERE leadNumber REGEXP '^L-[0-9]+$'`,
     tenantId ? [tenantId] : []
   );
-  const last = (rows as any[])[0]?.leadNumber;
-  if (!last) return "L-0001";
-  const num = parseInt(last.replace("L-", ""), 10) + 1;
+  const num = Number((rows as any[])[0]?.maxNumber || 0) + 1;
   return `L-${String(num).padStart(4, "0")}`;
 }
 
 // ─── Leads CRUD ─────────────────────────────────────────────────────────────
 export async function listLeads(filters?: {
   status?: string;
+  lifecycleView?: "pipeline" | "clients" | "all";
   productType?: string;
   leadSource?: string;
   designAdvisor?: string;
@@ -64,9 +68,27 @@ export async function listLeads(filters?: {
     conditions.push(eq(crmLeads.archived, false));
   }
 
+  if (filters?.lifecycleView === "clients") {
+    conditions.push(sql`${crmLeads.status} IN ('completed', 'won')`);
+    conditions.push(
+      filters.tenantId
+        ? sql`EXISTS (
+            SELECT 1 FROM construction_jobs cj
+            WHERE cj.leadId = ${crmLeads.id}
+              AND (cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)
+          )`
+        : sql`EXISTS (
+            SELECT 1 FROM construction_jobs cj
+            WHERE cj.leadId = ${crmLeads.id}
+          )`
+    );
+  } else if (filters?.lifecycleView === "pipeline") {
+    conditions.push(sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`);
+  }
+
   // Performance: default to active leads from past 3 months when no date/status filter is set
   // Skip this optimization when showAll is true, or when user has set explicit filters
-  if (!filters?.showAll && !filters?.status && !filters?.startDate && !filters?.search && !filters?.showArchived) {
+  if (!filters?.lifecycleView && !filters?.showAll && !filters?.status && !filters?.startDate && !filters?.search && !filters?.showArchived) {
     // Exclude completed/won/cancelled by default
     conditions.push(
       sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`
@@ -107,7 +129,8 @@ export async function listLeads(filters?: {
         like(crmLeads.contactEmail, `%${filters.search}%`),
         like(crmLeads.contactPhone, `%${filters.search}%`),
         like(crmLeads.company, `%${filters.search}%`),
-        like(crmLeads.leadNumber, `%${filters.search}%`)
+        like(crmLeads.leadNumber, `%${filters.search}%`),
+        like(crmLeads.clientNumber, `%${filters.search}%`)
       )
     );
   }
@@ -126,6 +149,7 @@ export async function listLeads(filters?: {
     status: crmLeads.status,
     leadSource: crmLeads.leadSource,
     designAdvisor: crmLeads.designAdvisor,
+    sourceCreatedAt: crmLeads.sourceCreatedAt,
     createdAt: crmLeads.createdAt,
     suburb: crmLeads.suburb,
   };
@@ -155,6 +179,7 @@ export async function listLeads(filters?: {
 
 export async function listLeadIds(filters?: {
   status?: string;
+  lifecycleView?: "pipeline" | "clients" | "all";
   productType?: string;
   leadSource?: string;
   designAdvisor?: string;
@@ -171,6 +196,23 @@ export async function listLeadIds(filters?: {
   appendTenantScope(conditions, crmLeads.tenantId, filters?.tenantId);
   if (!filters?.showArchived) {
     conditions.push(eq(crmLeads.archived, false));
+  }
+  if (filters?.lifecycleView === "clients") {
+    conditions.push(sql`${crmLeads.status} IN ('completed', 'won')`);
+    conditions.push(
+      filters.tenantId
+        ? sql`EXISTS (
+            SELECT 1 FROM construction_jobs cj
+            WHERE cj.leadId = ${crmLeads.id}
+              AND (cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)
+          )`
+        : sql`EXISTS (
+            SELECT 1 FROM construction_jobs cj
+            WHERE cj.leadId = ${crmLeads.id}
+          )`
+    );
+  } else if (filters?.lifecycleView === "pipeline") {
+    conditions.push(sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`);
   }
   if (filters?.status) conditions.push(eq(crmLeads.status, filters.status as any));
   if (filters?.productType) conditions.push(eq(crmLeads.productType, filters.productType));
@@ -201,7 +243,8 @@ export async function listLeadIds(filters?: {
         like(crmLeads.contactEmail, `%${filters.search}%`),
         like(crmLeads.contactPhone, `%${filters.search}%`),
         like(crmLeads.company, `%${filters.search}%`),
-        like(crmLeads.leadNumber, `%${filters.search}%`)
+        like(crmLeads.leadNumber, `%${filters.search}%`),
+        like(crmLeads.clientNumber, `%${filters.search}%`)
       )
     );
   }
@@ -297,7 +340,7 @@ export async function findExistingLeadByContact(
     if (last8.length >= 6) {
       const [rows] = await pool.execute(
         `SELECT id, leadNumber FROM crm_leads
-	         WHERE archivedAt IS NULL
+	         WHERE archived = 0
            ${tenantClause}
 	           AND contactPhone IS NOT NULL
 	           AND RIGHT(REGEXP_REPLACE(contactPhone, '[^0-9]', ''), 8) = ?
@@ -312,7 +355,7 @@ export async function findExistingLeadByContact(
   if (email) {
     const [rows] = await pool.execute(
       `SELECT id, leadNumber FROM crm_leads
-       WHERE archivedAt IS NULL
+       WHERE archived = 0
          ${tenantClause}
          AND LOWER(contactEmail) = LOWER(?)
        ORDER BY createdAt DESC LIMIT 1`,
@@ -465,6 +508,7 @@ export async function findDuplicateLeads(leadId: number, tenantId?: number | nul
   status: string;
   productType: string | null;
   leadSource: string | null;
+  sourceCreatedAt: Date | null;
   createdAt: Date | null;
   matchReasons: string[];
 }>> {
@@ -525,6 +569,7 @@ export async function findDuplicateLeads(leadId: number, tenantId?: number | nul
       status: c.status,
       productType: c.productType,
       leadSource: c.leadSource,
+      sourceCreatedAt: c.sourceCreatedAt,
       createdAt: c.createdAt,
       matchReasons,
     };
@@ -578,6 +623,7 @@ export async function searchAllLeads(query: string, tenantId?: number | null) {
       like(crmLeads.contactPhone, pattern),
       like(crmLeads.company, pattern),
       like(crmLeads.leadNumber, pattern),
+      like(crmLeads.clientNumber, pattern),
     ),
   ];
   appendTenantScope(conditions, crmLeads.tenantId, tenantId);
@@ -585,21 +631,63 @@ export async function searchAllLeads(query: string, tenantId?: number | null) {
 }
 
 // ─── Appointments ───────────────────────────────────────────────────────────
-export async function getAppointments(leadId: number) {
-  return db.select().from(crmAppointments).where(eq(crmAppointments.leadId, leadId)).orderBy(desc(crmAppointments.createdAt));
+export type AppointmentParticipant = { name?: string; email: string };
+
+export async function getAppointment(id: number, tenantId?: number | null) {
+  const conditions = [eq(crmAppointments.id, id)];
+  appendTenantScope(conditions, crmAppointments.tenantId, tenantId);
+  const [appointment] = await db.select().from(crmAppointments).where(and(...conditions)).limit(1);
+  return appointment || null;
 }
 
-export async function createAppointment(data: { leadId: number; appointmentType?: string; appointmentDate?: string; appointmentTime?: string; duration?: number; location?: string; notes?: string; outcome?: string; assignedUserId?: number }) {
+export async function getAppointments(leadId: number, tenantId?: number | null) {
+  const conditions = [eq(crmAppointments.leadId, leadId)];
+  appendTenantScope(conditions, crmAppointments.tenantId, tenantId);
+  return db.select().from(crmAppointments).where(and(...conditions)).orderBy(desc(crmAppointments.createdAt));
+}
+
+export async function createAppointment(data: {
+  tenantId?: number | null;
+  leadId: number;
+  appointmentType?: string;
+  appointmentDate?: string;
+  appointmentTime?: string;
+  duration?: number;
+  location?: string;
+  notes?: string;
+  outcome?: string;
+  assignedUserId?: number;
+  participants?: AppointmentParticipant[];
+  calendarSyncStatus?: string;
+  calendarSyncError?: string | null;
+}) {
   const [result] = await db.insert(crmAppointments).values(data as any);
   return { id: (result as any).insertId };
 }
 
-export async function updateAppointment(id: number, data: Partial<typeof crmAppointments.$inferInsert>) {
-  await db.update(crmAppointments).set(data as any).where(eq(crmAppointments.id, id));
+export async function updateAppointment(id: number, data: Partial<typeof crmAppointments.$inferInsert>, tenantId?: number | null) {
+  const conditions = [eq(crmAppointments.id, id)];
+  appendTenantScope(conditions, crmAppointments.tenantId, tenantId);
+  await db.update(crmAppointments).set(data as any).where(and(...conditions));
 }
 
-export async function deleteAppointment(id: number) {
-  await db.delete(crmAppointments).where(eq(crmAppointments.id, id));
+export async function updateAppointmentSyncStatus(
+  id: number,
+  data: { status: string; error?: string | null; eventId?: string | null; syncedAt?: Date | null },
+  tenantId?: number | null,
+) {
+  await updateAppointment(id, {
+    calendarSyncStatus: data.status,
+    calendarSyncError: data.error ?? null,
+    nylasEventId: data.eventId ?? undefined,
+    calendarSyncedAt: data.syncedAt ?? null,
+  } as any, tenantId);
+}
+
+export async function deleteAppointment(id: number, tenantId?: number | null) {
+  const conditions = [eq(crmAppointments.id, id)];
+  appendTenantScope(conditions, crmAppointments.tenantId, tenantId);
+  await db.delete(crmAppointments).where(and(...conditions));
 }
 
 // ─── Contracts ──────────────────────────────────────────────────────────────
@@ -694,6 +782,115 @@ export async function upsertCustomerReview(leadId: number, data: Partial<typeof 
     const [result] = await db.insert(crmCustomerReviews).values({ ...data, leadId } as any);
     return { id: (result as any).insertId };
   }
+}
+
+export type PostConstructionStatus = {
+  leadId: number;
+  constructionJobId: number | null;
+  constructionCompleteDate: string | null;
+  maintenanceLetterSent: boolean;
+  maintenanceLetterSentDate: string | null;
+  customerReviewReceived: boolean;
+  portalActive: boolean;
+  cpcSubscriptionActive: boolean;
+  outstandingDefects: number;
+  lastActivityAt: string | null;
+};
+
+function serializeDateValue(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function latestDateValue(values: unknown[]): string | null {
+  let latest: Date | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    const date = value instanceof Date ? value : new Date(String(value));
+    if (Number.isNaN(date.getTime())) continue;
+    if (!latest || date > latest) latest = date;
+  }
+  return latest ? latest.toISOString() : null;
+}
+
+// ─── Post-Construction Client Status ────────────────────────────────────────
+export async function getPostConstructionStatuses(
+  leadIds: number[],
+  tenantId?: number | null,
+): Promise<PostConstructionStatus[]> {
+  const uniqueIds = Array.from(new Set(leadIds.filter((id) => Number.isInteger(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+
+  const scopedIds = await visibleLeadIds(uniqueIds, tenantId);
+  if (scopedIds.length === 0) return [];
+
+  const placeholders = scopedIds.map(() => "?").join(",");
+  const tenantJobClause = tenantId ? " AND (cj.tenantId = ? OR cj.tenantId IS NULL)" : "";
+  const tenantPortalClause = tenantId ? " AND (pa.tenantId = ? OR pa.tenantId IS NULL)" : "";
+  const params: any[] = [];
+  if (tenantId) params.push(tenantId);
+  if (tenantId) params.push(tenantId);
+  params.push(...scopedIds);
+
+  const [rows] = await pool.execute(
+    `
+      SELECT
+        l.id AS leadId,
+        MAX(cj.id) AS constructionJobId,
+        MAX(cc.completionDate) AS crmCompletionDate,
+        MAX(cj.actualEnd) AS jobActualEnd,
+        MAX(cr.projectCompletedDate) AS reviewCompletedDate,
+        MAX(cv.maintenanceLetterSentDate) AS maintenanceLetterSentDate,
+        COUNT(DISTINCT cr.id) AS customerReviewCount,
+        COUNT(DISTINCT CASE WHEN pa.isActive = 1 THEN pa.id END) AS portalActiveCount,
+        COUNT(DISTINCT CASE WHEN cpc.status = 'active' THEN cpc.id END) AS cpcActiveCount,
+        COUNT(DISTINCT CASE WHEN pd.status <> 'resolved' THEN pd.id END) AS outstandingDefects,
+        MAX(ca.createdAt) AS crmLastActivityAt,
+        MAX(cla.createdAt) AS clientLastActivityAt,
+        MAX(l.updatedAt) AS leadUpdatedAt,
+        MAX(cj.updatedAt) AS jobUpdatedAt
+      FROM crm_leads l
+      LEFT JOIN crm_constructions cc ON cc.leadId = l.id
+      LEFT JOIN crm_verifications cv ON cv.leadId = l.id
+      LEFT JOIN crm_customer_reviews cr ON cr.leadId = l.id
+      LEFT JOIN construction_jobs cj ON cj.leadId = l.id${tenantJobClause}
+      LEFT JOIN portal_access pa ON pa.constructionJobId = cj.id${tenantPortalClause}
+      LEFT JOIN cpc_subscriptions cpc ON cpc.constructionJobId = cj.id
+      LEFT JOIN portal_defects pd ON pd.constructionJobId = cj.id
+      LEFT JOIN crm_activities ca ON ca.leadId = l.id
+      LEFT JOIN client_activities cla ON cla.leadId = l.id OR cla.jobId = cj.id
+      WHERE l.id IN (${placeholders})
+      GROUP BY l.id
+    `,
+    params,
+  );
+
+  return (rows as any[]).map((row) => {
+    const constructionCompleteDate =
+      serializeDateValue(row.crmCompletionDate) ||
+      serializeDateValue(row.jobActualEnd) ||
+      serializeDateValue(row.reviewCompletedDate);
+    const maintenanceLetterSentDate = serializeDateValue(row.maintenanceLetterSentDate);
+
+    return {
+      leadId: Number(row.leadId),
+      constructionJobId: row.constructionJobId ? Number(row.constructionJobId) : null,
+      constructionCompleteDate,
+      maintenanceLetterSent: Boolean(maintenanceLetterSentDate),
+      maintenanceLetterSentDate,
+      customerReviewReceived: Number(row.customerReviewCount || 0) > 0,
+      portalActive: Number(row.portalActiveCount || 0) > 0,
+      cpcSubscriptionActive: Number(row.cpcActiveCount || 0) > 0,
+      outstandingDefects: Number(row.outstandingDefects || 0),
+      lastActivityAt: latestDateValue([
+        row.crmLastActivityAt,
+        row.clientLastActivityAt,
+        row.jobUpdatedAt,
+        row.leadUpdatedAt,
+      ]),
+    };
+  });
 }
 
 

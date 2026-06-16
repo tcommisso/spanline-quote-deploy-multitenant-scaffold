@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Send, Trash2, Pin } from "lucide-react";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
+import { isAdminRole } from "@shared/const";
 
 interface QuoteNotesSectionProps {
   quoteId: number;
@@ -110,7 +111,7 @@ export default function QuoteNotesSection({ quoteId, quoteType }: QuoteNotesSect
                     >
                       <Pin className="h-3 w-3" />
                     </Button>
-                    {(user?.role === "admin" || user?.id === note.userId) && (
+                    {(isAdminRole(user?.role || "") || user?.id === note.userId) && (
                       <Button
                         variant="ghost"
                         size="sm"

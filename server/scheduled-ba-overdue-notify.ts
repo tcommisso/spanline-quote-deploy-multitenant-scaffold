@@ -5,7 +5,7 @@
  * Triggered by a Heartbeat cron job at /api/scheduled/ba-overdue-notify
  */
 import type { Express, Request, Response } from "express";
-import { sdk } from "./_core/sdk";
+import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { crmBuildingAuthority, globalSettings, constructionJobs } from "../drizzle/schema";
 import { eq, and, or, isNotNull } from "drizzle-orm";
@@ -16,11 +16,8 @@ export function registerScheduledBaOverdueNotify(app: Express) {
     const startTime = Date.now();
     try {
       // Authenticate the cron caller
-      const user = await sdk.authenticateRequest(req);
-      if (!(user as any).isCron && !(user as any).taskUid) {
-        if ((user as any).role !== "admin") {
-          return res.status(403).json({ error: "cron-only" });
-        }
+      if (!(await authenticateScheduledRequest(req))) {
+        return res.status(403).json({ error: "cron-only" });
       }
 
       const db = await getDb();

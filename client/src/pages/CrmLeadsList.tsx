@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useLocation } from "wouter";
-import { Search, Plus, Filter, X, Upload, FileSpreadsheet, CheckCircle2, Building2, UserPlus, Trash2, Archive, ArchiveRestore, GitMerge, Copy, ShieldCheck, MapPin } from "lucide-react";
+import { Search, Plus, Filter, X, Upload, FileSpreadsheet, CheckCircle2, Building2, UserPlus, Trash2, Archive, ArchiveRestore, GitMerge, Copy, ShieldCheck, MapPin, Bookmark, Save, UserCheck, Loader2 } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { BulkAssignAdvisorDialog } from "@/components/BulkAssignAdvisorDialog";
@@ -30,6 +30,7 @@ const STATUS_COLORS: Record<string, string> = {
   building_authority: "bg-teal-100 text-teal-800",
   construction: "bg-orange-100 text-orange-800",
   completed: "bg-emerald-100 text-emerald-800",
+  won: "bg-emerald-100 text-emerald-800",
   cancelled: "bg-red-100 text-red-800",
 };
 
@@ -42,6 +43,7 @@ const STATUS_LABELS: Record<string, string> = {
   building_authority: "Approvals",
   construction: "Construction",
   completed: "Completed",
+  won: "Won / Client",
   cancelled: "Cancelled",
 };
 
@@ -54,6 +56,128 @@ const FALLBACK_LEAD_SOURCES = [
   "Website", "Phone", "Referral", "Display Home", "Home Show",
   "Social Media", "Print Ad", "Door Knock", "Repeat Client", "Other"
 ];
+
+type BranchFilterValue = number | "unassigned" | undefined;
+
+type LeadFilterSnapshot = {
+  leadView: LeadViewMode;
+  search: string;
+  statusFilter: string;
+  productFilter: string;
+  sourceFilter: string;
+  advisorFilter: string;
+  branchFilter: number | "unassigned" | null;
+  baStatusFilter: string;
+  showArchived: boolean;
+  showAllLeads: boolean;
+  showDuplicatesOnly: boolean;
+  sortBy: string;
+  sortDir: "asc" | "desc";
+};
+
+type LeadFilterPreset = {
+  id: string;
+  name: string;
+  filters: LeadFilterSnapshot;
+};
+
+type LeadViewMode = "pipeline" | "clients" | "all";
+
+type PostConstructionStatus = {
+  leadId: number;
+  constructionJobId: number | null;
+  constructionCompleteDate: string | null;
+  maintenanceLetterSent: boolean;
+  maintenanceLetterSentDate: string | null;
+  customerReviewReceived: boolean;
+  portalActive: boolean;
+  cpcSubscriptionActive: boolean;
+  outstandingDefects: number;
+  lastActivityAt: string | null;
+};
+
+function formatShortDate(value?: string | null) {
+  if (!value) return "Missing";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("en-AU");
+}
+
+function StatusChip({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "ok" | "warning" | "neutral";
+}) {
+  const toneClass =
+    tone === "ok"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
+      : tone === "warning"
+        ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300"
+        : "border-muted bg-muted/30 text-muted-foreground";
+
+  return (
+    <span className={`inline-flex min-h-7 items-center gap-1 rounded-md border px-2 py-1 text-[11px] leading-tight ${toneClass}`}>
+      <span className="font-medium text-foreground/80">{label}</span>
+      <span>{value}</span>
+    </span>
+  );
+}
+
+function PostConstructionQuickStatus({ status }: { status?: PostConstructionStatus }) {
+  if (!status) {
+    return (
+      <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+        Loading post-construction status...
+      </div>
+    );
+  }
+
+  const hasDefects = status.outstandingDefects > 0;
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <StatusChip
+        label="Complete"
+        value={formatShortDate(status.constructionCompleteDate)}
+        tone={status.constructionCompleteDate ? "ok" : "neutral"}
+      />
+      <StatusChip
+        label="Maintenance"
+        value={status.maintenanceLetterSent ? `Sent ${formatShortDate(status.maintenanceLetterSentDate)}` : "Not sent"}
+        tone={status.maintenanceLetterSent ? "ok" : "neutral"}
+      />
+      <StatusChip
+        label="Review"
+        value={status.customerReviewReceived ? "Received" : "Missing"}
+        tone={status.customerReviewReceived ? "ok" : "neutral"}
+      />
+      <StatusChip
+        label="Portal"
+        value={status.portalActive ? "Active" : "Inactive"}
+        tone={status.portalActive ? "ok" : "neutral"}
+      />
+      <StatusChip
+        label="CPC"
+        value={status.cpcSubscriptionActive ? "Subscribed" : "None"}
+        tone={status.cpcSubscriptionActive ? "ok" : "neutral"}
+      />
+      <StatusChip
+        label="Defects"
+        value={hasDefects ? `${status.outstandingDefects} outstanding` : "Clear"}
+        tone={hasDefects ? "warning" : "ok"}
+      />
+      <StatusChip
+        label="Last activity"
+        value={formatShortDate(status.lastActivityAt)}
+        tone="neutral"
+      />
+    </div>
+  );
+}
 
 export default function CrmLeadsList() {
   const [, navigate] = useLocation();
@@ -68,16 +192,29 @@ export default function CrmLeadsList() {
   const LEAD_SOURCES = leadSources.length > 0 ? leadSources : FALLBACK_LEAD_SOURCES;
   // Build dynamic STATUS_LABELS from fetched options
   const dynamicStatusLabels = statusOptions.reduce<Record<string, string>>((acc, o) => { acc[o.value] = o.label; return acc; }, {});
-  const EFFECTIVE_STATUS_LABELS = Object.keys(dynamicStatusLabels).length > 0 ? dynamicStatusLabels : STATUS_LABELS;
+  const EFFECTIVE_STATUS_LABELS = { ...STATUS_LABELS, ...dynamicStatusLabels };
+  const [leadView, setLeadView] = useState<LeadViewMode>("pipeline");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [productFilter, setProductFilter] = useState<string>("");
   const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [advisorFilter, setAdvisorFilter] = useState<string>("");
   const [showFilters, setShowFilters] = useState(false);
-  const [branchFilter, setBranchFilter] = useState<number | "unassigned" | undefined>(undefined);
+  const [branchFilter, setBranchFilter] = useState<BranchFilterValue>(undefined);
   const [baStatusFilter, setBaStatusFilter] = useState<string>("");
   const [page, setPage] = useState(0);
   const pageSize = 25;
+  const [displayedLeads, setDisplayedLeads] = useState<any[]>([]);
+  const [totalLeads, setTotalLeads] = useState(0);
+  const [loadedUnassignedCount, setLoadedUnassignedCount] = useState(0);
+  const [auxQueriesEnabled, setAuxQueriesEnabled] = useState(false);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreGuardRef = useRef(false);
+  const presetStorageKey = `crm-lead-filter-presets:${user?.id ?? user?.openId ?? "local"}`;
+  const [filterPresets, setFilterPresets] = useState<LeadFilterPreset[]>([]);
+  const [presetSelectValue, setPresetSelectValue] = useState("placeholder");
+  const [showSavePreset, setShowSavePreset] = useState(false);
+  const [presetName, setPresetName] = useState("");
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -90,14 +227,22 @@ export default function CrmLeadsList() {
   const [sortBy, setSortBy] = useState<string>("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
+  const resetLeadList = () => {
+    setPage(0);
+    setDisplayedLeads([]);
+    setTotalLeads(0);
+    setAuxQueriesEnabled(false);
+    loadMoreGuardRef.current = false;
+  };
+
   const handleSort = (col: string) => {
     if (sortBy === col) {
       setSortDir(sortDir === "asc" ? "desc" : "asc");
     } else {
       setSortBy(col);
-      setSortDir(col === "createdAt" ? "desc" : "asc");
+      setSortDir(col === "createdAt" || col === "sourceCreatedAt" ? "desc" : "asc");
     }
-    setPage(0);
+    resetLeadList();
   };
 
   const SortIcon = ({ col }: { col: string }) => {
@@ -105,30 +250,95 @@ export default function CrmLeadsList() {
     return <span className="ml-1">{sortDir === "asc" ? "↑" : "↓"}</span>;
   };
 
+  const getLeadSourceCreatedAt = (lead: any) => lead.sourceCreatedAt || lead.createdAt;
+
   const { data: branchesList } = trpc.branches.list.useQuery();
+  const { data: advisorsList } = trpc.designAdvisors.list.useQuery({});
+  const activeAdvisors = useMemo(
+    () => (advisorsList || []).filter((advisor: any) => !advisor.archived && advisor.role === "design_adviser"),
+    [advisorsList]
+  );
 
   const { data, isLoading, isFetching } = trpc.crm.leads.list.useQuery({
+    lifecycleView: leadView,
     search: search || undefined,
     status: statusFilter || undefined,
     productType: productFilter || undefined,
     leadSource: sourceFilter || undefined,
+    designAdvisor: advisorFilter || undefined,
     branchId: branchFilter,
     baStatus: baStatusFilter || undefined,
     showArchived: showArchived || undefined,
-    showAll: showAllLeads || undefined,
+    showAll: showAllLeads || leadView !== "pipeline" || undefined,
     limit: pageSize,
     offset: page * pageSize,
     sortBy,
     sortDir,
-  }, {
-    placeholderData: (prev) => prev, // keep previous data while fetching next page
   });
 
-  const hasFilters = statusFilter || productFilter || sourceFilter || branchFilter || baStatusFilter;
-  const unassignedCount = data?.unassignedCount ?? 0;
+  useEffect(() => {
+    if (!data) return;
+
+    setTotalLeads(data.total ?? 0);
+    setLoadedUnassignedCount(data.unassignedCount ?? 0);
+    setDisplayedLeads((prev) => {
+      const pageLeads = data.leads || [];
+      if (page === 0) return pageLeads;
+
+      const seen = new Set(prev.map((lead: any) => lead.id));
+      const next = [...prev];
+      for (const lead of pageLeads) {
+        if (!seen.has(lead.id)) next.push(lead);
+      }
+      return next;
+    });
+  }, [data, page]);
+
+  useEffect(() => {
+    if (isFetching) return;
+    loadMoreGuardRef.current = false;
+  }, [isFetching]);
+
+  useEffect(() => {
+    if (isLoading || displayedLeads.length === 0 || auxQueriesEnabled) return;
+    const timer = window.setTimeout(() => setAuxQueriesEnabled(true), 800);
+    return () => window.clearTimeout(timer);
+  }, [isLoading, displayedLeads.length, auxQueriesEnabled]);
+
+  const hasMoreLeads = displayedLeads.length < totalLeads;
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || !hasMoreLeads) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting || isFetching || loadMoreGuardRef.current) return;
+      loadMoreGuardRef.current = true;
+      setPage((current) => current + 1);
+    }, { rootMargin: "420px" });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMoreLeads, isFetching]);
+
+  const hasFilters = statusFilter || productFilter || sourceFilter || advisorFilter || branchFilter || baStatusFilter || showDuplicatesOnly;
+  const unassignedCount = loadedUnassignedCount;
+
+  // Duplicate IDs for badge display. Deferred so the main leads list paints first.
+  const { data: duplicateIds } = trpc.crm.leads.getDuplicateIds.useQuery(undefined, {
+    enabled: auxQueriesEnabled,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const duplicateIdSet = useMemo(() => new Set(duplicateIds || []), [duplicateIds]);
+
+  const visibleLeads = useMemo(
+    () => showDuplicatesOnly ? displayedLeads.filter((lead: any) => duplicateIdSet.has(lead.id)) : displayedLeads,
+    [displayedLeads, duplicateIdSet, showDuplicatesOnly]
+  );
 
   // Fetch Approval statuses for listed leads
-  const leadIds = data?.leads?.map((l: any) => l.id) || [];
+  const leadIds = useMemo(() => visibleLeads.map((l: any) => l.id), [visibleLeads]);
   const { data: baStatuses } = trpc.crm.buildingAuthority.batchStatuses.useQuery(
     { leadIds },
     { enabled: leadIds.length > 0 }
@@ -143,15 +353,30 @@ export default function CrmLeadsList() {
     return map;
   }, [baStatuses]);
 
+  const { data: postConstructionStatuses } = trpc.crm.leads.postConstructionStatuses.useQuery(
+    { leadIds },
+    { enabled: leadView === "clients" && leadIds.length > 0 }
+  );
+  const postConstructionStatusMap = useMemo(() => {
+    const map: Record<number, PostConstructionStatus> = {};
+    for (const status of postConstructionStatuses || []) {
+      map[status.leadId] = status;
+    }
+    return map;
+  }, [postConstructionStatuses]);
+
   // Fetch all matching IDs when "select all matching" is triggered
   const { data: allMatchingIds, refetch: fetchAllMatchingIds } = trpc.crm.leads.listIds.useQuery(
     {
+      lifecycleView: leadView,
       search: search || undefined,
       status: statusFilter || undefined,
       productType: productFilter || undefined,
       leadSource: sourceFilter || undefined,
+      designAdvisor: advisorFilter || undefined,
       branchId: branchFilter,
       baStatus: baStatusFilter || undefined,
+      showArchived: showArchived || undefined,
     },
     { enabled: false } // only fetch on demand
   );
@@ -243,14 +468,9 @@ export default function CrmLeadsList() {
     },
   });
 
-  // Duplicate IDs for badge display
-    const { data: duplicateIds } = trpc.crm.leads.getDuplicateIds.useQuery(undefined, {
-    staleTime: 5 * 60_000, // cache for 5 minutes — expensive self-join on 7k+ rows
-    refetchOnWindowFocus: false,
-  });
-  const duplicateIdSet = useMemo(() => new Set(duplicateIds || []), [duplicateIds]);
   // Stale leads (follow-up overdue)
   const { data: staleLeads } = trpc.crm.leads.getStaleIds.useQuery(undefined, {
+    enabled: auxQueriesEnabled,
     staleTime: 5 * 60_000, // cache for 5 minutes — correlated subquery on activities
     refetchOnWindowFocus: false,
   });
@@ -259,6 +479,93 @@ export default function CrmLeadsList() {
     (staleLeads || []).forEach(s => m.set(s.id, s.daysSinceActivity));
     return m;
   }, [staleLeads]);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(presetStorageKey);
+      setFilterPresets(stored ? JSON.parse(stored) : []);
+    } catch {
+      setFilterPresets([]);
+    }
+  }, [presetStorageKey]);
+
+  const getCurrentFilterSnapshot = (): LeadFilterSnapshot => ({
+    leadView,
+    search,
+    statusFilter,
+    productFilter,
+    sourceFilter,
+    advisorFilter,
+    branchFilter: branchFilter ?? null,
+    baStatusFilter,
+    showArchived,
+    showAllLeads,
+    showDuplicatesOnly,
+    sortBy,
+    sortDir,
+  });
+
+  const persistFilterPresets = (nextPresets: LeadFilterPreset[]) => {
+    setFilterPresets(nextPresets);
+    localStorage.setItem(presetStorageKey, JSON.stringify(nextPresets));
+  };
+
+  const applyFilterSnapshot = (filters: LeadFilterSnapshot) => {
+    setLeadView(filters.leadView || "pipeline");
+    setSearch(filters.search || "");
+    setStatusFilter(filters.statusFilter || "");
+    setProductFilter(filters.productFilter || "");
+    setSourceFilter(filters.sourceFilter || "");
+    setAdvisorFilter(filters.advisorFilter || "");
+    setBranchFilter(filters.branchFilter ?? undefined);
+    setBaStatusFilter(filters.baStatusFilter || "");
+    setShowArchived(!!filters.showArchived);
+    setShowAllLeads(!!filters.showAllLeads);
+    setShowDuplicatesOnly(!!filters.showDuplicatesOnly);
+    setSortBy(filters.sortBy || "createdAt");
+    setSortDir(filters.sortDir || "desc");
+    setShowFilters(true);
+    setSelectedIds(new Set());
+    setSelectAllMatchingMode(false);
+    resetLeadList();
+  };
+
+  const handleSavePreset = () => {
+    const name = presetName.trim();
+    if (!name) {
+      toast.error("Enter a preset name");
+      return;
+    }
+
+    const existing = filterPresets.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+    const nextPreset: LeadFilterPreset = {
+      id: existing?.id || String(Date.now()),
+      name,
+      filters: getCurrentFilterSnapshot(),
+    };
+    const nextPresets = existing
+      ? filterPresets.map((preset) => preset.id === existing.id ? nextPreset : preset)
+      : [...filterPresets, nextPreset];
+
+    persistFilterPresets(nextPresets);
+    setPresetName("");
+    setShowSavePreset(false);
+    toast.success(existing ? "Filter preset updated" : "Filter preset saved");
+  };
+
+  const handleDeletePreset = (presetId: string) => {
+    persistFilterPresets(filterPresets.filter((preset) => preset.id !== presetId));
+  };
+
+  const applyMyLeadsFilter = () => {
+    if (!user?.name) {
+      toast.error("Your user profile does not have a name to match against advisors");
+      return;
+    }
+    setAdvisorFilter(user.name);
+    setShowFilters(true);
+    resetLeadList();
+  };
 
   // CSV Import state
   const [showImport, setShowImport] = useState(false);
@@ -288,6 +595,7 @@ export default function CrmLeadsList() {
     { value: "contactPhone", label: "Phone" },
     { value: "contactEmail", label: "Email" },
     { value: "contactAddress", label: "Address" },
+    { value: "clientNumber", label: "Client Number" },
     { value: "productType", label: "Product Type" },
     { value: "leadSource", label: "Lead Source" },
     { value: "designAdvisor", label: "Design Advisor" },
@@ -324,6 +632,7 @@ export default function CrmLeadsList() {
         else if (lower.includes("phone") || lower.includes("mobile")) autoMap[h] = "contactPhone";
         else if (lower.includes("email")) autoMap[h] = "contactEmail";
         else if (lower.includes("address") || lower.includes("street")) autoMap[h] = "contactAddress";
+        else if ((lower.includes("client") && lower.includes("number")) || (lower.includes("account") && lower.includes("number"))) autoMap[h] = "clientNumber";
         else if (lower.includes("product")) autoMap[h] = "productType";
         else if (lower.includes("source")) autoMap[h] = "leadSource";
         else if (lower.includes("advisor") || lower.includes("adviser")) autoMap[h] = "designAdvisor";
@@ -365,7 +674,7 @@ export default function CrmLeadsList() {
   };
 
   // Selection helpers
-  const currentPageIds = useMemo(() => (data?.leads || []).map(l => l.id), [data?.leads]);
+  const currentPageIds = useMemo(() => visibleLeads.map((lead: any) => lead.id), [visibleLeads]);
   const allOnPageSelected = currentPageIds.length > 0 && currentPageIds.every(id => selectedIds.has(id));
   const someOnPageSelected = currentPageIds.some(id => selectedIds.has(id));
 
@@ -428,10 +737,19 @@ export default function CrmLeadsList() {
         <div>
           <h1 className="text-2xl font-bold">Leads</h1>
           <p className="text-muted-foreground text-sm">
-            {data?.total || 0} total leads
+            {totalLeads} total leads
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            variant={advisorFilter && user?.name && advisorFilter === user.name ? "secondary" : "outline"}
+            size="sm"
+            onClick={applyMyLeadsFilter}
+            disabled={!user?.name}
+            title="Show leads assigned to your user name"
+          >
+            <UserCheck className="h-4 w-4 mr-1" /> My Leads
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setShowBulkAssign(true)}>
             <UserPlus className="h-4 w-4 mr-1" /> <span className="hidden sm:inline">Bulk </span>Assign
           </Button>
@@ -444,6 +762,31 @@ export default function CrmLeadsList() {
         </div>
       </div>
 
+      <div className="inline-flex rounded-md border bg-background p-1">
+        {[
+          { value: "pipeline" as const, label: "Pipeline" },
+          { value: "clients" as const, label: "Clients" },
+          { value: "all" as const, label: "All" },
+        ].map((view) => (
+          <Button
+            key={view.value}
+            type="button"
+            size="sm"
+            variant={leadView === view.value ? "secondary" : "ghost"}
+            className="h-8 px-3"
+            onClick={() => {
+              if (leadView === view.value) return;
+              setLeadView(view.value);
+              setSelectedIds(new Set());
+              setSelectAllMatchingMode(false);
+              resetLeadList();
+            }}
+          >
+            {view.label}
+          </Button>
+        ))}
+      </div>
+
       {/* Selection toolbar */}
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-2">
@@ -452,14 +795,14 @@ export default function CrmLeadsList() {
             {selectAllMatchingMode && " (all matching)"}
           </span>
           {/* Show "Select all X matching" when all on page are selected but there are more */}
-          {allOnPageSelected && !selectAllMatchingMode && data && data.total > pageSize && isAdmin && (
+          {allOnPageSelected && !selectAllMatchingMode && totalLeads > visibleLeads.length && isAdmin && (
             <Button
               variant="link"
               size="sm"
               className="text-blue-600 dark:text-blue-400 p-0 h-auto"
               onClick={handleSelectAllMatching}
             >
-              Select all {data.total} matching leads
+              Select all {totalLeads} matching leads
             </Button>
           )}
           <div className="flex-1" />
@@ -537,10 +880,34 @@ export default function CrmLeadsList() {
           <Input
             placeholder="Search leads..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            onChange={(e) => { setSearch(e.target.value); resetLeadList(); }}
             className="pl-9"
           />
         </div>
+        <Select
+          value={presetSelectValue}
+          onValueChange={(presetId) => {
+            const preset = filterPresets.find((item) => item.id === presetId);
+            if (preset) applyFilterSnapshot(preset.filters);
+            setPresetSelectValue("placeholder");
+          }}
+        >
+          <SelectTrigger className="w-[180px]">
+            <Bookmark className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+            <SelectValue placeholder="Saved presets" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="placeholder" disabled>Saved presets</SelectItem>
+            {filterPresets.length === 0 ? (
+              <SelectItem value="none" disabled>No saved presets</SelectItem>
+            ) : filterPresets.map((preset) => (
+              <SelectItem key={preset.id} value={preset.id}>{preset.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="sm" onClick={() => { setPresetName(""); setShowSavePreset(true); }}>
+          <Save className="h-4 w-4 mr-1" /> Save Preset
+        </Button>
         <Button
           variant={showFilters ? "secondary" : "outline"}
           size="sm"
@@ -550,14 +917,14 @@ export default function CrmLeadsList() {
           {hasFilters && <span className="ml-1 bg-primary text-primary-foreground rounded-full w-4 h-4 text-xs flex items-center justify-center">!</span>}
         </Button>
         {hasFilters && (
-          <Button variant="ghost" size="sm" onClick={() => { setStatusFilter(""); setProductFilter(""); setSourceFilter(""); setBranchFilter(undefined); setPage(0); }}>
+          <Button variant="ghost" size="sm" onClick={() => { setStatusFilter(""); setProductFilter(""); setSourceFilter(""); setAdvisorFilter(""); setBranchFilter(undefined); setBaStatusFilter(""); setShowDuplicatesOnly(false); resetLeadList(); }}>
             <X className="h-4 w-4 mr-1" /> Clear
           </Button>
         )}
         <Button
           variant={showAllLeads ? "secondary" : "ghost"}
           size="sm"
-          onClick={() => { setShowAllLeads(!showAllLeads); setPage(0); }}
+          onClick={() => { setShowAllLeads(!showAllLeads); resetLeadList(); }}
           title="By default only active leads from the past 3 months are shown"
         >
           <Filter className="h-4 w-4 mr-1" />
@@ -566,7 +933,7 @@ export default function CrmLeadsList() {
         <Button
           variant={showDuplicatesOnly ? "secondary" : "ghost"}
           size="sm"
-          onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); setPage(0); }}
+          onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); resetLeadList(); }}
         >
           <Copy className="h-4 w-4 mr-1" />
           {showDuplicatesOnly ? "Showing duplicates" : "Duplicates only"}
@@ -575,7 +942,7 @@ export default function CrmLeadsList() {
           <Button
             variant={showArchived ? "secondary" : "ghost"}
             size="sm"
-            onClick={() => { setShowArchived(!showArchived); setPage(0); setSelectedIds(new Set()); setSelectAllMatchingMode(false); }}
+            onClick={() => { setShowArchived(!showArchived); resetLeadList(); setSelectedIds(new Set()); setSelectAllMatchingMode(false); }}
             className="ml-auto"
           >
             <Archive className="h-4 w-4 mr-1" />
@@ -590,7 +957,7 @@ export default function CrmLeadsList() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">Status</label>
-                <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v === "all" ? "" : v); setPage(0); }}>
+                <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v === "all" ? "" : v); resetLeadList(); }}>
                   <SelectTrigger><SelectValue placeholder="All statuses" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
@@ -602,7 +969,7 @@ export default function CrmLeadsList() {
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">Product Type</label>
-                <Select value={productFilter} onValueChange={(v) => { setProductFilter(v === "all" ? "" : v); setPage(0); }}>
+                <Select value={productFilter} onValueChange={(v) => { setProductFilter(v === "all" ? "" : v); resetLeadList(); }}>
                   <SelectTrigger><SelectValue placeholder="All products" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All products</SelectItem>
@@ -614,7 +981,7 @@ export default function CrmLeadsList() {
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">Lead Source</label>
-                <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v === "all" ? "" : v); setPage(0); }}>
+                <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v === "all" ? "" : v); resetLeadList(); }}>
                   <SelectTrigger><SelectValue placeholder="All sources" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All sources</SelectItem>
@@ -624,10 +991,31 @@ export default function CrmLeadsList() {
                   </SelectContent>
                 </Select>
               </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Advisor</label>
+                <Select value={advisorFilter || "all"} onValueChange={(v) => { setAdvisorFilter(v === "all" ? "" : v); resetLeadList(); }}>
+                  <SelectTrigger>
+                    <UserCheck className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+                    <SelectValue placeholder="All advisors" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All advisors</SelectItem>
+                    <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                    {user?.name && (
+                      <SelectItem value={user.name}>My Leads ({user.name})</SelectItem>
+                    )}
+                    {activeAdvisors
+                      .filter((advisor: any) => advisor.name && advisor.name !== user?.name)
+                      .map((advisor: any) => (
+                        <SelectItem key={advisor.id} value={advisor.name}>{advisor.name}</SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
               {branchesList && branchesList.length > 0 && (
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Branch</label>
-                  <Select value={branchFilter ? String(branchFilter) : "all"} onValueChange={(v) => { setBranchFilter(v === "all" ? undefined : v === "unassigned" ? "unassigned" as const : parseInt(v)); setPage(0); }}>
+                  <Select value={branchFilter ? String(branchFilter) : "all"} onValueChange={(v) => { setBranchFilter(v === "all" ? undefined : v === "unassigned" ? "unassigned" as const : parseInt(v)); resetLeadList(); }}>
                     <SelectTrigger>
                       <Building2 className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
                       <SelectValue placeholder="All branches" />
@@ -646,7 +1034,7 @@ export default function CrmLeadsList() {
               )}
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1 block">Approval Status</label>
-                <Select value={baStatusFilter} onValueChange={(v) => { setBaStatusFilter(v === "all" ? "" : v); setPage(0); }}>
+                <Select value={baStatusFilter} onValueChange={(v) => { setBaStatusFilter(v === "all" ? "" : v); resetLeadList(); }}>
                   <SelectTrigger><SelectValue placeholder="All Approval statuses" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Approval statuses</SelectItem>
@@ -668,9 +1056,9 @@ export default function CrmLeadsList() {
       {/* Leads Table */}
       <Card>
         <CardContent className="p-0">
-          {isLoading ? (
+          {isLoading && displayedLeads.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">Loading leads...</div>
-          ) : !data?.leads || data.leads.length === 0 ? (
+          ) : visibleLeads.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground">
               No leads found. {search || hasFilters ? "Try adjusting your filters." : "Create your first lead to get started."}
             </div>
@@ -678,35 +1066,157 @@ export default function CrmLeadsList() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b bg-muted/30">
-                    {isAdmin && (
-                      <th className="py-3 px-3 w-10">
-                        <Checkbox
-                          checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
-                          onCheckedChange={toggleSelectAll}
-                          aria-label="Select all on page"
-                        />
-                      </th>
-                    )}
-                    <th className="text-left py-3 px-3 font-medium whitespace-nowrap cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("leadNumber")}>Lead #<SortIcon col="leadNumber" /></th>
-                    <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactFirstName")}>Contact<SortIcon col="contactFirstName" /></th>
-                    <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactPhone")}>Phone<SortIcon col="contactPhone" /></th>
-                    <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Product</th>
-                    <th className="text-left py-3 px-3 font-medium hidden lg:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("leadSource")}>Source<SortIcon col="leadSource" /></th>
-                    <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("status")}>Status<SortIcon col="status" /></th>
-                    <th className="text-left py-3 px-3 font-medium hidden xl:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("designAdvisor")}>Advisor<SortIcon col="designAdvisor" /></th>
-                    <th className="text-left py-3 px-3 font-medium hidden xl:table-cell">Branch</th>
-                    <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">BA</th>
-                    <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Lead Date</th>
-                    <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("createdAt")}>Age<SortIcon col="createdAt" /></th>
-                    <th className="text-left py-3 px-3 font-medium hidden xl:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("createdAt")}>Created<SortIcon col="createdAt" /></th>
-                    {showArchived && isAdmin && <th className="py-3 px-3 w-10"></th>}
-                  </tr>
+                  {leadView === "clients" ? (
+                    <tr className="border-b bg-muted/30">
+                      {isAdmin && (
+                        <th className="py-3 px-3 w-10">
+                          <Checkbox
+                            checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
+                            onCheckedChange={toggleSelectAll}
+                            aria-label="Select all on page"
+                          />
+                        </th>
+                      )}
+                      <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactFirstName")}>Name<SortIcon col="contactFirstName" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactPhone")}>Phone<SortIcon col="contactPhone" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Email</th>
+                      <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("status")}>Construction Status<SortIcon col="status" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Last Activity</th>
+                      <th className="text-left py-3 px-3 font-medium">Review</th>
+                      <th className="text-left py-3 px-3 font-medium">Portal</th>
+                      <th className="text-left py-3 px-3 font-medium">Maintenance</th>
+                      {showArchived && isAdmin && <th className="py-3 px-3 w-10"></th>}
+                    </tr>
+                  ) : (
+                    <tr className="border-b bg-muted/30">
+                      {isAdmin && (
+                        <th className="py-3 px-3 w-10">
+                          <Checkbox
+                            checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
+                            onCheckedChange={toggleSelectAll}
+                            aria-label="Select all on page"
+                          />
+                        </th>
+                      )}
+                      <th className="text-left py-3 px-3 font-medium whitespace-nowrap cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("leadNumber")}>Lead #<SortIcon col="leadNumber" /></th>
+                      <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactFirstName")}>Contact<SortIcon col="contactFirstName" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("contactPhone")}>Phone<SortIcon col="contactPhone" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Product</th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("leadSource")}>Source<SortIcon col="leadSource" /></th>
+                      <th className="text-left py-3 px-3 font-medium cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("status")}>Status<SortIcon col="status" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden xl:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("designAdvisor")}>Advisor<SortIcon col="designAdvisor" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden xl:table-cell">Branch</th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">BA</th>
+                      <th className="text-left py-3 px-3 font-medium hidden lg:table-cell">Lead Date</th>
+                      <th className="text-left py-3 px-3 font-medium hidden md:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("sourceCreatedAt")}>Age<SortIcon col="sourceCreatedAt" /></th>
+                      <th className="text-left py-3 px-3 font-medium hidden xl:table-cell cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("sourceCreatedAt")}>Created<SortIcon col="sourceCreatedAt" /></th>
+                      {showArchived && isAdmin && <th className="py-3 px-3 w-10"></th>}
+                    </tr>
+                  )}
                 </thead>
                 <tbody>
-                  {(showDuplicatesOnly ? data.leads.filter(l => duplicateIdSet.has(l.id)) : data.leads).map((lead) => (
+                  {visibleLeads.map((lead) => (
+                    <Fragment key={lead.id}>
+                    {leadView === "clients" ? (
+                      <>
+                      <tr
+                        className={`hover:bg-muted/50 cursor-pointer transition-colors ${selectedIds.has(lead.id) ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}`}
+                        onClick={() => navigate(`/crm/leads/${lead.id}`)}
+                      >
+                        {isAdmin && (
+                          <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              checked={selectedIds.has(lead.id)}
+                              onCheckedChange={() => toggleSelect(lead.id)}
+                              aria-label={`Select lead ${lead.leadNumber}`}
+                            />
+                          </td>
+                        )}
+                        <td className="py-3 px-3">
+                          <div className="font-medium">{lead.contactFirstName} {lead.contactLastName}</div>
+                          <div className="text-xs text-muted-foreground font-mono">{lead.leadNumber}</div>
+                          <div className="text-xs text-muted-foreground md:hidden">{lead.contactPhone || "No phone"}</div>
+                          <div className="text-xs text-muted-foreground lg:hidden">{lead.contactEmail || "No email"}</div>
+                        </td>
+                        <td className="py-3 px-3 text-muted-foreground hidden md:table-cell">{lead.contactPhone || "—"}</td>
+                        <td className="py-3 px-3 text-muted-foreground hidden lg:table-cell">{lead.contactEmail || "—"}</td>
+                        {(() => {
+                          const status = postConstructionStatusMap[lead.id];
+                          const hasDefects = (status?.outstandingDefects || 0) > 0;
+                          return (
+                            <>
+                              <td className="py-3 px-3">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Badge className={`text-xs ${STATUS_COLORS[lead.status] || ""}`}>
+                                    {EFFECTIVE_STATUS_LABELS[lead.status] || lead.status}
+                                  </Badge>
+                                  {hasDefects && (
+                                    <Badge variant="outline" className="text-[10px] border-red-300 text-red-700 dark:border-red-800 dark:text-red-300">
+                                      {status!.outstandingDefects} defect{status!.outstandingDefects === 1 ? "" : "s"}
+                                    </Badge>
+                                  )}
+                                  {status?.cpcSubscriptionActive && (
+                                    <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                                      CPC
+                                    </Badge>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  Complete: {status ? formatShortDate(status.constructionCompleteDate) : "Loading..."}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3 text-xs text-muted-foreground hidden lg:table-cell">
+                                {status ? formatShortDate(status.lastActivityAt) : "Loading..."}
+                              </td>
+                              <td className="py-3 px-3">
+                                <Badge variant="outline" className={`text-[10px] ${status?.customerReviewReceived ? "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300" : "border-muted text-muted-foreground"}`}>
+                                  {status?.customerReviewReceived ? "Received" : status ? "Missing" : "Loading"}
+                                </Badge>
+                              </td>
+                              <td className="py-3 px-3">
+                                <div className="flex flex-col gap-1">
+                                  <Badge variant="outline" className={`w-fit text-[10px] ${status?.portalActive ? "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300" : "border-muted text-muted-foreground"}`}>
+                                    {status?.portalActive ? "Active" : status ? "Inactive" : "Loading"}
+                                  </Badge>
+                                  {status?.cpcSubscriptionActive && (
+                                    <span className="text-[10px] text-emerald-700 dark:text-emerald-300">CPC subscribed</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-3 px-3">
+                                <Badge variant="outline" className={`text-[10px] ${status?.maintenanceLetterSent ? "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300" : "border-muted text-muted-foreground"}`}>
+                                  {status?.maintenanceLetterSent ? `Sent ${formatShortDate(status.maintenanceLetterSentDate)}` : status ? "Not sent" : "Loading"}
+                                </Badge>
+                              </td>
+                            </>
+                          );
+                        })()}
+                        {showArchived && isAdmin && (
+                          <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => unarchiveMut.mutate({ id: lead.id })}
+                              disabled={unarchiveMut.isPending}
+                              title="Restore from archive"
+                            >
+                              <ArchiveRestore className="h-4 w-4" />
+                            </Button>
+                          </td>
+                        )}
+                      </tr>
+                      <tr className="border-b bg-muted/10">
+                        <td
+                          colSpan={8 + (isAdmin ? 1 : 0) + (showArchived && isAdmin ? 1 : 0)}
+                          className="px-3 pb-3 pt-0"
+                        >
+                          <PostConstructionQuickStatus status={postConstructionStatusMap[lead.id]} />
+                        </td>
+                      </tr>
+                      </>
+                    ) : (
+                      <>
                     <tr
-                      key={lead.id}
                       className={`border-b hover:bg-muted/50 cursor-pointer transition-colors ${selectedIds.has(lead.id) ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}`}
                       onClick={() => navigate(`/crm/leads/${lead.id}`)}
                     >
@@ -771,13 +1281,14 @@ export default function CrmLeadsList() {
                       </td>
                       <td className="py-3 px-3 text-xs font-medium hidden md:table-cell">
                         {(() => {
-                          const days = Math.floor((Date.now() - new Date(lead.createdAt).getTime()) / 86400000);
+                          const createdAt = getLeadSourceCreatedAt(lead);
+                          const days = createdAt ? Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000) : 0;
                           const color = days <= 7 ? "text-green-600 dark:text-green-400" : days <= 21 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400";
                           return <span className={color}>{days}d</span>;
                         })()}
                       </td>
                       <td className="py-3 px-3 text-xs text-muted-foreground hidden xl:table-cell">
-                        {lead.createdAt ? new Date(lead.createdAt).toLocaleDateString() : "—"}
+                        {getLeadSourceCreatedAt(lead) ? new Date(getLeadSourceCreatedAt(lead)).toLocaleDateString("en-AU") : "—"}
                       </td>
                       {showArchived && isAdmin && (
                         <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
@@ -793,6 +1304,9 @@ export default function CrmLeadsList() {
                         </td>
                       )}
                     </tr>
+                    </>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -801,23 +1315,77 @@ export default function CrmLeadsList() {
         </CardContent>
       </Card>
 
-      {/* Pagination */}
-      {data && data.total > pageSize && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, data.total)} of {data.total}
-            {isFetching && !isLoading && <span className="ml-2 text-xs text-muted-foreground/60 animate-pulse">Loading…</span>}
-          </p>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page === 0 || isFetching} onClick={() => setPage(p => p - 1)}>
-              Previous
-            </Button>
-            <Button variant="outline" size="sm" disabled={(page + 1) * pageSize >= data.total || isFetching} onClick={() => setPage(p => p + 1)}>
-              Next
-            </Button>
-          </div>
+      {/* Infinite scroll status */}
+      {totalLeads > 0 && (
+        <div ref={loadMoreRef} className="flex items-center justify-center py-4 text-sm text-muted-foreground">
+          {isFetching && displayedLeads.length > 0 ? (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading more leads...
+            </span>
+          ) : hasMoreLeads ? (
+            <span>Showing {displayedLeads.length} of {totalLeads}</span>
+          ) : (
+            <span>Showing all {totalLeads} lead{totalLeads === 1 ? "" : "s"}</span>
+          )}
         </div>
       )}
+
+      {/* Saved Filter Presets */}
+      <Dialog open={showSavePreset} onOpenChange={setShowSavePreset}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bookmark className="h-5 w-5" />
+              Save Filter Preset
+            </DialogTitle>
+            <DialogDescription>
+              Save the current lead filters, sorting, and quick toggles for one-click access.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs font-medium">Preset name</Label>
+              <Input
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                placeholder="My Active Leads in ACT"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleSavePreset();
+                }}
+              />
+            </div>
+            {filterPresets.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Existing presets</Label>
+                <div className="max-h-40 overflow-y-auto rounded-md border">
+                  {filterPresets.map((preset) => (
+                    <div key={preset.id} className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0">
+                      <span className="min-w-0 flex-1 truncate text-sm">{preset.name}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeletePreset(preset.id)}
+                        className="h-8 w-8 p-0"
+                        title="Delete preset"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSavePreset(false)}>Cancel</Button>
+            <Button onClick={handleSavePreset}>
+              <Save className="h-4 w-4 mr-1" />
+              Save Preset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Bulk Archive Confirmation */}
       <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>

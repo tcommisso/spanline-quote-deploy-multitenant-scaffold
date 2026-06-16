@@ -1,10 +1,10 @@
 /**
- * Google Maps API Integration for Manus WebDev Templates
- * 
- * Main function: makeRequest<T>(endpoint, params) - Makes authenticated requests to Google Maps APIs
- * All credentials are automatically injected. Array parameters use | as separator.
- * 
- * See API examples below the type definitions for usage patterns.
+ * Map/geocoding integration.
+ *
+ * makeRequest<T>(endpoint, params) keeps the old Google-shaped call sites
+ * working while routing production traffic to app-owned providers. The default
+ * is OpenStreetMap-compatible LocationIQ for search/geocoding and a local
+ * haversine fallback for distance matrix calculations.
  */
 
 import { ENV } from "./env";
@@ -18,13 +18,13 @@ type MapsConfig = {
   apiKey: string;
 };
 
-function getMapsConfig(): MapsConfig {
-  const baseUrl = ENV.forgeApiUrl;
-  const apiKey = ENV.forgeApiKey;
+function getGoogleMapsConfig(): MapsConfig {
+  const baseUrl = "https://maps.googleapis.com";
+  const apiKey = ENV.googleMapsApiKey;
 
-  if (!baseUrl || !apiKey) {
+  if (!apiKey) {
     throw new Error(
-      "Google Maps proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
+      "Google Maps credentials missing: set GOOGLE_MAPS_API_KEY"
     );
   }
 
@@ -32,6 +32,13 @@ function getMapsConfig(): MapsConfig {
     baseUrl: baseUrl.replace(/\/+$/, ""),
     apiKey,
   };
+}
+
+function getLocationIqKey() {
+  if (!ENV.locationIqApiKey) {
+    throw new Error("LocationIQ credentials missing: set LOCATIONIQ_API_KEY");
+  }
+  return ENV.locationIqApiKey;
 }
 
 // ============================================================================
@@ -56,10 +63,37 @@ export async function makeRequest<T = unknown>(
   params: Record<string, unknown> = {},
   options: RequestOptions = {}
 ): Promise<T> {
-  const { baseUrl, apiKey } = getMapsConfig();
+  if (ENV.geocoderProvider === "google") {
+    return makeGoogleRequest<T>(endpoint, params, options);
+  }
 
-  // Construct full URL: baseUrl + /v1/maps/proxy + endpoint
-  const url = new URL(`${baseUrl}/v1/maps/proxy${endpoint}`);
+  const path = normaliseEndpointPath(endpoint);
+  if (path.endsWith("/geocode/json")) {
+    return (await locationIqGeocode(params)) as T;
+  }
+  if (path.endsWith("/place/autocomplete/json")) {
+    return (await locationIqAutocomplete(params)) as T;
+  }
+  if (path.endsWith("/place/details/json")) {
+    return (await locationIqPlaceDetails(params)) as T;
+  }
+  if (path.endsWith("/distancematrix/json")) {
+    return (await distanceMatrix(params)) as T;
+  }
+
+  throw new Error(`Unsupported map provider endpoint for ${ENV.geocoderProvider}: ${endpoint}`);
+}
+
+async function makeGoogleRequest<T = unknown>(
+  endpoint: string,
+  params: Record<string, unknown> = {},
+  options: RequestOptions = {}
+): Promise<T> {
+  const { baseUrl, apiKey } = getGoogleMapsConfig();
+
+  const url = endpoint.startsWith("http")
+    ? new URL(endpoint)
+    : new URL(endpoint, baseUrl);
 
   // Add API key as query parameter (standard Google Maps API authentication)
   url.searchParams.append("key", apiKey);
@@ -82,11 +116,230 @@ export async function makeRequest<T = unknown>(
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `Google Maps API request failed (${response.status} ${response.statusText}): ${errorText}`
+      `Map API request failed (${response.status} ${response.statusText}): ${errorText}`
     );
   }
 
   return (await response.json()) as T;
+}
+
+function normaliseEndpointPath(endpoint: string) {
+  try {
+    return new URL(endpoint).pathname;
+  } catch {
+    return endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  }
+}
+
+async function fetchLocationIq(path: string, params: Record<string, unknown>) {
+  const url = new URL(path, "https://api.locationiq.com");
+  url.searchParams.set("key", getLocationIqKey());
+  url.searchParams.set("format", "json");
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      "User-Agent": "SpanlineQuoteSystem/1.0 (+https://app.commissogroup.au)",
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`LocationIQ request failed (${response.status}): ${detail}`);
+  }
+  return response.json();
+}
+
+async function locationIqAutocomplete(params: Record<string, unknown>) {
+  const q = String(params.input ?? params.q ?? "").trim();
+  if (!q) return { status: "ZERO_RESULTS", predictions: [] };
+
+  const rows = await fetchLocationIq("/v1/autocomplete", {
+    q,
+    countrycodes: countryCodeFromGoogleComponents(params.components) || params.countrycodes || "au",
+    addressdetails: 1,
+    limit: 8,
+    dedupe: 1,
+  });
+
+  return {
+    status: Array.isArray(rows) && rows.length ? "OK" : "ZERO_RESULTS",
+    predictions: Array.isArray(rows)
+      ? rows.map((row: any) => ({
+          place_id: String(row.place_id ?? row.osm_id ?? row.display_place ?? row.display_name),
+          description: row.display_name,
+          structured_formatting: {
+            main_text: row.display_place || row.name || row.address?.road || row.display_name,
+            secondary_text: row.display_address || secondaryAddress(row.address),
+          },
+          _locationiq: row,
+        }))
+      : [],
+  };
+}
+
+async function locationIqPlaceDetails(params: Record<string, unknown>) {
+  const placeId = String(params.place_id ?? "");
+  if (!placeId) return { status: "ZERO_RESULTS" };
+
+  const row = await fetchLocationIq("/v1/details.php", {
+    place_id: placeId,
+    addressdetails: 1,
+  }).catch(async () => {
+    const fallback = await fetchLocationIq("/v1/search", {
+      q: placeId,
+      countrycodes: "au",
+      addressdetails: 1,
+      limit: 1,
+    });
+    return Array.isArray(fallback) ? fallback[0] : fallback;
+  });
+
+  if (!row) return { status: "ZERO_RESULTS" };
+  return {
+    status: "OK",
+    result: {
+      place_id: String(row.place_id ?? placeId),
+      name: row.name || row.display_place || row.display_name,
+      formatted_address: row.display_name,
+      address_components: toGoogleAddressComponents(row.address ?? {}),
+      geometry: {
+        location: {
+          lat: Number(row.lat ?? row.centroid?.coordinates?.[1]),
+          lng: Number(row.lon ?? row.centroid?.coordinates?.[0]),
+        },
+      },
+    },
+  };
+}
+
+async function locationIqGeocode(params: Record<string, unknown>) {
+  if (params.latlng) {
+    const [lat, lon] = String(params.latlng).split(",").map(Number);
+    const row = await fetchLocationIq("/v1/reverse", {
+      lat,
+      lon,
+      addressdetails: 1,
+    });
+    return { status: row ? "OK" : "ZERO_RESULTS", results: row ? [toGoogleGeocodeResult(row)] : [] };
+  }
+
+  const q = String(params.address ?? params.q ?? "").trim();
+  if (!q) return { status: "ZERO_RESULTS", results: [] };
+  const rows = await fetchLocationIq("/v1/search", {
+    q,
+    countrycodes: params.countrycodes ?? "au",
+    addressdetails: 1,
+    limit: params.limit ?? 1,
+  });
+  return {
+    status: Array.isArray(rows) && rows.length ? "OK" : "ZERO_RESULTS",
+    results: Array.isArray(rows) ? rows.map(toGoogleGeocodeResult) : [],
+  };
+}
+
+async function distanceMatrix(params: Record<string, unknown>): Promise<DistanceMatrixResult> {
+  const origins = splitPipeList(params.origins);
+  const destinations = splitPipeList(params.destinations);
+  const originPoints = await Promise.all(origins.map(geocodePoint));
+  const destinationPoints = await Promise.all(destinations.map(geocodePoint));
+
+  return {
+    status: "OK",
+    origin_addresses: origins,
+    destination_addresses: destinations,
+    rows: originPoints.map(origin => ({
+      elements: destinationPoints.map(destination => {
+        if (!origin || !destination) {
+          return {
+            status: "ZERO_RESULTS",
+            distance: { text: "N/A", value: 0 },
+            duration: { text: "N/A", value: 0 },
+          };
+        }
+        const metres = Math.round(haversineMetres(origin, destination) * 1.25);
+        const seconds = Math.round((metres / 1000 / 55) * 3600);
+        return {
+          status: "OK",
+          distance: { text: `${(metres / 1000).toFixed(1)} km`, value: metres },
+          duration: { text: `${Math.max(1, Math.round(seconds / 60))} mins`, value: seconds },
+        };
+      }),
+    })),
+  };
+}
+
+function splitPipeList(value: unknown) {
+  return String(value ?? "")
+    .split("|")
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+async function geocodePoint(address: string): Promise<LatLng | null> {
+  const result = await locationIqGeocode({ address, limit: 1 }).catch(() => null);
+  const first = result?.results?.[0]?.geometry?.location;
+  return first && Number.isFinite(first.lat) && Number.isFinite(first.lng) ? first : null;
+}
+
+function toGoogleGeocodeResult(row: any) {
+  const lat = Number(row.lat ?? row.centroid?.coordinates?.[1]);
+  const lng = Number(row.lon ?? row.centroid?.coordinates?.[0]);
+  return {
+    place_id: String(row.place_id ?? row.osm_id ?? row.display_name),
+    formatted_address: row.display_name,
+    address_components: toGoogleAddressComponents(row.address ?? {}),
+    geometry: {
+      location: { lat, lng },
+      location_type: "APPROXIMATE",
+      viewport: {
+        northeast: { lat, lng },
+        southwest: { lat, lng },
+      },
+    },
+    types: [],
+  };
+}
+
+function toGoogleAddressComponents(address: Record<string, any>) {
+  const components: Array<{ long_name: string; short_name: string; types: string[] }> = [];
+  const push = (value: unknown, types: string[]) => {
+    if (value) components.push({ long_name: String(value), short_name: String(value), types });
+  };
+  push(address.house_number, ["street_number"]);
+  push(address.road || address.pedestrian || address.footway, ["route"]);
+  push(address.suburb || address.city_district || address.neighbourhood, ["sublocality", "political"]);
+  push(address.city || address.town || address.village || address.hamlet, ["locality", "political"]);
+  push(address.state, ["administrative_area_level_1", "political"]);
+  push(address.postcode, ["postal_code"]);
+  push(address.country, ["country", "political"]);
+  return components;
+}
+
+function secondaryAddress(address: Record<string, any> = {}) {
+  return [address.suburb || address.city || address.town, address.state, address.postcode]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function countryCodeFromGoogleComponents(value: unknown) {
+  const match = String(value ?? "").match(/country:([a-z]{2})/i);
+  return match?.[1]?.toLowerCase();
+}
+
+function haversineMetres(a: LatLng, b: LatLng) {
+  const r = 6371000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * r * Math.asin(Math.sqrt(h));
 }
 
 // ============================================================================
@@ -313,7 +566,5 @@ export type RoadsResult = {
  * Output: Image URL (not JSON) - use directly in <img src={url} />
  * Note: Construct URL manually with getMapsConfig() for auth
  */
-
-
 
 

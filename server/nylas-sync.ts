@@ -8,6 +8,8 @@ import { eq, and } from "drizzle-orm";
 import { createEvent, updateEvent, deleteEvent } from "./nylas";
 import type { NylasEventInput } from "./nylas";
 
+type AppointmentParticipant = { name?: string; email: string };
+
 interface SyncAppointmentInput {
   tenantId?: number | null;
   appointmentId: number;
@@ -18,6 +20,7 @@ interface SyncAppointmentInput {
   duration: number;
   location?: string;
   notes?: string;
+  participants?: AppointmentParticipant[];
 }
 
 /**
@@ -26,7 +29,7 @@ interface SyncAppointmentInput {
  */
 export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Promise<string | null> {
   const db = await getDb();
-  if (!db) return null;
+  if (!db) throw new Error("Database is not available");
 
   // Find the user's active grant
   const grantConditions: any[] = [
@@ -40,7 +43,7 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
     .where(and(...grantConditions))
     .limit(1);
 
-  if (!grant) return null;
+  if (!grant) throw new Error("No connected calendar found for this appointment owner");
 
   // Get lead info for the event title
   const leadConditions: any[] = [eq(crmLeads.id, input.leadId)];
@@ -62,6 +65,7 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
     title: `Site Visit: ${clientName}${suburb}`,
     description: input.notes || undefined,
     location: input.location || undefined,
+    participants: input.participants?.length ? input.participants : undefined,
     when: {
       start_time: startTime,
       end_time: endTime,
@@ -76,19 +80,26 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
   };
 
   try {
-    const event = await createEvent(grant.grantId, eventInput, "primary", input.tenantId);
+    const event = await createEvent(grant.grantId, eventInput, "primary", input.tenantId, {
+      notifyParticipants: !!input.participants?.length,
+    });
 
     // Update the appointment with the Nylas event ID
     const appointmentConditions: any[] = [eq(crmAppointments.id, input.appointmentId)];
     if (input.tenantId) appointmentConditions.push(eq(crmAppointments.tenantId, input.tenantId));
     await db.update(crmAppointments)
-      .set({ nylasEventId: event.id })
+      .set({
+        nylasEventId: event.id,
+        calendarSyncStatus: "synced",
+        calendarSyncError: null,
+        calendarSyncedAt: new Date(),
+      })
       .where(and(...appointmentConditions));
 
     return event.id;
   } catch (err: any) {
     console.error("[Nylas Sync] Failed to create calendar event:", err.message);
-    return null;
+    throw err;
   }
 }
 
@@ -98,11 +109,11 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
 export async function updateCalendarEvent(
   appointmentId: number,
   userId: number,
-  updates: { date?: string; time?: string; duration?: number; location?: string; notes?: string },
+  updates: { date?: string; time?: string; duration?: number; location?: string; notes?: string; participants?: AppointmentParticipant[] },
   tenantId?: number | null
 ): Promise<boolean> {
   const db = await getDb();
-  if (!db) return false;
+  if (!db) throw new Error("Database is not available");
 
   // Get the appointment to find the Nylas event ID
   const appointmentConditions: any[] = [eq(crmAppointments.id, appointmentId)];
@@ -129,7 +140,7 @@ export async function updateCalendarEvent(
     .where(and(...grantConditions))
     .limit(1);
 
-  if (!grant) return false;
+  if (!grant) throw new Error("No connected calendar found for this appointment owner");
 
   try {
     const date = updates.date || appointment.appointmentDate || "";
@@ -151,12 +162,22 @@ export async function updateCalendarEvent(
 
     if (updates.location !== undefined) eventUpdates.location = updates.location;
     if (updates.notes !== undefined) eventUpdates.description = updates.notes;
+    if (updates.participants !== undefined) eventUpdates.participants = updates.participants;
 
-    await updateEvent(grant.grantId, appointment.nylasEventId, eventUpdates, "primary", effectiveTenantId);
+    await updateEvent(grant.grantId, appointment.nylasEventId, eventUpdates, "primary", effectiveTenantId, {
+      notifyParticipants: updates.participants !== undefined,
+    });
+    await db.update(crmAppointments)
+      .set({
+        calendarSyncStatus: "synced",
+        calendarSyncError: null,
+        calendarSyncedAt: new Date(),
+      })
+      .where(and(...appointmentConditions));
     return true;
   } catch (err: any) {
     console.error("[Nylas Sync] Failed to update calendar event:", err.message);
-    return false;
+    throw err;
   }
 }
 

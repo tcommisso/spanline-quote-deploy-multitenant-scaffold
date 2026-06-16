@@ -14,10 +14,11 @@ import { randomUUID } from "crypto";
 import { applyWatermark, fetchImageBuffer } from "./watermark";
 import { storagePut } from "./storage";
 import { logRenderCost } from "./render-cost-router";
-import { getDb } from "./db";
+import { getDb, getTenantBrandingSettings } from "./db";
 import { getDeckProductById } from "./deck-db";
-import { deckQuotes, eclipseQuotes, userSettings } from "../drizzle/schema";
+import { deckQuotes, eclipseQuotes } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
+import { getCompanyName } from "./company-name";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -169,24 +170,24 @@ function eclipseQuoteToRenderInput(quote: any): EclipseRenderInput {
 
 // ─── Watermark helper ───────────────────────────────────────────────────────
 
-async function applyRenderWatermark(imageUrl: string, userId: number): Promise<string> {
+async function applyRenderWatermark(imageUrl: string, userId: number, tenantId?: number | null): Promise<string> {
   try {
     const rawBuffer = await fetchImageBuffer(imageUrl);
     let logoBuffer: Buffer | undefined;
+    let companyName = "Altaspan";
     try {
-      const db = await getDb();
-      if (db) {
-        const [settings] = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
-        if (settings?.customLogoUrl) {
-          logoBuffer = await fetchImageBuffer(settings.customLogoUrl);
-        }
+      const branding = await getTenantBrandingSettings(tenantId);
+      const companyInfo = await getCompanyName(tenantId);
+      companyName = companyInfo.displayName || companyName;
+      if (branding?.customLogoUrl) {
+        logoBuffer = await fetchImageBuffer(branding.customLogoUrl);
       }
     } catch { /* continue without logo */ }
 
     const watermarked = await applyWatermark({
       imageBuffer: rawBuffer,
       logoBuffer,
-      companyName: "Altaspan",
+      companyName,
       year: new Date().getFullYear(),
       opacity: 0.85,
       position: "bottom-right",
@@ -256,7 +257,7 @@ export const quoteRenderRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Image generation did not return a URL" });
       }
 
-      const finalUrl = await applyRenderWatermark(result.url, ctx.user.id);
+      const finalUrl = await applyRenderWatermark(result.url, ctx.user.id, ctx.tenant?.id ?? null);
 
       // Log cost
       await logRenderCost({
@@ -326,7 +327,7 @@ export const quoteRenderRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Image generation did not return a URL" });
       }
 
-      const finalUrl = await applyRenderWatermark(result.url, ctx.user.id);
+      const finalUrl = await applyRenderWatermark(result.url, ctx.user.id, ctx.tenant?.id ?? null);
 
       // Log cost
       await logRenderCost({

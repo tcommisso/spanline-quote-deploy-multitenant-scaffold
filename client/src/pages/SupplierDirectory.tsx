@@ -6,13 +6,31 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { Plus, Search, Building2, Phone, Mail, MapPin, Pencil, Trash2, Package, RefreshCw, Loader2, Tag, X, UserPlus, Star } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
 
-export default function SupplierDirectory() {
+const CATEGORY_COLORS = ["#3B82F6", "#EF4444", "#F59E0B", "#10B981", "#8B5CF6", "#06B6D4", "#EC4899", "#64748B"];
+type SupplierScope = "construction" | "manufacturing";
+
+type SupplierDirectoryProps = {
+  supplierScope?: SupplierScope;
+};
+
+export default function SupplierDirectory({ supplierScope = "construction" }: SupplierDirectoryProps) {
+  const utils = trpc.useUtils();
   const { user } = useAuth();
   const isAdmin = user ? isAdminRole(user.role) : false;
   const [search, setSearch] = useState("");
@@ -21,6 +39,13 @@ export default function SupplierDirectory() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([]);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryColor, setNewCategoryColor] = useState(CATEGORY_COLORS[0]);
+  const [pendingSupplierAction, setPendingSupplierAction] = useState<null | {
+    type: "deactivate" | "addTradeUser";
+    supplierId: number;
+    supplierName: string;
+  }>(null);
 
   // Form state
   const [form, setForm] = useState({
@@ -30,9 +55,10 @@ export default function SupplierDirectory() {
   const suppliersQuery = trpc.suppliers.list.useQuery({
     search: search || undefined,
     activeOnly: !showInactive,
+    supplierScope,
   });
   const categoriesQuery = trpc.supplierCategories.list.useQuery();
-  const lastSyncQuery = trpc.xeroSupplierSync.getLastSyncInfo.useQuery();
+  const lastSyncQuery = trpc.xeroSupplierSync.getLastSyncInfo.useQuery({ supplierScope });
   const ratingsQuery = trpc.supplierFeedback.allRatings.useQuery();
   const ratingsMap = useMemo(() => {
     const map = new Map<number, { avgOverall: number; totalReviews: number }>();
@@ -53,7 +79,7 @@ export default function SupplierDirectory() {
 
   const syncMutation = trpc.xeroSupplierSync.syncFromXero.useMutation({
     onSuccess: (result) => {
-      toast.success(`Synced ${result.total} suppliers from Xero: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
+      toast.success(`Synced ${result.total} ${supplierScope} suppliers from Xero: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
       suppliersQuery.refetch();
       lastSyncQuery.refetch();
     },
@@ -96,6 +122,25 @@ export default function SupplierDirectory() {
     onSuccess: () => {
       assignmentsQuery.refetch();
     },
+  });
+  const createSupplierCategoryMutation = trpc.supplierCategories.create.useMutation({
+    onSuccess: async (result) => {
+      const categoryId = Number(result.id);
+      toast.success("Category created");
+      setNewCategoryName("");
+      setSelectedCategoryIds(prev => prev.includes(categoryId) ? prev : [...prev, categoryId]);
+      await utils.supplierCategories.list.invalidate();
+      await utils.supplierCategories.listAll.invalidate();
+    },
+    onError: (e) => toast.error(e.message || "Could not create category"),
+  });
+  const seedDefaultCategoriesMutation = trpc.supplierCategories.seedDefaults.useMutation({
+    onSuccess: async (result) => {
+      toast.success(result.created > 0 ? `Added ${result.created} trade categories` : "Trade categories are already set up");
+      await utils.supplierCategories.list.invalidate();
+      await utils.supplierCategories.listAll.invalidate();
+    },
+    onError: (e) => toast.error(e.message || "Could not add default categories"),
   });
   const addAsTradeUserMut = trpc.suppliers.addAsTradeUser.useMutation({
     onSuccess: (data) => {
@@ -148,7 +193,7 @@ export default function SupplierDirectory() {
     if (editingId) {
       updateMutation.mutate({ id: editingId, ...form });
     } else {
-      createMutation.mutate(form);
+        createMutation.mutate({ ...form, supplierScope });
     }
   }
 
@@ -158,17 +203,46 @@ export default function SupplierDirectory() {
     );
   }
 
+  function handleCreateSupplierCategory() {
+    const name = newCategoryName.trim();
+    if (!name) {
+      toast.error("Category name is required");
+      return;
+    }
+    const existing = categories.find(category => category.name.trim().toLowerCase() === name.toLowerCase());
+    if (existing) {
+      toggleCategory(existing.id);
+      setNewCategoryName("");
+      return;
+    }
+    createSupplierCategoryMutation.mutate({ name, color: newCategoryColor });
+  }
+
+  function confirmPendingSupplierAction() {
+    if (!pendingSupplierAction) return;
+    if (pendingSupplierAction.type === "deactivate") {
+      deleteMutation.mutate({ id: pendingSupplierAction.supplierId });
+    } else {
+      addAsTradeUserMut.mutate({ supplierId: pendingSupplierAction.supplierId });
+    }
+    setPendingSupplierAction(null);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Supplier Directory</h1>
+          <h1 className="text-2xl font-bold">
+            {supplierScope === "manufacturing" ? "Manufacturing Supplier Directory" : "Construction Supplier Directory"}
+          </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Manage your supplier contacts for procurement
+            {supplierScope === "manufacturing"
+              ? "Commisso Manufacturing suppliers for inventory and manufacturing purchase orders"
+              : "Spanline Home Additions suppliers for construction procurement"}
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          <Button variant="outline" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending}>
+          <Button variant="outline" onClick={() => syncMutation.mutate({ supplierScope })} disabled={syncMutation.isPending}>
             {syncMutation.isPending ? (
               <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Syncing...</>
             ) : (
@@ -190,7 +264,7 @@ export default function SupplierDirectory() {
               <Plus className="h-4 w-4 mr-2" /> Add Supplier
             </Button>
           </DialogTrigger>
-          <DialogContent className="max-w-lg">
+          <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{editingId ? "Edit Supplier" : "Add Supplier"}</DialogTitle>
             </DialogHeader>
@@ -213,7 +287,9 @@ export default function SupplierDirectory() {
                 <label className="text-sm font-medium">Categories</label>
                 <div className="flex flex-wrap gap-1.5 p-2 border rounded-md min-h-[38px] bg-background">
                   {selectedCategoryIds.length === 0 && (
-                    <span className="text-xs text-muted-foreground">Click to assign...</span>
+                    <span className="text-xs text-muted-foreground">
+                      {categories.length === 0 ? "No categories yet. Add one below or load defaults." : "Click to assign..."}
+                    </span>
                   )}
                   {selectedCategoryIds.map(catId => {
                     const cat = categories.find(c => c.id === catId);
@@ -244,6 +320,61 @@ export default function SupplierDirectory() {
                       + {cat.name}
                     </button>
                   ))}
+                </div>
+                {categories.length === 0 && (
+                  <div className="mt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={() => seedDefaultCategoriesMutation.mutate()}
+                      disabled={seedDefaultCategoriesMutation.isPending}
+                    >
+                      {seedDefaultCategoriesMutation.isPending ? (
+                        <><Loader2 className="h-3 w-3 mr-1.5 animate-spin" /> Adding...</>
+                      ) : (
+                        "Add default trade categories"
+                      )}
+                    </Button>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 mt-2">
+                  <Input
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleCreateSupplierCategory();
+                      }
+                    }}
+                    placeholder="Create a category..."
+                    className="h-8 text-xs"
+                  />
+                  <div className="flex items-center gap-1">
+                    {CATEGORY_COLORS.slice(0, 6).map(color => (
+                      <button
+                        key={color}
+                        type="button"
+                        aria-label={`Use ${color}`}
+                        onClick={() => setNewCategoryColor(color)}
+                        className={`h-5 w-5 rounded-full border transition-transform ${newCategoryColor === color ? "scale-110 ring-2 ring-primary ring-offset-1" : "border-border"}`}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs shrink-0"
+                    onClick={handleCreateSupplierCategory}
+                    disabled={createSupplierCategoryMutation.isPending}
+                  >
+                    {createSupplierCategoryMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                    Add
+                  </Button>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -384,19 +515,26 @@ export default function SupplierDirectory() {
                           size="icon"
                           className="h-7 w-7 text-blue-500 hover:text-blue-600"
                           title="Add as Trade User"
-                          onClick={() => {
-                            if (confirm(`Add ${s.name} as a Trade User for the portal?`)) {
-                              addAsTradeUserMut.mutate({ supplierId: s.id });
-                            }
-                          }}
+                          onClick={() => setPendingSupplierAction({
+                            type: "addTradeUser",
+                            supplierId: s.id,
+                            supplierName: s.name,
+                          })}
                         >
                           <UserPlus className="h-3.5 w-3.5" />
                         </Button>
                       )}
                       {s.isActive && (
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 hover:text-red-600" onClick={() => {
-                          if (confirm(`Deactivate ${s.name}?`)) deleteMutation.mutate({ id: s.id });
-                        }}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-red-500 hover:text-red-600"
+                          onClick={() => setPendingSupplierAction({
+                            type: "deactivate",
+                            supplierId: s.id,
+                            supplierName: s.name,
+                          })}
+                        >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       )}
@@ -453,6 +591,27 @@ export default function SupplierDirectory() {
           })}
         </div>
       )}
+
+      <AlertDialog open={!!pendingSupplierAction} onOpenChange={(open) => !open && setPendingSupplierAction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingSupplierAction?.type === "deactivate" ? "Deactivate supplier?" : "Add as Trade User?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingSupplierAction?.type === "deactivate"
+                ? `${pendingSupplierAction.supplierName} will be hidden from active supplier lists. You can show inactive suppliers to view it later.`
+                : `${pendingSupplierAction?.supplierName} will be added as a Trade User and granted portal access.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmPendingSupplierAction}>
+              {pendingSupplierAction?.type === "deactivate" ? "Deactivate" : "Add Trade User"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

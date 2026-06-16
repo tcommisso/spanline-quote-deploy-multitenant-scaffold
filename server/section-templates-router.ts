@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { specSectionTemplates, quotes } from "../drizzle/schema";
+import { specSectionTemplates, quoteDetails } from "../drizzle/schema";
 import { eq } from "drizzle-orm";
 
 export const sectionTemplatesRouter = router({
@@ -83,11 +83,12 @@ export const sectionTemplatesRouter = router({
     .query(async ({ input }) => {
       const db = await getDb();
       if (!db) return null;
-      const [row] = await db.select({ specSectionPrefs: quotes.specSectionPrefs })
-        .from(quotes)
-        .where(eq(quotes.id, input.quoteId));
-      if (!row || !row.specSectionPrefs) return null;
-      return row.specSectionPrefs as { sectionOrder?: string[]; hiddenSections?: string[]; templateId?: number };
+      const [row] = await db.select()
+        .from(quoteDetails)
+        .where(eq(quoteDetails.quoteId, input.quoteId));
+      const data = (row?.data as Record<string, any> | null) || {};
+      if (!data.specSectionPrefs) return null;
+      return data.specSectionPrefs as { sectionOrder?: string[]; hiddenSections?: string[]; templateId?: number };
     }),
 
   // Save section preferences for a specific quote
@@ -106,7 +107,16 @@ export const sectionTemplatesRouter = router({
         hiddenSections: input.hiddenSections,
         templateId: input.templateId || null,
       };
-      await db.update(quotes).set({ specSectionPrefs: prefs } as any).where(eq(quotes.id, input.quoteId));
+      const [existing] = await db.select()
+        .from(quoteDetails)
+        .where(eq(quoteDetails.quoteId, input.quoteId))
+        .limit(1);
+      const data = { ...((existing?.data as Record<string, any> | null) || {}), specSectionPrefs: prefs };
+      if (existing) {
+        await db.update(quoteDetails).set({ data }).where(eq(quoteDetails.quoteId, input.quoteId));
+      } else {
+        await db.insert(quoteDetails).values({ quoteId: input.quoteId, data });
+      }
       return { success: true };
     }),
 });

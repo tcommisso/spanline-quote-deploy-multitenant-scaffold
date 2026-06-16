@@ -346,7 +346,7 @@ export const daPortalRouter = router({
   // Push approved invoice to Xero as a bill
   pushToXero: adminProcedure
     .input(z.object({ invoiceId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [invoice] = await db.select()
         .from(daInvoices)
@@ -368,7 +368,7 @@ export const daPortalRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "DA is not linked to a Xero contact. Please link in Personal Details." });
       }
       const { getValidAccessToken } = await import("./xero-client");
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "approvals" });
       if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
 
       const billPayload = {

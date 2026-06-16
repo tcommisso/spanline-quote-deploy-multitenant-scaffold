@@ -30,7 +30,7 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 
   if (!isUnauthorized) return;
 
-  // Don't redirect to Manus OAuth if we're on a portal page
+  // Keep customer and trade portals on their own auth flow.
   if (window.location.pathname.startsWith("/portal")) return;
   if (window.location.pathname.startsWith("/trade-portal")) return;
 

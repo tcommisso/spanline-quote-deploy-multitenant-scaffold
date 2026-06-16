@@ -146,17 +146,18 @@ export const adminTradePortalRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection. Please connect Xero first." });
+      const routing = { connectionId: auth.xeroConnectionId };
       const [installer] = await db.select().from(constructionInstallers)
         .where(and(...installerTenantConditions(ctx, input.installerId))).limit(1);
       if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Trade not found" });
       if (!installer.email) throw new TRPCError({ code: "BAD_REQUEST", message: "Trade has no email address. Add an email to match with Xero." });
       // Search Xero contacts by email
-      const result = await getXeroContacts({ where: `EmailAddress=="${installer.email}"` });
+      const result = await getXeroContacts({ where: `EmailAddress=="${installer.email}"` }, routing);
       if (result.Contacts.length === 0) {
         // Try matching by name as fallback
-        const nameResult = await getXeroContacts({ where: `Name.Contains("${installer.name}")` });
+        const nameResult = await getXeroContacts({ where: `Name.Contains("${installer.name}")` }, routing);
         if (nameResult.Contacts.length === 0) {
           throw new TRPCError({ code: "NOT_FOUND", message: `No Xero contact found matching email "${installer.email}" or name "${installer.name}"` });
         }
@@ -179,8 +180,9 @@ export const adminTradePortalRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) return { connected: false, bills: [], error: "No active Xero connection" };
+      const routing = { connectionId: auth.xeroConnectionId };
       const [installer] = await db.select().from(constructionInstallers)
         .where(and(...installerTenantConditions(ctx, input.installerId))).limit(1);
       if (!installer?.xeroContactId) {
@@ -189,7 +191,7 @@ export const adminTradePortalRouter = router({
       try {
         const result = await getXeroInvoices({
           where: `Type=="ACCPAY"&&Contact.ContactID==guid("${installer.xeroContactId}")`,
-        });
+        }, routing);
         const bills = (result.Invoices || []).map((inv: XeroInvoice) => ({
           invoiceId: inv.InvoiceID,
           invoiceNumber: inv.InvoiceNumber,
@@ -220,7 +222,7 @@ export const adminTradePortalRouter = router({
   bulkMatchTradesToXero: adminProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
     if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
     const trades = await db.select({
       id: constructionInstallers.id,
@@ -238,7 +240,7 @@ export const adminTradePortalRouter = router({
     const results: Array<{ id: number; name: string; status: string }> = [];
     for (const trade of trades) {
       try {
-        const contactResult = await getXeroContacts({ where: `EmailAddress=="${trade.email}"` });
+        const contactResult = await getXeroContacts({ where: `EmailAddress=="${trade.email}"` }, { connectionId: auth.xeroConnectionId });
         if (contactResult.Contacts.length > 0) {
           await db.update(constructionInstallers)
             .set({ xeroContactId: contactResult.Contacts[0].ContactID })
@@ -776,11 +778,12 @@ export const adminTradePortalRouter = router({
 
   // ─── Xero Payment Reconciliation ──────────────────────────────────────────
   /** Reconcile Xero payments → auto-create remittance records for paid bills */
-  reconcileXeroPayments: adminProcedure.mutation(async () => {
+  reconcileXeroPayments: adminProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
     if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection. Please connect Xero first." });
+    const routing = { connectionId: auth.xeroConnectionId };
 
     // Get all trades linked to Xero
     const linkedTrades = await db.select({
@@ -816,7 +819,7 @@ export const adminTradePortalRouter = router({
         // Fetch ACCPAY (bills) for this trade's Xero contact
         const invoiceResult = await getXeroInvoices({
           where: `Type=="ACCPAY"&&Contact.ContactID==guid("${trade.xeroContactId}")&&Status=="PAID"`,
-        });
+        }, routing);
 
         for (const invoice of (invoiceResult.Invoices || [])) {
           // Fetch payments for this invoice
@@ -824,7 +827,7 @@ export const adminTradePortalRouter = router({
           try {
             const paymentResult = await getXeroPayments({
               where: `Invoice.InvoiceID==guid("${invoice.InvoiceID}")`,
-            });
+            }, routing);
             for (const payment of (paymentResult.Payments || [])) {
               if (!payment.PaymentID) continue;
               if (existingPaymentIds.has(payment.PaymentID)) {
@@ -901,18 +904,19 @@ export const adminTradePortalRouter = router({
   /** Pull Xero contact details into local trade record */
   syncContactFromXero: adminProcedure
     .input(z.object({ installerId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+      const routing = { connectionId: auth.xeroConnectionId };
 
       const [installer] = await db.select().from(constructionInstallers)
         .where(eq(constructionInstallers.id, input.installerId)).limit(1);
       if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Trade not found" });
       if (!installer.xeroContactId) throw new TRPCError({ code: "BAD_REQUEST", message: "Trade not linked to Xero" });
 
-      const result = await getXeroContacts({ where: `ContactID==guid("${installer.xeroContactId}")` });
+      const result = await getXeroContacts({ where: `ContactID==guid("${installer.xeroContactId}")` }, routing);
       if (!result.Contacts?.length) throw new TRPCError({ code: "NOT_FOUND", message: "Xero contact not found" });
 
       const xc = result.Contacts[0];
@@ -957,11 +961,12 @@ export const adminTradePortalRouter = router({
   /** Push local trade details to Xero contact card */
   pushContactToXero: adminProcedure
     .input(z.object({ installerId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+      const routing = { connectionId: auth.xeroConnectionId };
 
       const [installer] = await db.select().from(constructionInstallers)
         .where(eq(constructionInstallers.id, input.installerId)).limit(1);
@@ -988,7 +993,7 @@ export const adminTradePortalRouter = router({
         }];
       }
 
-      await updateXeroContact(installer.xeroContactId, xeroUpdate);
+      await updateXeroContact(installer.xeroContactId, xeroUpdate, routing);
       await db.update(constructionInstallers)
         .set({ lastXeroSyncAt: new Date() })
         .where(eq(constructionInstallers.id, input.installerId));
@@ -997,11 +1002,12 @@ export const adminTradePortalRouter = router({
     }),
 
   /** Bulk sync all linked trades' contact details from Xero */
-  bulkSyncContactsFromXero: adminProcedure.mutation(async () => {
+  bulkSyncContactsFromXero: adminProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
     if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+    const routing = { connectionId: auth.xeroConnectionId };
 
     const linkedTrades = await db.select().from(constructionInstallers)
       .where(and(
@@ -1015,7 +1021,7 @@ export const adminTradePortalRouter = router({
 
     for (const trade of linkedTrades) {
       try {
-        const result = await getXeroContacts({ where: `ContactID==guid("${trade.xeroContactId}")` });
+        const result = await getXeroContacts({ where: `ContactID==guid("${trade.xeroContactId}")` }, routing);
         if (!result.Contacts?.length) {
           results.push({ id: trade.id, name: trade.name, status: "not_found_in_xero" });
           failed++;
@@ -1078,13 +1084,17 @@ export const adminTradePortalRouter = router({
   // ─── Xero Payment Reconciliation ────────────────────────────────────────
   syncXeroPayments: adminProcedure
     .input(z.object({ installerId: z.number().optional() }).optional())
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
+      if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+      const routing = { connectionId: auth.xeroConnectionId };
 
       // Get all Xero-linked trades
       const conditions: any[] = [sql`${constructionInstallers.xeroContactId} IS NOT NULL`];
       if (input?.installerId) conditions.push(eq(constructionInstallers.id, input.installerId));
+      appendTenantScope(conditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
       const linkedTrades = await db.select()
         .from(constructionInstallers)
         .where(and(...conditions));
@@ -1101,7 +1111,7 @@ export const adminTradePortalRouter = router({
       for (const trade of linkedTrades) {
         try {
           // Get payments for this contact from Xero
-          const paymentsResult = await getXeroPayments({ where: `Invoice.Contact.ContactID=guid("${trade.xeroContactId}")` });
+          const paymentsResult = await getXeroPayments({ where: `Invoice.Contact.ContactID=guid("${trade.xeroContactId}")` }, routing);
           const payments = paymentsResult.Payments || [];
 
           for (const payment of payments) {

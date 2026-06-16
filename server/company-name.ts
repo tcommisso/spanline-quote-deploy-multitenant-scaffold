@@ -1,10 +1,10 @@
 /**
  * company-name.ts — Server-side helper to retrieve the company name
- * from the user_settings table (companyDetails JSON field).
+ * from tenant settings, with the legacy user_settings row as a fallback.
  * 
  * Falls back to "Altaspan" if no company name is configured.
  */
-import { getDb } from "./db";
+import { getDb, getTenantBrandingSettings } from "./db";
 import { userSettings } from "../drizzle/schema";
 
 const DEFAULT_COMPANY_NAME = "Altaspan";
@@ -20,11 +20,20 @@ interface CompanyNameResult {
  * Fetches the company name from the first user_settings row that has companyDetails.
  * This is a global setting (same for all users in the org).
  */
-export async function getCompanyName(): Promise<CompanyNameResult> {
+export async function getCompanyName(tenantId?: number | null): Promise<CompanyNameResult> {
   try {
     const db = await getDb();
     if (!db) {
       return { companyName: DEFAULT_COMPANY_NAME, tradingAs: DEFAULT_TRADING_AS, displayName: DEFAULT_COMPANY_NAME };
+    }
+
+    const tenantBranding = await getTenantBrandingSettings(tenantId);
+    if (tenantBranding?.companyDetails && typeof tenantBranding.companyDetails === "object") {
+      const details = tenantBranding.companyDetails as Record<string, unknown>;
+      const companyName = (details.companyName as string) || DEFAULT_COMPANY_NAME;
+      const tradingAs = (details.tradingAs as string) || "";
+      const displayName = tradingAs || companyName;
+      return { companyName, tradingAs, displayName };
     }
 
     // Get the first user settings row that has companyDetails set

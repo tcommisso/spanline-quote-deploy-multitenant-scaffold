@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, desc, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, isNull, sql, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
@@ -23,6 +23,7 @@ import {
   getValidAccessToken,
   getXeroContacts,
   createXeroContact,
+  updateXeroContact,
   type XeroContact,
 } from "./xero-client";
 import {
@@ -54,6 +55,11 @@ interface XeroProject {
   totalInvoiced?: { currency: string; value: number };
   totalToBeInvoiced?: { currency: string; value: number };
   estimate?: { currency: string; value: number };
+  closedDate?: string | Date | { value?: string | Date };
+  closedDateUtc?: string | Date | { value?: string | Date };
+  ClosedDate?: string | Date | { value?: string | Date };
+  ClosedDateUTC?: string | Date | { value?: string | Date };
+  "Closed Date"?: string | Date | { value?: string | Date };
   status: "INPROGRESS" | "CLOSED";
 }
 
@@ -64,7 +70,7 @@ interface XeroProjectsResponse {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function fetchAllXeroProjects(statuses?: string[]): Promise<XeroProject[]> {
+async function fetchAllXeroProjects(connectionId: number, statuses?: string[]): Promise<XeroProject[]> {
   const allProjects: XeroProject[] = [];
   const statusList = statuses || ["INPROGRESS", "CLOSED"];
 
@@ -73,7 +79,8 @@ async function fetchAllXeroProjects(statuses?: string[]): Promise<XeroProject[]>
     let hasMore = true;
     while (hasMore) {
       const result = await xeroApiRequest<XeroProjectsResponse>(
-        `/projects/projects?states=${status}&page=${page}&pageSize=50`
+        `/projects/projects?states=${status}&page=${page}&pageSize=50`,
+        { connectionId }
       );
       if (result.items && result.items.length > 0) {
         allProjects.push(...result.items);
@@ -94,7 +101,8 @@ async function getOrCreateXeroContact(
   clientName: string,
   email?: string | null,
   phone?: string | null,
-  address?: string | null
+  address?: string | null,
+  accountNumber?: string | null,
 ): Promise<string> {
   // Check if we already have a mapping
   const existingMapping = await db
@@ -109,13 +117,19 @@ async function getOrCreateXeroContact(
     .limit(1);
 
   if (existingMapping.length > 0) {
+    if (accountNumber) {
+      await updateXeroContact(existingMapping[0].xeroContactId, { AccountNumber: accountNumber }, { connectionId: auth.xeroConnectionId });
+    }
     return existingMapping[0].xeroContactId;
   }
 
   // Search Xero for existing contact
   try {
-    const searchResult = await getXeroContacts({ where: `Name=="${clientName}"` });
+    const searchResult = await getXeroContacts({ where: `Name=="${clientName}"` }, { connectionId: auth.xeroConnectionId });
     if (searchResult.Contacts && searchResult.Contacts.length > 0) {
+      if (accountNumber && searchResult.Contacts[0].AccountNumber !== accountNumber) {
+        await updateXeroContact(searchResult.Contacts[0].ContactID, { AccountNumber: accountNumber }, { connectionId: auth.xeroConnectionId });
+      }
       return searchResult.Contacts[0].ContactID;
     }
   } catch {
@@ -127,6 +141,7 @@ async function getOrCreateXeroContact(
     Name: clientName,
     IsCustomer: true,
   };
+  if (accountNumber) contactData.AccountNumber = accountNumber;
   if (email) contactData.EmailAddress = email;
   if (phone) {
     contactData.Phones = [{ PhoneType: "DEFAULT", PhoneNumber: phone }];
@@ -135,7 +150,7 @@ async function getOrCreateXeroContact(
     contactData.Addresses = [{ AddressType: "STREET", AddressLine1: address }];
   }
 
-  const result = await createXeroContact(contactData);
+  const result = await createXeroContact(contactData, { connectionId: auth.xeroConnectionId });
   const xeroContactId = result.Contacts[0].ContactID;
 
   return xeroContactId;
@@ -149,6 +164,39 @@ function mapJobStatusToXeroStatus(jobStatus: string): "INPROGRESS" | "CLOSED" {
   return jobStatus === "completed" || jobStatus === "cancelled" ? "CLOSED" : "INPROGRESS";
 }
 
+function parseXeroDateValue(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = typeof value === "object" && "value" in (value as Record<string, unknown>)
+    ? (value as Record<string, unknown>).value
+    : value;
+  if (!raw) return null;
+  const date = raw instanceof Date ? raw : new Date(String(raw));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getXeroProjectClosedDate(project: XeroProject): Date | null {
+  return parseXeroDateValue(project.closedDate)
+    || parseXeroDateValue(project.closedDateUtc)
+    || parseXeroDateValue(project.ClosedDate)
+    || parseXeroDateValue(project.ClosedDateUTC)
+    || parseXeroDateValue(project["Closed Date"]);
+}
+
+async function backfillLeadClientNumber(db: any, jobId: number, clientNumber: string | null | undefined) {
+  const value = String(clientNumber || "").trim();
+  if (!value) return;
+  const [job] = await db.select({
+    leadId: constructionJobs.leadId,
+  })
+    .from(constructionJobs)
+    .where(eq(constructionJobs.id, jobId))
+    .limit(1);
+  if (!job?.leadId) return;
+  await db.update(crmLeads)
+    .set({ clientNumber: value, updatedAt: new Date() })
+    .where(eq(crmLeads.id, job.leadId));
+}
+
 // ─── Router ─────────────────────────────────────────────────────────────────
 
 export const xeroProjectsRouter = router({
@@ -160,13 +208,14 @@ export const xeroProjectsRouter = router({
         includeClosed: z.boolean().default(true),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
+      const routing = { connectionId: auth.xeroConnectionId };
 
       // Create sync log
       const [syncLog] = await db.insert(xeroSyncLogs).values({
@@ -181,7 +230,7 @@ export const xeroProjectsRouter = router({
         if (input.includeOpen) statuses.push("INPROGRESS");
         if (input.includeClosed) statuses.push("CLOSED");
 
-        const xeroProjects = await fetchAllXeroProjects(statuses);
+        const xeroProjects = await fetchAllXeroProjects(auth.xeroConnectionId, statuses);
 
         let processed = 0;
         let failed = 0;
@@ -200,6 +249,46 @@ export const xeroProjectsRouter = router({
                 )
               )
               .limit(1);
+
+            // Resolve the actual client/contact details once so existing and new mappings stay aligned.
+            let contactName = project.name;
+            let contactEmail: string | null = null;
+            let contactPhone: string | null = null;
+            let contactAddress: string | null = null;
+            let contactAccountNumber: string | null = null;
+            try {
+              const contactResult = await xeroApiRequest<{ Contacts: XeroContact[] }>(
+                `/Contacts/${project.contactId}`,
+                routing
+              );
+              if (contactResult.Contacts?.[0]) {
+                const xContact = contactResult.Contacts[0];
+                const resolvedName = xContact.Name;
+                const firstName = xContact.FirstName || "";
+                const lastName = xContact.LastName || "";
+                const fullName = `${firstName} ${lastName}`.trim();
+                if (resolvedName && /^[A-Z]{2,4}-\d+/.test(resolvedName) && fullName) {
+                  contactName = fullName;
+                } else if (resolvedName) {
+                  contactName = resolvedName;
+                } else if (fullName) {
+                  contactName = fullName;
+                }
+                contactAccountNumber = xContact.AccountNumber || null;
+                contactEmail = xContact.EmailAddress || null;
+                if (xContact.Phones?.length) {
+                  contactPhone = xContact.Phones[0].PhoneNumber || null;
+                }
+                if (xContact.Addresses?.length) {
+                  const addr = xContact.Addresses[0];
+                  contactAddress = [addr.AddressLine1, addr.City, addr.Region, addr.PostalCode]
+                    .filter(Boolean)
+                    .join(", ") || null;
+                }
+              }
+            } catch {
+              // Use project name as fallback
+            }
 
             if (existing.length > 0) {
               // Update existing mapping with latest financial data
@@ -221,10 +310,20 @@ export const xeroProjectsRouter = router({
                   lastSyncedAt: new Date(),
                 })
                 .where(eq(xeroProjectMappings.id, existing[0].id));
+              const jobUpdates: any = { status: mapXeroStatusToJobStatus(project.status) };
+              if (project.status === "CLOSED") {
+                const closedDate = getXeroProjectClosedDate(project);
+                if (closedDate) jobUpdates.actualEnd = closedDate;
+              }
+              await db.update(constructionJobs)
+                .set(jobUpdates)
+                .where(eq(constructionJobs.id, existing[0].jobId));
+              await backfillLeadClientNumber(db, existing[0].jobId, contactAccountNumber);
               // Also update estimatedCost from NON_CHARGEABLE tasks
               try {
                 const tasksRes = await xeroApiRequest<{ items: Array<{ chargeType: string; rate?: { value: number } }> }>(
-                  `/projects/projects/${project.projectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`
+                  `/projects/projects/${project.projectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`,
+                  routing
                 );
                 const budgetExGst = (tasksRes.items || []).reduce((s: number, t: any) => s + (t.rate?.value || 0), 0);
                 await db.update(xeroProjectMappings).set({ estimatedCost: (budgetExGst * 1.1).toFixed(2) }).where(eq(xeroProjectMappings.id, existing[0].id));
@@ -233,50 +332,12 @@ export const xeroProjectsRouter = router({
               continue;
             }
 
-            // Get contact name from Xero - resolve the actual client name
-            let contactName = project.name;
-            let contactEmail: string | null = null;
-            let contactPhone: string | null = null;
-            let contactAddress: string | null = null;
-            try {
-              const contactResult = await xeroApiRequest<{ Contacts: XeroContact[] }>(
-                `/Contacts/${project.contactId}`
-              );
-              if (contactResult.Contacts?.[0]) {
-                const xContact = contactResult.Contacts[0];
-                // Prefer the contact's Name field; if it looks like a code, try FirstName + LastName
-                const resolvedName = xContact.Name;
-                const firstName = xContact.FirstName || "";
-                const lastName = xContact.LastName || "";
-                const fullName = `${firstName} ${lastName}`.trim();
-                // If the Name looks like a job code (e.g. SC-12345-XX), prefer FirstName + LastName
-                if (resolvedName && /^[A-Z]{2,4}-\d+/.test(resolvedName) && fullName) {
-                  contactName = fullName;
-                } else if (resolvedName) {
-                  contactName = resolvedName;
-                } else if (fullName) {
-                  contactName = fullName;
-                }
-                contactEmail = xContact.EmailAddress || null;
-                if (xContact.Phones?.length) {
-                  contactPhone = xContact.Phones[0].PhoneNumber || null;
-                }
-                if (xContact.Addresses?.length) {
-                  const addr = xContact.Addresses[0];
-                  contactAddress = [addr.AddressLine1, addr.City, addr.Region, addr.PostalCode]
-                    .filter(Boolean)
-                    .join(", ") || null;
-                }
-              }
-            } catch {
-              // Use project name as fallback
-            }
-
             // Also try to get invoiced amount from Xero Accounting API for this contact
             let accountingInvoicedAmount = 0;
             try {
               const invoicesResult = await xeroApiRequest<{ Invoices: Array<{ Total: number; Status: string }> }>(
-                `/Invoices?ContactIDs=${project.contactId}&Statuses=AUTHORISED,PAID`
+                `/Invoices?ContactIDs=${project.contactId}&Statuses=AUTHORISED,PAID`,
+                routing
               );
               if (invoicesResult.Invoices?.length) {
                 accountingInvoicedAmount = invoicesResult.Invoices.reduce(
@@ -289,14 +350,18 @@ export const xeroProjectsRouter = router({
 
             // Create construction job with resolved contact details
             const [insertResult] = await db.insert(constructionJobs).values({
+              tenantId: ctx.tenant?.id ?? null,
               clientName: contactName,
               siteAddress: contactAddress,
               status: mapXeroStatusToJobStatus(project.status),
               priority: "normal",
               notes: `Imported from Xero Project: ${project.name}`,
               scheduledStart: project.deadlineUtc ? new Date(project.deadlineUtc) : null,
+              actualEnd: project.status === "CLOSED" ? getXeroProjectClosedDate(project) : null,
+              createdBy: ctx.user?.id ?? null,
             });
             const jobId = insertResult.insertId;
+            await backfillLeadClientNumber(db, jobId, contactAccountNumber);
 
             // Create financial record - use accounting invoiced amount if available
             const totalCosts =
@@ -306,7 +371,8 @@ export const xeroProjectsRouter = router({
             let contractValue = 0;
             try {
               const tasksRes = await xeroApiRequest<{ items: Array<{ chargeType: string; rate?: { value: number } }> }>(
-                `/projects/projects/${project.projectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`
+                `/projects/projects/${project.projectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`,
+                routing
               );
               const budgetExGst = (tasksRes.items || []).reduce((s: number, t: any) => s + (t.rate?.value || 0), 0);
               contractValue = budgetExGst * 1.1;
@@ -391,11 +457,11 @@ export const xeroProjectsRouter = router({
         jobId: z.number(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -434,6 +500,7 @@ export const xeroProjectsRouter = router({
       // Get or find lead data for email/phone
       let email: string | null = null;
       let phone: string | null = null;
+      let accountNumber: string | null = null;
       if (job.leadId) {
         const [lead] = await db
           .select()
@@ -442,6 +509,7 @@ export const xeroProjectsRouter = router({
         if (lead) {
           email = lead.contactEmail;
           phone = lead.contactPhone;
+          accountNumber = lead.clientNumber;
         }
       }
 
@@ -452,7 +520,8 @@ export const xeroProjectsRouter = router({
         job.clientName,
         email,
         phone,
-        job.siteAddress
+        job.siteAddress,
+        accountNumber
       );
 
          // Create Xero Project
@@ -473,6 +542,7 @@ export const xeroProjectsRouter = router({
       const result = await xeroApiRequest<XeroProject>("/projects/projects", {
         method: "POST",
         body: projectData,
+        connectionId: auth.xeroConnectionId,
       });
 
       // Store mapping
@@ -500,11 +570,11 @@ export const xeroProjectsRouter = router({
   // ─── Get Xero project mapping for a job ─────────────────────────────────────
   getJobMapping: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return null;
 
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth) return null;
 
       const [mapping] = await db
@@ -522,11 +592,11 @@ export const xeroProjectsRouter = router({
     }),
 
   // ─── Start chunked financial sync (processed by Heartbeat cron every 5 min) ──
-  syncFinancials: protectedProcedure.mutation(async () => {
+  syncFinancials: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -544,7 +614,7 @@ export const xeroProjectsRouter = router({
     if (activeFinSync) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `A financial sync is already in progress (${activeFinSync.syncCursor || 0}/${activeFinSync.totalItems || '?'} processed). The Heartbeat cron processes 50 projects every 5 minutes.`,
+        message: `A financial sync is already in progress (${activeFinSync.syncCursor || 0}/${activeFinSync.totalItems || '?'} processed). The scheduled worker processes small batches every 5 minutes.`,
       });
     }
     // Mark any stale running syncs as failed (older than 2 hours)
@@ -581,7 +651,7 @@ export const xeroProjectsRouter = router({
     console.log(`[SyncFinancials] Started chunked sync: ${totalItems} mappings, log ID ${syncLogId}`);
     return {
       success: true,
-      message: `Financial sync started. Processing ${totalItems} projects in chunks of 50 every 5 minutes via Heartbeat cron.`,
+      message: `Financial sync started. Processing ${totalItems} projects in small batches every 5 minutes.`,
       syncLogId,
       totalItems,
     };
@@ -622,11 +692,11 @@ export const xeroProjectsRouter = router({
   }),
 
   // ─── Batch sync contacts ────────────────────────────────────────────────────
-  batchSyncContacts: protectedProcedure.mutation(async () => {
+  batchSyncContacts: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -665,6 +735,7 @@ export const xeroProjectsRouter = router({
           // Get lead data for email/phone
           let email: string | null = null;
           let phone: string | null = null;
+          let accountNumber: string | null = null;
           if (job.leadId) {
             const [lead] = await db
               .select()
@@ -673,10 +744,11 @@ export const xeroProjectsRouter = router({
             if (lead) {
               email = lead.contactEmail;
               phone = lead.contactPhone;
+              accountNumber = lead.clientNumber;
             }
           }
 
-          await getOrCreateXeroContact(db, auth, job.clientName, email, phone, job.siteAddress);
+          await getOrCreateXeroContact(db, auth, job.clientName, email, phone, job.siteAddress, accountNumber);
           processed++;
         } catch (err: any) {
           failed++;
@@ -709,11 +781,11 @@ export const xeroProjectsRouter = router({
   }),
 
   // ─── Full batch sync (contacts + projects + financials) ─────────────────────
-  fullBatchSync: protectedProcedure.mutation(async () => {
+  fullBatchSync: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
 
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection" });
 
@@ -775,11 +847,11 @@ export const xeroProjectsRouter = router({
   // ─── Get sync logs ──────────────────────────────────────────────────────────
   getSyncLogs: protectedProcedure
     .input(z.object({ limit: z.number().default(20) }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
 
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth) return [];
 
       return db
@@ -804,10 +876,10 @@ export const xeroProjectsRouter = router({
     }),
 
     // ─── Get all project mappings ───────────────────────────────────────────────
-  getAllMappings: protectedProcedure.query(async () => {
+  getAllMappings: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
-    const auth = await getValidAccessToken();
+    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth) return [];
     return db
       .select()
@@ -822,10 +894,10 @@ export const xeroProjectsRouter = router({
       mappingId: z.number(),
       type: z.enum(["invoices", "bills", "expenses"]),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { transactions: [] };
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth) return { transactions: [] };
 
       const [mapping] = await db
@@ -847,7 +919,8 @@ export const xeroProjectsRouter = router({
           // Get accounts receivable invoices from Accounting API
           // Fetch all invoices for this contact and filter by Type in code to avoid Xero where clause issues
           const result = await xeroApiRequest<{ Invoices: Array<{ InvoiceID: string; InvoiceNumber: string; Reference: string; Type: string; Total: number; AmountPaid: number; AmountDue: number; Status: string; DateString: string; DueDateString: string; Contact: { Name: string } }> }>(
-            `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=DRAFT,SUBMITTED,AUTHORISED,PAID`
+            `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=DRAFT,SUBMITTED,AUTHORISED,PAID`,
+            { connectionId: auth.xeroConnectionId }
           );
           // Filter to only ACCREC (accounts receivable) invoices
           result.Invoices = (result.Invoices || []).filter(inv => inv.Type === "ACCREC");
@@ -912,10 +985,10 @@ export const xeroProjectsRouter = router({
   /** Fetches FIXED tasks from a Xero project = client payment milestones */
   getProjectPaymentSchedule: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { milestones: [], project: null, invoices: [] };
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       if (!auth) return { milestones: [], project: null, invoices: [] };
       // Find the project mapping for this job
       const [mapping] = await db
@@ -929,11 +1002,13 @@ export const xeroProjectsRouter = router({
       try {
         // Fetch the project details
         const project = await xeroApiRequest<any>(
-          `/projects/projects/${mapping.xeroProjectId}`
+          `/projects/projects/${mapping.xeroProjectId}`,
+          { connectionId: auth.xeroConnectionId }
         );
         // Fetch all tasks for the project
         const tasksResult = await xeroApiRequest<{ pagination: any; items: any[] }>(
-          `/projects/projects/${mapping.xeroProjectId}/tasks?pageSize=100`
+          `/projects/projects/${mapping.xeroProjectId}/tasks?pageSize=100`,
+          { connectionId: auth.xeroConnectionId }
         );
         // Filter to FIXED tasks (payment milestones) and map to a clean structure
         const milestones = (tasksResult.items || [])
@@ -953,7 +1028,8 @@ export const xeroProjectsRouter = router({
         if (mapping.xeroContactId) {
           try {
             const invResult = await xeroApiRequest<{ Invoices: any[] }>(
-              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`
+              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`,
+              { connectionId: auth.xeroConnectionId }
             );
             invoices = (invResult.Invoices || [])
               .filter((inv: any) => inv.Type === "ACCREC")
@@ -999,11 +1075,11 @@ export const xeroProjectsRouter = router({
   // ─── Get Job Financial Summary (combined client + trade view) ────────────────
   getJobFinancialSummary: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return null;
       // Get the job's project mapping for client-side financials
-      const auth = await getValidAccessToken();
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
       let mapping: any = null;
       if (auth) {
         const [m] = await db
@@ -1064,11 +1140,12 @@ export const xeroProjectsRouter = router({
 // This runs outside the tRPC request lifecycle so it won't time out.
 async function runFullBatchSyncBackground(
   db: any,
-  auth: { accessToken: string; tenantId: string; xeroConnectionId: number },
+  auth: { accessToken: string; tenantId: string; xeroConnectionId: number; appTenantId?: number | null },
   syncLogId: number
 ): Promise<void> {
   let totalProcessed = 0;
   let totalFailed = 0;
+  const routing = { connectionId: auth.xeroConnectionId, appTenantId: auth.appTenantId ?? null, moduleKey: "construction" };
 
   try {
     // ── Phase 1: Sync contacts for all jobs ──────────────────────────────────
@@ -1077,6 +1154,7 @@ async function runFullBatchSyncBackground(
       try {
         let email: string | null = null;
         let phone: string | null = null;
+        let accountNumber: string | null = null;
         if (job.leadId) {
           const [lead] = await db
             .select()
@@ -1085,9 +1163,10 @@ async function runFullBatchSyncBackground(
           if (lead) {
             email = lead.contactEmail;
             phone = lead.contactPhone;
+            accountNumber = lead.clientNumber;
           }
         }
-        await getOrCreateXeroContact(db, auth, job.clientName, email, phone, job.siteAddress);
+        await getOrCreateXeroContact(db, auth, job.clientName, email, phone, job.siteAddress, accountNumber);
         totalProcessed++;
       } catch (err: any) {
         totalFailed++;
@@ -1111,6 +1190,7 @@ async function runFullBatchSyncBackground(
 
     try {
       const accountingSync = await syncXeroAccountingTransactionsForMappings(db, auth, mappings, {
+        appTenantId: auth.appTenantId ?? null,
         maxPages: 50,
         includeUnmatched: false,
       });
@@ -1124,7 +1204,8 @@ async function runFullBatchSyncBackground(
     for (const mapping of mappings) {
       try {
         const project = await xeroApiRequest<XeroProject>(
-          `/projects/projects/${mapping.xeroProjectId}`
+          `/projects/projects/${mapping.xeroProjectId}`,
+          routing
         );
         // Xero Projects API returns ex-GST values — multiply by 1.1 to store inc-GST
         const GST_MULTIPLIER = 1.1;
@@ -1138,7 +1219,8 @@ async function runFullBatchSyncBackground(
         let estimatedCost = 0;
         try {
           const tasksRes = await xeroApiRequest<{ pagination: any; items: Array<{ chargeType: string; rate?: { value: number } }> }>(
-            `/projects/projects/${mapping.xeroProjectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`
+            `/projects/projects/${mapping.xeroProjectId}/tasks?pageSize=100&chargeType=NON_CHARGEABLE`,
+            routing
           );
           const nonChargeableTasks = tasksRes.items || [];
           const budgetCostExGst = nonChargeableTasks.reduce((sum: number, t: any) => sum + (t.rate?.value || 0), 0);
@@ -1153,7 +1235,8 @@ async function runFullBatchSyncBackground(
             const invoicesResult = await xeroApiRequest<{
               Invoices: Array<{ Total: number; Status: string; Type: string }>;
             }>(
-              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`
+              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID`,
+              routing
             );
             const accrecInvoices = (invoicesResult.Invoices || []).filter(inv => inv.Type === "ACCREC");
             if (accrecInvoices.length) {
@@ -1194,7 +1277,8 @@ async function runFullBatchSyncBackground(
         if (xeroPaidAmount === 0 && mapping.xeroContactId) {
           try {
             const paidResult = await xeroApiRequest<{ Invoices: Array<{ AmountPaid: number; Type: string }> }>(
-              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=PAID`
+              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=PAID`,
+              routing
             );
             const paidAccrec = (paidResult.Invoices || []).filter(inv => inv.Type === "ACCREC");
             if (paidAccrec.length) {
@@ -1230,7 +1314,8 @@ async function runFullBatchSyncBackground(
         if (mapping.xeroContactId) {
           try {
             const earliestInvResult = await xeroApiRequest<{ Invoices: Array<{ DateString: string; Type: string }> }>(
-              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID&order=Date`
+              `/Invoices?ContactIDs=${mapping.xeroContactId}&Statuses=AUTHORISED,PAID&order=Date`,
+              routing
             );
             const accrec = (earliestInvResult.Invoices || []).filter(inv => inv.Type === "ACCREC");
             if (accrec.length > 0 && accrec[0].DateString) {
@@ -1239,7 +1324,10 @@ async function runFullBatchSyncBackground(
           } catch { /* no invoices found */ }
         }
         if (project.status === "CLOSED") {
-          jobDateUpdates.actualEnd = mapping.lastSyncedAt || new Date();
+          const closedDate = getXeroProjectClosedDate(project);
+          if (closedDate) {
+            jobDateUpdates.actualEnd = closedDate;
+          }
           jobDateUpdates.status = "completed";
         }
 
@@ -1296,6 +1384,7 @@ async function runFullBatchSyncBackground(
 
         let email: string | null = null;
         let phone: string | null = null;
+        let accountNumber: string | null = null;
         if (job.leadId) {
           const [lead] = await db
             .select()
@@ -1304,6 +1393,7 @@ async function runFullBatchSyncBackground(
           if (lead) {
             email = lead.contactEmail;
             phone = lead.contactPhone;
+            accountNumber = lead.clientNumber;
           }
         }
 
@@ -1313,7 +1403,8 @@ async function runFullBatchSyncBackground(
           job.clientName,
           email,
           phone,
-          job.siteAddress
+          job.siteAddress,
+          accountNumber
         );
 
         const [financials] = await db
@@ -1339,6 +1430,7 @@ async function runFullBatchSyncBackground(
         const result = await xeroApiRequest<XeroProject>("/projects/projects", {
           method: "POST",
           body: projectData,
+          connectionId: auth.xeroConnectionId,
         });
 
         await db.insert(xeroProjectMappings).values({
@@ -1389,7 +1481,7 @@ async function runFullBatchSyncBackground(
     if (totalFailed > 0) {
       try {
         const failures = await db.select().from(xeroSyncFailures).where(eq(xeroSyncFailures.syncLogId, syncLogId));
-        const adminUsers = await db.select().from(users).where(eq(users.role, "admin"));
+        const adminUsers = await db.select().from(users).where(inArray(users.role, ["admin", "super_admin"]));
         const adminEmails = adminUsers.map((u: any) => u.email).filter(Boolean) as string[];
         if (adminEmails.length > 0) {
           const failuresByPhase: Record<string, typeof failures> = {};

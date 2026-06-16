@@ -7,9 +7,56 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { daCompetitorWatchlist, clientDas, crmLeads, quotes } from "../drizzle/schema";
-import { eq, and, desc, sql, like, inArray, isNull } from "drizzle-orm";
+import { eq, and, asc, desc, sql, like, inArray, isNull } from "drizzle-orm";
 import { searchDasByCompany, searchDasByAddress, searchDasByApplicant, runClientDaMatching } from "./competitor-intel-service";
 import { TRPCError } from "@trpc/server";
+
+type ClientDaCanonical = {
+  id: number;
+  daNumber: string;
+  companyName: string | null;
+  streetAddress: string | null;
+  suburb: string | null;
+  isOurs?: boolean;
+  matchType?: string;
+  lodgementDate?: Date | string | null;
+};
+
+function normaliseDaKeyPart(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+function clientDaCanonicalKey(row: ClientDaCanonical): string {
+  return [
+    normaliseDaKeyPart(row.daNumber),
+    normaliseDaKeyPart(row.companyName),
+    normaliseDaKeyPart(row.streetAddress),
+    normaliseDaKeyPart(row.suburb),
+  ].join("|");
+}
+
+function dedupeClientDaRows<T extends ClientDaCanonical>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = clientDaCanonicalKey(row);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+
+    const rowIsManual = row.matchType === "manual";
+    const existingIsManual = existing.matchType === "manual";
+    if (
+      (rowIsManual && !existingIsManual) ||
+      (row.isOurs && !existing.isOurs) ||
+      (row.lodgementDate && !existing.lodgementDate)
+    ) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
+}
 
 export const competitorIntelRouter = router({
   // ─── Watchlist CRUD ──────────────────────────────────────────────────────────
@@ -244,15 +291,18 @@ export const competitorIntelRouter = router({
         offset: z.number().min(0).optional().default(0),
         companyName: z.string().optional(),
         unattributed: z.boolean().optional(),
+        ours: z.boolean().optional().default(false),
       }))
       .query(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) return { items: [], total: 0 };
         const conditions: any[] = [
           eq(clientDas.tenantId, ctx.tenant!.id),
-          eq(clientDas.isOurs, false),
+          eq(clientDas.isOurs, input.ours),
         ];
-        if (input.unattributed) {
+        if (input.ours) {
+          // Associated DAs are shown as a reviewable list regardless of applicant/company.
+        } else if (input.unattributed) {
           conditions.push(sql`(${clientDas.companyName} IS NULL OR ${clientDas.companyName} = '')`);
         } else if (input.companyName) {
           conditions.push(like(clientDas.companyName, `%${input.companyName}%`));
@@ -260,8 +310,7 @@ export const competitorIntelRouter = router({
 
         const where = and(...conditions);
 
-        const [items, countResult] = await Promise.all([
-          db.select({
+        const rows = await db.select({
             id: clientDas.id,
             leadId: clientDas.leadId,
             quoteId: clientDas.quoteId,
@@ -276,20 +325,19 @@ export const competitorIntelRouter = router({
             decision: clientDas.decision,
             matchType: clientDas.matchType,
             matchConfidence: clientDas.matchConfidence,
+            isOurs: clientDas.isOurs,
             centroidLat: clientDas.centroidLat,
             centroidLng: clientDas.centroidLng,
           })
             .from(clientDas)
             .where(where)
             .orderBy(desc(clientDas.lodgementDate))
-            .limit(input.limit)
-            .offset(input.offset),
-          db.select({ count: sql<number>`count(*)` })
-            .from(clientDas)
-            .where(where),
-        ]);
+            .limit(2000);
 
-        return { items, total: countResult[0]?.count || 0 };
+        const deduped = dedupeClientDaRows(rows);
+        const items = deduped.slice(input.offset, input.offset + input.limit);
+
+        return { items, total: deduped.length };
       }),
 
     // Summary stats
@@ -297,34 +345,37 @@ export const competitorIntelRouter = router({
       const db = await getDb();
       if (!db) return { totalMatches: 0, oursCount: 0, competitorCount: 0, topCompetitors: [] };
 
-      const [totalResult] = await db.select({ count: sql<number>`count(*)` })
-        .from(clientDas)
-        .where(eq(clientDas.tenantId, ctx.tenant!.id));
-      const [oursResult] = await db.select({ count: sql<number>`count(*)` })
-        .from(clientDas)
-        .where(and(eq(clientDas.tenantId, ctx.tenant!.id), eq(clientDas.isOurs, true)));
-      const [compResult] = await db.select({ count: sql<number>`count(*)` })
-        .from(clientDas)
-        .where(and(eq(clientDas.tenantId, ctx.tenant!.id), eq(clientDas.isOurs, false)));
-
-      const topCompetitors = await db.select({
+      const rows = await db.select({
+        id: clientDas.id,
+        daNumber: clientDas.daNumber,
         companyName: clientDas.companyName,
-        count: sql<number>`count(*)`,
+        streetAddress: clientDas.streetAddress,
+        suburb: clientDas.suburb,
+        isOurs: clientDas.isOurs,
+        matchType: clientDas.matchType,
+        lodgementDate: clientDas.lodgementDate,
       })
         .from(clientDas)
-        .where(and(
-          eq(clientDas.tenantId, ctx.tenant!.id),
-          eq(clientDas.isOurs, false),
-          sql`${clientDas.companyName} IS NOT NULL AND ${clientDas.companyName} != ''`
-        ))
-        .groupBy(clientDas.companyName)
-        .orderBy(desc(sql`count(*)`))
-        .limit(10);
+        .where(eq(clientDas.tenantId, ctx.tenant!.id))
+        .orderBy(desc(clientDas.lodgementDate), asc(clientDas.id))
+        .limit(5000);
+
+      const canonicalRows = dedupeClientDaRows(rows);
+      const topCompetitorMap = new Map<string, number>();
+      for (const row of canonicalRows) {
+        if (!row.isOurs && row.companyName?.trim()) {
+          topCompetitorMap.set(row.companyName, (topCompetitorMap.get(row.companyName) || 0) + 1);
+        }
+      }
+      const topCompetitors = Array.from(topCompetitorMap.entries())
+        .map(([companyName, count]) => ({ companyName, count }))
+        .sort((a, b) => b.count - a.count || a.companyName.localeCompare(b.companyName))
+        .slice(0, 10);
 
       return {
-        totalMatches: totalResult?.count || 0,
-        oursCount: oursResult?.count || 0,
-        competitorCount: compResult?.count || 0,
+        totalMatches: canonicalRows.length,
+        oursCount: canonicalRows.filter((row) => row.isOurs).length,
+        competitorCount: canonicalRows.filter((row) => !row.isOurs).length,
         topCompetitors,
       };
     }),
@@ -357,6 +408,45 @@ export const competitorIntelRouter = router({
           .where(and(
             eq(clientDas.id, input.id),
             eq(clientDas.tenantId, ctx.tenant!.id),
+          ));
+        return { ok: true };
+      }),
+
+    // Manually override whether a matched ACT DA belongs to us.
+    setOwnership: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        isOurs: z.boolean(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+        const [target] = await db.select({
+          daNumber: clientDas.daNumber,
+          companyName: clientDas.companyName,
+          streetAddress: clientDas.streetAddress,
+          suburb: clientDas.suburb,
+        })
+          .from(clientDas)
+          .where(and(
+            eq(clientDas.id, input.id),
+            eq(clientDas.tenantId, ctx.tenant!.id),
+          ))
+          .limit(1);
+        if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "DA match not found" });
+
+        await db.update(clientDas)
+          .set({
+            isOurs: input.isOurs,
+            matchType: "manual",
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(clientDas.tenantId, ctx.tenant!.id),
+            eq(clientDas.daNumber, target.daNumber),
+            sql`coalesce(${clientDas.companyName}, '') = ${target.companyName ?? ""}`,
+            sql`coalesce(${clientDas.streetAddress}, '') = ${target.streetAddress ?? ""}`,
+            sql`coalesce(${clientDas.suburb}, '') = ${target.suburb ?? ""}`,
           ));
         return { ok: true };
       }),

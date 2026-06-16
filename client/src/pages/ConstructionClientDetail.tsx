@@ -241,7 +241,7 @@ export default function ConstructionClientDetail() {
     );
   }
 
-  const { job, progress, assignments, financials, kanbanTasks, quoteData, leadData, completedStages, totalStages, progressPercent, progressSource } = detailQuery.data;
+  const { job, progress, assignments, financials, xeroAccountingSummary, kanbanTasks, quoteData, leadData, completedStages, totalStages, progressPercent, progressSource } = detailQuery.data;
   const statusCfg = STATUS_CONFIG[job.status] || STATUS_CONFIG.scheduled;
   const StatusIcon = statusCfg.icon;
 
@@ -498,6 +498,7 @@ export default function ConstructionClientDetail() {
           <FinancialsTab
             jobId={jobId}
             financials={financials}
+            xeroAccountingSummary={xeroAccountingSummary}
             onSave={(data) => updateFinancials.mutate({ jobId, ...data })}
             loading={updateFinancials.isPending}
           />
@@ -790,10 +791,11 @@ const BUDGET_CATEGORY_LABELS: Record<string, string> = {
 };
 
 function FinancialsTab({
-  jobId, financials, onSave, loading,
+  jobId, financials, xeroAccountingSummary, onSave, loading,
 }: {
   jobId: number;
   financials: any;
+  xeroAccountingSummary?: any;
   onSave: (data: any) => void;
   loading: boolean;
 }) {
@@ -810,11 +812,32 @@ function FinancialsTab({
   const budgetMargin = budgetContractValue - budgetTotalCost;
   const budgetMarginPercent = budgetContractValue > 0 ? (budgetMargin / budgetContractValue) * 100 : 0;
 
-  // Xero actuals — imported cost report is the single source of truth for actual costs
-  const xeroTotalCost = parseFloat(financials?.xeroTotalCost || "0");
-  const xeroContract = parseFloat(financials?.xeroContractValue || "0");
-  const xeroInvoiced = parseFloat(financials?.xeroInvoicedAmount || "0");
-  const xeroPaid = parseFloat(financials?.xeroPaidAmount || "0");
+  // Prefer matched Xero Accounting API rows when real positive invoice/cost rows exist.
+  // Imported financials remain the fallback until the API sync has useful matches for this job.
+  const apiRowCount = Number(xeroAccountingSummary?.rowCount || 0);
+  const apiCost = Number(xeroAccountingSummary?.positiveCostTotal || 0);
+  const apiRevenue = Number(xeroAccountingSummary?.positiveRevenueTotal || 0);
+  const apiPaid = Number(xeroAccountingSummary?.positivePaidTotal || 0);
+  const hasPositiveApiActuals = apiCost > 0 || apiRevenue > 0 || apiPaid > 0;
+  const hasPartialApiRows = apiRowCount > 0 && !hasPositiveApiActuals;
+
+  const storedXeroTotalCost = parseFloat(financials?.xeroTotalCost || "0");
+  const storedXeroInvoiced = parseFloat(financials?.xeroInvoicedAmount || "0");
+  const storedXeroPaid = parseFloat(financials?.xeroPaidAmount || "0");
+  const xeroTotalCost = hasPositiveApiActuals && apiCost > 0 ? apiCost : storedXeroTotalCost;
+  const xeroContract = parseFloat(financials?.xeroContractValue || financials?.contractValue || "0");
+  const xeroInvoiced = hasPositiveApiActuals && apiRevenue > 0 ? apiRevenue : storedXeroInvoiced;
+  const xeroPaid = hasPositiveApiActuals && apiPaid > 0 ? apiPaid : storedXeroPaid;
+  const xeroSourceBadge = hasPositiveApiActuals
+    ? "From Xero API"
+    : hasPartialApiRows
+      ? "Partial Xero API"
+      : "Imported fallback";
+  const xeroSourceText = hasPositiveApiActuals
+    ? "These values are rolled up from matched Xero Accounting API transactions."
+    : hasPartialApiRows
+      ? "Xero transaction rows exist for this job, but the current matched rows are credits or adjustments only. Showing stored/imported totals where available."
+      : "No matched positive Xero API actuals yet. Showing stored/imported Xero totals where available.";
   const xeroMargin = xeroInvoiced - xeroTotalCost;
   const xeroMarginPercent = xeroInvoiced > 0 ? (xeroMargin / xeroInvoiced) * 100 : 0;
   const xeroOutstanding = xeroInvoiced - xeroPaid;
@@ -910,12 +933,22 @@ function FinancialsTab({
             <CardTitle className="text-base flex items-center gap-2">
               <ExternalLink className="h-4 w-4 text-blue-600" />
               Xero Actuals
-              <Badge variant="outline" className="text-[10px] ml-1 border-blue-300 text-blue-600">From Imported Cost Report</Badge>
+              <Badge variant="outline" className="text-[10px] ml-1 border-blue-300 text-blue-600">{xeroSourceBadge}</Badge>
             </CardTitle>
           </div>
-          <p className="text-xs text-muted-foreground">These values come from the imported Xero Project Details cost report.</p>
+          <p className="text-xs text-muted-foreground">{xeroSourceText}</p>
         </CardHeader>
           <CardContent>
+            {hasPartialApiRows && (
+              <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>
+                    {apiRowCount} Xero API row{apiRowCount === 1 ? "" : "s"} matched, but none are positive invoice/cost transactions yet. Run the financial sync after the Xero connection is healthy to refresh invoice, bill, and spend-money rows.
+                  </span>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="space-y-1">

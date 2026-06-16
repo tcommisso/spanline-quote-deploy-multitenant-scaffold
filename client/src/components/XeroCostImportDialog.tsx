@@ -112,18 +112,18 @@ export default function XeroCostImportDialog() {
               e.preventDefault();
               e.stopPropagation();
               const f = e.dataTransfer.files?.[0];
-              if (f && (f.name.endsWith(".xlsx") || f.name.endsWith(".xls"))) {
+              if (f && (f.name.endsWith(".xlsx") || f.name.endsWith(".xls") || f.name.endsWith(".csv"))) {
                 setFile(f);
                 setResult(null);
               } else {
-                toast.error("Please upload an Excel file (.xlsx or .xls)");
+                toast.error("Please upload an Excel or CSV file (.xlsx, .xls or .csv)");
               }
             }}
           >
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx,.xls,.csv"
               onChange={handleFileSelect}
               className="hidden"
             />
@@ -140,7 +140,7 @@ export default function XeroCostImportDialog() {
                   Drop your Xero Project Details report here or click to browse
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Accepts .xlsx or .xls files
+                  Accepts .xlsx, .xls or .csv files
                 </p>
               </div>
             )}
@@ -151,11 +151,11 @@ export default function XeroCostImportDialog() {
             <p className="font-medium text-foreground">How to export from Xero:</p>
             <ol className="list-decimal list-inside space-y-0.5">
               <li>Go to Xero → Projects → Reports → Project Details</li>
-              <li>Select date range and export as Excel</li>
-              <li>Upload the file here — only Expense rows with non-zero cost will be imported</li>
+              <li>Export the actual expenses view as CSV or Excel</li>
+              <li>Upload the file here — only Expense rows with non-zero cost are imported</li>
             </ol>
             <p className="mt-2">
-              <strong>Duplicate prevention:</strong> Re-uploading the same report will skip already-imported items.
+              <strong>Duplicate prevention:</strong> Re-uploading the same report skips already-imported items. Closed Xero projects update matching jobs to Completed.
             </p>
           </div>
 
@@ -166,7 +166,7 @@ export default function XeroCostImportDialog() {
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
                 <span className="text-sm font-medium text-green-700 dark:text-green-400">Import Complete</span>
               </div>
-              <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="grid grid-cols-3 md:grid-cols-5 gap-2 text-xs">
                 <div>
                   <p className="text-muted-foreground">Imported</p>
                   <p className="font-semibold text-green-600">{result.imported}</p>
@@ -178,6 +178,14 @@ export default function XeroCostImportDialog() {
                 <div>
                   <p className="text-muted-foreground">Skipped</p>
                   <p className="font-semibold text-slate-600">{result.skipped}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Jobs Completed</p>
+                  <p className="font-semibold text-blue-600">{result.closedJobsUpdated ?? 0}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Leads Completed</p>
+                  <p className="font-semibold text-blue-600">{result.closedLeadsUpdated ?? 0}</p>
                 </div>
               </div>
               {result.dateRange && (
@@ -213,6 +221,7 @@ export default function XeroCostImportDialog() {
                       <p className="font-medium truncate">{batch.filename}</p>
                       <p className="text-muted-foreground">
                         {new Date(batch.createdAt).toLocaleDateString("en-AU")} · {batch.importedRows} imported
+                        {(batch.duplicateRows ?? 0) > 0 && ` · ${batch.duplicateRows} duplicates`}
                         {batch.dateRangeStart && batch.dateRangeEnd && ` · ${batch.dateRangeStart} to ${batch.dateRangeEnd}`}
                       </p>
                     </div>

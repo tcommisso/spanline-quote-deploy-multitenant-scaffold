@@ -25,6 +25,102 @@ export interface ParcelBoundary {
   centroid: [number, number];
 }
 
+type ParsedActAddress = {
+  streetNumber: string | null;
+  streetName: string;
+  suburb: string | null;
+  searchTerm: string;
+};
+
+const ACT_STREET_SUFFIXES = new Set([
+  "STREET",
+  "ST",
+  "ROAD",
+  "RD",
+  "AVENUE",
+  "AVE",
+  "CRESCENT",
+  "CRES",
+  "DRIVE",
+  "DR",
+  "PLACE",
+  "PL",
+  "COURT",
+  "CT",
+  "CIRCUIT",
+  "CCT",
+  "LANE",
+  "LN",
+  "TERRACE",
+  "TCE",
+  "CLOSE",
+  "CL",
+  "WAY",
+  "PARADE",
+  "PDE",
+]);
+
+function normaliseAddressText(value: string | null | undefined) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/['’]/g, "")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseACTAddress(address: string, hints?: { suburb?: string; region?: string }): ParsedActAddress {
+  const parts = address.split(",").map(part => part.trim()).filter(Boolean);
+  const firstPartIsStreetNumber = /^\d+[A-Za-z]?$/.test(parts[0] || "") && !!parts[1];
+  const streetPart = firstPartIsStreetNumber
+    ? `${parts[0]} ${parts[1]}`
+    : parts[0] || address;
+  const suburbSearchStart = firstPartIsStreetNumber ? 2 : 1;
+  const suburbFromAddress = parts
+    .slice(suburbSearchStart)
+    .map(part => part.replace(/\b(ACT|NSW|AUSTRALIA)\b/gi, "").replace(/\b\d{4}\b/g, "").trim())
+    .find(Boolean);
+
+  const unitMatch = streetPart.match(/^(\d+[A-Za-z]?)\/(\d+[A-Za-z]?)\s+(.+)$/i);
+  const match = streetPart.match(/^(\d+[A-Za-z]?)\s+(.+)$/i);
+  const streetNumber = unitMatch?.[2] || match?.[1] || null;
+  const rawStreetName = unitMatch?.[3] || match?.[2] || streetPart;
+  const streetName = normaliseAddressText(rawStreetName);
+  const suburb = normaliseAddressText(hints?.suburb || suburbFromAddress || "");
+  const coreStreetName = streetName
+    .split(" ")
+    .filter(word => word.length > 1 && !ACT_STREET_SUFFIXES.has(word))
+    .join(" ");
+  const searchTerm = normaliseAddressText(`${streetNumber || ""} ${coreStreetName || streetName}`.trim() || address);
+
+  return {
+    streetNumber,
+    streetName,
+    suburb: suburb || null,
+    searchTerm,
+  };
+}
+
+function scoreACTParcelMatch(attrs: any, parsed: ParsedActAddress) {
+  const addresses = normaliseAddressText(attrs.ADDRESSES);
+  const division = normaliseAddressText(attrs.DIVISION_NAME);
+  let score = 0;
+
+  if (parsed.suburb && division === parsed.suburb) score += 100;
+  if (parsed.suburb && division !== parsed.suburb) score -= 100;
+  if (parsed.searchTerm && addresses.includes(parsed.searchTerm)) score += 80;
+  if (parsed.streetNumber && new RegExp(`\\b${parsed.streetNumber}\\b`).test(addresses)) score += 30;
+
+  const streetWords = parsed.streetName
+    .split(" ")
+    .filter(word => word.length > 1 && !ACT_STREET_SUFFIXES.has(word));
+  for (const word of streetWords) {
+    if (addresses.includes(word)) score += 12;
+  }
+
+  return score;
+}
+
 /**
  * Detect whether an address is in ACT or NSW based on common patterns.
  * Accepts optional suburb/region hints from the quote record.
@@ -50,32 +146,22 @@ export function detectState(address: string, hints?: { suburb?: string; region?:
 /**
  * Query ACTmapi for parcel boundary by address
  */
-export async function lookupACTParcel(address: string): Promise<ParcelBoundary | null> {
-  // Extract street number and name for fuzzy matching
-  // Handle formats like: "44 Dalman Crescent, O'Malley ACT 2606, Australia"
-  // or "5/44 Dalman Crescent, O'Malley ACT"
-  // or bare: "5/44 Dalman Crescent" (no suburb/state suffix)
-  const unitMatch = address.match(/^(\d+[A-Za-z]?)\/(\d+[A-Za-z]?)\s+(.+?)(?:,|\s+(ACT|CANBERRA)|$)/i);
-  const match = address.match(/^(\d+[A-Za-z]?)\s+(.+?)(?:,|\s+(ACT|CANBERRA|NSW)|$)/i);
-  let searchTerm = address.split(",")[0].trim();
-  if (unitMatch) {
-    // Unit address: use just the street number and name (without unit)
-    searchTerm = `${unitMatch[2]} ${unitMatch[3]}`.toUpperCase().trim();
-  } else if (match) {
-    searchTerm = `${match[1]} ${match[2]}`.toUpperCase().trim();
+export async function lookupACTParcel(address: string, hints?: { suburb?: string; region?: string }): Promise<ParcelBoundary | null> {
+  const parsed = parseACTAddress(address, hints);
+  const escapedSearchTerm = parsed.searchTerm.replace(/'/g, "''");
+  const whereParts = [`ADDRESSES LIKE '%${escapedSearchTerm}%'`];
+  if (parsed.suburb) {
+    whereParts.push(`DIVISION_NAME = '${parsed.suburb.replace(/'/g, "''")}'`);
   }
-
-  // Escape single quotes for SQL LIKE query (e.g. O'Malley -> O''Malley)
-  const escapedSearchTerm = searchTerm.replace(/'/g, "''");
 
   const url = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query";
   const params = new URLSearchParams({
-    where: `ADDRESSES LIKE '%${escapedSearchTerm}%'`,
+    where: whereParts.join(" AND "),
     outFields: "BLOCK_NUMBER,SECTION_NUMBER,DIVISION_NAME,ADDRESSES,BLOCK_DERIVED_AREA",
     returnGeometry: "true",
     outSR: "4326",
     f: "json",
-    resultRecordCount: "1",
+    resultRecordCount: "10",
   });
 
   try {
@@ -85,7 +171,15 @@ export async function lookupACTParcel(address: string): Promise<ParcelBoundary |
     const features = data.features;
     if (!features || features.length === 0) return null;
 
-    const feature = features[0];
+    const ranked = [...features]
+      .map((feature: any) => ({ feature, score: scoreACTParcelMatch(feature.attributes || {}, parsed) }))
+      .sort((a, b) => b.score - a.score);
+    const { feature, score } = ranked[0];
+    if (score < 80) {
+      console.warn(`[ParcelLookup] ACT match rejected for "${address}" with score ${score}`);
+      return null;
+    }
+
     const attrs = feature.attributes;
     const rings = feature.geometry?.rings;
     if (!rings || rings.length === 0) return null;
@@ -186,12 +280,12 @@ export async function lookupParcel(address: string, hints?: { suburb?: string; r
   console.log(`[ParcelLookup] Address: "${address}", Hints: ${JSON.stringify(hints)}, Detected state: ${state}`);
 
   if (state === "ACT") {
-    return lookupACTParcel(address);
+    return lookupACTParcel(address, hints);
   } else if (state === "NSW") {
     return lookupNSWParcel(address);
   } else {
     // Try ACT first, then NSW
-    const actResult = await lookupACTParcel(address);
+    const actResult = await lookupACTParcel(address, hints);
     if (actResult) return actResult;
     return lookupNSWParcel(address);
   }

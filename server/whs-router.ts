@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure, publicProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
+import { isAdminRole } from "@shared/const";
 import {
   createSwmsDocument,
   getAllSwmsDocuments,
@@ -30,7 +31,7 @@ export const whsRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.role !== "admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
 
@@ -67,7 +68,7 @@ export const whsRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.role !== "admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
       const { id, ...data } = input;
@@ -86,7 +87,7 @@ export const whsRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.role !== "admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
       const buffer = Buffer.from(input.fileBase64, "base64");
@@ -102,7 +103,7 @@ export const whsRouter = router({
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.role !== "admin") {
+      if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
       await deleteSwmsDocument(input.id);
