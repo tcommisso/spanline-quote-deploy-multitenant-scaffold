@@ -3,6 +3,13 @@ import { z } from "zod";
 import { getDb } from "./db";
 import { crmDropdownOptions } from "../drizzle/schema";
 import { eq, and, asc } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+
+function dropdownTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, crmDropdownOptions.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
 
 export const crmDropdownRouter = router({
   /**
@@ -18,7 +25,7 @@ export const crmDropdownRouter = router({
       const db = await getDb();
       if (!db) return [];
 
-      const conditions = [eq(crmDropdownOptions.tenantId, ctx.tenant!.id)];
+      const conditions = dropdownTenantConditions(ctx);
       if (input.category) conditions.push(eq(crmDropdownOptions.category, input.category));
       if (input.activeOnly) conditions.push(eq(crmDropdownOptions.active, true));
 
@@ -38,7 +45,7 @@ export const crmDropdownRouter = router({
     if (!db) return [];
     const rows = await db.selectDistinct({ category: crmDropdownOptions.category })
       .from(crmDropdownOptions)
-      .where(eq(crmDropdownOptions.tenantId, ctx.tenant!.id));
+      .where(and(...dropdownTenantConditions(ctx)));
     return rows.map(r => r.category);
   }),
 
@@ -90,8 +97,8 @@ export const crmDropdownRouter = router({
       if (Object.keys(updates).length > 0) {
         await db
           .update(crmDropdownOptions)
-          .set(updates)
-          .where(and(eq(crmDropdownOptions.id, input.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
+          .set({ ...updates, tenantId: ctx.tenant!.id })
+          .where(and(...dropdownTenantConditions(ctx, eq(crmDropdownOptions.id, input.id))));
       }
       return { success: true };
     }),
@@ -106,7 +113,7 @@ export const crmDropdownRouter = router({
       if (!db) throw new Error("Database unavailable");
       await db
         .delete(crmDropdownOptions)
-        .where(and(eq(crmDropdownOptions.id, input.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
+        .where(and(...dropdownTenantConditions(ctx, eq(crmDropdownOptions.id, input.id))));
       return { success: true };
     }),
 
@@ -126,8 +133,8 @@ export const crmDropdownRouter = router({
 
       for (const item of input.items) {
         await db.update(crmDropdownOptions)
-          .set({ sortOrder: item.sortOrder })
-          .where(and(eq(crmDropdownOptions.id, item.id), eq(crmDropdownOptions.tenantId, ctx.tenant!.id)));
+          .set({ sortOrder: item.sortOrder, tenantId: ctx.tenant!.id })
+          .where(and(...dropdownTenantConditions(ctx, eq(crmDropdownOptions.id, item.id))));
       }
       return { success: true };
     }),

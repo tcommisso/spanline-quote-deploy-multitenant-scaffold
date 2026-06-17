@@ -26,7 +26,7 @@ Recommended jobs:
 | NSW competitor digest | `POST /api/scheduled/nsw-competitor-digest` | Monday 7am AEST |
 | Weather poll | `POST /api/scheduled/weather-poll` | Daily 6am AEST |
 | Xero payment sync | `POST /api/scheduled/xero-payment-sync` | Daily overnight |
-| Xero financial sync | `POST /api/scheduled/xero-financial-sync` | Every 5 minutes while active |
+| Xero financial sync | `POST /api/scheduled/xero-financial-sync` | Every 5 minutes. Processes manual sync chunks when active, otherwise runs hourly incremental accounting catch-up. |
 | O365 email sync | `POST /api/scheduled/msgraph-email-sync` | Every 5 minutes |
 | VOCPhone sync | `POST /api/scheduled/vocphone-sync` | Hourly |
 | Quote expiry reminder | `POST /api/scheduled/quote-expiry-reminder` | Daily 9am AEST |

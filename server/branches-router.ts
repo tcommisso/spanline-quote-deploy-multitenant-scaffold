@@ -2,7 +2,14 @@ import { z } from "zod";
 import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { branches } from "../drizzle/schema";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+
+function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
 
 export const branchesRouter = router({
   list: tenantProcedure.query(async ({ ctx }) => {
@@ -11,13 +18,16 @@ export const branchesRouter = router({
     return db
       .select()
       .from(branches)
-      .where(and(eq(branches.tenantId, ctx.tenant!.id), eq(branches.isActive, true)));
+      .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))))
+      .orderBy(asc(branches.name));
   }),
 
   listAll: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
-    return db.select().from(branches).where(eq(branches.tenantId, ctx.tenant!.id));
+    return db.select().from(branches)
+      .where(and(...branchTenantConditions(ctx)))
+      .orderBy(asc(branches.name));
   }),
 
   create: tenantAdminProcedure
@@ -60,8 +70,8 @@ export const branchesRouter = router({
       const { id, ...data } = input;
       await db
         .update(branches)
-        .set(data)
-        .where(and(eq(branches.id, id), eq(branches.tenantId, ctx.tenant!.id)));
+        .set({ ...data, tenantId: ctx.tenant!.id })
+        .where(and(...branchTenantConditions(ctx, eq(branches.id, id))));
       return { success: true };
     }),
 
@@ -72,8 +82,8 @@ export const branchesRouter = router({
       if (!db) throw new Error("Database unavailable");
       await db
         .update(branches)
-        .set({ isActive: false })
-        .where(and(eq(branches.id, input.id), eq(branches.tenantId, ctx.tenant!.id)));
+        .set({ isActive: false, tenantId: ctx.tenant!.id })
+        .where(and(...branchTenantConditions(ctx, eq(branches.id, input.id))));
       return { success: true };
     }),
 });

@@ -69,7 +69,7 @@ const API_CHECKS: ApiCheck[] = [
   { key: "osm_tiles", name: "OpenStreetMap Tiles", category: "Maps", baseUrl: "https://tile.openstreetmap.org", configured: true, schedule: "Browser tile fetch" },
   { key: "locationiq", name: "LocationIQ", category: "Maps", baseUrl: "https://api.locationiq.com", configured: !!ENV.locationIqApiKey, schedule: "On demand geocoding" },
   { key: "openai", name: "OpenAI", category: "AI", baseUrl: "https://api.openai.com", configured: !!ENV.openAiApiKey, schedule: "On demand" },
-  { key: "xero", name: "Xero", category: "Finance", baseUrl: "https://api.xero.com", configured: !!(ENV.xeroClientId && ENV.xeroClientSecret), schedule: "Every 5 minutes + webhooks" },
+  { key: "xero", name: "Xero", category: "Finance", baseUrl: "https://api.xero.com", configured: !!(ENV.xeroClientId && ENV.xeroClientSecret), schedule: "Every 5 min worker + hourly catch-up + webhooks" },
   { key: "xero_webhook", name: "Xero Webhook", category: "Finance", baseUrl: "/api/xero/webhook", configured: !!ENV.xeroWebhookKey, schedule: "Event-driven" },
   { key: "o365_graph", name: "O365 Graph", category: "Email", baseUrl: "https://graph.microsoft.com", configured: !!(ENV.msGraphTenantId && ENV.msGraphClientId && ENV.msGraphClientSecret), schedule: "Every 5 minutes" },
   { key: "nylas", name: "Nylas", category: "Calendar", baseUrl: ENV.nylasApiUri || "https://api.eu.nylas.com", configured: !!(ENV.nylasClientId && ENV.nylasApiKey), schedule: "On demand calendar sync" },

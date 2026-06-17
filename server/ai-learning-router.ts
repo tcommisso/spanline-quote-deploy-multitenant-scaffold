@@ -11,6 +11,30 @@ async function requireDb() {
   return db!;
 }
 
+const DEFAULT_ENGINI_PROMPT = `You are Engini, the technical knowledge specialist for Altaspan and Spanline Home Additions.
+
+You help staff with engineering, pricing, components, construction methods, approvals, site planning, and technical library questions. Answer in practical Australian building terminology. Prefer concise, job-ready guidance, but include assumptions, constraints, and safety caveats when the answer depends on engineering, site conditions, council rules, or product specifications.
+
+Use the available technical library and knowledge context when provided. If the source material is incomplete or uncertain, say so plainly and suggest what the team should verify before acting. Do not invent product ratings, spans, certificates, prices, or compliance requirements.`;
+
+async function ensureDefaultPrompts(db: Awaited<ReturnType<typeof requireDb>>) {
+  const existing = await db.select({ id: aiPrompts.id }).from(aiPrompts).limit(1);
+  if (existing.length) return;
+
+  try {
+    await db.insert(aiPrompts).values({
+      key: "engini",
+      label: "Engini Main Assistant",
+      description: "Default technical assistant prompt used when no custom AI settings have been imported.",
+      systemPrompt: DEFAULT_ENGINI_PROMPT,
+      isActive: true,
+    });
+  } catch (err) {
+    // Another request may have created the default prompt between the read and insert.
+    console.warn("[AI Settings] Default prompt seed skipped:", err);
+  }
+}
+
 // ─── AI Learning & Improvement Router ────────────────────────────────────────
 
 export const aiLearningRouter = router({
@@ -20,6 +44,7 @@ export const aiLearningRouter = router({
   prompts: router({
     list: adminProcedure.query(async () => {
       const db = await requireDb();
+      await ensureDefaultPrompts(db);
       return db.select().from(aiPrompts).orderBy(aiPrompts.key);
     }),
 

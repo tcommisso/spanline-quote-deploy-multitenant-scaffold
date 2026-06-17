@@ -6,6 +6,8 @@ import { ENV } from "./env";
 import { adminProcedure, publicProcedure, router, tenantAdminProcedure } from "./trpc";
 
 const TENANT_ID_TABLES = [
+  "branches",
+  "crm_dropdown_options",
   "quotes",
   "crm_leads",
   "design_advisors",

@@ -8,10 +8,10 @@
  * 3. Process each mapping (fetch project data, invoices, costs from Xero)
  * 4. Update syncCursor and itemsProcessed
  * 5. If all done, mark as "completed"
- * 6. If no active sync log found, respond with { ok: true, skipped: "no-active-sync" }
+ * 6. If no active sync log exists, run a throttled automatic accounting catch-up
  * 
- * Triggered by: Heartbeat cron at /api/scheduled/xero-financial-sync (every 5 minutes)
- * Also triggered by: manual "Sync Financials" button which creates the sync log entry
+ * Triggered by: Railway cron at /api/scheduled/xero-financial-sync (every 5 minutes)
+ * Also triggered by: manual "Sync Financials" button which creates the chunked sync log entry
  */
 import type { Express, Request, Response } from "express";
 import { authenticateScheduledRequest } from "./_core/scheduled-auth";
@@ -85,6 +85,172 @@ async function getPreviousCompletedFinancialSyncDate(db: any, connectionId: numb
   const date = new Date(baseDate);
   if (Number.isNaN(date.getTime())) return null;
   return new Date(date.getTime() - INCREMENTAL_OVERLAP_MS);
+}
+
+async function getLatestCompletedFinancialSyncDate(db: any, connectionId: number) {
+  const [lastSync] = await db.select({
+    completedAt: xeroSyncLogs.completedAt,
+    startedAt: xeroSyncLogs.startedAt,
+  })
+    .from(xeroSyncLogs)
+    .where(and(
+      eq(xeroSyncLogs.xeroConnectionId, connectionId),
+      eq(xeroSyncLogs.syncType, "financials"),
+      eq(xeroSyncLogs.status, "completed"),
+      sql`${xeroSyncLogs.completedAt} IS NOT NULL`,
+    ))
+    .orderBy(sql`${xeroSyncLogs.completedAt} DESC`)
+    .limit(1);
+
+  const baseDate = lastSync?.completedAt || lastSync?.startedAt;
+  if (!baseDate) return null;
+  const date = new Date(baseDate);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function autoAccountingSyncIntervalMs() {
+  const minutes = Number(process.env.XERO_AUTO_ACCOUNTING_SYNC_INTERVAL_MINUTES || 60);
+  return Math.max(5, Number.isFinite(minutes) ? minutes : 60) * 60 * 1000;
+}
+
+function autoAccountingSyncMaxPages() {
+  const pages = Number(process.env.XERO_AUTO_ACCOUNTING_SYNC_MAX_PAGES || 10);
+  return Math.max(1, Math.min(100, Number.isFinite(pages) ? pages : 10));
+}
+
+async function getMappedProjectsForConnection(db: any, connection: typeof xeroConnections.$inferSelect) {
+  const conditions: any[] = [eq(xeroProjectMappings.xeroConnectionId, connection.id)];
+  if (connection.appTenantId) {
+    conditions.push(eq(constructionJobs.tenantId, connection.appTenantId));
+  }
+
+  const rows = await db
+    .select({ mapping: xeroProjectMappings })
+    .from(xeroProjectMappings)
+    .innerJoin(constructionJobs, eq(xeroProjectMappings.jobId, constructionJobs.id))
+    .where(and(...conditions))
+    .orderBy(asc(xeroProjectMappings.id));
+
+  return rows.map((row: { mapping: typeof xeroProjectMappings.$inferSelect }) => row.mapping);
+}
+
+async function runAutomaticAccountingCatchup(db: any) {
+  if (process.env.XERO_AUTO_ACCOUNTING_SYNC_DISABLED === "true") {
+    return { enabled: false, skipped: "disabled" };
+  }
+
+  const intervalMs = autoAccountingSyncIntervalMs();
+  const maxPages = autoAccountingSyncMaxPages();
+  const now = Date.now();
+  const connections = await db
+    .select()
+    .from(xeroConnections)
+    .where(eq(xeroConnections.isActive, true))
+    .orderBy(asc(xeroConnections.id));
+
+  const summary = {
+    enabled: true,
+    intervalMinutes: Math.round(intervalMs / 60000),
+    maxPages,
+    checkedConnections: connections.length,
+    syncedConnections: 0,
+    skippedRecent: 0,
+    skippedNoMappings: 0,
+    failedConnections: 0,
+    imported: 0,
+    unmatched: 0,
+    affectedMappings: 0,
+    results: [] as Array<Record<string, unknown>>,
+  };
+
+  for (const connection of connections) {
+    const lastCompleted = await getLatestCompletedFinancialSyncDate(db, connection.id);
+    if (lastCompleted && now - lastCompleted.getTime() < intervalMs) {
+      summary.skippedRecent++;
+      continue;
+    }
+
+    const mappings = await getMappedProjectsForConnection(db, connection);
+    if (!mappings.length) {
+      summary.skippedNoMappings++;
+      continue;
+    }
+
+    const [syncLog] = await db.insert(xeroSyncLogs).values({
+      xeroConnectionId: connection.id,
+      syncType: "financials",
+      status: "running",
+      totalItems: mappings.length,
+      syncCursor: 0,
+    });
+    const syncLogId = syncLog.insertId;
+
+    try {
+      const auth = await getValidAccessToken({
+        connectionId: connection.id,
+        appTenantId: connection.appTenantId,
+      });
+      if (!auth) throw new Error("Xero connection unavailable or token refresh failed");
+
+      const modifiedSince = lastCompleted
+        ? new Date(lastCompleted.getTime() - INCREMENTAL_OVERLAP_MS)
+        : null;
+      const result = await syncXeroAccountingTransactionsForMappings(db, auth, mappings, {
+        appTenantId: connection.appTenantId,
+        maxPages,
+        includeUnmatched: true,
+        modifiedSince,
+      });
+      const warning = result.fetchErrors.length
+        ? result.fetchErrors.join("; ")
+        : modifiedSince
+          ? `Automatic incremental accounting sync since ${modifiedSince.toISOString()}`
+          : "Automatic accounting catch-up sync";
+
+      await db.update(xeroSyncLogs)
+        .set({
+          status: "completed",
+          itemsProcessed: result.imported,
+          itemsFailed: result.fetchErrors.length,
+          errorMessage: warning,
+          syncCursor: mappings.length,
+          completedAt: new Date(),
+        })
+        .where(eq(xeroSyncLogs.id, syncLogId));
+
+      summary.syncedConnections++;
+      summary.imported += result.imported;
+      summary.unmatched += result.unmatched;
+      summary.affectedMappings += result.affectedMappings;
+      summary.results.push({
+        connectionId: connection.id,
+        tenantName: connection.tenantName,
+        imported: result.imported,
+        unmatched: result.unmatched,
+        affectedMappings: result.affectedMappings,
+        fetched: result.fetched,
+        modifiedSince: result.incrementalSince,
+        fetchErrors: result.fetchErrors,
+      });
+    } catch (err: any) {
+      summary.failedConnections++;
+      await db.update(xeroSyncLogs)
+        .set({
+          status: "failed",
+          errorMessage: err?.message || "Automatic accounting catch-up failed",
+          completedAt: new Date(),
+        })
+        .where(eq(xeroSyncLogs.id, syncLogId));
+      await recordSyncFailure(db, syncLogId, "accounting_auto_catchup", connection.id, connection.tenantName || `Xero connection ${connection.id}`, err);
+      summary.results.push({
+        connectionId: connection.id,
+        tenantName: connection.tenantName,
+        error: err?.message || "Automatic accounting catch-up failed",
+      });
+    }
+  }
+
+  return summary;
 }
 
 // Xero Projects API type
@@ -161,8 +327,9 @@ export function registerScheduledXeroFinancialSync(app: Express) {
         .limit(1);
 
       if (!activeSyncLog) {
-        console.log("[XeroFinancialSync] No active sync — skipping this heartbeat");
-        return res.json({ ok: true, skipped: "no-active-sync" });
+        const autoSync = await runAutomaticAccountingCatchup(db);
+        console.log("[XeroFinancialSync] No active chunked sync — automatic accounting catch-up result:", autoSync);
+        return res.json({ ok: true, skipped: "no-active-chunked-sync", autoSync });
       }
 
       const startedAt = activeSyncLog.startedAt ? new Date(activeSyncLog.startedAt).getTime() : 0;
