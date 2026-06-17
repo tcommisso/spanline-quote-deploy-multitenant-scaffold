@@ -3427,6 +3427,200 @@ export const daZoneAssignments = mysqlTable("da_zone_assignments", {
 export type DaZoneAssignment = typeof daZoneAssignments.$inferSelect;
 export type InsertDaZoneAssignment = typeof daZoneAssignments.$inferInsert;
 
+// ─── Security Screens Pricing & Quotes ──────────────────────────────────────
+export const ssPricingSettings = mysqlTable("ss_pricing_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  defaultMarkupPercent: decimal("defaultMarkupPercent", { precision: 5, scale: 2 }).default("30.00").notNull(),
+  updatedBy: int("updatedBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_ss_pricing_settings_tenant").on(table.tenantId),
+  index("idx_ss_pricing_settings_tenant").on(table.tenantId),
+]);
+export type SsPricingSettings = typeof ssPricingSettings.$inferSelect;
+export type InsertSsPricingSettings = typeof ssPricingSettings.$inferInsert;
+
+export const ssPricingMatrix = mysqlTable("ss_pricing_matrix", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  brand: varchar("brand", { length: 64 }).notNull(),
+  productType: varchar("productType", { length: 64 }).notNull(),
+  heightMm: int("heightMm").notNull(),
+  widthMm: int("widthMm").notNull(),
+  priceIncGst: decimal("priceIncGst", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_matrix_tenant_brand_type").on(table.tenantId, table.brand, table.productType),
+  uniqueIndex("uq_ss_matrix_tenant_size").on(table.tenantId, table.brand, table.productType, table.heightMm, table.widthMm),
+]);
+export type SsPricingMatrix = typeof ssPricingMatrix.$inferSelect;
+export type InsertSsPricingMatrix = typeof ssPricingMatrix.$inferInsert;
+
+export const ssPriceAdjustments = mysqlTable("ss_price_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  effectiveDate: varchar("effectiveDate", { length: 10 }).notNull(),
+  percentageIncrease: decimal("percentageIncrease", { precision: 6, scale: 2 }).notNull(),
+  description: text("description"),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_adjustments_tenant_date").on(table.tenantId, table.effectiveDate),
+]);
+export type SsPriceAdjustment = typeof ssPriceAdjustments.$inferSelect;
+export type InsertSsPriceAdjustment = typeof ssPriceAdjustments.$inferInsert;
+
+export const ssCostAdditions = mysqlTable("ss_cost_additions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  category: varchar("category", { length: 64 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  cost: decimal("cost", { precision: 12, scale: 2 }).notNull(),
+  uom: varchar("uom", { length: 32 }),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_costs_tenant_category").on(table.tenantId, table.category),
+]);
+export type SsCostAddition = typeof ssCostAdditions.$inferSelect;
+export type InsertSsCostAddition = typeof ssCostAdditions.$inferInsert;
+
+export const ssProductOptions = mysqlTable("ss_product_options", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  category: varchar("category", { length: 64 }).notNull(),
+  orderCode: varchar("orderCode", { length: 100 }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  brand: varchar("brand", { length: 64 }),
+  costPrice: decimal("costPrice", { precision: 12, scale: 2 }).notNull(),
+  sellPrice: decimal("sellPrice", { precision: 12, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_options_tenant_category").on(table.tenantId, table.category),
+]);
+export type SsProductOption = typeof ssProductOptions.$inferSelect;
+export type InsertSsProductOption = typeof ssProductOptions.$inferInsert;
+
+export const ssGlassInfill = mysqlTable("ss_glass_infill", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  glassType: varchar("glassType", { length: 128 }).notNull(),
+  description: text("description"),
+  cost: decimal("cost", { precision: 12, scale: 2 }).notNull(),
+  uom: varchar("uom", { length: 32 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_glass_tenant").on(table.tenantId),
+]);
+export type SsGlassInfill = typeof ssGlassInfill.$inferSelect;
+export type InsertSsGlassInfill = typeof ssGlassInfill.$inferInsert;
+
+export const ssColours = mysqlTable("ss_colours", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 128 }).notNull(),
+  hexCode: varchar("hexCode", { length: 16 }).notNull(),
+  colorbondName: varchar("colorbondName", { length: 128 }),
+  surchargePercent: decimal("surchargePercent", { precision: 5, scale: 2 }).default("0.00").notNull(),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+}, (table) => [
+  index("idx_ss_colours_tenant_sort").on(table.tenantId, table.sortOrder),
+]);
+export type SsColour = typeof ssColours.$inferSelect;
+export type InsertSsColour = typeof ssColours.$inferInsert;
+
+export const ssQuotes = mysqlTable("ss_quotes", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteNumber: varchar("quoteNumber", { length: 32 }).notNull(),
+  clientName: varchar("clientName", { length: 255 }).notNull(),
+  clientEmail: varchar("clientEmail", { length: 320 }),
+  clientPhone: varchar("clientPhone", { length: 64 }),
+  siteAddress: text("siteAddress"),
+  markupPercent: decimal("markupPercent", { precision: 5, scale: 2 }).default("30.00").notNull(),
+  status: mysqlEnum("ssQuoteStatus", ["draft", "sent", "accepted", "declined", "expired"]).default("draft").notNull(),
+  subtotalExGst: decimal("subtotalExGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  gstAmount: decimal("gstAmount", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  totalIncGst: decimal("totalIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  notes: text("notes"),
+  leadId: int("leadId").references(() => crmLeads.id, { onDelete: "set null" }),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_ss_quote_tenant_number").on(table.tenantId, table.quoteNumber),
+  index("idx_ss_quotes_tenant_status").on(table.tenantId, table.status),
+  index("idx_ss_quotes_lead").on(table.leadId),
+]);
+export type SsQuote = typeof ssQuotes.$inferSelect;
+export type InsertSsQuote = typeof ssQuotes.$inferInsert;
+
+export const ssQuoteItems = mysqlTable("ss_quote_items", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteId: int("quoteId").notNull().references(() => ssQuotes.id, { onDelete: "cascade" }),
+  itemNumber: int("itemNumber").notNull(),
+  brand: varchar("brand", { length: 64 }).notNull(),
+  productType: varchar("productType", { length: 64 }).notNull(),
+  widthMm: int("widthMm").notNull(),
+  heightMm: int("heightMm").notNull(),
+  quantity: int("quantity").default(1).notNull(),
+  colourId: int("colourId").references(() => ssColours.id, { onDelete: "set null" }),
+  colourName: varchar("colourName", { length: 128 }),
+  handleSide: varchar("handleSide", { length: 32 }),
+  hingeSide: varchar("hingeSide", { length: 32 }),
+  openingDirection: varchar("openingDirection", { length: 32 }),
+  hingePosition: varchar("hingePosition", { length: 32 }),
+  glassInfillId: int("glassInfillId").references(() => ssGlassInfill.id, { onDelete: "set null" }),
+  photoUrl: text("photoUrl"),
+  notes: text("notes"),
+  basePriceIncGst: decimal("basePriceIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  adjustedPrice: decimal("adjustedPrice", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  optionsTotal: decimal("optionsTotal", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  lineTotalExGst: decimal("lineTotalExGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_ss_items_tenant_quote").on(table.tenantId, table.quoteId),
+  index("idx_ss_items_quote").on(table.quoteId),
+]);
+export type SsQuoteItem = typeof ssQuoteItems.$inferSelect;
+export type InsertSsQuoteItem = typeof ssQuoteItems.$inferInsert;
+
+export const ssQuoteItemOptions = mysqlTable("ss_quote_item_options", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteItemId: int("quoteItemId").notNull().references(() => ssQuoteItems.id, { onDelete: "cascade" }),
+  productOptionId: int("productOptionId").references(() => ssProductOptions.id, { onDelete: "set null" }),
+  quantity: int("quantity").default(1).notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
+  lineTotal: decimal("lineTotal", { precision: 12, scale: 2 }).notNull(),
+}, (table) => [
+  index("idx_ss_item_options_tenant_item").on(table.tenantId, table.quoteItemId),
+]);
+export type SsQuoteItemOption = typeof ssQuoteItemOptions.$inferSelect;
+export type InsertSsQuoteItemOption = typeof ssQuoteItemOptions.$inferInsert;
+
+export const ssQuoteCostAdditions = mysqlTable("ss_quote_cost_additions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteId: int("quoteId").notNull().references(() => ssQuotes.id, { onDelete: "cascade" }),
+  costAdditionId: int("costAdditionId").references(() => ssCostAdditions.id, { onDelete: "set null" }),
+  quantity: decimal("quantity", { precision: 10, scale: 2 }).default("1.00").notNull(),
+  unitCost: decimal("unitCost", { precision: 12, scale: 2 }).notNull(),
+  lineTotal: decimal("lineTotal", { precision: 12, scale: 2 }).notNull(),
+}, (table) => [
+  index("idx_ss_quote_costs_tenant_quote").on(table.tenantId, table.quoteId),
+]);
+export type SsQuoteCostAddition = typeof ssQuoteCostAdditions.$inferSelect;
+export type InsertSsQuoteCostAddition = typeof ssQuoteCostAdditions.$inferInsert;
+
 // ─── Proposals (Centralised Proposal Generation) ─────────────────────────────
 export const proposals = mysqlTable("proposals", {
   id: int("id").autoincrement().primaryKey(),
@@ -3442,7 +3636,7 @@ export const proposals = mysqlTable("proposals", {
 
   // Section selection (JSON array: [{type, quoteId, label, worksPrice, description}])
   sections: json("sections").$type<{
-    type: "opq" | "deck" | "eclipse" | "blind" | "louvre" | "security_door";
+    type: "opq" | "deck" | "eclipse" | "blind" | "louvre" | "security_door" | "security_screen";
     quoteId: number;
     label: string;
     worksPrice: number;
@@ -3870,6 +4064,9 @@ export const manufacturingPurchaseOrders = mysqlTable("manufacturing_purchase_or
   supplierPhone: varchar("supplierPhone", { length: 64 }),
   supplierAddress: text("supplierAddress"),
   supplierAbn: varchar("supplierAbn", { length: 64 }),
+  deliverToBranchId: int("deliverToBranchId").references(() => branches.id, { onDelete: "set null" }),
+  deliverToBranchName: varchar("deliverToBranchName", { length: 128 }),
+  deliverToAddress: text("deliverToAddress"),
   paymentTermsDays: int("paymentTermsDays").default(14),
   status: mysqlEnum("status", ["draft", "issued", "confirmed", "partially_received", "received", "paid", "cancelled"]).default("draft").notNull(),
   lineItems: json("lineItems"), // Array of { productName, productCode, quantity, unit, unitPrice, totalPrice, colour, description }
@@ -5409,20 +5606,25 @@ export type NswDaPollLog = typeof nswDaPollLog.$inferSelect;
 /** Editable AI system prompts — admin can fine-tune each prompt key */
 export const aiPrompts = mysqlTable("ai_prompts", {
   id: int("id").autoincrement().primaryKey(),
-  key: varchar("key", { length: 128 }).notNull().unique(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 128 }).notNull(),
   label: varchar("label", { length: 255 }).notNull(),
   description: text("description"),
   systemPrompt: mediumtext("system_prompt").notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_ai_prompts_tenant").on(table.tenantId),
+  uniqueIndex("uq_ai_prompts_tenant_key").on(table.tenantId, table.key),
+]);
 export type AiPrompt = typeof aiPrompts.$inferSelect;
 export type InsertAiPrompt = typeof aiPrompts.$inferInsert;
 
 /** Knowledge chunks that get injected into AI context */
 export const aiKnowledgeChunks = mysqlTable("ai_knowledge_chunks", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   content: mediumtext("content").notNull(),
   category: varchar("category", { length: 128 }),
@@ -5430,13 +5632,17 @@ export const aiKnowledgeChunks = mysqlTable("ai_knowledge_chunks", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_ai_knowledge_tenant").on(table.tenantId),
+  index("idx_ai_knowledge_tenant_active").on(table.tenantId, table.isActive),
+]);
 export type AiKnowledgeChunk = typeof aiKnowledgeChunks.$inferSelect;
 export type InsertAiKnowledgeChunk = typeof aiKnowledgeChunks.$inferInsert;
 
 /** User feedback on AI responses (thumbs up/down + comments) */
 export const aiFeedback = mysqlTable("ai_feedback", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("user_id").notNull(),
   sessionId: varchar("session_id", { length: 128 }),
   messageContent: text("message_content"), // The AI response that was rated
@@ -5449,6 +5655,7 @@ export const aiFeedback = mysqlTable("ai_feedback", {
   adminNotes: text("admin_notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
+  index("idx_ai_feedback_tenant").on(table.tenantId),
   index("idx_ai_feedback_user").on(table.userId),
   index("idx_ai_feedback_rating").on(table.rating),
   index("idx_ai_feedback_status").on(table.status),
@@ -5461,6 +5668,7 @@ export type InsertAiFeedback = typeof aiFeedback.$inferInsert;
 /** Few-shot example pairs — gold-standard Q&A injected into prompts */
 export const aiFewShotExamples = mysqlTable("ai_few_shot_examples", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   promptKey: varchar("prompt_key", { length: 128 }).notNull(),
   userInput: text("user_input").notNull(),
   expectedOutput: mediumtext("expected_output").notNull(),
@@ -5470,6 +5678,7 @@ export const aiFewShotExamples = mysqlTable("ai_few_shot_examples", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
+  index("idx_ai_fewshot_tenant").on(table.tenantId),
   index("idx_ai_fewshot_prompt").on(table.promptKey),
   index("idx_ai_fewshot_active").on(table.isActive),
 ]);
@@ -5479,6 +5688,7 @@ export type InsertAiFewShotExample = typeof aiFewShotExamples.$inferInsert;
 /** Correction memory — stores user corrections for similar future queries */
 export const aiCorrections = mysqlTable("ai_corrections", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("user_id"),
   originalQuery: text("original_query").notNull(),
   originalResponse: mediumtext("original_response"),
@@ -5490,6 +5700,7 @@ export const aiCorrections = mysqlTable("ai_corrections", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
+  index("idx_ai_correction_tenant").on(table.tenantId),
   index("idx_ai_correction_prompt").on(table.promptKey),
   index("idx_ai_correction_active").on(table.isActive),
 ]);

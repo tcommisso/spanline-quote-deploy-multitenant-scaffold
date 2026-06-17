@@ -4,7 +4,7 @@ import process from "node:process";
 import mysql from "mysql2/promise";
 
 const migrationPath = process.argv[2];
-const databaseUrl = process.env.DATABASE_URL ?? process.env.MYSQL_URL;
+const databaseUrl = process.env.MYSQL_PUBLIC_URL ?? process.env.DATABASE_URL ?? process.env.MYSQL_URL;
 
 if (!migrationPath) {
   console.error("Usage: pnpm db:migrate:sql [path-to-sql-file]");
@@ -12,7 +12,7 @@ if (!migrationPath) {
 }
 
 if (!databaseUrl) {
-  console.error("DATABASE_URL or MYSQL_URL is required.");
+  console.error("DATABASE_URL, MYSQL_URL, or MYSQL_PUBLIC_URL is required.");
   process.exit(1);
 }
 

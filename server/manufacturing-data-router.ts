@@ -72,6 +72,32 @@ function normalizeProduct(row: any) {
   };
 }
 
+function compactSearchValue(value: string) {
+  return value.trim().toLowerCase().replace(/[\s\-_/\\.]/g, "");
+}
+
+function catalogueSearchCondition(search: string) {
+  const raw = search.trim().toLowerCase();
+  const term = `%${raw}%`;
+  const compact = compactSearchValue(search);
+  const compactTerm = `%${compact}%`;
+  const compactOAsZeroTerm = `%${compact.replace(/o/g, "0")}%`;
+  const compactZeroAsOTerm = `%${compact.replace(/0/g, "o")}%`;
+  const compactSku = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(sku, ''), ' ', ''), '-', ''), '/', ''), '.', ''), '_', ''))`;
+  const compactDescription = sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(description, ''), ' ', ''), '-', ''), '/', ''), '.', ''), '_', ''))`;
+  return sql`(
+    LOWER(COALESCE(sku, '')) LIKE ${term}
+    OR LOWER(description) LIKE ${term}
+    OR LOWER(COALESCE(category, '')) LIKE ${term}
+    OR LOWER(COALESCE(subGroup, '')) LIKE ${term}
+    OR LOWER(COALESCE(colour, '')) LIKE ${term}
+    OR ${compactSku} LIKE ${compactTerm}
+    OR REPLACE(${compactSku}, 'o', '0') LIKE ${compactOAsZeroTerm}
+    OR REPLACE(${compactSku}, '0', 'o') LIKE ${compactZeroAsOTerm}
+    OR ${compactDescription} LIKE ${compactTerm}
+  )`;
+}
+
 const productInput = z.object({
   sku: z.string().optional().nullable(),
   description: z.string().min(1),
@@ -85,7 +111,7 @@ const productInput = z.object({
 });
 
 export const manufacturingDataRouter = router({
-  list: tenantAdminProcedure
+  list: tenantProcedure
     .input(z.object({
       search: z.string().optional(),
       category: z.string().optional(),
@@ -104,14 +130,7 @@ export const manufacturingDataRouter = router({
       if (input?.category && input.category !== "all") conditions.push(sql`category = ${input.category}`);
       if (input?.subGroup && input.subGroup !== "all") conditions.push(sql`subGroup = ${input.subGroup}`);
       if (input?.search?.trim()) {
-        const term = `%${input.search.trim().toLowerCase()}%`;
-        conditions.push(sql`(
-          LOWER(COALESCE(sku, '')) LIKE ${term}
-          OR LOWER(description) LIKE ${term}
-          OR LOWER(COALESCE(category, '')) LIKE ${term}
-          OR LOWER(COALESCE(subGroup, '')) LIKE ${term}
-          OR LOWER(COALESCE(colour, '')) LIKE ${term}
-        )`);
+        conditions.push(catalogueSearchCondition(input.search));
       }
       const where = sql`WHERE ${sql.join(conditions, sql` AND `)}`;
       const [rowsResult] = await db.execute(sql`
@@ -135,14 +154,7 @@ export const manufacturingDataRouter = router({
       const tenantId = tenantIdForContext(ctx);
       const conditions = [tenantSql(tenantId), sql`isActive = 1`];
       if (input?.query?.trim()) {
-        const term = `%${input.query.trim().toLowerCase()}%`;
-        conditions.push(sql`(
-          LOWER(COALESCE(sku, '')) LIKE ${term}
-          OR LOWER(description) LIKE ${term}
-          OR LOWER(COALESCE(category, '')) LIKE ${term}
-          OR LOWER(COALESCE(subGroup, '')) LIKE ${term}
-          OR LOWER(COALESCE(colour, '')) LIKE ${term}
-        )`);
+        conditions.push(catalogueSearchCondition(input.query));
       }
       const [rowsResult] = await db.execute(sql`
         SELECT id, tenantId, sku, description, category, subGroup, uom, unitCost, supplier, colour, isActive, createdAt, updatedAt
@@ -154,7 +166,7 @@ export const manufacturingDataRouter = router({
       return rowsFromExecute(rowsResult).map(normalizeProduct);
     }),
 
-  facets: tenantAdminProcedure.query(async ({ ctx }) => {
+  facets: tenantProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     await ensureManufacturingCatalogueTable(db);
     const tenantId = tenantIdForContext(ctx);

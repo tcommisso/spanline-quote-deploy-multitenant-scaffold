@@ -6,7 +6,7 @@ import * as eclipseDb from "./eclipse-db";
 import * as deckDb from "./deck-db";
 
 const sectionSchema = z.object({
-  type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door"]),
+  type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door", "security_screen"]),
   quoteId: z.number(),
   label: z.string(),
   worksPrice: z.number(),
@@ -264,7 +264,7 @@ export const proposalRouter = router({
   appendixData: protectedProcedure
     .input(z.object({
       sections: z.array(z.object({
-        type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door"]),
+        type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door", "security_screen"]),
         quoteId: z.number(),
       })),
     }))

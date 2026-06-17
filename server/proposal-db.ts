@@ -5,7 +5,7 @@ import {
   proposals, proposalActivity,
   type InsertProposal, type Proposal,
   type InsertProposalActivity,
-  quotes, quoteComponents, deckQuotes, eclipseQuotes, crmLeads,
+  quotes, quoteComponents, deckQuotes, eclipseQuotes, ssQuotes, crmLeads,
 } from "../drizzle/schema";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
@@ -208,6 +208,14 @@ export async function getActiveQuotesForClient(clientId: number) {
     otherCostDescription: eclipseQuotes.otherCostDescription,
   }).from(eclipseQuotes).where(eq(eclipseQuotes.clientId, clientId));
 
+  const securityScreenRows = await db.select({
+    id: ssQuotes.id,
+    quoteNumber: ssQuotes.quoteNumber,
+    status: ssQuotes.status,
+    subtotalExGst: ssQuotes.subtotalExGst,
+    totalIncGst: ssQuotes.totalIncGst,
+  }).from(ssQuotes).where(eq(ssQuotes.leadId, clientId));
+
   return {
     opq: opqWithTotals,
     deck: deckRows.map(q => {
@@ -255,6 +263,15 @@ export async function getActiveQuotesForClient(clientId: number) {
         label: `Eclipse ${q.quoteNumber} — ${q.totalSqm || "?"}m²`,
       };
     }),
+    securityScreens: securityScreenRows.map(q => ({
+      id: q.id,
+      quoteNumber: q.quoteNumber,
+      status: q.status,
+      type: "security_screen" as const,
+      worksPrice: parseFloat(q.subtotalExGst || "0"),
+      sharedCosts: [],
+      label: `Security Screens ${q.quoteNumber}`,
+    })),
   };
 }
 
@@ -270,6 +287,8 @@ export async function syncSectionStatuses(
       await db.update(deckQuotes).set({ status: newStatus } as any).where(eq(deckQuotes.id, s.quoteId));
     } else if (s.type === "eclipse") {
       await db.update(eclipseQuotes).set({ status: newStatus } as any).where(eq(eclipseQuotes.id, s.quoteId));
+    } else if (s.type === "security_screen") {
+      await db.update(ssQuotes).set({ status: newStatus } as any).where(eq(ssQuotes.id, s.quoteId));
     }
   }
 }

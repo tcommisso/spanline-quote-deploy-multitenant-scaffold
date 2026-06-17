@@ -95,6 +95,8 @@ import { nswDaRouter } from "./nsw-da-router";
 import { aiLearningRouter } from "./ai-learning-router";
 import { tenantRouter } from "./tenant-router";
 import { apiHealthRouter } from "./api-health-router";
+import { securityScreensRouter } from "./security-screens-router";
+import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { isStorageConfigured, storageGet, storageDownload, storagePut } from "./storage";
 import { syncQuoteHbcfRequirement } from "./hbcf-service";
 
@@ -1848,17 +1850,24 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
           const drizzleDb = (await (await import("./db")).getDb())!;
           if (drizzleDb) {
             const { aiKnowledgeChunks, aiFewShotExamples, aiCorrections } = await import("../drizzle/schema");
-            const { eq, asc } = await import("drizzle-orm");
+            const { eq, asc, and } = await import("drizzle-orm");
+            const tenantId = tenantIdFromContext(ctx);
+            const withTenantScope = (tenantColumn: any, conditions: any[]) => {
+              const scope = tenantScoped(tenantColumn, tenantId);
+              if (scope) conditions.push(scope);
+              return conditions.length === 1 ? conditions[0] : and(...conditions);
+            };
 
             // Active knowledge chunks
-            const chunks = await drizzleDb.select().from(aiKnowledgeChunks).where(eq(aiKnowledgeChunks.isActive, true));
+            const chunks = await drizzleDb.select().from(aiKnowledgeChunks)
+              .where(withTenantScope(aiKnowledgeChunks.tenantId, [eq(aiKnowledgeChunks.isActive, true)]));
             if (chunks.length > 0) {
               aiKnowledgeContext = "\n\n--- ADDITIONAL KNOWLEDGE ---\n" + chunks.map(c => `[${c.category || "general"}] ${c.title}:\n${c.content}`).join("\n\n");
             }
 
             // Active few-shot examples for 'engini' prompt
             const examples = await drizzleDb.select().from(aiFewShotExamples)
-              .where(eq(aiFewShotExamples.isActive, true))
+              .where(withTenantScope(aiFewShotExamples.tenantId, [eq(aiFewShotExamples.isActive, true)]))
               .orderBy(asc(aiFewShotExamples.sortOrder));
             const enginiExamples = examples.filter(e => e.promptKey === "engini");
             for (const ex of enginiExamples.slice(0, 5)) { // Max 5 few-shot examples
@@ -1868,7 +1877,7 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
 
             // Active corrections for 'engini' prompt — only inject those relevant to the current query
             const corrections = await drizzleDb.select().from(aiCorrections)
-              .where(eq(aiCorrections.isActive, true));
+              .where(withTenantScope(aiCorrections.tenantId, [eq(aiCorrections.isActive, true)]));
             const enginiCorrections = corrections.filter(c => !c.promptKey || c.promptKey === "engini");
             // Relevance filter: inject correction only if query shares significant keywords with originalQuery
             const queryWords = input.question.toLowerCase().split(/\s+/).filter(w => w.length > 3);
@@ -2138,6 +2147,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   xeroSupplierSync: xeroSupplierSyncRouter,
   plans: plansRouter,
   proposals: proposalRouter,
+  securityScreens: securityScreensRouter,
   reviews: reviewsRouter,
   manufacturing: manufacturingRouter,
   manufacturingData: manufacturingDataRouter,

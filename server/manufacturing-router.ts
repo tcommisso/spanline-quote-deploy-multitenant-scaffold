@@ -581,6 +581,9 @@ export const manufacturingRouter = router({
           supplierPhone: manufacturingPurchaseOrders.supplierPhone,
           supplierAddress: manufacturingPurchaseOrders.supplierAddress,
           supplierAbn: manufacturingPurchaseOrders.supplierAbn,
+          deliverToBranchId: manufacturingPurchaseOrders.deliverToBranchId,
+          deliverToBranchName: manufacturingPurchaseOrders.deliverToBranchName,
+          deliverToAddress: manufacturingPurchaseOrders.deliverToAddress,
           status: manufacturingPurchaseOrders.status,
           lineItems: manufacturingPurchaseOrders.lineItems,
           totalAmount: manufacturingPurchaseOrders.totalAmount,
@@ -606,6 +609,9 @@ export const manufacturingRouter = router({
         supplierPhone: z.string().optional(),
         supplierAddress: z.string().optional(),
         supplierAbn: z.string().optional(),
+        deliverToBranchId: z.number().nullable().optional(),
+        deliverToBranchName: z.string().optional(),
+        deliverToAddress: z.string().optional(),
         lineItems: z.array(z.object({
           productName: z.string(),
           productCode: z.string().optional(),
@@ -637,6 +643,9 @@ export const manufacturingRouter = router({
           supplierPhone: input.supplierPhone,
           supplierAddress: input.supplierAddress,
           supplierAbn: input.supplierAbn,
+          deliverToBranchId: input.deliverToBranchId ?? null,
+          deliverToBranchName: input.deliverToBranchName,
+          deliverToAddress: input.deliverToAddress,
           status: "draft",
           lineItems: input.lineItems,
           totalAmount: input.totalAmount?.toString(),
@@ -702,6 +711,9 @@ export const manufacturingRouter = router({
         supplierPhone: z.string().optional(),
         supplierAddress: z.string().optional(),
         supplierAbn: z.string().optional(),
+        deliverToBranchId: z.number().nullable().optional(),
+        deliverToBranchName: z.string().nullable().optional(),
+        deliverToAddress: z.string().nullable().optional(),
         requiredByDate: z.string().nullable().optional(),
         notes: z.string().nullable().optional(),
       }))
@@ -715,6 +727,9 @@ export const manufacturingRouter = router({
         if (updates.supplierPhone !== undefined) setData.supplierPhone = updates.supplierPhone;
         if (updates.supplierAddress !== undefined) setData.supplierAddress = updates.supplierAddress;
         if (updates.supplierAbn !== undefined) setData.supplierAbn = updates.supplierAbn;
+        if (updates.deliverToBranchId !== undefined) setData.deliverToBranchId = updates.deliverToBranchId;
+        if (updates.deliverToBranchName !== undefined) setData.deliverToBranchName = updates.deliverToBranchName;
+        if (updates.deliverToAddress !== undefined) setData.deliverToAddress = updates.deliverToAddress;
         if (updates.requiredByDate !== undefined) setData.requiredByDate = updates.requiredByDate ? new Date(updates.requiredByDate) : null;
         if (updates.notes !== undefined) setData.notes = updates.notes;
         if (Object.keys(setData).length > 0) {

@@ -17,7 +17,7 @@ import type { jsPDF } from "jspdf";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type SectionType = "opq" | "deck" | "eclipse" | "blind" | "louvre" | "security_door";
+export type SectionType = "opq" | "deck" | "eclipse" | "blind" | "louvre" | "security_door" | "security_screen";
 
 /** Context passed to each plugin when generating appendix pages */
 export interface AppendixContext {

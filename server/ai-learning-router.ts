@@ -4,11 +4,20 @@ import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { aiPrompts, aiKnowledgeChunks, aiFeedback, aiFewShotExamples, aiCorrections } from "../drizzle/schema";
 import { eq, desc, and, sql } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 async function requireDb() {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
   return db!;
+}
+
+function scopedWhere(column: any, tenantId: number | null | undefined, extra: any[] = []) {
+  const conditions = [...extra];
+  appendTenantScope(conditions, column, tenantId);
+  if (conditions.length === 0) return sql`1 = 1`;
+  if (conditions.length === 1) return conditions[0];
+  return and(...conditions);
 }
 
 const DEFAULT_ENGINI_PROMPT = `You are Engini, the technical knowledge specialist for Altaspan and Spanline Home Additions.
@@ -17,12 +26,19 @@ You help staff with engineering, pricing, components, construction methods, appr
 
 Use the available technical library and knowledge context when provided. If the source material is incomplete or uncertain, say so plainly and suggest what the team should verify before acting. Do not invent product ratings, spans, certificates, prices, or compliance requirements.`;
 
-async function ensureDefaultPrompts(db: Awaited<ReturnType<typeof requireDb>>) {
-  const existing = await db.select({ id: aiPrompts.id }).from(aiPrompts).limit(1);
+async function ensureDefaultPrompts(
+  db: Awaited<ReturnType<typeof requireDb>>,
+  tenantId: number | null | undefined,
+) {
+  const existing = await db.select({ id: aiPrompts.id })
+    .from(aiPrompts)
+    .where(scopedWhere(aiPrompts.tenantId, tenantId))
+    .limit(1);
   if (existing.length) return;
 
   try {
     await db.insert(aiPrompts).values({
+      tenantId: tenantId ?? null,
       key: "engini",
       label: "Engini Main Assistant",
       description: "Default technical assistant prompt used when no custom AI settings have been imported.",
@@ -42,17 +58,24 @@ export const aiLearningRouter = router({
   // PROMPTS — Admin can view/edit all AI system prompts
   // ═══════════════════════════════════════════════════════════════════════════
   prompts: router({
-    list: adminProcedure.query(async () => {
+    list: adminProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
-      await ensureDefaultPrompts(db);
-      return db.select().from(aiPrompts).orderBy(aiPrompts.key);
+      const tenantId = tenantIdFromContext(ctx);
+      await ensureDefaultPrompts(db, tenantId);
+      return db.select()
+        .from(aiPrompts)
+        .where(scopedWhere(aiPrompts.tenantId, tenantId))
+        .orderBy(aiPrompts.key);
     }),
 
     get: adminProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const [row] = await db.select().from(aiPrompts).where(eq(aiPrompts.id, input.id)).limit(1);
+        const [row] = await db.select()
+          .from(aiPrompts)
+          .where(scopedWhere(aiPrompts.tenantId, tenantIdFromContext(ctx), [eq(aiPrompts.id, input.id)]))
+          .limit(1);
         return row || null;
       }),
 
@@ -65,8 +88,9 @@ export const aiLearningRouter = router({
         systemPrompt: z.string().min(1),
         isActive: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         if (input.id) {
           await db.update(aiPrompts)
             .set({
@@ -76,10 +100,11 @@ export const aiLearningRouter = router({
               systemPrompt: input.systemPrompt,
               isActive: input.isActive ?? true,
             })
-            .where(eq(aiPrompts.id, input.id));
+            .where(scopedWhere(aiPrompts.tenantId, tenantId, [eq(aiPrompts.id, input.id)]));
           return { success: true, id: input.id };
         } else {
           const [result] = await db.insert(aiPrompts).values({
+            tenantId: tenantId ?? null,
             key: input.key,
             label: input.label,
             description: input.description || null,
@@ -92,19 +117,20 @@ export const aiLearningRouter = router({
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
-        await db.delete(aiPrompts).where(eq(aiPrompts.id, input.id));
+        await db.delete(aiPrompts)
+          .where(scopedWhere(aiPrompts.tenantId, tenantIdFromContext(ctx), [eq(aiPrompts.id, input.id)]));
         return { success: true };
       }),
 
     toggleActive: adminProcedure
       .input(z.object({ id: z.number(), isActive: z.boolean() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiPrompts)
           .set({ isActive: input.isActive })
-          .where(eq(aiPrompts.id, input.id));
+          .where(scopedWhere(aiPrompts.tenantId, tenantIdFromContext(ctx), [eq(aiPrompts.id, input.id)]));
         return { success: true };
       }),
   }),
@@ -119,9 +145,12 @@ export const aiLearningRouter = router({
         category: z.string().optional(),
         activeOnly: z.boolean().optional(),
       }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        let query = db.select().from(aiKnowledgeChunks).orderBy(desc(aiKnowledgeChunks.updatedAt));
+        let query = db.select()
+          .from(aiKnowledgeChunks)
+          .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx)))
+          .orderBy(desc(aiKnowledgeChunks.updatedAt));
         // Filtering done post-query for simplicity with drizzle
         const rows = await query;
         let filtered = rows;
@@ -142,19 +171,22 @@ export const aiLearningRouter = router({
         return filtered;
       }),
 
-    categories: adminProcedure.query(async () => {
+    categories: adminProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
       const rows = await db.selectDistinct({ category: aiKnowledgeChunks.category })
         .from(aiKnowledgeChunks)
-        .where(sql`${aiKnowledgeChunks.category} IS NOT NULL`);
+        .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx), [sql`${aiKnowledgeChunks.category} IS NOT NULL`]));
       return rows.map(r => r.category).filter(Boolean) as string[];
     }),
 
     get: adminProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const [row] = await db.select().from(aiKnowledgeChunks).where(eq(aiKnowledgeChunks.id, input.id)).limit(1);
+        const [row] = await db.select()
+          .from(aiKnowledgeChunks)
+          .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx), [eq(aiKnowledgeChunks.id, input.id)]))
+          .limit(1);
         return row || null;
       }),
 
@@ -167,8 +199,9 @@ export const aiLearningRouter = router({
         tags: z.array(z.string()).optional(),
         isActive: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         const tagsJson = input.tags ? JSON.stringify(input.tags) : null;
         if (input.id) {
           await db.update(aiKnowledgeChunks)
@@ -179,10 +212,11 @@ export const aiLearningRouter = router({
               tags: tagsJson,
               isActive: input.isActive ?? true,
             })
-            .where(eq(aiKnowledgeChunks.id, input.id));
+            .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantId, [eq(aiKnowledgeChunks.id, input.id)]));
           return { success: true, id: input.id };
         } else {
           const [result] = await db.insert(aiKnowledgeChunks).values({
+            tenantId: tenantId ?? null,
             title: input.title,
             content: input.content,
             category: input.category || null,
@@ -195,24 +229,25 @@ export const aiLearningRouter = router({
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
-        await db.delete(aiKnowledgeChunks).where(eq(aiKnowledgeChunks.id, input.id));
+        await db.delete(aiKnowledgeChunks)
+          .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx), [eq(aiKnowledgeChunks.id, input.id)]));
         return { success: true };
       }),
 
     toggleActive: adminProcedure
       .input(z.object({ id: z.number(), isActive: z.boolean() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiKnowledgeChunks)
           .set({ isActive: input.isActive })
-          .where(eq(aiKnowledgeChunks.id, input.id));
+          .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx), [eq(aiKnowledgeChunks.id, input.id)]));
         return { success: true };
       }),
 
     /** Get all active knowledge chunks for injection into AI prompts */
-    getActiveForInjection: protectedProcedure.query(async () => {
+    getActiveForInjection: protectedProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
       return db.select({
         id: aiKnowledgeChunks.id,
@@ -220,7 +255,7 @@ export const aiLearningRouter = router({
         content: aiKnowledgeChunks.content,
         category: aiKnowledgeChunks.category,
       }).from(aiKnowledgeChunks)
-        .where(eq(aiKnowledgeChunks.isActive, true))
+        .where(scopedWhere(aiKnowledgeChunks.tenantId, tenantIdFromContext(ctx), [eq(aiKnowledgeChunks.isActive, true)]))
         .orderBy(aiKnowledgeChunks.category, aiKnowledgeChunks.title);
     }),
   }),
@@ -241,7 +276,9 @@ export const aiLearningRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         const [result] = await db.insert(aiFeedback).values({
+          tenantId: tenantId ?? null,
           userId: ctx.user.id,
           sessionId: input.sessionId || null,
           messageContent: input.messageContent || null,
@@ -268,7 +305,9 @@ export const aiLearningRouter = router({
             const validTopics = ["pricing", "specs", "general", "other"] as const;
             const matched = validTopics.find(t => topic.includes(t));
             if (matched) {
-              await db.update(aiFeedback).set({ topic: matched }).where(eq(aiFeedback.id, feedbackId));
+              await db.update(aiFeedback)
+                .set({ topic: matched })
+                .where(scopedWhere(aiFeedback.tenantId, tenantId, [eq(aiFeedback.id, feedbackId)]));
             }
           } catch (e) {
             console.error("[AI Feedback] Auto-tag failed:", e);
@@ -286,9 +325,13 @@ export const aiLearningRouter = router({
         topic: z.enum(["pricing", "specs", "general", "other"]).optional(),
         limit: z.number().min(1).max(200).optional(),
       }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const rows = await db.select().from(aiFeedback).orderBy(desc(aiFeedback.createdAt)).limit(input?.limit || 100);
+        const rows = await db.select()
+          .from(aiFeedback)
+          .where(scopedWhere(aiFeedback.tenantId, tenantIdFromContext(ctx)))
+          .orderBy(desc(aiFeedback.createdAt))
+          .limit(input?.limit || 100);
         let filtered = rows;
         if (input?.status) filtered = filtered.filter(r => r.status === input.status);
         if (input?.rating) filtered = filtered.filter(r => r.rating === input.rating);
@@ -297,13 +340,14 @@ export const aiLearningRouter = router({
       }),
 
     /** Admin: get stats summary */
-    stats: adminProcedure.query(async () => {
+    stats: adminProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
       const rows = await db.select({
         rating: aiFeedback.rating,
         status: aiFeedback.status,
         count: sql<number>`COUNT(*)`,
       }).from(aiFeedback)
+        .where(scopedWhere(aiFeedback.tenantId, tenantIdFromContext(ctx)))
         .groupBy(aiFeedback.rating, aiFeedback.status);
       
       let positive = 0, negative = 0, pending = 0, reviewed = 0, actioned = 0;
@@ -325,26 +369,26 @@ export const aiLearningRouter = router({
         status: z.enum(["pending", "reviewed", "actioned", "dismissed"]),
         adminNotes: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiFeedback)
           .set({
             status: input.status,
             adminNotes: input.adminNotes,
           })
-          .where(eq(aiFeedback.id, input.id));
+          .where(scopedWhere(aiFeedback.tenantId, tenantIdFromContext(ctx), [eq(aiFeedback.id, input.id)]));
         return { success: true };
       }),
 
     /** Admin: get weekly feedback trends for chart */
-    trends: adminProcedure.query(async () => {
+    trends: adminProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
       const rows = await db.select({
         week: sql<string>`DATE_FORMAT(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')`,
         rating: aiFeedback.rating,
         count: sql<number>`COUNT(*)`,
       }).from(aiFeedback)
-        .where(sql`created_at >= DATE_SUB(NOW(), INTERVAL 12 WEEK)`)
+        .where(scopedWhere(aiFeedback.tenantId, tenantIdFromContext(ctx), [sql`created_at >= DATE_SUB(NOW(), INTERVAL 12 WEEK)`]))
         .groupBy(sql`week`, aiFeedback.rating)
         .orderBy(sql`week`);
 
@@ -366,14 +410,19 @@ export const aiLearningRouter = router({
         correction: z.string().min(1),
         context: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         // Get the feedback record
-        const [fb] = await db.select().from(aiFeedback).where(eq(aiFeedback.id, input.feedbackId)).limit(1);
+        const [fb] = await db.select()
+          .from(aiFeedback)
+          .where(scopedWhere(aiFeedback.tenantId, tenantId, [eq(aiFeedback.id, input.feedbackId)]))
+          .limit(1);
         if (!fb) return { success: false, error: "Feedback not found" };
 
         // Create correction
         const [result] = await db.insert(aiCorrections).values({
+          tenantId: tenantId ?? null,
           userId: fb.userId,
           originalQuery: fb.userQuery || "",
           originalResponse: fb.messageContent || null,
@@ -385,7 +434,7 @@ export const aiLearningRouter = router({
         // Mark feedback as actioned
         await db.update(aiFeedback)
           .set({ status: "actioned", adminNotes: `Converted to correction #${result.insertId}` })
-          .where(eq(aiFeedback.id, input.feedbackId));
+          .where(scopedWhere(aiFeedback.tenantId, tenantId, [eq(aiFeedback.id, input.feedbackId)]));
 
         return { success: true, correctionId: result.insertId };
       }),
@@ -397,9 +446,12 @@ export const aiLearningRouter = router({
   fewShot: router({
     list: adminProcedure
       .input(z.object({ promptKey: z.string().optional() }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const rows = await db.select().from(aiFewShotExamples).orderBy(aiFewShotExamples.promptKey, aiFewShotExamples.sortOrder);
+        const rows = await db.select()
+          .from(aiFewShotExamples)
+          .where(scopedWhere(aiFewShotExamples.tenantId, tenantIdFromContext(ctx)))
+          .orderBy(aiFewShotExamples.promptKey, aiFewShotExamples.sortOrder);
         if (input?.promptKey) return rows.filter(r => r.promptKey === input.promptKey);
         return rows;
       }),
@@ -414,8 +466,9 @@ export const aiLearningRouter = router({
         isActive: z.boolean().optional(),
         sortOrder: z.number().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         if (input.id) {
           await db.update(aiFewShotExamples)
             .set({
@@ -426,10 +479,11 @@ export const aiLearningRouter = router({
               isActive: input.isActive ?? true,
               sortOrder: input.sortOrder ?? 0,
             })
-            .where(eq(aiFewShotExamples.id, input.id));
+            .where(scopedWhere(aiFewShotExamples.tenantId, tenantId, [eq(aiFewShotExamples.id, input.id)]));
           return { success: true, id: input.id };
         } else {
           const [result] = await db.insert(aiFewShotExamples).values({
+            tenantId: tenantId ?? null,
             promptKey: input.promptKey,
             userInput: input.userInput,
             expectedOutput: input.expectedOutput,
@@ -443,35 +497,36 @@ export const aiLearningRouter = router({
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
-        await db.delete(aiFewShotExamples).where(eq(aiFewShotExamples.id, input.id));
+        await db.delete(aiFewShotExamples)
+          .where(scopedWhere(aiFewShotExamples.tenantId, tenantIdFromContext(ctx), [eq(aiFewShotExamples.id, input.id)]));
         return { success: true };
       }),
 
     toggleActive: adminProcedure
       .input(z.object({ id: z.number(), isActive: z.boolean() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiFewShotExamples)
           .set({ isActive: input.isActive })
-          .where(eq(aiFewShotExamples.id, input.id));
+          .where(scopedWhere(aiFewShotExamples.tenantId, tenantIdFromContext(ctx), [eq(aiFewShotExamples.id, input.id)]));
         return { success: true };
       }),
 
     /** Get active examples for a prompt key (used during LLM calls) */
     getActiveForPrompt: protectedProcedure
       .input(z.object({ promptKey: z.string() }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
         return db.select({
           userInput: aiFewShotExamples.userInput,
           expectedOutput: aiFewShotExamples.expectedOutput,
         }).from(aiFewShotExamples)
-          .where(and(
+          .where(scopedWhere(aiFewShotExamples.tenantId, tenantIdFromContext(ctx), [
             eq(aiFewShotExamples.promptKey, input.promptKey),
             eq(aiFewShotExamples.isActive, true),
-          ))
+          ]))
           .orderBy(aiFewShotExamples.sortOrder);
       }),
   }),
@@ -485,9 +540,12 @@ export const aiLearningRouter = router({
         promptKey: z.string().optional(),
         activeOnly: z.boolean().optional(),
       }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const rows = await db.select().from(aiCorrections).orderBy(desc(aiCorrections.updatedAt));
+        const rows = await db.select()
+          .from(aiCorrections)
+          .where(scopedWhere(aiCorrections.tenantId, tenantIdFromContext(ctx)))
+          .orderBy(desc(aiCorrections.updatedAt));
         let filtered = rows;
         if (input?.promptKey) filtered = filtered.filter(r => r.promptKey === input.promptKey);
         if (input?.activeOnly) filtered = filtered.filter(r => r.isActive);
@@ -504,8 +562,9 @@ export const aiLearningRouter = router({
         promptKey: z.string().optional(),
         isActive: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
+        const tenantId = tenantIdFromContext(ctx);
         if (input.id) {
           await db.update(aiCorrections)
             .set({
@@ -516,10 +575,11 @@ export const aiLearningRouter = router({
               promptKey: input.promptKey || "engini",
               isActive: input.isActive ?? true,
             })
-            .where(eq(aiCorrections.id, input.id));
+            .where(scopedWhere(aiCorrections.tenantId, tenantId, [eq(aiCorrections.id, input.id)]));
           return { success: true, id: input.id };
         } else {
           const [result] = await db.insert(aiCorrections).values({
+            tenantId: tenantId ?? null,
             originalQuery: input.originalQuery,
             originalResponse: input.originalResponse || null,
             correction: input.correction,
@@ -533,26 +593,27 @@ export const aiLearningRouter = router({
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
-        await db.delete(aiCorrections).where(eq(aiCorrections.id, input.id));
+        await db.delete(aiCorrections)
+          .where(scopedWhere(aiCorrections.tenantId, tenantIdFromContext(ctx), [eq(aiCorrections.id, input.id)]));
         return { success: true };
       }),
 
     toggleActive: adminProcedure
       .input(z.object({ id: z.number(), isActive: z.boolean() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiCorrections)
           .set({ isActive: input.isActive })
-          .where(eq(aiCorrections.id, input.id));
+          .where(scopedWhere(aiCorrections.tenantId, tenantIdFromContext(ctx), [eq(aiCorrections.id, input.id)]));
         return { success: true };
       }),
 
     /** Get active corrections for injection into prompts */
     getActiveForPrompt: protectedProcedure
       .input(z.object({ promptKey: z.string() }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await requireDb();
         return db.select({
           id: aiCorrections.id,
@@ -560,21 +621,21 @@ export const aiLearningRouter = router({
           correction: aiCorrections.correction,
           context: aiCorrections.context,
         }).from(aiCorrections)
-          .where(and(
+          .where(scopedWhere(aiCorrections.tenantId, tenantIdFromContext(ctx), [
             eq(aiCorrections.promptKey, input.promptKey),
             eq(aiCorrections.isActive, true),
-          ))
+          ]))
           .orderBy(desc(aiCorrections.usageCount));
       }),
 
     /** Increment usage count when a correction is used */
     incrementUsage: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         await db.update(aiCorrections)
           .set({ usageCount: sql`${aiCorrections.usageCount} + 1` })
-          .where(eq(aiCorrections.id, input.id));
+          .where(scopedWhere(aiCorrections.tenantId, tenantIdFromContext(ctx), [eq(aiCorrections.id, input.id)]));
         return { success: true };
       }),
   }),

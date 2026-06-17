@@ -152,6 +152,7 @@ const salesItems: MenuItem[] = [
   { icon: FileText, label: "Structure Quotes", path: "/quotes" },
   { icon: Fence, label: "Deck Quotes", path: "/deck-quotes" },
   { icon: Sun, label: "Eclipse Quotes", path: "/eclipse-quotes" },
+  { icon: ShieldCheck, label: "Screen Quotes", path: "/security-screens" },
   { icon: Send, label: "Proposals", path: "/proposals" },
   { icon: Palette, label: "Patio Planner", path: "/patio-planner" },
 ];
@@ -273,6 +274,7 @@ const adminGroups: AdminGroup[] = [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
       { icon: Package, label: "Construction Data", path: "/admin/component-catalogue" },
       { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
+      { icon: ShieldCheck, label: "Screen Pricing", path: "/admin/security-screens" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
       { icon: History, label: "Import History", path: "/admin/import-history" },

@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Receipt, Plus, ExternalLink, Pencil, CloudUpload, X, Package, Layers, Search } from "lucide-react";
+import { Receipt, Plus, ExternalLink, Pencil, CloudUpload, X, Package, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 
@@ -53,6 +53,12 @@ type SupplierOption = {
   address?: string | null;
 };
 
+type BranchOption = {
+  id: number;
+  name: string;
+  address?: string | null;
+};
+
 function formatCurrency(value: number | string | undefined) {
   return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
 }
@@ -65,7 +71,7 @@ function catalogueLineItem(product: ManufacturingCatalogueProduct, quantity: num
     unit: product.uom || "ea",
     unitPrice: String(product.unitCost ?? 0),
     colour: product.colour || undefined,
-    description: product.category || undefined,
+    description: [product.category, product.subGroup].filter(Boolean).join(" / ") || undefined,
   };
 }
 
@@ -179,6 +185,7 @@ export default function ManufacturingPurchaseOrders() {
                 <th className="text-left px-4 py-3 font-medium">PO #</th>
                 <th className="text-left px-4 py-3 font-medium">Supplier</th>
                 <th className="text-left px-4 py-3 font-medium">Order</th>
+                <th className="text-left px-4 py-3 font-medium">Deliver To</th>
                 <th className="text-left px-4 py-3 font-medium">Status</th>
                 <th className="text-right px-4 py-3 font-medium">Amount</th>
                 <th className="text-left px-4 py-3 font-medium">Required By</th>
@@ -188,9 +195,9 @@ export default function ManufacturingPurchaseOrders() {
             </thead>
             <tbody className="divide-y">
               {isLoading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
               ) : !pos?.length ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No purchase orders found</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">No purchase orders found</td></tr>
               ) : (
                 pos.map((po: any) => (
                   <tr key={po.id} className="hover:bg-muted/30 transition-colors">
@@ -207,6 +214,10 @@ export default function ManufacturingPurchaseOrders() {
                       ) : (
                         <span className="text-muted-foreground">Standalone manufacturing PO</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      <div>{po.deliverToBranchName || "—"}</div>
+                      {po.deliverToAddress && <div className="max-w-[220px] truncate text-muted-foreground">{po.deliverToAddress}</div>}
                     </td>
                     <td className="px-4 py-3">
                       <Select
@@ -283,6 +294,9 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const [supplierPhone, setSupplierPhone] = useState("");
   const [supplierAddress, setSupplierAddress] = useState("");
   const [supplierAbn, setSupplierAbn] = useState("");
+  const [deliverToBranchId, setDeliverToBranchId] = useState("");
+  const [deliverToBranchName, setDeliverToBranchName] = useState("");
+  const [deliverToAddress, setDeliverToAddress] = useState("");
   const [orderId, setOrderId] = useState(STANDALONE_ORDER_VALUE);
   const [requiredByDate, setRequiredByDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -290,12 +304,14 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const utils = trpc.useUtils();
 
   const { data: orders } = trpc.manufacturing.orders.list.useQuery({ status: "all" });
+  const { data: branches = [] } = trpc.branches.list.useQuery();
   const createPO = trpc.manufacturing.purchaseOrders.create.useMutation({
     onSuccess: (data: any) => {
       utils.manufacturing.purchaseOrders.list.invalidate();
       onOpenChange(false);
       toast.success(`PO ${data.poNumber} created`);
       setSupplier(""); setSupplierEmail(""); setSupplierPhone(""); setSupplierAddress(""); setSupplierAbn("");
+      setDeliverToBranchId(""); setDeliverToBranchName(""); setDeliverToAddress("");
       setOrderId(STANDALONE_ORDER_VALUE); setRequiredByDate(""); setNotes("");
       setLineItems([]);
     },
@@ -333,8 +349,19 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     setSupplierAbn(nextSupplier.abn || "");
   };
 
+  const applyDeliverToBranch = (branchId: string) => {
+    const branch = (branches as BranchOption[]).find((item) => String(item.id) === branchId);
+    setDeliverToBranchId(branchId);
+    setDeliverToBranchName(branch?.name || "");
+    setDeliverToAddress(branch?.address || "");
+  };
+
   const handleSubmit = () => {
     if (!supplier.trim() || validLineItems.length === 0) return;
+    if (!deliverToBranchId) {
+      toast.error("Select a deliver-to branch");
+      return;
+    }
     const linkedOrderId = orderId === STANDALONE_ORDER_VALUE ? undefined : Number(orderId);
     createPO.mutate({
       orderId: linkedOrderId,
@@ -343,6 +370,9 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
       supplierPhone: supplierPhone || undefined,
       supplierAddress: supplierAddress || undefined,
       supplierAbn: supplierAbn || undefined,
+      deliverToBranchId: Number(deliverToBranchId),
+      deliverToBranchName: deliverToBranchName || undefined,
+      deliverToAddress: deliverToAddress || undefined,
       lineItems: validLineItems.map(li => ({
         productName: li.productName.trim(),
         productCode: li.productCode,
@@ -400,6 +430,29 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               <Input type="email" value={supplierEmail} onChange={(e) => setSupplierEmail(e.target.value)} placeholder="supplier@example.com" />
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Deliver To *</Label>
+              <Select value={deliverToBranchId} onValueChange={applyDeliverToBranch}>
+                <SelectTrigger><SelectValue placeholder="Select branch" /></SelectTrigger>
+                <SelectContent>
+                  {(branches as BranchOption[]).map((branch) => (
+                    <SelectItem key={branch.id} value={String(branch.id)}>{branch.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-[11px] text-muted-foreground">Delivery location is sourced from Admin &gt; Company Settings &gt; Branch Offices.</p>
+            </div>
+            <div>
+              <Label>Delivery Address</Label>
+              <Textarea
+                value={deliverToAddress}
+                onChange={(e) => setDeliverToAddress(e.target.value)}
+                placeholder="Branch delivery address"
+                rows={2}
+              />
+            </div>
+          </div>
 
           <ManufacturingProductCatalogue onAddProduct={addCatalogueItem} />
 
@@ -418,7 +471,7 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={createPO.isPending || !supplier.trim() || validLineItems.length === 0}>
+          <Button onClick={handleSubmit} disabled={createPO.isPending || !supplier.trim() || !deliverToBranchId || validLineItems.length === 0}>
             {createPO.isPending ? "Creating..." : "Create PO"}
           </Button>
         </DialogFooter>
@@ -547,6 +600,12 @@ function ManufacturingProductCatalogue({
     toast.success(`${product.description} added to PO`);
   };
 
+  const resetFilters = () => {
+    setCategory("all");
+    setSubGroup("all");
+    setSearch("");
+  };
+
   return (
     <div className="rounded-lg border bg-card">
       <div className="flex items-center justify-between border-b px-4 py-3">
@@ -561,30 +620,40 @@ function ManufacturingProductCatalogue({
       </div>
 
       <div className="space-y-3 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">Category</span>
-          <Button
-            type="button"
-            variant={category === "all" ? "default" : "outline"}
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => setCategory("all")}
-          >
-            <Layers className="mr-1 h-3.5 w-3.5" />
-            All
-          </Button>
-          {categories.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant={category === item ? "default" : "outline"}
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => setCategory(item)}
-            >
-              {item}
+        <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+          <div className="space-y-1">
+            <Label className="text-xs">Category</Label>
+            <Select value={category} onValueChange={setCategory}>
+              <SelectTrigger>
+                <SelectValue placeholder="Category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                {categories.map((item) => (
+                  <SelectItem key={item} value={item}>{item}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Sub-Category</Label>
+            <Select value={subGroup} onValueChange={setSubGroup}>
+              <SelectTrigger>
+                <SelectValue placeholder="Sub-category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Sub-Categories</SelectItem>
+                {subGroups.map((item) => (
+                  <SelectItem key={item} value={item}>{item}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <Button type="button" variant="outline" className="w-full md:w-auto" onClick={resetFilters}>
+              Clear
             </Button>
-          ))}
+          </div>
         </div>
 
         <div className="flex flex-col gap-2 md:flex-row">
@@ -592,22 +661,11 @@ function ManufacturingProductCatalogue({
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               className="pl-9"
-              placeholder="Search products by code, description, colour, category..."
+              placeholder="Search code, description, colour, category..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
-          <Select value={subGroup} onValueChange={setSubGroup}>
-            <SelectTrigger className="w-full md:w-[240px]">
-              <SelectValue placeholder="Sub-group" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Sub-Groups</SelectItem>
-              {subGroups.map((item) => (
-                <SelectItem key={item} value={item}>{item}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
 
         <div className="max-h-[330px] overflow-auto rounded-lg border">
@@ -627,7 +685,11 @@ function ManufacturingProductCatalogue({
               {productsQuery.isLoading ? (
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">Loading products...</td></tr>
               ) : !products.length ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No products found. Try another category or search.</td></tr>
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                    No products found. Check the category/sub-category filters, try the product code with 0/O swapped, or import manufacturing data.
+                  </td>
+                </tr>
               ) : products.map((product) => (
                 <tr key={product.id} className="hover:bg-muted/30">
                   <td className="px-3 py-2 font-mono">{product.sku || "-"}</td>
