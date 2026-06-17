@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { generateImage } from "./_core/imageGeneration";
 import { getPatioProject, updatePatioProject, getPatioProjectByQuoteId } from "./patio-planner-db";
@@ -128,7 +128,7 @@ export const patioRenderRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       // Load the project
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -187,8 +187,8 @@ export const patioRenderRouter = router({
         let logoBuffer: Buffer | undefined;
         let companyName = "Altaspan";
         try {
-          const branding = await getTenantBrandingSettings(ctx.tenant?.id ?? null);
-          const companyInfo = await getCompanyName(ctx.tenant?.id ?? null);
+          const branding = await getTenantBrandingSettings(ctx.tenant!.id);
+          const companyInfo = await getCompanyName(ctx.tenant!.id);
           companyName = companyInfo.displayName || companyName;
           if (branding?.customLogoUrl) {
             logoBuffer = await fetchImageBuffer(branding.customLogoUrl);
@@ -207,7 +207,7 @@ export const patioRenderRouter = router({
         });
 
         // Upload watermarked version to S3
-        const wmKey = `patio-renders/${ctx.user.id}/${input.projectId}/${Date.now()}-wm.png`;
+        const wmKey = `tenants/${ctx.tenant!.id}/patio-renders/${ctx.user.id}/${input.projectId}/${Date.now()}-wm.png`;
         const { url: wmUrl } = await storagePut(wmKey, watermarked, "image/png");
         finalUrl = wmUrl;
       } catch (e) {
@@ -221,14 +221,14 @@ export const patioRenderRouter = router({
         projectId: input.projectId,
         renderMode: input.mode,
         stylePreset: input.stylePreset,
-        tenantId: ctx.tenant?.id,
+        tenantId: ctx.tenant!.id,
       });
 
       // Build render history entry
       const entry: PatioRenderHistoryEntry = {
         id: randomUUID(),
         imageUrl: finalUrl,
-        imageKey: `patio-render/${ctx.user.id}/${input.projectId}/${Date.now()}.png`,
+        imageKey: `tenants/${ctx.tenant!.id}/patio-render/${ctx.user.id}/${input.projectId}/${Date.now()}.png`,
         prompt,
         promptMode: input.mode,
         createdAt: Date.now(),
@@ -244,7 +244,7 @@ export const patioRenderRouter = router({
       // Save to database
       await updatePatioProject(input.projectId, ctx.user.id, {
         renderHistory: JSON.stringify(updatedHistory),
-      });
+      }, ctx.tenant!.id);
 
       return {
         id: entry.id,
@@ -261,7 +261,7 @@ export const patioRenderRouter = router({
   history: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -283,7 +283,7 @@ export const patioRenderRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -296,7 +296,7 @@ export const patioRenderRouter = router({
 
       await updatePatioProject(input.projectId, ctx.user.id, {
         renderHistory: JSON.stringify(filtered),
-      });
+      }, ctx.tenant!.id);
 
       return { success: true };
     }),
@@ -308,7 +308,7 @@ export const patioRenderRouter = router({
   getLatestRenderForQuote: protectedProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const project = await getPatioProjectByQuoteId(input.quoteId, ctx.user.id);
+      const project = await getPatioProjectByQuoteId(input.quoteId, ctx.user.id, ctx.tenant!.id);
       if (!project) return { hasRender: false, renders: [] as PatioRenderHistoryEntry[] };
 
       const history = parseRenderHistory((project as any).renderHistory);
@@ -335,7 +335,7 @@ export const patioRenderRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -370,7 +370,7 @@ export const patioRenderRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -388,7 +388,7 @@ export const patioRenderRouter = router({
 
       await updatePatioProject(input.projectId, ctx.user.id, {
         renderHistory: JSON.stringify(updated),
-      });
+      }, ctx.tenant!.id);
 
       const toggled = updated.find((r) => r.id === input.renderId);
       return { success: true, isFavourite: toggled?.isFavourite ?? false };
@@ -408,7 +408,7 @@ export const patioRenderRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       // Load the project
-      const project = await getPatioProject(input.projectId, ctx.user.id);
+      const project = await getPatioProject(input.projectId, ctx.user.id, ctx.tenant!.id);
       if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
@@ -451,8 +451,8 @@ export const patioRenderRouter = router({
             let logoBuffer: Buffer | undefined;
             let companyName = "Altaspan";
             try {
-              const branding = await getTenantBrandingSettings(ctx.tenant?.id ?? null);
-              const companyInfo = await getCompanyName(ctx.tenant?.id ?? null);
+              const branding = await getTenantBrandingSettings(ctx.tenant!.id);
+              const companyInfo = await getCompanyName(ctx.tenant!.id);
               companyName = companyInfo.displayName || companyName;
               if (branding?.customLogoUrl) {
                 logoBuffer = await fetchImageBuffer(branding.customLogoUrl);
@@ -468,7 +468,7 @@ export const patioRenderRouter = router({
               position: "bottom-right",
             });
 
-            const wmKey = `patio-renders/${ctx.user.id}/${input.projectId}/${Date.now()}-batch-wm.png`;
+            const wmKey = `tenants/${ctx.tenant!.id}/patio-renders/${ctx.user.id}/${input.projectId}/${Date.now()}-batch-wm.png`;
             const { url: wmUrl } = await storagePut(wmKey, watermarked, "image/png");
             finalUrl = wmUrl;
           } catch {
@@ -478,7 +478,7 @@ export const patioRenderRouter = router({
           const entry: PatioRenderHistoryEntry = {
             id: randomUUID(),
             imageUrl: finalUrl,
-            imageKey: `patio-render/${ctx.user.id}/${input.projectId}/${Date.now()}.png`,
+            imageKey: `tenants/${ctx.tenant!.id}/patio-render/${ctx.user.id}/${input.projectId}/${Date.now()}.png`,
             prompt,
             promptMode: input.mode,
             createdAt: Date.now(),
@@ -498,7 +498,7 @@ export const patioRenderRouter = router({
           projectId: input.projectId,
           renderMode: "batch",
           renderCount: results.length,
-          tenantId: ctx.tenant?.id,
+          tenantId: ctx.tenant!.id,
         });
       }
 
@@ -508,7 +508,7 @@ export const patioRenderRouter = router({
         const updatedHistory = [...existingHistory, ...results];
         await updatePatioProject(input.projectId, ctx.user.id, {
           renderHistory: JSON.stringify(updatedHistory),
-        });
+        }, ctx.tenant!.id);
       }
 
       return {

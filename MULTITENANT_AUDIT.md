@@ -39,6 +39,8 @@ Last updated: 2026-06-18
 - Portal CMS content is now tenant-scoped: client/trade/DA portal news and client portal product offers carry tenant ownership, admin CMS writes are tenant-bound, and all public portal reads filter to the active portal tenant. Existing news/products are backfilled by migration.
 - Process templates are now tenant-scoped: Smartshop/order kit templates and construction Kanban seed templates carry tenant ownership, template list/get/update/delete/duplicate/apply flows are tenant-filtered, and existing templates are backfilled to the active tenant by migration.
 - Inbox support configuration is now tenant-scoped: inbox tags, email signatures, inbox settings, and SLA rules carry tenant ownership, signature/tag/settings/SLA admin operations are tenant-filtered, Graph/legacy inbound auto-tags and auto-replies use the mailbox tenant, and the scheduled SLA checker iterates active tenants. Existing inbox support rows are backfilled by migration.
+- Patio planner projects now carry tenant ownership. Planner CRUD, admin cleanup, quote-prefill, AI render generation/history/favourites/batch generation, portal render gallery reads, and render-cost project joins are scoped to the active tenant, and newly uploaded patio photos/renders use tenant-prefixed object keys. Existing patio projects are backfilled by migration.
+- Security screen quote creation now uses the real `status` database column for quote status, fixing the failed `ss_quotes.ssQuoteStatus` insert generated when creating a quote from a lead or from the new quote form.
 
 ## Remaining high-priority tenant gaps
 

@@ -2751,6 +2751,7 @@ export type InsertUserSettings = typeof userSettings.$inferInsert;
 // ─── Patio Planner Projects ─────────────────────────────────────────────────
 export const patioPlanner = mysqlTable("patio_planner", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
   quoteId: int("quoteId").references(() => quotes.id, { onDelete: "set null" }),
   name: varchar("name", { length: 255 }).notNull(),
@@ -2802,7 +2803,11 @@ export const patioPlanner = mysqlTable("patio_planner", {
   // Timestamps
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_patio_planner_tenant").on(table.tenantId),
+  tenantUserIdx: index("idx_patio_planner_tenant_user").on(table.tenantId, table.userId),
+  tenantQuoteIdx: index("idx_patio_planner_tenant_quote").on(table.tenantId, table.quoteId),
+}));
 export type PatioPlanner = typeof patioPlanner.$inferSelect;
 export type InsertPatioPlanner = typeof patioPlanner.$inferInsert;
 
@@ -3669,7 +3674,7 @@ export const ssQuotes = mysqlTable("ss_quotes", {
   clientPhone: varchar("clientPhone", { length: 64 }),
   siteAddress: text("siteAddress"),
   markupPercent: decimal("markupPercent", { precision: 5, scale: 2 }).default("30.00").notNull(),
-  status: mysqlEnum("ssQuoteStatus", ["draft", "sent", "accepted", "declined", "expired"]).default("draft").notNull(),
+  status: mysqlEnum("status", ["draft", "sent", "accepted", "declined", "expired"]).default("draft").notNull(),
   subtotalExGst: decimal("subtotalExGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
   gstAmount: decimal("gstAmount", { precision: 12, scale: 2 }).default("0.00").notNull(),
   totalIncGst: decimal("totalIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),

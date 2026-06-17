@@ -211,7 +211,10 @@ export const renderCostRouter = router({
           lastRenderAt: sql<Date>`MAX(${renderCostLogs.createdAt})`,
         })
         .from(renderCostLogs)
-        .leftJoin(patioPlanner, eq(renderCostLogs.projectId, patioPlanner.id))
+        .leftJoin(patioPlanner, and(
+          eq(renderCostLogs.projectId, patioPlanner.id),
+          eq(renderCostLogs.tenantId, patioPlanner.tenantId),
+        ))
         .where(where)
         .groupBy(renderCostLogs.projectId, patioPlanner.name)
         .orderBy(sql`SUM(${renderCostLogs.creditCost}) DESC`);
@@ -305,7 +308,10 @@ export const renderCostRouter = router({
         })
         .from(renderCostLogs)
         .leftJoin(users, eq(renderCostLogs.userId, users.id))
-        .leftJoin(patioPlanner, eq(renderCostLogs.projectId, patioPlanner.id))
+        .leftJoin(patioPlanner, and(
+          eq(renderCostLogs.projectId, patioPlanner.id),
+          eq(renderCostLogs.tenantId, patioPlanner.tenantId),
+        ))
         .where(and(...renderCostConditions(ctx)))
         .orderBy(desc(renderCostLogs.createdAt))
         .limit(limit)

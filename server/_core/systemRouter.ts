@@ -45,6 +45,7 @@ const TENANT_ID_TABLES = [
   "permission_audit_log",
   "user_dashboard_config",
   "user_schedule_blocks",
+  "patio_planner",
   "user_time_off",
   "calendar_view_members",
   "user_calendar_selections",

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import {
   listPatioProjects,
@@ -135,13 +135,13 @@ function extractPrefillFromQuote(quote: Record<string, any>): Record<string, any
 
 export const patioRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
-    return listPatioProjects(ctx.user.id);
+    return listPatioProjects(ctx.user.id, ctx.tenant!.id);
   }),
 
   get: protectedProcedure
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.id, ctx.user.id);
+      const project = await getPatioProject(input.id, ctx.user.id, ctx.tenant!.id);
       if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       return project;
     }),
@@ -150,6 +150,7 @@ export const patioRouter = router({
     .input(z.object({ name: z.string().min(1), quoteId: z.number().optional() }))
     .mutation(async ({ ctx, input }) => {
       const id = await createPatioProject({
+        tenantId: ctx.tenant!.id,
         userId: ctx.user.id,
         name: input.name,
         quoteId: input.quoteId,
@@ -158,11 +159,11 @@ export const patioRouter = router({
       // If a quoteId was provided, pre-fill from spec sheet
       if (input.quoteId) {
         try {
-          const quote = await getQuoteById(input.quoteId);
+          const quote = await getQuoteById(input.quoteId, ctx.tenant!.id);
           if (quote) {
             const prefill = extractPrefillFromQuote(quote);
             if (Object.keys(prefill).length > 0) {
-              await updatePatioProject(id, ctx.user.id, prefill);
+              await updatePatioProject(id, ctx.user.id, prefill, ctx.tenant!.id);
             }
           }
         } catch (err) {
@@ -180,7 +181,7 @@ export const patioRouter = router({
       data: z.record(z.string(), z.any()),
     }))
     .mutation(async ({ ctx, input }) => {
-      const updated = await updatePatioProject(input.id, ctx.user.id, input.data);
+      const updated = await updatePatioProject(input.id, ctx.user.id, input.data, ctx.tenant!.id);
       if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       return updated;
     }),
@@ -188,7 +189,7 @@ export const patioRouter = router({
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const success = await deletePatioProject(input.id, ctx.user.id);
+      const success = await deletePatioProject(input.id, ctx.user.id, ctx.tenant!.id);
       if (!success) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       return { success: true };
     }),
@@ -201,31 +202,31 @@ export const patioRouter = router({
       fileName: z.string(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const project = await getPatioProject(input.id, ctx.user.id);
+      const project = await getPatioProject(input.id, ctx.user.id, ctx.tenant!.id);
       if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
 
       const buffer = Buffer.from(input.base64, "base64");
       const ext = input.fileName.split(".").pop() || "jpg";
-      const key = `patio-planner/${ctx.user.id}/${input.id}/${randomUUID()}.${ext}`;
+      const key = `tenants/${ctx.tenant!.id}/patio-planner/${ctx.user.id}/${input.id}/${randomUUID()}.${ext}`;
       const { url } = await storagePut(key, buffer, input.mimeType);
 
       await updatePatioProject(input.id, ctx.user.id, {
         photoUrl: url,
         photoKey: key,
-      });
+      }, ctx.tenant!.id);
 
       return { url, key };
     }),
 
   // ─── Admin procedures ─────────────────────────────────────────────────
-  adminList: adminProcedure.query(async () => {
-    return listAllPatioProjects();
+  adminList: adminProcedure.query(async ({ ctx }) => {
+    return listAllPatioProjects(ctx.tenant!.id);
   }),
 
   adminDelete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      const success = await adminDeletePatioProject(input.id);
+    .mutation(async ({ ctx, input }) => {
+      const success = await adminDeletePatioProject(input.id, ctx.tenant!.id);
       if (!success) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       return { success: true };
     }),

@@ -9,6 +9,7 @@ import {
   constructionJobs, constructionProgress, clientActivities, xeroProjectMappings,
   portalPhotoComments,
   approvalProjects, approvalLodgements, approvalInspections, approvalTasks, approvalRfis,
+  patioPlanner,
 } from "../drizzle/schema";
 import { publicProcedure, router, middleware } from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
@@ -759,20 +760,23 @@ export const portalRouter = router({
     const jobId = ctx.portalAccess.constructionJobId;
 
     // Find the construction job to get the quoteId
+    const jobConditions = [eq(constructionJobs.id, jobId)];
+    appendTenantScope(jobConditions, constructionJobs.tenantId, portalTenantId(ctx));
     const [job] = await db
       .select()
       .from(constructionJobs)
-      .where(eq(constructionJobs.id, jobId))
+      .where(and(...jobConditions))
       .limit(1);
 
     if (!job || !job.quoteId) return { hasRenders: false, renders: [] };
 
     // Find patio planner project linked to this quote
-    const { patioPlanner } = await import("../drizzle/schema");
+    const projectConditions = [eq(patioPlanner.quoteId, job.quoteId)];
+    appendTenantScope(projectConditions, patioPlanner.tenantId, portalTenantId(ctx));
     const [project] = await db
       .select()
       .from(patioPlanner)
-      .where(eq(patioPlanner.quoteId, job.quoteId))
+      .where(and(...projectConditions))
       .limit(1);
 
     if (!project || !(project as any).renderHistory) {
