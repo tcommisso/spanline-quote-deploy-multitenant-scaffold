@@ -44,7 +44,7 @@ export const inboxRouter = router({
       const messagesWithTags = await Promise.all(
         messages.map(async (msg) => ({
           ...msg,
-          tags: await inboxDb.getMessageTags(msg.id),
+          tags: await inboxDb.getMessageTags(msg.id, ctx.tenant!.id),
         }))
       );
       return messagesWithTags;
@@ -55,7 +55,7 @@ export const inboxRouter = router({
     .query(async ({ ctx, input }) => {
       const msg = await inboxDb.getInboxMessageById(input.id, ctx.tenant!.id);
       if (!msg) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
-      const tags = await inboxDb.getMessageTags(msg.id);
+      const tags = await inboxDb.getMessageTags(msg.id, ctx.tenant!.id);
       return { ...msg, tags };
     }),
 
@@ -153,7 +153,7 @@ export const inboxRouter = router({
       if (input.assignedToId && input.assignedToId !== ctx.user!.id) {
         const msg = await inboxDb.getInboxMessageById(input.messageId, ctx.tenant!.id);
         if (msg) {
-          const staff = await inboxDb.listStaffUsers();
+          const staff = await inboxDb.listStaffUsers(ctx.tenant!.id);
           const assignee = staff.find(u => u.id === input.assignedToId);
           if (assignee?.email) {
             try {
@@ -191,8 +191,8 @@ export const inboxRouter = router({
       return { success: true };
     }),
 
-  staffUsers: protectedProcedure.query(async () => {
-    return inboxDb.listStaffUsers();
+  staffUsers: protectedProcedure.query(async ({ ctx }) => {
+    return inboxDb.listStaffUsers(ctx.tenant!.id);
   }),
 
   // ─── Contact Search (for recipient autocomplete) ────────────────────────────
@@ -286,10 +286,10 @@ export const inboxRouter = router({
       if (input.includeSignature) {
         let signature: any = null;
         if (input.signatureId) {
-          const sigs = await inboxDb.getUserSignatures(ctx.user!.id);
+          const sigs = await inboxDb.getUserSignatures(ctx.user!.id, ctx.tenant!.id);
           signature = sigs.find(s => s.id === input.signatureId);
         } else {
-          signature = await inboxDb.getDefaultSignature(ctx.user!.id);
+          signature = await inboxDb.getDefaultSignature(ctx.user!.id, ctx.tenant!.id);
         }
         if (signature) {
           fullHtml += `<br/><div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">${signature.htmlContent}</div>`;
@@ -298,9 +298,9 @@ export const inboxRouter = router({
 
       // Add rate-us feedback if enabled
       if (input.includeRateUs) {
-        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled");
+        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled", ctx.tenant!.id);
         if (rateUsEnabled === "true") {
-          const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt") || "How would you rate our service?";
+          const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt", ctx.tenant!.id) || "How would you rate our service?";
           const baseUrl = ctx.req.headers.origin || "";
           const feedbackHtml = buildRateUsHtml(baseUrl, input.inReplyToMessageId, rateUsPrompt);
           fullHtml += feedbackHtml;
@@ -393,10 +393,10 @@ export const inboxRouter = router({
       if (input.includeSignature) {
         let signature: any = null;
         if (input.signatureId) {
-          const sigs = await inboxDb.getUserSignatures(ctx.user!.id);
+          const sigs = await inboxDb.getUserSignatures(ctx.user!.id, ctx.tenant!.id);
           signature = sigs.find(s => s.id === input.signatureId);
         } else {
-          signature = await inboxDb.getDefaultSignature(ctx.user!.id);
+          signature = await inboxDb.getDefaultSignature(ctx.user!.id, ctx.tenant!.id);
         }
         if (signature) {
           fullHtml += `<br/><div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">${signature.htmlContent}</div>`;
@@ -406,7 +406,7 @@ export const inboxRouter = router({
       // Rate Us placeholder - will be replaced with actual content before sending
       let includeRateUsInEmail = false;
       if (input.includeRateUs) {
-        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled");
+        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled", ctx.tenant!.id);
         if (rateUsEnabled === "true") {
           includeRateUsInEmail = true;
         }
@@ -448,7 +448,7 @@ export const inboxRouter = router({
 
       // Now build Rate Us HTML with the actual message ID and append to email body
       if (includeRateUsInEmail) {
-        const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt") || "How would you rate our service?";
+        const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt", ctx.tenant!.id) || "How would you rate our service?";
         const baseUrl = ctx.req.headers.origin || "";
         const feedbackHtml = buildRateUsHtml(baseUrl, msgId, rateUsPrompt);
         fullHtml += feedbackHtml;
@@ -483,8 +483,8 @@ export const inboxRouter = router({
   // ─── Tags ─────────────────────────────────────────────────────────────────
 
   tags: router({
-    list: protectedProcedure.query(async () => {
-      return inboxDb.listTags();
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return inboxDb.listTags(ctx.tenant!.id);
     }),
 
     create: adminProcedure
@@ -494,8 +494,9 @@ export const inboxRouter = router({
         description: z.string().max(255).optional(),
         sortOrder: z.number().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         return inboxDb.createTag({
+          tenantId: ctx.tenant!.id,
           name: input.name,
           color: input.color || "#6b7280",
           description: input.description || null,
@@ -512,37 +513,37 @@ export const inboxRouter = router({
         description: z.string().max(255).optional(),
         sortOrder: z.number().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
-        await inboxDb.updateTag(id, data);
+        await inboxDb.updateTag(id, data, ctx.tenant!.id);
         return { success: true };
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await inboxDb.deleteTag(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await inboxDb.deleteTag(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
     addToMessage: protectedProcedure
       .input(z.object({ messageId: z.number(), tagId: z.number() }))
-      .mutation(async ({ input }) => {
-        await inboxDb.addTagToMessage(input.messageId, input.tagId);
+      .mutation(async ({ input, ctx }) => {
+        await inboxDb.addTagToMessage(input.messageId, input.tagId, ctx.tenant!.id);
         return { success: true };
       }),
 
     removeFromMessage: protectedProcedure
       .input(z.object({ messageId: z.number(), tagId: z.number() }))
-      .mutation(async ({ input }) => {
-        await inboxDb.removeTagFromMessage(input.messageId, input.tagId);
+      .mutation(async ({ input, ctx }) => {
+        await inboxDb.removeTagFromMessage(input.messageId, input.tagId, ctx.tenant!.id);
         return { success: true };
       }),
 
     getForMessage: protectedProcedure
       .input(z.object({ messageId: z.number() }))
-      .query(async ({ input }) => {
-        return inboxDb.getMessageTags(input.messageId);
+      .query(async ({ input, ctx }) => {
+        return inboxDb.getMessageTags(input.messageId, ctx.tenant!.id);
       }),
   }),
 
@@ -550,11 +551,11 @@ export const inboxRouter = router({
 
   signatures: router({
     list: protectedProcedure.query(async ({ ctx }) => {
-      return inboxDb.getUserSignatures(ctx.user!.id);
+      return inboxDb.getUserSignatures(ctx.user!.id, ctx.tenant!.id);
     }),
 
     getDefault: protectedProcedure.query(async ({ ctx }) => {
-      return inboxDb.getDefaultSignature(ctx.user!.id);
+      return inboxDb.getDefaultSignature(ctx.user!.id, ctx.tenant!.id);
     }),
 
     create: protectedProcedure
@@ -566,12 +567,13 @@ export const inboxRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         return inboxDb.upsertSignature({
+          tenantId: ctx.tenant!.id,
           userId: ctx.user!.id,
           name: input.name,
           htmlContent: input.htmlContent,
           isDefault: input.isDefault || false,
           schedule: input.schedule || "always",
-        });
+        }, ctx.tenant!.id);
       }),
 
     update: protectedProcedure
@@ -584,14 +586,14 @@ export const inboxRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
-        await inboxDb.updateSignature(id, ctx.user!.id, data);
+        await inboxDb.updateSignature(id, ctx.user!.id, data, ctx.tenant!.id);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        await inboxDb.deleteSignature(input.id, ctx.user!.id);
+        await inboxDb.deleteSignature(input.id, ctx.user!.id, ctx.tenant!.id);
         return { success: true };
       }),
 
@@ -604,12 +606,12 @@ export const inboxRouter = router({
         // Get the signature HTML - either from provided HTML or by ID
         let signatureHtml = input.signatureHtml || "";
         if (!signatureHtml && input.signatureId) {
-          const sigs = await inboxDb.getUserSignatures(ctx.user!.id);
+          const sigs = await inboxDb.getUserSignatures(ctx.user!.id, ctx.tenant!.id);
           const sig = sigs.find(s => s.id === input.signatureId);
           if (sig) signatureHtml = sig.htmlContent;
         }
         if (!signatureHtml) {
-          const defaultSig = await inboxDb.getDefaultSignature(ctx.user!.id);
+          const defaultSig = await inboxDb.getDefaultSignature(ctx.user!.id, ctx.tenant!.id);
           if (defaultSig) signatureHtml = defaultSig.htmlContent;
         }
         if (!signatureHtml) {
@@ -657,8 +659,8 @@ export const inboxRouter = router({
   // ─── Admin Settings ───────────────────────────────────────────────────────
 
   settings: router({
-    getAll: adminProcedure.query(async () => {
-      return inboxDb.getAllSettings();
+    getAll: adminProcedure.query(async ({ ctx }) => {
+      return inboxDb.getAllSettings(ctx.tenant!.id);
     }),
 
     update: adminProcedure
@@ -667,7 +669,7 @@ export const inboxRouter = router({
         value: z.string(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await inboxDb.setSetting(input.key, input.value, ctx.user!.id);
+        await inboxDb.setSetting(input.key, input.value, ctx.user!.id, ctx.tenant!.id);
         return { success: true };
       }),
 
@@ -678,13 +680,13 @@ export const inboxRouter = router({
       })))
       .mutation(async ({ input, ctx }) => {
         for (const { key, value } of input) {
-          await inboxDb.setSetting(key, value, ctx.user!.id);
+          await inboxDb.setSetting(key, value, ctx.user!.id, ctx.tenant!.id);
         }
         return { success: true };
       }),
 
-    getCompanySignature: adminProcedure.query(async () => {
-      return inboxDb.getCompanyDefaultSignature();
+    getCompanySignature: adminProcedure.query(async ({ ctx }) => {
+      return inboxDb.getCompanyDefaultSignature(ctx.tenant!.id);
     }),
 
     setCompanySignature: adminProcedure
@@ -693,13 +695,13 @@ export const inboxRouter = router({
         htmlContent: z.string().min(1),
       }))
       .mutation(async ({ input, ctx }) => {
-        await inboxDb.setCompanyDefaultSignature(input.name, input.htmlContent, ctx.user!.id);
+        await inboxDb.setCompanyDefaultSignature(input.name, input.htmlContent, ctx.user!.id, ctx.tenant!.id);
         return { success: true };
       }),
 
     deleteCompanySignature: adminProcedure
       .mutation(async ({ ctx }) => {
-        await inboxDb.setSetting("company_default_signature", "", ctx.user!.id);
+        await inboxDb.setSetting("company_default_signature", "", ctx.user!.id, ctx.tenant!.id);
         return { success: true };
       }),
 
@@ -709,12 +711,12 @@ export const inboxRouter = router({
         htmlContent: z.string().min(1),
         forceAll: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
-        return inboxDb.duplicateCompanySignatureToUsers(input.name, input.htmlContent, input.forceAll || false);
+      .mutation(async ({ input, ctx }) => {
+        return inboxDb.duplicateCompanySignatureToUsers(input.name, input.htmlContent, input.forceAll || false, ctx.tenant!.id);
       }),
 
-    signatureAnalytics: adminProcedure.query(async () => {
-      return inboxDb.getSignatureAnalytics();
+    signatureAnalytics: adminProcedure.query(async ({ ctx }) => {
+      return inboxDb.getSignatureAnalytics(ctx.tenant!.id);
     }),
   }),
 
@@ -804,12 +806,12 @@ export const inboxRouter = router({
   }),
 
   sla: router({
-    list: adminProcedure.query(async () => {
-      return inboxDb.listSlaRules();
+    list: adminProcedure.query(async ({ ctx }) => {
+      return inboxDb.listSlaRules(ctx.tenant!.id);
     }),
 
-    getActive: protectedProcedure.query(async () => {
-      return inboxDb.getActiveSlaRule();
+    getActive: protectedProcedure.query(async ({ ctx }) => {
+      return inboxDb.getActiveSlaRule(ctx.tenant!.id);
     }),
 
     upsert: adminProcedure
@@ -822,19 +824,19 @@ export const inboxRouter = router({
         managerEmail: z.string().email().nullable().optional(),
         active: z.boolean(),
       }))
-      .mutation(async ({ input }) => {
-        return inboxDb.upsertSlaRule(input);
+      .mutation(async ({ input, ctx }) => {
+        return inboxDb.upsertSlaRule(input, ctx.tenant!.id);
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await inboxDb.deleteSlaRule(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await inboxDb.deleteSlaRule(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
-    breaching: protectedProcedure.query(async () => {
-      return inboxDb.getMessagesBreachingSla();
+    breaching: protectedProcedure.query(async ({ ctx }) => {
+      return inboxDb.getMessagesBreachingSla(ctx.tenant!.id);
     }),
   }),
 });
@@ -842,7 +844,7 @@ export const inboxRouter = router({
 // ─── Rate Us HTML Builder ───────────────────────────────────────────────────
 
 async function getTenantSenderDomain(tenantId: number): Promise<string> {
-  const configuredDomain = await inboxDb.getSetting("receiving_domain");
+  const configuredDomain = await inboxDb.getSetting("receiving_domain", tenantId);
   if (configuredDomain) return configuredDomain;
 
   const emailConfig = await getTenantEmailConfig(tenantId);

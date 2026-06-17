@@ -2,7 +2,7 @@ import { COOKIE_NAME, isAdminRole } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, adminProcedure, superAdminProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, adminProcedure, superAdminProcedure, tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { randomBytes } from "crypto";
 import * as db from "./db";
@@ -807,7 +807,11 @@ export const appRouter = router({
         // Get all branch addresses from branches table
         const drizzleDb = (await (await import("./db")).getDb())!;
         const { branches: branchesTable } = await import("../drizzle/schema");
-        const branchRows = await drizzleDb.select().from(branchesTable);
+        const { and, eq } = await import("drizzle-orm");
+        const branchConditions: any[] = [eq(branchesTable.isActive, true)];
+        const tenantCondition = tenantScoped(branchesTable.tenantId, tenantIdFromContext(ctx));
+        if (tenantCondition) branchConditions.push(tenantCondition);
+        const branchRows = await drizzleDb.select().from(branchesTable).where(and(...branchConditions));
         if (!branchRows.length) throw new Error("No branch addresses configured. Go to Company Settings to add branches.");
 
         const { makeRequest } = await import("./_core/map");
@@ -1122,13 +1126,13 @@ export const appRouter = router({
 
   // ─── Master Data ───────────────────────────────────────────────────────────
   masterData: router({
-    getAll: protectedProcedure.query(async ({ ctx }) => db.getAllMasterData(ctx.tenant?.id ?? null)),
+    getAll: tenantProcedure.query(async ({ ctx }) => db.getAllMasterData(ctx.tenant!.id)),
 
-    getByCategory: protectedProcedure
+    getByCategory: tenantProcedure
       .input(z.object({ category: z.string() }))
-      .query(async ({ ctx, input }) => db.getMasterDataByCategory(input.category, ctx.tenant?.id ?? null)),
+      .query(async ({ ctx, input }) => db.getMasterDataByCategory(input.category, ctx.tenant!.id)),
 
-    upsert: adminProcedure
+    upsert: tenantAdminProcedure
       .input(z.object({
         id: z.number().optional(),
         category: z.string(),
@@ -1141,50 +1145,50 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         // If updating an existing product_tab, cascade the key change to all products
         if (input.id && input.category === "product_tab") {
-          const existing = await db.getMasterDataById(input.id, ctx.tenant?.id ?? null);
+          const existing = await db.getMasterDataById(input.id, ctx.tenant!.id);
           if (existing && existing.key !== input.key) {
             // Tab key was renamed — update all products referencing the old key
-            await db.reassignProductsFromTab(existing.key, input.key);
+            await db.reassignProductsFromTab(existing.key, input.key, ctx.tenant!.id);
           }
         }
-        const id = await db.upsertMasterData(input as any, ctx.tenant?.id ?? null);
+        const id = await db.upsertMasterData(input as any, ctx.tenant!.id);
         return { id };
       }),
 
-    delete: adminProcedure
+    delete: tenantAdminProcedure
       .input(z.object({ id: z.number(), reassignTo: z.string().optional() }))
       .mutation(async ({ ctx, input }) => {
         // Check if this is a product_tab being deleted — handle orphaned products
-        const entry = await db.getMasterDataById(input.id, ctx.tenant?.id ?? null);
+        const entry = await db.getMasterDataById(input.id, ctx.tenant!.id);
         if (entry && entry.category === "product_tab") {
-          await db.reassignProductsFromTab(entry.key, input.reassignTo || null);
+          await db.reassignProductsFromTab(entry.key, input.reassignTo || null, ctx.tenant!.id);
         }
         // If deleting a colour, also remove it from all colour group memberships
         if (entry && entry.category === "colour") {
-          await db.removeColourGroupMembersByValue(entry.value);
+          await db.removeColourGroupMembersByValue(entry.value, ctx.tenant!.id);
         }
-        await db.deleteMasterData(input.id, ctx.tenant?.id ?? null);
+        await db.deleteMasterData(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
-    reorder: adminProcedure
+    reorder: tenantAdminProcedure
       .input(z.object({
         items: z.array(z.object({ id: z.number(), sortOrder: z.number() })),
       }))
       .mutation(async ({ ctx, input }) => {
         for (const item of input.items) {
-          await db.updateMasterDataSortOrder(item.id, item.sortOrder, ctx.tenant?.id ?? null);
+          await db.updateMasterDataSortOrder(item.id, item.sortOrder, ctx.tenant!.id);
         }
         return { success: true };
       }),
 
-    getProductCountByTab: adminProcedure
+    getProductCountByTab: tenantAdminProcedure
       .input(z.object({ tabKey: z.string() }))
-      .query(async ({ input }) => db.getProductCountByTab(input.tabKey)),
+      .query(async ({ ctx, input }) => db.getProductCountByTab(input.tabKey, ctx.tenant!.id)),
 
     skyluxMatrix: router({
-      getAll: protectedProcedure.query(async () => db.getAllSkyluxMatrix()),
-      upsert: adminProcedure
+      getAll: tenantProcedure.query(async ({ ctx }) => db.getAllSkyluxMatrix(ctx.tenant!.id)),
+      upsert: tenantAdminProcedure
         .input(z.object({
           id: z.number().optional(),
           length: z.number(),
@@ -1192,8 +1196,8 @@ export const appRouter = router({
           baseCost: z.string(),
           sellMultiplier: z.string().optional(),
         }))
-        .mutation(async ({ input }) => {
-          const id = await db.upsertSkyluxMatrix(input as any);
+        .mutation(async ({ ctx, input }) => {
+          const id = await db.upsertSkyluxMatrix(input as any, ctx.tenant!.id);
           return { id };
         }),
     }),
@@ -1201,15 +1205,15 @@ export const appRouter = router({
 
   // ─── Colour Groups ────────────────────────────────────────────────────────
   colourGroups: router({
-    getAll: protectedProcedure.query(async () => db.getAllColourGroups()),
+    getAll: tenantProcedure.query(async ({ ctx }) => db.getAllColourGroups(ctx.tenant!.id)),
 
-    getMembers: protectedProcedure
+    getMembers: tenantProcedure
       .input(z.object({ colourGroupId: z.number() }))
-      .query(async ({ input }) => db.getColourGroupMembers(input.colourGroupId)),
+      .query(async ({ ctx, input }) => db.getColourGroupMembers(input.colourGroupId, ctx.tenant!.id)),
 
-    getAllMembers: protectedProcedure.query(async () => db.getAllColourGroupMembers()),
+    getAllMembers: tenantProcedure.query(async ({ ctx }) => db.getAllColourGroupMembers(ctx.tenant!.id)),
 
-    upsert: adminProcedure
+    upsert: tenantAdminProcedure
       .input(z.object({
         id: z.number().optional(),
         name: z.string().min(1),
@@ -1217,66 +1221,66 @@ export const appRouter = router({
         sortOrder: z.number().optional(),
         standardColours: z.array(z.string()).optional(),
       }))
-      .mutation(async ({ input }) => {
-        const id = await db.upsertColourGroup(input);
+      .mutation(async ({ ctx, input }) => {
+        const id = await db.upsertColourGroup(input, ctx.tenant!.id);
         return { id };
       }),
 
-    updateStandardColours: adminProcedure
+    updateStandardColours: tenantAdminProcedure
       .input(z.object({
         id: z.number(),
         standardColours: z.array(z.string()),
       }))
-      .mutation(async ({ input }) => {
-        await db.updateColourGroupStandardColours(input.id, input.standardColours);
+      .mutation(async ({ ctx, input }) => {
+        await db.updateColourGroupStandardColours(input.id, input.standardColours, ctx.tenant!.id);
         return { success: true };
       }),
 
-    delete: adminProcedure
+    delete: tenantAdminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await db.deleteColourGroup(input.id);
+      .mutation(async ({ ctx, input }) => {
+        await db.deleteColourGroup(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
-    setMembers: adminProcedure
+    setMembers: tenantAdminProcedure
       .input(z.object({
         colourGroupId: z.number(),
         colours: z.array(z.string()),
       }))
-      .mutation(async ({ input }) => {
-        await db.setColourGroupMembers(input.colourGroupId, input.colours);
+      .mutation(async ({ ctx, input }) => {
+        await db.setColourGroupMembers(input.colourGroupId, input.colours, ctx.tenant!.id);
         return { success: true };
       }),
 
-    cleanupOrphaned: adminProcedure
-      .mutation(async () => {
-        const removed = await db.cleanupOrphanedColourGroupMembers();
+    cleanupOrphaned: tenantAdminProcedure
+      .mutation(async ({ ctx }) => {
+        const removed = await db.cleanupOrphanedColourGroupMembers(ctx.tenant!.id);
         return { removed };
       }),
   }),
 
   // ─── Products ──────────────────────────────────────────────────────────────
   products: router({
-    getByTab: protectedProcedure
+    getByTab: tenantProcedure
       .input(z.object({ tabName: z.string() }))
-      .query(async ({ input }) => db.getProductsByTab(input.tabName)),
+      .query(async ({ ctx, input }) => db.getProductsByTab(input.tabName, ctx.tenant!.id)),
 
-    getAll: protectedProcedure.query(async () => db.getAllProducts()),
+    getAll: tenantProcedure.query(async ({ ctx }) => db.getAllProducts(ctx.tenant!.id)),
 
-    getNamesByTabPattern: protectedProcedure
+    getNamesByTabPattern: tenantProcedure
       .input(z.object({ pattern: z.string() }))
-      .query(async ({ input }) => db.getProductNamesByTabPattern(input.pattern)),
+      .query(async ({ ctx, input }) => db.getProductNamesByTabPattern(input.pattern, ctx.tenant!.id)),
 
-    getRatesForTab: protectedProcedure
+    getRatesForTab: tenantProcedure
       .input(z.object({ tabName: z.string(), region: z.string().optional() }))
-      .query(async ({ ctx, input }) => db.calculateTabProductRates(input.tabName, input.region || "Canberra", ctx.tenant?.id ?? null)),
+      .query(async ({ ctx, input }) => db.calculateTabProductRates(input.tabName, input.region || "Canberra", ctx.tenant!.id)),
 
-    calculateRate: protectedProcedure
+    calculateRate: tenantProcedure
       .input(z.object({ productId: z.number(), isPowderCoated: z.boolean().optional(), region: z.string().optional() }))
-      .query(async ({ ctx, input }) => db.calculateProductSellRate(input.productId, input.isPowderCoated ?? false, input.region || "Canberra", ctx.tenant?.id ?? null)),
+      .query(async ({ ctx, input }) => db.calculateProductSellRate(input.productId, input.isPowderCoated ?? false, input.region || "Canberra", ctx.tenant!.id)),
 
-    upsert: adminProcedure
+    upsert: tenantAdminProcedure
       .input(z.object({
         id: z.number().optional(),
         productCode: z.string().nullable().optional(),
@@ -1297,33 +1301,33 @@ export const appRouter = router({
         sortOrder: z.number().optional(),
         active: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         // Auto-compute baseCost from breakdown fields
         const materials = parseFloat(input.materials || "0") || 0;
         const installLabour = parseFloat(input.installLabour || "0") || 0;
         const consumables = parseFloat(input.consumables || "0") || 0;
         const computedBaseCost = (materials + installLabour + consumables).toFixed(2);
-        const id = await db.upsertProduct({ ...input, baseCost: computedBaseCost } as any);
+        const id = await db.upsertProduct({ ...input, baseCost: computedBaseCost } as any, ctx.tenant!.id);
         return { id };
       }),
-    delete: adminProcedure
+    delete: tenantAdminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await db.deleteProduct(input.id);
+      .mutation(async ({ ctx, input }) => {
+        await db.deleteProduct(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
-    bulkDelete: adminProcedure
+    bulkDelete: tenantAdminProcedure
       .input(z.object({ ids: z.array(z.number()).min(1) }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         for (const id of input.ids) {
-          await db.deleteProduct(id);
+          await db.deleteProduct(id, ctx.tenant!.id);
         }
         return { deleted: input.ids.length };
       }),
 
-    getTabsAndUoms: protectedProcedure.query(async ({ ctx }) => {
-      const allMd = await db.getAllMasterData(ctx.tenant?.id ?? null);
+    getTabsAndUoms: tenantProcedure.query(async ({ ctx }) => {
+      const allMd = await db.getAllMasterData(ctx.tenant!.id);
       const tabs = allMd.filter(m => m.category === "product_tab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       const uoms = allMd.filter(m => m.category === "product_uom").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       const subTabs = allMd.filter(m => m.category === "product_subtab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -1335,8 +1339,8 @@ export const appRouter = router({
      * Each specField maps to one or more product tabs. Products are grouped by sub-tab within each tab.
      * Response shape: { [specField]: { categories: { id, label, options[] }[] } }
      */
-    getSpecFieldOptions: protectedProcedure.query(async ({ ctx }) => {
-      const allMd = await db.getAllMasterData(ctx.tenant?.id ?? null);
+    getSpecFieldOptions: tenantProcedure.query(async ({ ctx }) => {
+      const allMd = await db.getAllMasterData(ctx.tenant!.id);
       const tabs = allMd.filter(m => m.category === "product_tab");
       const subTabs = allMd.filter(m => m.category === "product_subtab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
 
@@ -1364,7 +1368,7 @@ export const appRouter = router({
           // Get sub-tabs for this tab
           const tabSubTabs = subTabs.filter(st => st.description === tabKey);
           // Get products for this tab
-          const products = await db.getProductNamesByTabPattern(tabKey);
+          const products = await db.getProductNamesByTabPattern(tabKey, ctx.tenant!.id);
 
           // Collect colourGroup mappings
           for (const p of products) {
@@ -1412,8 +1416,8 @@ export const appRouter = router({
       return { fields: result, productColourGroups, productColourGroupsBottom };
     }),
 
-    exportCsv: adminProcedure.query(async () => {
-      const allProducts = await db.getAllProductsForExport();
+    exportCsv: tenantAdminProcedure.query(async ({ ctx }) => {
+      const allProducts = await db.getAllProductsForExport(ctx.tenant!.id);
       const headers = ["productCode", "tabName", "subTab", "name", "uom", "baseCost", "materials", "installLabour", "consumables", "markupCategory", "fixedSell", "powderCoatSurcharge", "colourGroup", "coverageWidth", "sortOrder", "active"];
       const csvRows = [headers.join(",")];
       for (const p of allProducts) {
@@ -1428,7 +1432,7 @@ export const appRouter = router({
       return { csv: csvRows.join("\n"), count: allProducts.length };
     }),
 
-    bulkImport: adminProcedure
+    bulkImport: tenantAdminProcedure
       .input(z.object({
         rows: z.array(z.object({
           productCode: z.string().nullable().optional(),
@@ -1450,7 +1454,7 @@ export const appRouter = router({
           active: z.boolean().optional(),
         })),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         // Auto-compute baseCost from breakdown fields for each row
         const rows = input.rows.map(row => {
           const mat = parseFloat(row.materials || "0") || 0;
@@ -1458,11 +1462,11 @@ export const appRouter = router({
           const con = parseFloat(row.consumables || "0") || 0;
           return { ...row, baseCost: (mat + lab + con).toFixed(2) };
         });
-        return db.bulkUpsertProducts(rows);
+        return db.bulkUpsertProducts(rows, ctx.tenant!.id);
       }),
 
     /** Search the component catalogue for import candidates */
-    searchCatalogue: protectedProcedure
+    searchCatalogue: tenantProcedure
       .input(z.object({
         category: z.string().optional(),
         search: z.string().optional().default(""),
@@ -1509,7 +1513,7 @@ export const appRouter = router({
       }),
 
     /** Get catalogue categories for the import picker */
-    catalogueCategories: protectedProcedure.query(async () => {
+    catalogueCategories: tenantProcedure.query(async () => {
       return [
         "Aluminium", "Ampelite", "Back Channel", "Brackets & Componentry",
         "Coils", "Downlights", "Infill", "IRP IWP", "Laserlite",
@@ -1518,7 +1522,7 @@ export const appRouter = router({
     }),
 
     /** Import selected catalogue items into the products table */
-    importFromCatalogue: adminProcedure
+    importFromCatalogue: tenantAdminProcedure
       .input(z.object({
         items: z.array(z.object({
           catalogueId: z.number(),
@@ -1534,8 +1538,8 @@ export const appRouter = router({
         markupCategory: z.string().nullable().optional(),
         markupPercent: z.number().min(0).max(500).optional(),
       }))
-      .mutation(async ({ input }) => {
-        const allProducts = await db.getAllProducts();
+      .mutation(async ({ ctx, input }) => {
+        const allProducts = await db.getAllProducts(ctx.tenant!.id);
         const existingCodes = new Set(allProducts.map(p => p.productCode?.toLowerCase()).filter(Boolean));
 
         let imported = 0;
@@ -1573,7 +1577,7 @@ export const appRouter = router({
             coverageWidth: null,
             sortOrder: 0,
             active: true,
-          } as any);
+          } as any, ctx.tenant!.id);
           imported++;
           existingCodes.add(item.spaCode.toLowerCase());
         }
@@ -2303,7 +2307,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
 
   // ─── User Settings (synced across devices) ──────────────────────────────────────────────
   userSettings: router({
-    get: protectedProcedure.query(async ({ ctx }) => {
+    get: tenantProcedure.query(async ({ ctx }) => {
       const userSettings = await db.getUserSettings(ctx.user.id);
       const tenantBranding = await db.getTenantBrandingSettings(ctx.tenant?.id ?? null);
       if (!tenantBranding) return userSettings;
@@ -2316,7 +2320,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         companyTheme: tenantBranding.companyTheme ?? userSettings?.companyTheme ?? null,
       };
     }),
-    save: protectedProcedure
+    save: tenantProcedure
       .input(z.object({
         themeMode: z.string().optional(),
         colorScheme: z.string().optional(),

@@ -1,17 +1,22 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
-import { TRPCError } from "@trpc/server";
+import { router, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { renderCostLogs, users, patioPlanner } from "../drizzle/schema";
 import { eq, and, sql, gte, lte, desc } from "drizzle-orm";
 import { getDefaultRenderPricing, getRenderCostAud, type RenderPricingSettings } from "./global-settings-router";
-import { isAdminRole } from "@shared/const";
 import { getTenantAppSetting } from "./tenant-settings-store";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 // ─── Fetch Pricing from DB ──────────────────────────────────────────────────
 async function fetchRenderPricing(tenantId?: number | null): Promise<RenderPricingSettings> {
   const stored = await getTenantAppSetting<Partial<RenderPricingSettings>>(tenantId, "renderPricing");
   return { ...getDefaultRenderPricing(), ...stored };
+}
+
+function renderCostConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, renderCostLogs.tenantId, tenantIdFromContext(ctx));
+  return conditions;
 }
 
 // ─── Cost Logging Helper ────────────────────────────────────────────────────
@@ -31,6 +36,7 @@ export async function logRenderCost(params: {
   const totalCost = perRenderCost * (params.renderCount || 1);
 
   await db.insert(renderCostLogs).values({
+    tenantId: params.tenantId ?? null,
     userId: params.userId,
     projectId: params.projectId ?? null,
     renderMode: params.renderMode,
@@ -45,7 +51,7 @@ export const renderCostRouter = router({
   /**
    * Get cost summary KPIs (total credits, render count, budget usage).
    */
-  summary: protectedProcedure
+  summary: adminProcedure
     .input(
       z.object({
         startDate: z.string().optional(), // ISO date
@@ -53,10 +59,6 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (!isAdminRole(ctx.user.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-      }
-
       const db = await getDb();
       if (!db) {
         const defaultPricing = getDefaultRenderPricing();
@@ -76,11 +78,11 @@ export const renderCostRouter = router({
         };
       }
 
-      const conditions: any[] = [];
+      const conditions = renderCostConditions(ctx);
       if (input?.startDate) conditions.push(gte(renderCostLogs.createdAt, new Date(input.startDate)));
       if (input?.endDate) conditions.push(lte(renderCostLogs.createdAt, new Date(input.endDate + "T23:59:59.999Z")));
 
-      const where = conditions.length ? and(...conditions) : undefined;
+      const where = and(...conditions);
 
       const [result] = await db
         .select({
@@ -105,7 +107,7 @@ export const renderCostRouter = router({
           monthlyCredits: sql<string>`COALESCE(SUM(${renderCostLogs.creditCost}), 0)`,
         })
         .from(renderCostLogs)
-        .where(gte(renderCostLogs.createdAt, monthStart));
+        .where(and(...renderCostConditions(ctx, gte(renderCostLogs.createdAt, monthStart))));
 
       const totalCostAud = parseFloat(result.totalCredits) || 0;
       const totalRenders = Number(result.totalRenders) || 0;
@@ -133,7 +135,7 @@ export const renderCostRouter = router({
   /**
    * Get cost breakdown by adviser.
    */
-  byAdviser: protectedProcedure
+  byAdviser: adminProcedure
     .input(
       z.object({
         startDate: z.string().optional(),
@@ -141,18 +143,14 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (!isAdminRole(ctx.user.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-      }
-
       const db = await getDb();
       if (!db) return [];
 
-      const conditions: any[] = [];
+      const conditions = renderCostConditions(ctx);
       if (input?.startDate) conditions.push(gte(renderCostLogs.createdAt, new Date(input.startDate)));
       if (input?.endDate) conditions.push(lte(renderCostLogs.createdAt, new Date(input.endDate + "T23:59:59.999Z")));
 
-      const where = conditions.length ? and(...conditions) : undefined;
+      const where = and(...conditions);
 
       const rows = await db
         .select({
@@ -187,7 +185,7 @@ export const renderCostRouter = router({
   /**
    * Get cost breakdown by project.
    */
-  byProject: protectedProcedure
+  byProject: adminProcedure
     .input(
       z.object({
         startDate: z.string().optional(),
@@ -195,18 +193,14 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (!isAdminRole(ctx.user.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-      }
-
       const db = await getDb();
       if (!db) return [];
 
-      const conditions: any[] = [];
+      const conditions = renderCostConditions(ctx);
       if (input?.startDate) conditions.push(gte(renderCostLogs.createdAt, new Date(input.startDate)));
       if (input?.endDate) conditions.push(lte(renderCostLogs.createdAt, new Date(input.endDate + "T23:59:59.999Z")));
 
-      const where = conditions.length ? and(...conditions) : undefined;
+      const where = and(...conditions);
 
       const rows = await db
         .select({
@@ -234,17 +228,13 @@ export const renderCostRouter = router({
   /**
    * Get monthly trend data (last 12 months).
    */
-  monthlyTrend: protectedProcedure
+  monthlyTrend: adminProcedure
     .input(
       z.object({
         months: z.number().min(3).max(24).default(12),
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (!isAdminRole(ctx.user.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-      }
-
       const db = await getDb();
       if (!db) return [];
 
@@ -264,7 +254,7 @@ export const renderCostRouter = router({
           batchRenders: sql<number>`COALESCE(SUM(CASE WHEN ${renderCostLogs.renderMode} = 'batch' THEN ${renderCostLogs.renderCount} ELSE 0 END), 0)`,
         })
         .from(renderCostLogs)
-        .where(gte(renderCostLogs.createdAt, startDate))
+        .where(and(...renderCostConditions(ctx, gte(renderCostLogs.createdAt, startDate))))
         .groupBy(sql`DATE_FORMAT(${renderCostLogs.createdAt}, '%Y-%m')`)
         .orderBy(sql`DATE_FORMAT(${renderCostLogs.createdAt}, '%Y-%m')`);
 
@@ -281,7 +271,7 @@ export const renderCostRouter = router({
   /**
    * Get recent render logs (paginated).
    */
-  recentLogs: protectedProcedure
+  recentLogs: adminProcedure
     .input(
       z.object({
         limit: z.number().min(1).max(100).default(50),
@@ -289,10 +279,6 @@ export const renderCostRouter = router({
       }).optional()
     )
     .query(async ({ ctx, input }) => {
-      if (!isAdminRole(ctx.user.role)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
-      }
-
       const db = await getDb();
       if (!db) return { logs: [], total: 0 };
 
@@ -301,7 +287,8 @@ export const renderCostRouter = router({
 
       const [countResult] = await db
         .select({ count: sql<number>`COUNT(*)` })
-        .from(renderCostLogs);
+        .from(renderCostLogs)
+        .where(and(...renderCostConditions(ctx)));
 
       const logs = await db
         .select({
@@ -319,6 +306,7 @@ export const renderCostRouter = router({
         .from(renderCostLogs)
         .leftJoin(users, eq(renderCostLogs.userId, users.id))
         .leftJoin(patioPlanner, eq(renderCostLogs.projectId, patioPlanner.id))
+        .where(and(...renderCostConditions(ctx)))
         .orderBy(desc(renderCostLogs.createdAt))
         .limit(limit)
         .offset(offset);

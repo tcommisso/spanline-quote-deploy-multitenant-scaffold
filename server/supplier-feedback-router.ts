@@ -1,4 +1,4 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { z } from "zod";
 import {
   listFeedback,
@@ -15,7 +15,8 @@ import { TRPCError } from "@trpc/server";
 import { notifyOwner } from "./_core/notification";
 import { getMasterDataValue, getDb } from "./db";
 import { suppliers } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 const ratingSchema = z.number().int().min(1).max(5);
 
@@ -26,8 +27,9 @@ export const supplierFeedbackRouter = router({
       limit: z.number().min(1).max(100).optional().default(50),
       offset: z.number().min(0).optional().default(0),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       return listFeedback({
+        tenantId: ctx.tenant!.id,
         supplierId: input?.supplierId,
         limit: input?.limit,
         offset: input?.offset,
@@ -47,6 +49,7 @@ export const supplierFeedbackRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const result = await createFeedback({
+        tenantId: ctx.tenant!.id,
         supplierId: input.supplierId,
         userId: ctx.user.id,
         timeliness: input.timeliness,
@@ -62,10 +65,12 @@ export const supplierFeedbackRouter = router({
       try {
         const thresholdStr = await getMasterDataValue("notification", "supplier_alert_threshold", ctx.tenant?.id ?? null);
         const threshold = parseFloat(thresholdStr || "3.0");
-        const summary = await getSupplierRatingsSummary(input.supplierId);
+        const summary = await getSupplierRatingsSummary(input.supplierId, ctx.tenant!.id);
         if (summary && summary.avgOverall < threshold) {
           const db = await getDb();
-          const supplierRow = db ? await db.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1) : [];
+          const supplierConditions = [eq(suppliers.id, input.supplierId)];
+          appendTenantScope(supplierConditions, suppliers.tenantId, ctx.tenant!.id);
+          const supplierRow = db ? await db.select().from(suppliers).where(and(...supplierConditions)).limit(1) : [];
           const supplierName = supplierRow[0]?.name || `Supplier #${input.supplierId}`;
           await notifyOwner({
             title: `⚠️ Supplier Alert: ${supplierName} below ${threshold} stars`,
@@ -89,48 +94,48 @@ export const supplierFeedbackRouter = router({
       pricing: ratingSchema.optional(),
       notes: z.string().nullable().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
-      return updateFeedback(id, data);
+      return updateFeedback(id, { ...data, tenantId: ctx.tenant!.id });
     }),
 
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      return deleteFeedback(input.id);
+    .mutation(async ({ ctx, input }) => {
+      return deleteFeedback(input.id, ctx.tenant!.id);
     }),
 
   /** Get aggregated ratings for a single supplier */
   supplierSummary: protectedProcedure
     .input(z.object({ supplierId: z.number() }))
-    .query(async ({ input }) => {
-      return getSupplierRatingsSummary(input.supplierId);
+    .query(async ({ ctx, input }) => {
+      return getSupplierRatingsSummary(input.supplierId, ctx.tenant!.id);
     }),
 
   /** Get all supplier ratings for directory display */
-  allRatings: protectedProcedure.query(async () => {
-    return getAllSupplierRatings();
+  allRatings: protectedProcedure.query(async ({ ctx }) => {
+    return getAllSupplierRatings(ctx.tenant!.id);
   }),
 
   /** Check if user already submitted feedback for a PO */
   hasFeedbackForPo: protectedProcedure
     .input(z.object({ poId: z.number() }))
     .query(async ({ ctx, input }) => {
-      return hasFeedbackForPo(ctx.user.id, input.poId);
+      return hasFeedbackForPo(ctx.user.id, input.poId, ctx.tenant!.id);
     }),
 
   /** Get scorecard data for a supplier */
   scorecard: protectedProcedure
     .input(z.object({ supplierId: z.number() }))
-    .query(async ({ input }) => {
-      return getSupplierScorecard(input.supplierId);
+    .query(async ({ ctx, input }) => {
+      return getSupplierScorecard(input.supplierId, ctx.tenant!.id);
     }),
 
   /** Generate scorecard PDF for a supplier */
   scorecardPdf: protectedProcedure
     .input(z.object({ supplierId: z.number() }))
-    .mutation(async ({ input }) => {
-      const data = await getSupplierScorecard(input.supplierId);
+    .mutation(async ({ ctx, input }) => {
+      const data = await getSupplierScorecard(input.supplierId, ctx.tenant!.id);
       if (!data) throw new TRPCError({ code: "NOT_FOUND", message: "No feedback data found for this supplier" });
       const pdfBuffer = await generateScorecardPdf(data);
       // Return as base64 string for frontend download

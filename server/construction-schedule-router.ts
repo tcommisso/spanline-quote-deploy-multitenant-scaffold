@@ -122,6 +122,7 @@ export const constructionScheduleRouter = router({
       await requireJobAccess(db, ctx, input.jobId);
       if (input.assignedInstallerId) await requireInstallerAccess(db, ctx, input.assignedInstallerId);
       const [result] = await db.insert(constructionScheduleEvents).values({
+        tenantId: tenantIdFromContext(ctx),
         jobId: input.jobId,
         title: input.title,
         description: input.description,

@@ -455,9 +455,12 @@ function MainRouter() {
         <Route path="/inventory/movements" component={InventoryMovements} />
         <Route path="/inventory/transfers" component={InventoryTransfers} />
         <Route path="/inventory/reports" component={InventoryReports} />
-        <Route path="/manufacturing/stocktake" component={StocktakeList} />
-        <Route path="/manufacturing/stocktake/:id/count" component={StocktakeMobileCount} />
-        <Route path="/manufacturing/stocktake/:id" component={StocktakeDetail} />
+        <Route path="/inventory/stocktake" component={StocktakeList} />
+        <Route path="/inventory/stocktake/:id/count" component={StocktakeMobileCount} />
+        <Route path="/inventory/stocktake/:id" component={StocktakeDetail} />
+        <Route path="/manufacturing/stocktake">{() => <Redirect to="/inventory/stocktake" />}</Route>
+        <Route path="/manufacturing/stocktake/:id/count">{(params) => <Redirect to={`/inventory/stocktake/${params.id}/count`} />}</Route>
+        <Route path="/manufacturing/stocktake/:id">{(params) => <Redirect to={`/inventory/stocktake/${params.id}`} />}</Route>
         <Route path="/inventory/warehouse-receiving" component={WarehouseReceiving} />
         <Route path="/inventory/low-stock-alerts" component={LowStockAlerts} />
         <Route path="/deck-quotes" component={DeckQuoteList} />

@@ -1,9 +1,10 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
 import { textBlocks } from "../drizzle/schema";
 import { eq, and, asc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 const VALID_CATEGORIES = ["Engineering", "Specifications"] as const;
 
@@ -14,10 +15,11 @@ export const textBlocksRouter = router({
       category: z.enum(VALID_CATEGORIES).optional(),
       activeOnly: z.boolean().optional().default(true),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
-      const conditions = [];
+      const conditions: any[] = [];
+      appendTenantScope(conditions, textBlocks.tenantId, ctx.tenant!.id);
       if (input?.activeOnly !== false) {
         conditions.push(eq(textBlocks.isActive, true));
       }
@@ -32,11 +34,13 @@ export const textBlocksRouter = router({
   /** Get a single text block by ID */
   getById: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      const conditions: any[] = [eq(textBlocks.id, input.id)];
+      appendTenantScope(conditions, textBlocks.tenantId, ctx.tenant!.id);
       const [block] = await db.select().from(textBlocks)
-        .where(eq(textBlocks.id, input.id)).limit(1);
+        .where(and(...conditions)).limit(1);
       if (!block) throw new TRPCError({ code: "NOT_FOUND", message: "Text block not found" });
       return block;
     }),
@@ -51,10 +55,11 @@ export const textBlocksRouter = router({
       imageKey: z.string().nullable().optional(),
       sortOrder: z.number().optional().default(0),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const [result] = await db.insert(textBlocks).values({
+        tenantId: ctx.tenant!.id,
         title: input.title,
         category: input.category,
         content: input.content,
@@ -77,21 +82,25 @@ export const textBlocksRouter = router({
       sortOrder: z.number().optional(),
       isActive: z.boolean().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const { id, ...data } = input;
-      await db.update(textBlocks).set(data).where(eq(textBlocks.id, id));
+      const conditions: any[] = [eq(textBlocks.id, id)];
+      appendTenantScope(conditions, textBlocks.tenantId, ctx.tenant!.id);
+      await db.update(textBlocks).set(data).where(and(...conditions));
       return { success: true };
     }),
 
   /** Delete (soft) a text block */
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.update(textBlocks).set({ isActive: false }).where(eq(textBlocks.id, input.id));
+      const conditions: any[] = [eq(textBlocks.id, input.id)];
+      appendTenantScope(conditions, textBlocks.tenantId, ctx.tenant!.id);
+      await db.update(textBlocks).set({ isActive: false }).where(and(...conditions));
       return { success: true };
     }),
 
@@ -103,12 +112,17 @@ export const textBlocksRouter = router({
         sortOrder: z.number(),
       })),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       await Promise.all(
         input.items.map(item =>
-          db.update(textBlocks).set({ sortOrder: item.sortOrder }).where(eq(textBlocks.id, item.id))
+          db.update(textBlocks)
+            .set({ sortOrder: item.sortOrder })
+            .where(and(
+              eq(textBlocks.id, item.id),
+              eq(textBlocks.tenantId, ctx.tenant!.id),
+            ))
         )
       );
       return { success: true };
@@ -121,13 +135,16 @@ export const textBlocksRouter = router({
       imageUrl: z.string().nullable(),
       imageKey: z.string().nullable(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       await db.update(textBlocks).set({
         imageUrl: input.imageUrl,
         imageKey: input.imageKey,
-      }).where(eq(textBlocks.id, input.id));
+      }).where(and(
+        eq(textBlocks.id, input.id),
+        eq(textBlocks.tenantId, ctx.tenant!.id),
+      ));
       return { success: true };
     }),
 });

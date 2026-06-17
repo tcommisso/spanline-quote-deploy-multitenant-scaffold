@@ -17,6 +17,7 @@ import {
   ssQuoteItemOptions,
   ssQuoteItems,
   ssQuotes,
+  users,
 } from "../drizzle/schema";
 import { storagePut } from "./storage";
 
@@ -34,6 +35,51 @@ function tenantIdForContext(ctx: any) {
 
 function scope(column: any, tenantId: number) {
   return tenantScoped(column, tenantId)!;
+}
+
+function insertIdFromResult(result: any): number | null {
+  const rawId = result?.insertId ?? result?.[0]?.insertId;
+  const id = Number(rawId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+async function quoteIdFromInsertResult(db: any, tenantId: number, insertResult: any, quoteNumber: string) {
+  const insertId = insertIdFromResult(insertResult);
+  if (insertId) return insertId;
+
+  const [quote] = await db
+    .select({ id: ssQuotes.id })
+    .from(ssQuotes)
+    .where(and(eq(ssQuotes.quoteNumber, quoteNumber), scope(ssQuotes.tenantId, tenantId)))
+    .limit(1);
+
+  if (!quote?.id) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Quote was created but could not be reloaded.",
+    });
+  }
+
+  return Number(quote.id);
+}
+
+function createQuoteNumber() {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `SS-${timestamp}-${suffix}`;
+}
+
+async function nullableExistingUserId(db: any, userId: unknown): Promise<number | null> {
+  const id = Number(userId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+
+  const [user] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+
+  return user?.id ?? null;
 }
 
 async function getDefaultMarkupPercent(db: any, tenantId: number) {
@@ -461,7 +507,7 @@ export const securityScreensRouter = router({
 
     create: tenantProcedure
       .input(z.object({
-        clientName: z.string(),
+        clientName: z.string().trim().min(1, "Client name is required"),
         clientEmail: z.string().optional(),
         clientPhone: z.string().optional(),
         siteAddress: z.string().optional(),
@@ -470,20 +516,22 @@ export const securityScreensRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        const quoteNumber = `SS-${Date.now().toString(36).toUpperCase()}`;
+        const quoteNumber = createQuoteNumber();
         const markupPercent = await getDefaultMarkupPercent(db, tenantId);
+        const createdBy = await nullableExistingUserId(db, ctx.user?.id);
         const [result] = await db.insert(ssQuotes).values({
           tenantId,
           quoteNumber,
-          clientName: input.clientName,
-          clientEmail: input.clientEmail || null,
-          clientPhone: input.clientPhone || null,
-          siteAddress: input.siteAddress || null,
+          clientName: input.clientName.trim(),
+          clientEmail: input.clientEmail?.trim() || null,
+          clientPhone: input.clientPhone?.trim() || null,
+          siteAddress: input.siteAddress?.trim() || null,
           markupPercent: markupPercent.toFixed(2),
-          notes: input.notes || null,
-          createdBy: ctx.user.id,
+          notes: input.notes?.trim() || null,
+          createdBy,
         });
-        return { id: result.insertId, quoteNumber };
+        const quoteId = await quoteIdFromInsertResult(db, tenantId, result, quoteNumber);
+        return { id: quoteId, quoteNumber };
       }),
 
     clone: tenantProcedure
@@ -492,7 +540,8 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         const quote = await requireQuote(db, tenantId, input.id);
-        const quoteNumber = `SS-${Date.now().toString(36).toUpperCase()}`;
+        const quoteNumber = createQuoteNumber();
+        const createdBy = await nullableExistingUserId(db, ctx.user?.id);
         const [quoteResult] = await db.insert(ssQuotes).values({
           tenantId,
           quoteNumber,
@@ -503,9 +552,9 @@ export const securityScreensRouter = router({
           markupPercent: quote.markupPercent,
           notes: quote.notes ? `${quote.notes}\n\nCloned from ${quote.quoteNumber}` : `Cloned from ${quote.quoteNumber}`,
           leadId: quote.leadId,
-          createdBy: ctx.user.id,
+          createdBy,
         });
-        const newQuoteId = Number(quoteResult.insertId);
+        const newQuoteId = await quoteIdFromInsertResult(db, tenantId, quoteResult, quoteNumber);
         const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
         const itemIdMap = new Map<number, number>();
         for (const item of items) {
@@ -532,7 +581,8 @@ export const securityScreensRouter = router({
             optionsTotal: item.optionsTotal,
             lineTotalExGst: item.lineTotalExGst,
           });
-          itemIdMap.set(item.id, Number(itemResult.insertId));
+          const newItemId = insertIdFromResult(itemResult);
+          if (newItemId) itemIdMap.set(item.id, newItemId);
         }
         const originalOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
         for (const option of originalOptions) {
@@ -634,13 +684,21 @@ export const securityScreensRouter = router({
           lineTotalExGst: lineTotalExGst.toFixed(2),
         });
 
+        const quoteItemId = insertIdFromResult(result);
+        if (!quoteItemId) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Quote item was created but could not be reloaded.",
+          });
+        }
+
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
           if (!productOption) continue;
           const lineTotal = Number(productOption.sellPrice || 0) * selected.quantity;
           await db.insert(ssQuoteItemOptions).values({
             tenantId,
-            quoteItemId: result.insertId,
+            quoteItemId,
             productOptionId: selected.productOptionId,
             quantity: selected.quantity,
             unitPrice: productOption.sellPrice,
@@ -649,7 +707,7 @@ export const securityScreensRouter = router({
         }
 
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
-        return { id: result.insertId, itemNumber, warnings: price?.warnings || [] };
+        return { id: quoteItemId, itemNumber, warnings: price?.warnings || [] };
       }),
 
     removeItem: tenantProcedure
@@ -729,8 +787,9 @@ export const securityScreensRouter = router({
         const [lead] = await db.select().from(crmLeads).where(and(eq(crmLeads.id, input.leadId), scope(crmLeads.tenantId, tenantId))).limit(1);
         if (!lead) throw new TRPCError({ code: "NOT_FOUND", message: "Lead not found" });
         const clientName = [lead.contactFirstName, lead.contactLastName].filter(Boolean).join(" ") || lead.company || "Unknown";
-        const quoteNumber = `SS-${Date.now().toString(36).toUpperCase()}`;
+        const quoteNumber = createQuoteNumber();
         const markupPercent = await getDefaultMarkupPercent(db, tenantId);
+        const createdBy = await nullableExistingUserId(db, ctx.user?.id);
         const [result] = await db.insert(ssQuotes).values({
           tenantId,
           quoteNumber,
@@ -740,9 +799,10 @@ export const securityScreensRouter = router({
           siteAddress: lead.contactAddress || null,
           markupPercent: markupPercent.toFixed(2),
           leadId: input.leadId,
-          createdBy: ctx.user.id,
+          createdBy,
         });
-        return { id: result.insertId, quoteNumber, clientName };
+        const quoteId = await quoteIdFromInsertResult(db, tenantId, result, quoteNumber);
+        return { id: quoteId, quoteNumber, clientName };
       }),
   }),
 

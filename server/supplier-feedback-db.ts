@@ -1,12 +1,19 @@
 import { getDb } from "./db";
 import { supplierFeedback, users, suppliers } from "../drizzle/schema";
 import { eq, desc, avg, count, and, sql } from "drizzle-orm";
+import { appendTenantScope } from "./_core/tenant-scope";
 
-export async function listFeedback(opts?: { supplierId?: number; limit?: number; offset?: number }) {
+function feedbackConditions(tenantId: number | null | undefined, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, supplierFeedback.tenantId, tenantId);
+  return conditions;
+}
+
+export async function listFeedback(opts?: { tenantId?: number; supplierId?: number; limit?: number; offset?: number }) {
   const db = await getDb();
   if (!db) return { rows: [], total: 0 };
 
-  const conditions = [];
+  const conditions = feedbackConditions(opts?.tenantId);
   if (opts?.supplierId) conditions.push(eq(supplierFeedback.supplierId, opts.supplierId));
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -42,6 +49,7 @@ export async function listFeedback(opts?: { supplierId?: number; limit?: number;
 }
 
 export async function createFeedback(data: {
+  tenantId?: number | null;
   supplierId: number;
   userId: number;
   timeliness: number;
@@ -58,6 +66,7 @@ export async function createFeedback(data: {
   const overallRating = ((data.timeliness + data.quality + data.communication + data.pricing) / 4).toFixed(2);
 
   const [result] = await db.insert(supplierFeedback).values({
+    tenantId: data.tenantId ?? null,
     supplierId: data.supplierId,
     userId: data.userId,
     timeliness: data.timeliness,
@@ -74,6 +83,7 @@ export async function createFeedback(data: {
 }
 
 export async function updateFeedback(id: number, data: {
+  tenantId?: number | null;
   timeliness?: number;
   quality?: number;
   communication?: number;
@@ -87,7 +97,10 @@ export async function updateFeedback(id: number, data: {
   // Recalculate overall if any category changed
   if (data.timeliness !== undefined || data.quality !== undefined || data.communication !== undefined || data.pricing !== undefined) {
     // Fetch current values to fill in unchanged fields
-    const [current] = await db.select().from(supplierFeedback).where(eq(supplierFeedback.id, id)).limit(1);
+    const [current] = await db.select()
+      .from(supplierFeedback)
+      .where(and(...feedbackConditions(data.tenantId, eq(supplierFeedback.id, id))))
+      .limit(1);
     if (!current) throw new Error("Feedback not found");
     const t = data.timeliness ?? current.timeliness;
     const q = data.quality ?? current.quality;
@@ -96,19 +109,22 @@ export async function updateFeedback(id: number, data: {
     updateData.overallRating = ((t + q + c + p) / 4).toFixed(2);
   }
 
-  await db.update(supplierFeedback).set(updateData).where(eq(supplierFeedback.id, id));
+  await db.update(supplierFeedback)
+    .set(updateData)
+    .where(and(...feedbackConditions(data.tenantId, eq(supplierFeedback.id, id))));
   return { success: true };
 }
 
-export async function deleteFeedback(id: number) {
+export async function deleteFeedback(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.delete(supplierFeedback).where(eq(supplierFeedback.id, id));
+  await db.delete(supplierFeedback)
+    .where(and(...feedbackConditions(tenantId, eq(supplierFeedback.id, id))));
   return { success: true };
 }
 
 /** Get aggregated ratings for a single supplier */
-export async function getSupplierRatingsSummary(supplierId: number) {
+export async function getSupplierRatingsSummary(supplierId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
 
@@ -121,7 +137,7 @@ export async function getSupplierRatingsSummary(supplierId: number) {
     totalReviews: count(),
   })
     .from(supplierFeedback)
-    .where(eq(supplierFeedback.supplierId, supplierId));
+    .where(and(...feedbackConditions(tenantId, eq(supplierFeedback.supplierId, supplierId))));
 
   if (!row || row.totalReviews === 0) return null;
   return {
@@ -135,7 +151,7 @@ export async function getSupplierRatingsSummary(supplierId: number) {
 }
 
 /** Get aggregated ratings for ALL suppliers (for directory display) */
-export async function getAllSupplierRatings() {
+export async function getAllSupplierRatings(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
 
@@ -147,6 +163,7 @@ export async function getAllSupplierRatings() {
   })
     .from(supplierFeedback)
     .leftJoin(suppliers, eq(supplierFeedback.supplierId, suppliers.id))
+    .where(and(...feedbackConditions(tenantId)))
     .groupBy(supplierFeedback.supplierId, suppliers.name);
 
   return rows.map(r => ({
@@ -158,12 +175,16 @@ export async function getAllSupplierRatings() {
 }
 
 /** Check if a user already submitted feedback for a specific PO */
-export async function hasFeedbackForPo(userId: number, poId: number) {
+export async function hasFeedbackForPo(userId: number, poId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return false;
   const [row] = await db.select({ id: supplierFeedback.id })
     .from(supplierFeedback)
-    .where(and(eq(supplierFeedback.userId, userId), eq(supplierFeedback.poId, poId)))
+    .where(and(...feedbackConditions(
+      tenantId,
+      eq(supplierFeedback.userId, userId),
+      eq(supplierFeedback.poId, poId),
+    )))
     .limit(1);
   return !!row;
 }

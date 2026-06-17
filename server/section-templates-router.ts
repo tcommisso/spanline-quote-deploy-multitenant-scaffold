@@ -1,25 +1,38 @@
 import { z } from "zod";
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
-import { getDb } from "./db";
+import { TRPCError } from "@trpc/server";
+import { tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure, router } from "./_core/trpc";
+import { getDb, getQuoteById } from "./db";
 import { specSectionTemplates, quoteDetails } from "../drizzle/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { appendTenantScope } from "./_core/tenant-scope";
+
+function sectionTemplateConditions(id: number | null, tenantId?: number | null) {
+  const conditions: any[] = [];
+  if (id != null) conditions.push(eq(specSectionTemplates.id, id));
+  appendTenantScope(conditions, specSectionTemplates.tenantId, tenantId);
+  return conditions;
+}
 
 export const sectionTemplatesRouter = router({
   // List all templates (any authenticated user can view)
-  list: protectedProcedure.query(async () => {
+  list: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
-    const rows = await db.select().from(specSectionTemplates).orderBy(specSectionTemplates.name);
+    const conditions = sectionTemplateConditions(null, ctx.tenant!.id);
+    const rows = await db.select().from(specSectionTemplates)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(specSectionTemplates.name);
     return rows;
   }),
 
   // Get a single template by ID
   get: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) return null;
-      const [row] = await db.select().from(specSectionTemplates).where(eq(specSectionTemplates.id, input.id));
+      const [row] = await db.select().from(specSectionTemplates)
+        .where(and(...sectionTemplateConditions(input.id, ctx.tenant!.id)));
       return row || null;
     }),
 
@@ -35,11 +48,12 @@ export const sectionTemplatesRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const [result] = await db.insert(specSectionTemplates).values({
+        tenantId: ctx.tenant!.id,
         name: input.name,
         description: input.description || null,
         hiddenSections: input.hiddenSections,
         sectionOrder: input.sectionOrder || null,
-        createdBy: ctx.user.id,
+        createdBy: ctx.user!.id,
       });
       return { id: result.insertId };
     }),
@@ -53,7 +67,7 @@ export const sectionTemplatesRouter = router({
       hiddenSections: z.array(z.string()).optional(),
       sectionOrder: z.array(z.string()).nullable().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const updateData: Record<string, any> = {};
@@ -61,17 +75,19 @@ export const sectionTemplatesRouter = router({
       if (input.description !== undefined) updateData.description = input.description;
       if (input.hiddenSections !== undefined) updateData.hiddenSections = input.hiddenSections;
       if (input.sectionOrder !== undefined) updateData.sectionOrder = input.sectionOrder;
-      await db.update(specSectionTemplates).set(updateData).where(eq(specSectionTemplates.id, input.id));
+      await db.update(specSectionTemplates).set(updateData)
+        .where(and(...sectionTemplateConditions(input.id, ctx.tenant!.id)));
       return { success: true };
     }),
 
   // Delete a template (admin only)
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.delete(specSectionTemplates).where(eq(specSectionTemplates.id, input.id));
+      await db.delete(specSectionTemplates)
+        .where(and(...sectionTemplateConditions(input.id, ctx.tenant!.id)));
       return { success: true };
     }),
 
@@ -80,9 +96,11 @@ export const sectionTemplatesRouter = router({
   // Get section preferences for a specific quote
   getQuotePrefs: protectedProcedure
     .input(z.object({ quoteId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) return null;
+      const quote = await getQuoteById(input.quoteId, ctx.tenant!.id);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
       const [row] = await db.select()
         .from(quoteDetails)
         .where(eq(quoteDetails.quoteId, input.quoteId));
@@ -99,9 +117,11 @@ export const sectionTemplatesRouter = router({
       hiddenSections: z.array(z.string()),
       templateId: z.number().nullable().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      const quote = await getQuoteById(input.quoteId, ctx.tenant!.id);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
       const prefs = {
         sectionOrder: input.sectionOrder,
         hiddenSections: input.hiddenSections,

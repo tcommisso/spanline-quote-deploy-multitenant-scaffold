@@ -201,7 +201,7 @@ async function processGraphMessage(
   if (address.autoTagIds) {
     const tagIds = Array.isArray(address.autoTagIds) ? address.autoTagIds : [];
     for (const tagId of tagIds) {
-      try { await inboxDb.addTagToMessage(inboxMsgId, tagId as number); } catch { /* ignore */ }
+      try { await inboxDb.addTagToMessage(inboxMsgId, tagId as number, address.tenantId); } catch { /* ignore */ }
     }
   }
 

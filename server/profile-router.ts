@@ -1,8 +1,9 @@
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, protectedProcedure, tenantProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
 import { users, userScheduleBlocks, userTimeOff, designAdvisors, constructionJobs, constructionAssignments, constructionInstallers, userNotificationPreferences } from "../drizzle/schema";
 import { eq, and, sql } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 // Canonical list of notification event types with labels and descriptions
 export const NOTIFICATION_EVENT_TYPES = [
@@ -37,6 +38,12 @@ export const NOTIFICATION_EVENT_TYPES = [
   { key: "notify_trade_schedule_change", label: "Schedule Change", description: "Job schedule changed" },
 ] as const;
 
+function tenantConditions(ctx: any, tenantColumn: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, tenantColumn, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 export const profileRouter = router({
   // Get current user's profile with role-specific data
   getMyProfile: protectedProcedure.query(async ({ ctx }) => {
@@ -49,11 +56,16 @@ export const profileRouter = router({
     // Check if user has a linked DA record
     let linkedDa: { id: number; name: string; branchId: number | null } | null = null;
     if (user.role === "design_adviser") {
+      const daConditions = tenantConditions(
+        ctx,
+        designAdvisors.tenantId,
+        eq(designAdvisors.userId, ctx.user.id)
+      );
       const [da] = await db.select({
         id: designAdvisors.id,
         name: designAdvisors.name,
         branchId: designAdvisors.branchId,
-      }).from(designAdvisors).where(eq(designAdvisors.userId, ctx.user.id)).limit(1);
+      }).from(designAdvisors).where(and(...daConditions)).limit(1);
       linkedDa = da || null;
     }
 
@@ -88,15 +100,20 @@ export const profileRouter = router({
 
   // ─── Schedule Blocks ─────────────────────────────────────────────────────
   schedule: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: tenantProcedure.query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) return [];
+      const conditions = tenantConditions(
+        ctx,
+        userScheduleBlocks.tenantId,
+        eq(userScheduleBlocks.userId, ctx.user.id)
+      );
       return db.select().from(userScheduleBlocks)
-        .where(eq(userScheduleBlocks.userId, ctx.user.id))
+        .where(and(...conditions))
         .orderBy(userScheduleBlocks.dayOfWeek, userScheduleBlocks.startTime);
     }),
 
-    set: protectedProcedure
+    set: tenantProcedure
       .input(z.object({
         blocks: z.array(z.object({
           dayOfWeek: z.number().min(0).max(6),
@@ -111,11 +128,14 @@ export const profileRouter = router({
         if (!db) throw new Error("Database unavailable");
 
         // Replace all blocks for this user
-        await db.delete(userScheduleBlocks).where(eq(userScheduleBlocks.userId, ctx.user.id));
+        await db.delete(userScheduleBlocks).where(and(
+          ...tenantConditions(ctx, userScheduleBlocks.tenantId, eq(userScheduleBlocks.userId, ctx.user.id))
+        ));
 
         if (input.blocks.length > 0) {
           await db.insert(userScheduleBlocks).values(
             input.blocks.map(b => ({
+              tenantId: ctx.tenant.id,
               userId: ctx.user.id,
               dayOfWeek: b.dayOfWeek,
               startTime: b.startTime,
@@ -131,15 +151,20 @@ export const profileRouter = router({
 
   // ─── Time Off ────────────────────────────────────────────────────────────
   timeOff: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: tenantProcedure.query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) return [];
+      const conditions = tenantConditions(
+        ctx,
+        userTimeOff.tenantId,
+        eq(userTimeOff.userId, ctx.user.id)
+      );
       return db.select().from(userTimeOff)
-        .where(eq(userTimeOff.userId, ctx.user.id))
+        .where(and(...conditions))
         .orderBy(userTimeOff.date);
     }),
 
-    create: protectedProcedure
+    create: tenantProcedure
       .input(z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -149,6 +174,7 @@ export const profileRouter = router({
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
         const [result] = await db.insert(userTimeOff).values({
+          tenantId: ctx.tenant.id,
           userId: ctx.user.id,
           date: input.date,
           endDate: input.endDate || null,
@@ -157,21 +183,28 @@ export const profileRouter = router({
         return { id: result.insertId };
       }),
 
-    delete: protectedProcedure
+    delete: tenantProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
         // Only allow deleting own time off
         await db.delete(userTimeOff).where(
-          and(eq(userTimeOff.id, input.id), eq(userTimeOff.userId, ctx.user.id))
+          and(
+            ...tenantConditions(
+              ctx,
+              userTimeOff.tenantId,
+              eq(userTimeOff.id, input.id),
+              eq(userTimeOff.userId, ctx.user.id)
+            )
+          )
         );
         return { success: true };
       }),
   }),
 
   // ─── My Upcoming Assignments (construction) ──────────────────────────────
-  myAssignments: protectedProcedure.query(async ({ ctx }) => {
+  myAssignments: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
 
@@ -180,9 +213,12 @@ export const profileRouter = router({
     if (!user || !user.name) return [];
 
     // Match installer by name (case-insensitive)
+    const installerMatch = user.email
+      ? sql`(LOWER(${constructionInstallers.name}) = LOWER(${user.name}) OR LOWER(${constructionInstallers.email}) = LOWER(${user.email}))`
+      : sql`LOWER(${constructionInstallers.name}) = LOWER(${user.name})`;
     const [installer] = await db.select({ id: constructionInstallers.id })
       .from(constructionInstallers)
-      .where(sql`LOWER(${constructionInstallers.name}) = LOWER(${user.name})`)
+      .where(and(...tenantConditions(ctx, constructionInstallers.tenantId, installerMatch)))
       .limit(1);
 
     if (!installer) return [];
@@ -200,8 +236,12 @@ export const profileRouter = router({
       .innerJoin(constructionAssignments, eq(constructionAssignments.jobId, constructionJobs.id))
       .where(
         and(
-          eq(constructionAssignments.installerId, installer.id),
-          sql`${constructionJobs.status} NOT IN ('completed', 'cancelled')`
+          ...tenantConditions(
+            ctx,
+            constructionJobs.tenantId,
+            eq(constructionAssignments.installerId, installer.id),
+            sql`${constructionJobs.status} NOT IN ('completed', 'cancelled')`
+          )
         )
       )
       .orderBy(constructionJobs.scheduledStart)
@@ -213,14 +253,20 @@ export const profileRouter = router({
   // ─── Notification Preferences ────────────────────────────────────────────
   notifications: router({
     // Get all event types with user's current preferences
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: tenantProcedure.query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
       const prefs = await db
         .select()
         .from(userNotificationPreferences)
-        .where(eq(userNotificationPreferences.userId, ctx.user.id));
+        .where(and(
+          ...tenantConditions(
+            ctx,
+            userNotificationPreferences.tenantId,
+            eq(userNotificationPreferences.userId, ctx.user.id)
+          )
+        ));
 
       // Merge with canonical event types — return defaults for any not yet set
       return NOTIFICATION_EVENT_TYPES.map((evt) => {
@@ -237,7 +283,7 @@ export const profileRouter = router({
     }),
 
     // Update a single event type's channel preferences
-    update: protectedProcedure
+    update: tenantProcedure
       .input(z.object({
         eventType: z.string().max(64),
         channelEmail: z.boolean(),
@@ -248,29 +294,30 @@ export const profileRouter = router({
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
 
+        const conditions = tenantConditions(
+          ctx,
+          userNotificationPreferences.tenantId,
+          eq(userNotificationPreferences.userId, ctx.user.id),
+          eq(userNotificationPreferences.eventType, input.eventType)
+        );
+
+        await db.delete(userNotificationPreferences).where(and(...conditions));
         await db
           .insert(userNotificationPreferences)
           .values({
+            tenantId: ctx.tenant.id,
             userId: ctx.user.id,
             eventType: input.eventType,
             channelEmail: input.channelEmail,
             channelSms: input.channelSms,
             channelPush: input.channelPush,
-          })
-          .onDuplicateKeyUpdate({
-            set: {
-              channelEmail: input.channelEmail,
-              channelSms: input.channelSms,
-              channelPush: input.channelPush,
-              updatedAt: sql`NOW()`,
-            },
           });
 
         return { success: true };
       }),
 
     // Bulk update all preferences at once
-    bulkUpdate: protectedProcedure
+    bulkUpdate: tenantProcedure
       .input(z.array(z.object({
         eventType: z.string().max(64),
         channelEmail: z.boolean(),
@@ -282,22 +329,23 @@ export const profileRouter = router({
         if (!db) throw new Error("Database unavailable");
 
         for (const pref of input) {
+          const conditions = tenantConditions(
+            ctx,
+            userNotificationPreferences.tenantId,
+            eq(userNotificationPreferences.userId, ctx.user.id),
+            eq(userNotificationPreferences.eventType, pref.eventType)
+          );
+
+          await db.delete(userNotificationPreferences).where(and(...conditions));
           await db
             .insert(userNotificationPreferences)
             .values({
+              tenantId: ctx.tenant.id,
               userId: ctx.user.id,
               eventType: pref.eventType,
               channelEmail: pref.channelEmail,
               channelSms: pref.channelSms,
               channelPush: pref.channelPush,
-            })
-            .onDuplicateKeyUpdate({
-              set: {
-                channelEmail: pref.channelEmail,
-                channelSms: pref.channelSms,
-                channelPush: pref.channelPush,
-                updatedAt: sql`NOW()`,
-              },
             });
         }
 

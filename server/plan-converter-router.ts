@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import * as planDb from "./plan-converter-db";
 import { storagePut } from "./storage";
@@ -64,25 +64,25 @@ export const planConverterRouter = router({
 
   listByJob: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
-      return planDb.listPlanConversionsByJob(input.jobId);
+    .query(async ({ ctx, input }) => {
+      return planDb.listPlanConversionsByJob(input.jobId, ctx.tenant!.id);
     }),
 
   list: protectedProcedure.query(async ({ ctx }) => {
-    return planDb.listPlanConversions(ctx.user.id);
+    return planDb.listPlanConversions(ctx.user.id, ctx.tenant!.id);
   }),
 
   adminList: protectedProcedure.query(async ({ ctx }) => {
     if (!isAdminRole(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN" });
     }
-    return planDb.listAllPlanConversions();
+    return planDb.listAllPlanConversions(ctx.tenant!.id);
   }),
 
   get: protectedProcedure
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id);
+      const conversion = await planDb.getPlanConversion(input.id, undefined, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
       const elements = await planDb.getConversionElements(input.id);
       return { ...conversion, elements };
@@ -100,7 +100,7 @@ export const planConverterRouter = router({
       notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      return planDb.createPlanConversion({ userId: ctx.user.id, ...input });
+      return planDb.createPlanConversion({ tenantId: ctx.tenant!.id, userId: ctx.user.id, ...input });
     }),
 
   update: protectedProcedure
@@ -118,15 +118,15 @@ export const planConverterRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
-      const conversion = await planDb.getPlanConversion(id, ctx.user.id);
+      const conversion = await planDb.getPlanConversion(id, ctx.user.id, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
-      await planDb.updatePlanConversion(id, data);
+      await planDb.updatePlanConversion(id, data, ctx.tenant!.id);
     }),
 
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const deleted = await planDb.deletePlanConversion(input.id, ctx.user.id);
+      const deleted = await planDb.deletePlanConversion(input.id, ctx.user.id, ctx.tenant!.id);
       if (!deleted) throw new TRPCError({ code: "NOT_FOUND" });
     }),
 
@@ -136,7 +136,7 @@ export const planConverterRouter = router({
       if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
-      await planDb.adminDeletePlanConversion(input.id);
+      await planDb.adminDeletePlanConversion(input.id, ctx.tenant!.id);
     }),
 
   uploadImage: protectedProcedure
@@ -147,7 +147,7 @@ export const planConverterRouter = router({
       mimeType: z.string(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id);
+      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
 
       const buffer = Buffer.from(input.imageBase64, "base64");
@@ -159,7 +159,7 @@ export const planConverterRouter = router({
         uploadedImageUrl: url,
         uploadedImageKey: key,
         status: "uploaded",
-      });
+      }, ctx.tenant!.id);
 
       return { url };
     }),
@@ -167,13 +167,13 @@ export const planConverterRouter = router({
   extractFromImage: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id);
+      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
       if (!conversion.uploadedImageUrl) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "No image uploaded yet" });
       }
 
-      await planDb.updatePlanConversion(input.id, { status: "extracting" });
+      await planDb.updatePlanConversion(input.id, { status: "extracting" }, ctx.tenant!.id);
 
       try {
         const extractionPrompt = buildExtractionPrompt(conversion.diagramType);
@@ -259,7 +259,7 @@ export const planConverterRouter = router({
         await planDb.updatePlanConversion(input.id, {
           extractedData,
           status: "review",
-        });
+        }, ctx.tenant!.id);
 
         if (extractedData.elements && extractedData.elements.length > 0) {
           await planDb.setConversionElements(input.id, extractedData.elements.map((el: any, idx: number) => ({
@@ -284,7 +284,7 @@ export const planConverterRouter = router({
 
         return extractedData;
       } catch (error: any) {
-        await planDb.updatePlanConversion(input.id, { status: "uploaded" });
+        await planDb.updatePlanConversion(input.id, { status: "uploaded" }, ctx.tenant!.id);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: `Extraction failed: ${error.message}`,
@@ -304,7 +304,7 @@ export const planConverterRouter = router({
       notes: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id);
+      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
 
       const confirmedData = {
@@ -318,7 +318,7 @@ export const planConverterRouter = router({
         confirmedData,
         status: "confirmed",
         notes: input.notes ?? conversion.notes ?? undefined,
-      });
+      }, ctx.tenant!.id);
 
       await planDb.setConversionElements(input.id, input.elements as any[]);
       return { success: true };
@@ -327,7 +327,7 @@ export const planConverterRouter = router({
   generatePdf: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id);
+      const conversion = await planDb.getPlanConversion(input.id, undefined, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
       if (conversion.status !== "confirmed" && conversion.status !== "generated") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Data must be confirmed before generating PDF" });
@@ -345,7 +345,7 @@ export const planConverterRouter = router({
         generatedPdfUrl: url,
         generatedPdfKey: key,
         status: "generated",
-      });
+      }, ctx.tenant!.id);
 
       return { url };
     }),
@@ -356,7 +356,7 @@ export const planConverterRouter = router({
       elements: z.array(elementSchema),
     }))
     .mutation(async ({ ctx, input }) => {
-      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id);
+      const conversion = await planDb.getPlanConversion(input.id, ctx.user.id, ctx.tenant!.id);
       if (!conversion) throw new TRPCError({ code: "NOT_FOUND" });
       await planDb.setConversionElements(input.id, input.elements as any[]);
     }),
@@ -378,20 +378,20 @@ export const planConverterRouter = router({
   // ─── Product Images (brackets/connections reference) ────────────────────
   listProductImages: protectedProcedure
     .input(z.object({ category: z.string().optional() }).optional())
-    .query(async ({ input }) => {
-      return planDb.listProductImages(input?.category);
+    .query(async ({ ctx, input }) => {
+      return planDb.listProductImages(input?.category, ctx.tenant!.id);
     }),
 
   searchProductImages: protectedProcedure
     .input(z.object({ query: z.string() }))
-    .query(async ({ input }) => {
-      return planDb.searchProductImages(input.query);
+    .query(async ({ ctx, input }) => {
+      return planDb.searchProductImages(input.query, ctx.tenant!.id);
     }),
 
   getProductImagesByCode: protectedProcedure
     .input(z.object({ code: z.string() }))
-    .query(async ({ input }) => {
-      return planDb.getProductImagesByCode(input.code);
+    .query(async ({ ctx, input }) => {
+      return planDb.getProductImagesByCode(input.code, ctx.tenant!.id);
     }),
 
   createProductImage: protectedProcedure
@@ -409,7 +409,7 @@ export const planConverterRouter = router({
       sortOrder: z.number().optional(),
       directImageUrl: z.string().optional(), // Allow storing a URL directly without upload
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       let url: string;
       if (input.directImageUrl) {
         // Use the provided URL directly (e.g. for default CDN-hosted images)
@@ -417,13 +417,14 @@ export const planConverterRouter = router({
       } else if (input.imageBase64) {
         const buffer = Buffer.from(input.imageBase64, "base64");
         const ext = input.fileName.split(".").pop() || "jpg";
-        const key = `product-images/${input.category}/${input.code}-${Date.now()}.${ext}`;
+        const key = `tenants/${ctx.tenant!.id}/product-images/${input.category}/${input.code}-${Date.now()}.${ext}`;
         const result = await storagePut(key, buffer, input.mimeType);
         url = result.url;
       } else {
         throw new Error("Either imageBase64 or directImageUrl must be provided");
       }
       const { id } = await planDb.createProductImage({
+        tenantId: ctx.tenant!.id,
         category: input.category,
         code: input.code,
         name: input.name,
@@ -452,38 +453,38 @@ export const planConverterRouter = router({
       tags: z.array(z.string()).optional(),
       sortOrder: z.number().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { id, imageBase64, fileName, mimeType, ...updates } = input;
       let imageUrl: string | undefined;
       if (imageBase64 && fileName && mimeType) {
         const buffer = Buffer.from(imageBase64, "base64");
         const ext = fileName.split(".").pop() || "jpg";
-        const key = `product-images/${updates.category || "misc"}/${updates.code || "img"}-${Date.now()}.${ext}`;
+        const key = `tenants/${ctx.tenant!.id}/product-images/${updates.category || "misc"}/${updates.code || "img"}-${Date.now()}.${ext}`;
         const result = await storagePut(key, buffer, mimeType);
         imageUrl = result.url;
       }
-      await planDb.updateProductImage(id, { ...updates, ...(imageUrl ? { imageUrl } : {}) });
+      await planDb.updateProductImage(id, { tenantId: ctx.tenant!.id, ...updates, ...(imageUrl ? { imageUrl } : {}) });
       return { success: true, imageUrl };
     }),
 
   deleteProductImage: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      await planDb.deleteProductImage(input.id);
+    .mutation(async ({ ctx, input }) => {
+      await planDb.deleteProductImage(input.id, ctx.tenant!.id);
       return { success: true };
     }),
 
   reorderProductImages: protectedProcedure
     .input(z.object({ ids: z.array(z.number()) }))
-    .mutation(async ({ input }) => {
-      await planDb.reorderProductImages(input.ids);
+    .mutation(async ({ ctx, input }) => {
+      await planDb.reorderProductImages(input.ids, ctx.tenant!.id);
       return { success: true };
     }),
 
   bulkUpdateCategory: protectedProcedure
     .input(z.object({ ids: z.array(z.number()).min(1), category: z.string().min(1) }))
-    .mutation(async ({ input }) => {
-      await planDb.bulkUpdateProductImageCategory(input.ids, input.category);
+    .mutation(async ({ ctx, input }) => {
+      await planDb.bulkUpdateProductImageCategory(input.ids, input.category, ctx.tenant!.id);
       return { success: true, count: input.ids.length };
     }),
 });

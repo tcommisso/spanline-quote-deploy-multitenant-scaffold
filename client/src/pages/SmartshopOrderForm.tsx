@@ -92,6 +92,16 @@ interface OrderLine {
   colourGroup?: string;
 }
 
+interface OrderTemplateItem {
+  spaCode: string;
+  description: string;
+  category: string;
+  colour?: string | null;
+  uom?: string | null;
+  defaultQuantity: number;
+  unitPrice?: string | null;
+}
+
 interface OrderDetails {
   orderDate: string;
   requestedBy: string;
@@ -1800,7 +1810,7 @@ function ApplyKitSection({
 
   const handleApply = () => {
     if (!templateDetail?.items?.length) return;
-    const lines: Omit<OrderLine, "id">[] = templateDetail.items.map((item) => ({
+    const lines: Omit<OrderLine, "id">[] = templateDetail.items.map((item: OrderTemplateItem) => ({
       category: item.category || "",
       spaCode: item.spaCode,
       description: item.description,
@@ -1899,7 +1909,7 @@ function ApplyKitSection({
                       </tr>
                     </thead>
                     <tbody>
-                      {templateDetail.items?.map((item, i) => (
+                      {templateDetail.items?.map((item: OrderTemplateItem, i: number) => (
                         <tr key={i} className="border-b border-border/50">
                           <td className="py-2 pr-3 font-mono text-xs">{item.spaCode}</td>
                           <td className="py-2 pr-3">{item.description}</td>

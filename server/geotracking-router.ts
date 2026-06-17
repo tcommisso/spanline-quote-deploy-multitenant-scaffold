@@ -1,7 +1,7 @@
-import { router, publicProcedure, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
-import { userLocations, users } from "../drizzle/schema";
+import { tenantMemberships, userLocations, users } from "../drizzle/schema";
 import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
@@ -65,6 +65,7 @@ export const geotrackingRouter = router({
       accuracy: z.number().min(0).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      const tenantId = ctx.tenant!.id;
       // Time gate: only accept during 7am–5pm AEST
       if (!isWithinTrackingWindow()) {
         return { success: false, reason: "outside_tracking_hours" };
@@ -84,6 +85,7 @@ export const geotrackingRouter = router({
       }
 
       await db.insert(userLocations).values({
+        tenantId,
         userId: ctx.user.id,
         latitude: input.latitude.toFixed(7),
         longitude: input.longitude.toFixed(7),
@@ -96,18 +98,23 @@ export const geotrackingRouter = router({
     }),
 
   /** Get latest position for all tracked users (admin/office view) */
-  latestPositions: protectedProcedure.query(async () => {
+  latestPositions: protectedProcedure.query(async ({ ctx }) => {
+    const tenantId = ctx.tenant!.id;
     const db = await getDb();
     if (!db) return { positions: [], isTrackingActive: isWithinTrackingWindow() };
 
-    // Get all users with tracked roles
+    // Get tracked users in the active tenant only.
     const trackedUsers = await db.select({
       id: users.id,
       name: users.name,
       role: users.role,
       email: users.email,
     }).from(users)
-      .where(inArray(users.role, [...TRACKED_ROLES]));
+      .innerJoin(tenantMemberships, eq(users.id, tenantMemberships.userId))
+      .where(and(
+        eq(tenantMemberships.tenantId, tenantId),
+        inArray(users.role, [...TRACKED_ROLES]),
+      ));
 
     if (trackedUsers.length === 0) {
       return { positions: [], isTrackingActive: isWithinTrackingWindow() };
@@ -116,7 +123,10 @@ export const geotrackingRouter = router({
     // Get latest location for each tracked user
     const positions = await Promise.all(trackedUsers.map(async (u) => {
       const [loc] = await db.select().from(userLocations)
-        .where(eq(userLocations.userId, u.id))
+        .where(and(
+          eq(userLocations.userId, u.id),
+          eq(userLocations.tenantId, tenantId),
+        ))
         .orderBy(desc(userLocations.recordedAt))
         .limit(1);
       return {
@@ -144,9 +154,21 @@ export const geotrackingRouter = router({
       userId: z.number(),
       date: z.string(), // ISO date string (YYYY-MM-DD) — returns that day's tracking window
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
+      const tenantId = ctx.tenant!.id;
       const db = await getDb();
       if (!db) return { points: [], isTrackingActive: isWithinTrackingWindow() };
+
+      const [membership] = await db.select({ userId: tenantMemberships.userId })
+        .from(tenantMemberships)
+        .where(and(
+          eq(tenantMemberships.tenantId, tenantId),
+          eq(tenantMemberships.userId, input.userId),
+        ))
+        .limit(1);
+      if (!membership) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Tracked user not found in this tenant" });
+      }
 
       // Compute tracking window for the requested date (AEST)
       const dayStart = new Date(`${input.date}T00:00:00.000Z`);
@@ -156,6 +178,7 @@ export const geotrackingRouter = router({
 
       const points = await db.select().from(userLocations)
         .where(and(
+          eq(userLocations.tenantId, tenantId),
           eq(userLocations.userId, input.userId),
           gte(userLocations.recordedAt, trackingStart),
           lte(userLocations.recordedAt, trackingEnd),

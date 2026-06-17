@@ -247,14 +247,14 @@ export const approvalRouter = router({
   workflowTemplates: router({
     list: protectedProcedure
       .input(z.object({ jurisdiction: z.string().optional() }).optional())
-      .query(async ({ input }) => {
-        return approvalDb.getWorkflowTemplates(input?.jurisdiction);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getWorkflowTemplates(input?.jurisdiction, ctx.tenant!.id);
       }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        return approvalDb.getWorkflowTemplateById(input.id);
+      .query(async ({ ctx, input }) => {
+        return approvalDb.getWorkflowTemplateById(input.id, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -272,6 +272,7 @@ export const approvalRouter = router({
       .mutation(async ({ ctx, input }) => {
         const id = await approvalDb.createWorkflowTemplate({
           ...input,
+          tenantId: ctx.tenant!.id,
           createdByUserId: ctx.user.id,
         });
         return { id };
@@ -279,23 +280,24 @@ export const approvalRouter = router({
 
     update: protectedProcedure
       .input(z.object({ id: z.number(), data: z.record(z.string(), z.any()) }))
-      .mutation(async ({ input }) => {
-        await approvalDb.updateWorkflowTemplate(input.id, input.data as any);
+      .mutation(async ({ ctx, input }) => {
+        await approvalDb.updateWorkflowTemplate(input.id, input.data as any, ctx.tenant!.id);
         return { success: true };
       }),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await approvalDb.deleteWorkflowTemplate(input.id);
+      .mutation(async ({ ctx, input }) => {
+        await approvalDb.deleteWorkflowTemplate(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
     duplicate: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const source = await approvalDb.getWorkflowTemplateById(input.id);
+        const source = await approvalDb.getWorkflowTemplateById(input.id, ctx.tenant!.id);
         if (!source) throw new Error("Template not found");
         const newId = await approvalDb.createWorkflowTemplate({
+          tenantId: ctx.tenant!.id,
           jurisdiction: source.jurisdiction,
           pathwayCode: source.pathwayCode + "_COPY",
           name: source.name + " (Copy)",
@@ -304,6 +306,7 @@ export const approvalRouter = router({
           transitions: source.transitions,
           gates: source.gates,
           documentChecklist: source.documentChecklist,
+          intakeChecklist: source.intakeChecklist,
           createdByUserId: ctx.user.id,
         });
         return { id: newId };
@@ -311,12 +314,13 @@ export const approvalRouter = router({
 
     seed: protectedProcedure.mutation(async ({ ctx }) => {
       // Seed all default templates (skip if already exist by pathwayCode)
-      const existing = await approvalDb.getWorkflowTemplates();
+      const existing = await approvalDb.getWorkflowTemplates(undefined, ctx.tenant!.id);
       const existingCodes = new Set((existing || []).map((t: any) => t.pathwayCode));
       let seeded = 0;
       for (const tpl of ALL_TEMPLATES) {
         if (existingCodes.has(tpl.pathwayCode)) continue;
         await approvalDb.createWorkflowTemplate({
+          tenantId: ctx.tenant!.id,
           jurisdiction: tpl.jurisdiction,
           pathwayCode: tpl.pathwayCode,
           name: tpl.name,
@@ -994,20 +998,24 @@ export const approvalRouter = router({
           if (db) {
             const [project] = await db.select({ crmJobId: approvalProjects.crmJobId, crmLeadId: approvalProjects.crmLeadId })
               .from(approvalProjects)
-              .where(eq(approvalProjects.id, input.projectId));
+              .where(and(eq(approvalProjects.id, input.projectId), eq(approvalProjects.tenantId, ctx.tenant!.id)));
             let jobId: number | null = null;
             if (project?.crmJobId) {
-              jobId = project.crmJobId;
+              const [job] = await db.select({ id: constructionJobs.id })
+                .from(constructionJobs)
+                .where(and(eq(constructionJobs.id, project.crmJobId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
+              if (job) jobId = job.id;
             } else if (project?.crmLeadId) {
               // Find construction job by leadId
               const [job] = await db.select({ id: constructionJobs.id })
                 .from(constructionJobs)
-                .where(eq(constructionJobs.leadId, project.crmLeadId));
+                .where(and(eq(constructionJobs.leadId, project.crmLeadId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
               if (job) jobId = job.id;
             }
             if (jobId) {
               const startDate = input.scheduledDate ? new Date(input.scheduledDate) : new Date();
               await db.insert(constructionScheduleEvents).values({
+                tenantId: ctx.tenant!.id,
                 jobId,
                 title: `[Approval] ${input.title}`,
                 description: `${input.inspectionType} inspection — auto-created from Building Approvals module`,

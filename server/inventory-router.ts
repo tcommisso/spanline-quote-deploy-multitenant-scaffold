@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts } from "../drizzle/schema";
-import { eq, and, desc, sql, like, inArray } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
@@ -10,6 +10,38 @@ async function requireDb() {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
   return db;
+}
+
+function insertIdFromResult(result: any): number | null {
+  const rawId = result?.insertId ?? result?.[0]?.insertId;
+  const id = Number(rawId);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function optionalText(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function optionalDecimal(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  return trimmed ? trimmed : null;
+}
+
+async function stockItemIdFromInsertResult(db: any, ctx: any, result: any, code: string) {
+  const id = insertIdFromResult(result);
+  if (id) return id;
+
+  const [item] = await db.select({ id: inventoryStockItems.id })
+    .from(inventoryStockItems)
+    .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.code, code.trim()))))
+    .orderBy(desc(inventoryStockItems.createdAt))
+    .limit(1);
+
+  if (!item?.id) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stock item was created but could not be reloaded." });
+  }
+  return item.id;
 }
 
 function stockItemTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -64,7 +96,16 @@ export const inventoryRouter = router({
       if (input.branchId) conditions.push(eq(inventoryStockItems.branchId, input.branchId));
       if (input.category) conditions.push(eq(inventoryStockItems.category, input.category));
       if (input.condition) conditions.push(eq(inventoryStockItems.conditionIndicator, input.condition));
-      if (input.search) conditions.push(like(inventoryStockItems.name, `%${input.search}%`));
+      if (input.search?.trim()) {
+        const term = `%${input.search.trim()}%`;
+        conditions.push(sql`(
+          ${inventoryStockItems.name} LIKE ${term}
+          OR ${inventoryStockItems.code} LIKE ${term}
+          OR ${inventoryStockItems.category} LIKE ${term}
+          OR ${inventoryStockItems.supplier} LIKE ${term}
+          OR ${inventoryStockItems.description} LIKE ${term}
+        )`);
+      }
       appendTenantScope(conditions, inventoryStockItems.tenantId, tenantIdFromContext(ctx));
 
       const items = await db.select().from(inventoryStockItems)
@@ -84,33 +125,34 @@ export const inventoryRouter = router({
       category: z.string().default("general"),
       unit: z.string().default("EA"),
       unitType: z.enum(["unit", "lm"]).default("unit"),
-      reorderQty: z.string().optional(),
-      minStockLevel: z.string().optional(),
-      branchId: z.number().optional(),
+      reorderQty: z.string().nullable().optional(),
+      minStockLevel: z.string().nullable().optional(),
+      branchId: z.number().nullable().optional(),
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).default("new"),
-      description: z.string().optional(),
-      supplier: z.string().optional(),
-      costPrice: z.string().optional(),
-      catalogueItemId: z.number().optional(),
+      description: z.string().nullable().optional(),
+      supplier: z.string().nullable().optional(),
+      costPrice: z.string().nullable().optional(),
+      catalogueItemId: z.number().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       const [result] = await db.insert(inventoryStockItems).values({
         tenantId: tenantIdFromContext(ctx),
-        code: input.code,
-        name: input.name,
-        category: input.category,
-        unit: input.unit,
+        code: input.code.trim(),
+        name: input.name.trim(),
+        category: input.category.trim() || "general",
+        unit: input.unit.trim() || "EA",
         unitType: input.unitType,
-        reorderQty: input.reorderQty || null,
-        minStockLevel: input.minStockLevel || null,
+        reorderQty: optionalDecimal(input.reorderQty),
+        minStockLevel: optionalDecimal(input.minStockLevel),
         branchId: input.branchId || null,
         conditionIndicator: input.conditionIndicator,
-        description: input.description || null,
-        supplier: input.supplier || null,
-        costPrice: input.costPrice || null,
+        description: optionalText(input.description),
+        supplier: optionalText(input.supplier),
+        costPrice: optionalDecimal(input.costPrice),
         catalogueItemId: input.catalogueItemId || null,
       });
-      return { id: result.insertId };
+      const id = await stockItemIdFromInsertResult(db, ctx, result, input.code);
+      return { id };
     }),
 
     update: protectedProcedure.input(z.object({
@@ -133,7 +175,22 @@ export const inventoryRouter = router({
       const db = await requireDb();
       const { id, ...updates } = input;
       await requireStockItemAccess(db, ctx, id);
-      await db.update(inventoryStockItems).set(updates).where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, id))));
+      const cleanedUpdates: Record<string, unknown> = {};
+      if (updates.code !== undefined) cleanedUpdates.code = updates.code.trim();
+      if (updates.name !== undefined) cleanedUpdates.name = updates.name.trim();
+      if (updates.category !== undefined) cleanedUpdates.category = updates.category.trim() || "general";
+      if (updates.unit !== undefined) cleanedUpdates.unit = updates.unit.trim() || "EA";
+      if (updates.unitType !== undefined) cleanedUpdates.unitType = updates.unitType;
+      if (updates.reorderQty !== undefined) cleanedUpdates.reorderQty = optionalDecimal(updates.reorderQty);
+      if (updates.minStockLevel !== undefined) cleanedUpdates.minStockLevel = optionalDecimal(updates.minStockLevel);
+      if (updates.branchId !== undefined) cleanedUpdates.branchId = updates.branchId || null;
+      if (updates.conditionIndicator !== undefined) cleanedUpdates.conditionIndicator = updates.conditionIndicator;
+      if (updates.description !== undefined) cleanedUpdates.description = optionalText(updates.description);
+      if (updates.supplier !== undefined) cleanedUpdates.supplier = optionalText(updates.supplier);
+      if (updates.costPrice !== undefined) cleanedUpdates.costPrice = optionalDecimal(updates.costPrice);
+      if (updates.catalogueItemId !== undefined) cleanedUpdates.catalogueItemId = updates.catalogueItemId || null;
+      if (updates.isActive !== undefined) cleanedUpdates.isActive = updates.isActive;
+      await db.update(inventoryStockItems).set(cleanedUpdates).where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, id))));
       return { success: true };
     }),
 

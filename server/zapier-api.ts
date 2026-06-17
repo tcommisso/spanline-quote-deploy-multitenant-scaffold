@@ -472,14 +472,14 @@ export function registerZapierApi(app: Express) {
 
         // Auto-allocate branch if not already assigned (DB-backed territory lookup)
         if (postcode) {
-          const { getBranchIdForPostcodeFromDb, getBranchManager } = await import("./territory-router");
-          const match = await getBranchIdForPostcodeFromDb(postcode);
+          const { getBranchIdForPostcodeFromDb } = await import("./territory-router");
+          const match = await getBranchIdForPostcodeFromDb(postcode, tenantId);
           if (match) {
             // Only set branch if the existing lead doesn't already have one
             if (existingFull && !existingFull.branchId) {
               updateData.branchId = match.branchId;
               // Notify branch manager (fire-and-forget)
-              notifyBranchManager(match.branchId, {
+              notifyBranchManager(match.branchId, tenantId, {
                 leadName: `${contactFirstName || ""} ${contactLastName || ""}`.trim() || "Unknown",
                 postcode: postcode || "",
                 suburb: suburb || "",
@@ -492,7 +492,7 @@ export function registerZapierApi(app: Express) {
         }
 
         if (Object.keys(updateData).length > 0) {
-          await crmDb.updateLead(existingLead.id, updateData);
+          await crmDb.updateLead(existingLead.id, updateData, tenantId);
 
           // Log activity with field-level change detail
           const fieldLabels: Record<string, string> = {
@@ -536,8 +536,8 @@ export function registerZapierApi(app: Express) {
       const leadDate = req.body.leadDate || req.body.lead_date || (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
 
       // ── Auto-allocate branch from postcode (DB-backed territory lookup) ──
-      const { getBranchIdForPostcodeFromDb, getBranchManager } = await import("./territory-router");
-      const territoryMatch = await getBranchIdForPostcodeFromDb(postcode);
+      const { getBranchIdForPostcodeFromDb } = await import("./territory-router");
+      const territoryMatch = await getBranchIdForPostcodeFromDb(postcode, tenantId);
       const autoBranchId = territoryMatch?.branchId || null;
       if (autoBranchId) {
         console.log(`[Zapier API] Auto-assigned branch ${autoBranchId} (${territoryMatch!.territory}) for postcode ${postcode}`);
@@ -567,7 +567,7 @@ export function registerZapierApi(app: Express) {
 
       // Notify branch manager of new auto-allocated lead (fire-and-forget)
       if (autoBranchId && territoryMatch) {
-        notifyBranchManager(autoBranchId, {
+        notifyBranchManager(autoBranchId, tenantId, {
           leadName: `${contactFirstName || ""} ${contactLastName || ""}`.trim() || "Unknown",
           postcode: postcode || "",
           suburb: suburb || "",
@@ -653,10 +653,10 @@ interface LeadNotificationData {
   leadNumber: string;
 }
 
-async function notifyBranchManager(branchId: number, lead: LeadNotificationData): Promise<void> {
+async function notifyBranchManager(branchId: number, tenantId: number | null | undefined, lead: LeadNotificationData): Promise<void> {
   try {
     const { getBranchManager } = await import("./territory-router");
-    const manager = await getBranchManager(branchId);
+    const manager = await getBranchManager(branchId, tenantId);
     if (!manager || !manager.email) {
       console.log(`[Zapier API] No branch manager email for branch ${branchId}, skipping notification`);
       return;

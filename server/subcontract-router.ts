@@ -1,4 +1,8 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import {
+  router,
+  tenantProcedure as protectedProcedure,
+  tenantAdminProcedure as adminProcedure,
+} from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
 import {
@@ -14,11 +18,23 @@ import {
   type ElectricalCablingChecklist,
   type DownpipesChecklist,
 } from "../drizzle/schema";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { generateSubcontractHtml } from "./subcontract-pdf";
 import { createDocument } from "./signwell";
 import { storagePut } from "./storage";
 import { buildTrustedAppUrl } from "./_core/url";
+
+function subcontractScope(id: number, tenantId: number) {
+  return and(eq(projectSubcontracts.id, id), eq(projectSubcontracts.tenantId, tenantId));
+}
+
+function jobScope(id: number, tenantId: number) {
+  return and(eq(constructionJobs.id, id), eq(constructionJobs.tenantId, tenantId));
+}
+
+function installerScope(id: number, tenantId: number) {
+  return and(eq(constructionInstallers.id, id), eq(constructionInstallers.tenantId, tenantId));
+}
 
 // ─── Default Payment Milestones ──────────────────────────────────────────────
 export const DEFAULT_PAYMENT_MILESTONES: PaymentMilestone[] = [
@@ -131,7 +147,7 @@ export const subcontractRouter = router({
       const [job] = await db
         .select()
         .from(constructionJobs)
-        .where(eq(constructionJobs.id, input.jobId))
+        .where(jobScope(input.jobId, ctx.tenant!.id))
         .limit(1);
 
       if (!job) throw new Error("Job not found");
@@ -142,12 +158,13 @@ export const subcontractRouter = router({
         const [inst] = await db
           .select()
           .from(constructionInstallers)
-          .where(eq(constructionInstallers.id, input.installerId))
+          .where(installerScope(input.installerId, ctx.tenant!.id))
           .limit(1);
         installer = inst;
       }
 
       const [result] = await db.insert(projectSubcontracts).values({
+        tenantId: ctx.tenant!.id,
         jobId: input.jobId,
         installerId: input.installerId || null,
         jobNumber: job.quoteNumber || String(job.id),
@@ -174,13 +191,13 @@ export const subcontractRouter = router({
   // Get a single subcontract by ID
   get: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return null;
       const [row] = await db
         .select()
         .from(projectSubcontracts)
-        .where(eq(projectSubcontracts.id, input.id))
+        .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
       return row || null;
     }),
@@ -188,23 +205,24 @@ export const subcontractRouter = router({
   // List subcontracts for a job
   listByJob: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       return db
         .select()
         .from(projectSubcontracts)
-        .where(eq(projectSubcontracts.jobId, input.jobId))
+        .where(and(eq(projectSubcontracts.jobId, input.jobId), eq(projectSubcontracts.tenantId, ctx.tenant!.id)))
         .orderBy(desc(projectSubcontracts.createdAt));
     }),
 
   // List all subcontracts
-  listAll: protectedProcedure.query(async () => {
+  listAll: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
     return db
       .select()
       .from(projectSubcontracts)
+      .where(eq(projectSubcontracts.tenantId, ctx.tenant!.id))
       .orderBy(desc(projectSubcontracts.createdAt))
       .limit(100);
   }),
@@ -232,7 +250,7 @@ export const subcontractRouter = router({
       flashingBySubcontractor: z.string().optional(),
       status: z.enum(["draft", "sent", "signed", "cancelled"]).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -253,7 +271,7 @@ export const subcontractRouter = router({
       await db
         .update(projectSubcontracts)
         .set(updateData)
-        .where(eq(projectSubcontracts.id, id));
+        .where(subcontractScope(id, ctx.tenant!.id));
 
       return { success: true };
     }),
@@ -261,12 +279,12 @@ export const subcontractRouter = router({
   // Delete a subcontract
   delete: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       await db
         .delete(projectSubcontracts)
-        .where(eq(projectSubcontracts.id, input.id));
+        .where(subcontractScope(input.id, ctx.tenant!.id));
       return { success: true };
     }),
 
@@ -286,7 +304,7 @@ export const subcontractRouter = router({
       const [sc] = await db
         .select()
         .from(projectSubcontracts)
-        .where(eq(projectSubcontracts.id, input.id))
+        .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
 
       if (!sc) throw new Error("Subcontract not found");
@@ -352,7 +370,7 @@ export const subcontractRouter = router({
           signwellDocumentId: doc.id,
           sentAt: new Date(),
         })
-        .where(eq(projectSubcontracts.id, sc.id));
+        .where(subcontractScope(sc.id, ctx.tenant!.id));
 
       return { success: true, documentId: doc.id };
     }),
@@ -360,13 +378,13 @@ export const subcontractRouter = router({
   // Generate HTML preview of the subcontract
   previewHtml: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const [sc] = await db
         .select()
         .from(projectSubcontracts)
-        .where(eq(projectSubcontracts.id, input.id))
+        .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
       if (!sc) throw new Error("Subcontract not found");
       const html = generateSubcontractHtml({
@@ -393,7 +411,7 @@ export const subcontractRouter = router({
   // Get installers assigned to a job (for subcontractor selection)
   getJobInstallers: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const assignments = await db
@@ -405,17 +423,27 @@ export const subcontractRouter = router({
           role: constructionAssignments.role,
         })
         .from(constructionAssignments)
+        .innerJoin(constructionJobs, eq(constructionAssignments.jobId, constructionJobs.id))
         .innerJoin(constructionInstallers, eq(constructionAssignments.installerId, constructionInstallers.id))
-        .where(eq(constructionAssignments.jobId, input.jobId));
+        .where(and(
+          eq(constructionAssignments.jobId, input.jobId),
+          eq(constructionJobs.tenantId, ctx.tenant!.id),
+          eq(constructionInstallers.tenantId, ctx.tenant!.id),
+        ));
       return assignments;
     }),
 
   // Get claim status for a subcontract's milestones (admin view)
   getClaimStatus: protectedProcedure
     .input(z.object({ subcontractId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
+      const [subcontract] = await db.select({ id: projectSubcontracts.id })
+        .from(projectSubcontracts)
+        .where(subcontractScope(input.subcontractId, ctx.tenant!.id))
+        .limit(1);
+      if (!subcontract) return [];
       const claims = await db.select({
         subcontractMilestoneIndex: tradeInvoiceLines.subcontractMilestoneIndex,
         amount: tradeInvoiceLines.amount,

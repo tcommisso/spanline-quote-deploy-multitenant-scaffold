@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { protectedProcedure, adminProcedure, publicProcedure, router } from "./_core/trpc";
+import { protectedProcedure, tenantAdminProcedure as adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { invitations, users } from "../drizzle/schema";
+import { invitations, tenantMemberships, users } from "../drizzle/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { randomBytes } from "crypto";
@@ -33,6 +33,7 @@ export const invitationsRouter = router({
       const existing = await db.select()
         .from(invitations)
         .where(and(
+          eq(invitations.tenantId, ctx.tenant!.id),
           eq(invitations.email, input.email),
           eq(invitations.status, "pending")
         ))
@@ -46,14 +47,14 @@ export const invitationsRouter = router({
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
       const [result] = await db.insert(invitations).values({
-        tenantId: ctx.tenant?.id ?? null,
+        tenantId: ctx.tenant!.id,
         email: input.email,
         name: input.name,
         role: input.role,
         token,
         status: "pending",
-        invitedById: ctx.user.id,
-        invitedByName: ctx.user.name || ctx.user.email || "Admin",
+        invitedById: ctx.user!.id,
+        invitedByName: ctx.user!.name || ctx.user!.email || "Admin",
         expiresAt,
       });
 
@@ -62,14 +63,14 @@ export const invitationsRouter = router({
 
       try {
         const emailResult = await sendNotificationEmail({
-          tenantId: ctx.tenant?.id ?? null,
+          tenantId: ctx.tenant!.id,
           to: input.email,
           subject: `You're invited to join AltaSpan`,
           htmlBody: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
               <h2 style="color: #1e293b;">Hi ${input.name},</h2>
               <p style="color: #334155; line-height: 1.6;">
-                ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${input.role.replace(/_/g, " ")}</strong>.
+                ${ctx.user!.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${input.role.replace(/_/g, " ")}</strong>.
               </p>
               <p style="color: #334155; line-height: 1.6;">
                 Click the button below to accept your invitation and set up your account:
@@ -104,11 +105,11 @@ export const invitationsRouter = router({
     .input(z.object({
       status: z.enum(["pending", "accepted", "expired", "revoked"]).optional(),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
 
-      const conditions = [];
+      const conditions = [eq(invitations.tenantId, ctx.tenant!.id)];
       if (input?.status) conditions.push(eq(invitations.status, input.status));
 
       const results = await db.select()
@@ -123,13 +124,14 @@ export const invitationsRouter = router({
   // ─── Revoke Invitation (Admin) ─────────────────────────────────────────────
   revoke: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
 
       await db.update(invitations)
         .set({ status: "revoked" })
         .where(and(
+          eq(invitations.tenantId, ctx.tenant!.id),
           eq(invitations.id, input.id),
           eq(invitations.status, "pending")
         ));
@@ -146,7 +148,10 @@ export const invitationsRouter = router({
 
       const [invite] = await db.select()
         .from(invitations)
-        .where(eq(invitations.id, input.id))
+        .where(and(
+          eq(invitations.tenantId, ctx.tenant!.id),
+          eq(invitations.id, input.id),
+        ))
         .limit(1);
 
       if (!invite) throw new Error("Invitation not found");
@@ -156,7 +161,10 @@ export const invitationsRouter = router({
       const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       await db.update(invitations)
         .set({ expiresAt: newExpiry })
-        .where(eq(invitations.id, input.id));
+        .where(and(
+          eq(invitations.tenantId, ctx.tenant!.id),
+          eq(invitations.id, input.id),
+        ));
 
       const inviteUrl = buildTrustedAppUrl(ctx.req, `/invite/${encodeURIComponent(invite.token)}`);
 
@@ -205,6 +213,7 @@ export const invitationsRouter = router({
           const [existing] = await db.select()
             .from(invitations)
             .where(and(
+              eq(invitations.tenantId, ctx.tenant!.id),
               eq(invitations.email, invite.email),
               eq(invitations.status, "pending")
             ))
@@ -219,27 +228,28 @@ export const invitationsRouter = router({
           const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
           const [insertResult] = await db.insert(invitations).values({
+            tenantId: ctx.tenant!.id,
             email: invite.email,
             name: invite.name,
             role: invite.role,
             token,
             status: "pending",
-            invitedById: ctx.user.id,
-            invitedByName: ctx.user.name || ctx.user.email || "Admin",
+            invitedById: ctx.user!.id,
+            invitedByName: ctx.user!.name || ctx.user!.email || "Admin",
             expiresAt,
           });
 
           const inviteUrl = buildTrustedAppUrl(ctx.req, `/invite/${encodeURIComponent(token)}`);
           try {
             const emailResult = await sendNotificationEmail({
-              tenantId: ctx.tenant?.id ?? null,
+              tenantId: ctx.tenant!.id,
               to: invite.email,
               subject: `You're invited to join AltaSpan`,
               htmlBody: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
                   <h2 style="color: #1e293b;">Hi ${invite.name},</h2>
                   <p style="color: #334155; line-height: 1.6;">
-                    ${ctx.user.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${invite.role.replace(/_/g, " ")}</strong>.
+                    ${ctx.user!.name || "An administrator"} has invited you to join <strong>AltaSpan</strong> as a <strong>${invite.role.replace(/_/g, " ")}</strong>.
                   </p>
                   <div style="text-align: center; margin: 32px 0;">
                     <a href="${inviteUrl}" style="background-color: #1e40af; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
@@ -330,6 +340,27 @@ export const invitationsRouter = router({
       await db.update(users)
         .set({ role: invite.role })
         .where(eq(users.id, ctx.user.id));
+
+      if (invite.tenantId) {
+        const tenantRole: "owner" | "admin" | "member" =
+          invite.role === "super_admin" ? "owner" :
+          invite.role === "admin" ? "admin" :
+          "member";
+
+        await db.insert(tenantMemberships)
+          .values({
+            tenantId: invite.tenantId,
+            userId: ctx.user.id,
+            role: tenantRole,
+            isDefault: true,
+          })
+          .onDuplicateKeyUpdate({
+            set: {
+              role: tenantRole,
+              isDefault: true,
+            },
+          });
+      }
 
       return { success: true, role: invite.role };
     }),

@@ -27,6 +27,12 @@ function installerTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function templateTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionKanbanTemplates.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 async function requireJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select()
     .from(constructionJobs)
@@ -108,6 +114,7 @@ export const constructionKanbanRouter = router({
         const maxPos = existing.length > 0 ? existing[0].position : -1;
 
         const [result] = await db.insert(constructionKanbanTasks).values({
+          tenantId: tenantIdFromContext(ctx),
           jobId: input.jobId,
           title: input.title,
           description: input.description,
@@ -195,12 +202,13 @@ export const constructionKanbanRouter = router({
         const db = await requireDb();
         await requireJobAccess(db, ctx, input.jobId);
         const templates = await db.select().from(constructionKanbanTemplates)
-          .where(eq(constructionKanbanTemplates.active, true))
+          .where(and(...templateTenantConditions(ctx, eq(constructionKanbanTemplates.active, true))))
           .orderBy(asc(constructionKanbanTemplates.sortOrder));
 
         if (templates.length === 0) return { count: 0 };
 
         const values = templates.map((t, idx) => ({
+          tenantId: tenantIdFromContext(ctx),
           jobId: input.jobId,
           title: t.title,
           description: t.description,
@@ -218,9 +226,12 @@ export const constructionKanbanRouter = router({
 
   // ─── Templates ─────────────────────────────────────────────────────────────
   templates: router({
-    list: protectedProcedure.query(async () => {
+    list: protectedProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
-      return db.select().from(constructionKanbanTemplates).orderBy(asc(constructionKanbanTemplates.sortOrder));
+      return db.select()
+        .from(constructionKanbanTemplates)
+        .where(and(...templateTenantConditions(ctx)))
+        .orderBy(asc(constructionKanbanTemplates.sortOrder));
     }),
   }),
 });

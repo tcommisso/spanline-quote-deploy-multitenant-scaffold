@@ -253,29 +253,38 @@ export type InsertMasterData = typeof masterData.$inferInsert;
 // ─── Colour Groups ────────────────────────────────────────────────────────
 export const colourGroups = mysqlTable("colour_groups", {
   id: int("id").autoincrement().primaryKey(),
-  name: varchar("name", { length: 64 }).notNull().unique(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 64 }).notNull(),
   description: text("description"),
   standardColours: json("standardColours").$type<string[]>().default([]),
   sortOrder: int("sortOrder").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_colour_groups_tenant").on(table.tenantId),
+  tenantNameIdx: uniqueIndex("uq_colour_groups_tenant_name").on(table.tenantId, table.name),
+}));
 export type ColourGroup = typeof colourGroups.$inferSelect;
 export type InsertColourGroup = typeof colourGroups.$inferInsert;
 
 // ─── Colour Group Members (which colours belong to which group) ────────────
 export const colourGroupMembers = mysqlTable("colour_group_members", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   colourGroupId: int("colourGroupId").notNull(),
   colourValue: varchar("colourValue", { length: 128 }).notNull(), // matches master_data colour value
   sortOrder: int("sortOrder").default(0),
-});
+}, (table) => ({
+  tenantIdx: index("idx_colour_group_members_tenant").on(table.tenantId),
+  tenantGroupIdx: index("idx_colour_group_members_tenant_group").on(table.tenantId, table.colourGroupId),
+}));
 export type ColourGroupMember = typeof colourGroupMembers.$inferSelect;
 export type InsertColourGroupMember = typeof colourGroupMembers.$inferInsert;
 
 // ─── Products Catalog ──────────────────────────────────────────────────────
 export const products = mysqlTable("products", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   productCode: varchar("productCode", { length: 64 }),
   tabName: varchar("tabName", { length: 64 }).notNull(),
   subTab: varchar("subTab", { length: 64 }),
@@ -296,7 +305,11 @@ export const products = mysqlTable("products", {
   active: boolean("active").default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_products_tenant").on(table.tenantId),
+  tenantTabIdx: index("idx_products_tenant_tab").on(table.tenantId, table.tabName),
+  tenantCodeIdx: index("idx_products_tenant_code").on(table.tenantId, table.productCode),
+}));
 
 export type Product = typeof products.$inferSelect;
 export type InsertProduct = typeof products.$inferInsert;
@@ -304,11 +317,15 @@ export type InsertProduct = typeof products.$inferInsert;
 // ─── Skylux Pricing Matrix ─────────────────────────────────────────────────
 export const skyluxMatrix = mysqlTable("skylux_matrix", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   length: int("length").notNull(),
   width: int("width").notNull(),
   baseCost: decimal("baseCost", { precision: 12, scale: 2 }).notNull(),
   sellMultiplier: decimal("sellMultiplier", { precision: 6, scale: 3 }).default("2.226"),
-});
+}, (table) => ({
+  tenantIdx: index("idx_skylux_matrix_tenant").on(table.tenantId),
+  tenantSizeIdx: index("idx_skylux_matrix_tenant_size").on(table.tenantId, table.length, table.width),
+}));
 
 export type SkyluxMatrix = typeof skyluxMatrix.$inferSelect;
 export type InsertSkyluxMatrix = typeof skyluxMatrix.$inferInsert;
@@ -432,6 +449,7 @@ export type InsertDeckAddonItem = typeof deckAddonItems.$inferInsert;
 // ─── Deck Quotes ──────────────────────────────────────────────────────────
 export const deckQuotes = mysqlTable("deck_quotes", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("userId").notNull(),
   quoteNumber: varchar("quoteNumber", { length: 32 }).notNull().unique(),
   status: mysqlEnum("status", ["draft", "sent", "accepted", "lost"]).default("draft").notNull(),
@@ -539,7 +557,9 @@ export const deckQuotes = mysqlTable("deck_quotes", {
   expiryReminderSentAt: timestamp("expiryReminderSentAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_deck_quotes_tenant").on(table.tenantId),
+]);
 export type DeckQuote = typeof deckQuotes.$inferSelect;;
 export type InsertDeckQuote = typeof deckQuotes.$inferInsert;
 
@@ -562,6 +582,7 @@ export type InsertDeckAddonOverrideHistory = typeof deckAddonOverrideHistory.$in
 // ─── Eclipse Opening Roof Quotes ─────────────────────────────────────────────
 export const eclipseQuotes = mysqlTable("eclipse_quotes", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("userId").notNull(),
   quoteNumber: varchar("quoteNumber", { length: 32 }).notNull().unique(),
   status: mysqlEnum("status", ["draft", "sent", "accepted", "lost"]).default("draft").notNull(),
@@ -644,7 +665,9 @@ export const eclipseQuotes = mysqlTable("eclipse_quotes", {
   expiryReminderSentAt: timestamp("expiryReminderSentAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_eclipse_quotes_tenant").on(table.tenantId),
+]);
 export type EclipseQuote = typeof eclipseQuotes.$inferSelect;;
 export type InsertEclipseQuote = typeof eclipseQuotes.$inferInsert;
 
@@ -664,6 +687,7 @@ export type InsertEclipsePricing = typeof eclipsePricing.$inferInsert;
 // ─── Spec Mappings (Admin-configurable spec-to-product rules) ──────────────
 export const specMappings = mysqlTable("spec_mappings", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 255 }).notNull(), // Human-readable rule name e.g. "Posts from spec"
   tabName: varchar("tabName", { length: 64 }).notNull(), // Which component tab this generates items for
   specField: varchar("specField", { length: 128 }).notNull(), // Primary spec field to evaluate e.g. "specPostsNumber"
@@ -679,13 +703,17 @@ export const specMappings = mysqlTable("spec_mappings", {
   active: boolean("active").default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_spec_mappings_tenant").on(table.tenantId),
+  index("idx_spec_mappings_tenant_active").on(table.tenantId, table.active),
+]);
 export type SpecMapping = typeof specMappings.$inferSelect;
 export type InsertSpecMapping = typeof specMappings.$inferInsert;
 
 // ─── Spec Mapping History (Audit Trail) ─────────────────────────────────────
 export const specMappingHistory = mysqlTable("spec_mapping_history", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   mappingId: int("mappingId").notNull(), // FK to spec_mappings.id (no cascade — keep history if mapping deleted)
   userId: int("userId").references(() => users.id),
   userName: varchar("userName", { length: 255 }),
@@ -693,13 +721,17 @@ export const specMappingHistory = mysqlTable("spec_mapping_history", {
   changes: json("changes").$type<Array<{ field: string; oldValue: any; newValue: any }>>(),
   snapshot: json("snapshot").$type<Record<string, any>>(), // full mapping state at time of change
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_spec_mapping_history_tenant").on(table.tenantId),
+  index("idx_spec_mapping_history_tenant_mapping").on(table.tenantId, table.mappingId),
+]);
 export type SpecMappingHistory = typeof specMappingHistory.$inferSelect;
 export type InsertSpecMappingHistory = typeof specMappingHistory.$inferInsert;
 
 // ─── Quote Items (Auto-generated + Manual line items for OPQ) ──────────────
 export const quoteItems = mysqlTable("quote_items", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   quoteId: int("quoteId").notNull(),
   source: mysqlEnum("source", ["auto", "manual"]).notNull().default("manual"),
   specMappingId: int("specMappingId"), // Which mapping rule generated this (null for manual)
@@ -717,7 +749,10 @@ export const quoteItems = mysqlTable("quote_items", {
   sortOrder: int("sortOrder").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_quote_items_tenant").on(table.tenantId),
+  index("idx_quote_items_tenant_quote").on(table.tenantId, table.quoteId),
+]);
 export type QuoteItem = typeof quoteItems.$inferSelect;
 export type InsertQuoteItem = typeof quoteItems.$inferInsert;
 
@@ -956,14 +991,18 @@ export type CrmDocument = typeof crmDocuments.$inferSelect;
 // ─── Email Templates ────────────────────────────────────────────────────────
 export const emailTemplates = mysqlTable("email_templates", {
   id: int("id").autoincrement().primaryKey(),
-  letterType: varchar("letterType", { length: 64 }).notNull().unique(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  letterType: varchar("letterType", { length: 64 }).notNull(),
   subject: varchar("subject", { length: 500 }).notNull(),
   body: text("body").notNull(),
   attachmentUrl: text("attachmentUrl"),
   attachmentName: varchar("attachmentName", { length: 255 }),
   category: varchar("category", { length: 64 }).default("general").notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_email_templates_tenant").on(table.tenantId),
+  uniqueIndex("uq_email_templates_tenant_letter_type").on(table.tenantId, table.letterType),
+]);
 export type EmailTemplate = typeof emailTemplates.$inferSelect;
 export type InsertEmailTemplate = typeof emailTemplates.$inferInsert;
 
@@ -1089,6 +1128,7 @@ export type InsertBranch = typeof branches.$inferInsert;
 // ─── Email Image Library ────────────────────────────────────────────────────
 export const emailImages = mysqlTable("email_images", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   filename: varchar("filename", { length: 255 }).notNull(),
   url: text("url").notNull(),
   fileKey: varchar("fileKey", { length: 512 }).notNull(),
@@ -1100,7 +1140,9 @@ export const emailImages = mysqlTable("email_images", {
   uploadedBy: int("uploadedBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_email_images_tenant").on(table.tenantId),
+]);
 export type EmailImage = typeof emailImages.$inferSelect;
 export type InsertEmailImage = typeof emailImages.$inferInsert;
 
@@ -1195,6 +1237,7 @@ export type InsertConstructionAssignment = typeof constructionAssignments.$infer
 
 export const constructionProgress = mysqlTable("construction_progress", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   stage: varchar("stage", { length: 128 }).notNull(), // e.g. "Site Prep", "Footings", "Frame", "Roof", "Electrical", "Final Inspection"
   status: mysqlEnum("status", ["pending", "in_progress", "completed", "skipped"]).default("pending").notNull(),
@@ -1202,7 +1245,10 @@ export const constructionProgress = mysqlTable("construction_progress", {
   notes: text("notes"),
   updatedBy: int("updatedBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_construction_progress_tenant").on(table.tenantId),
+  index("idx_construction_progress_job").on(table.jobId),
+]);
 export type ConstructionProgress = typeof constructionProgress.$inferSelect;
 export type InsertConstructionProgress = typeof constructionProgress.$inferInsert;
 
@@ -1271,6 +1317,7 @@ export type InsertSmsDeliveryLog = typeof smsDeliveryLog.$inferInsert;
 // ─── Construction Schedule Events ──────────────────────────────────────────
 export const constructionScheduleEvents = mysqlTable("construction_schedule_events", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
@@ -1288,6 +1335,8 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
+  index("idx_construction_schedule_events_tenant").on(table.tenantId),
+  index("idx_construction_schedule_events_tenant_start").on(table.tenantId, table.startTime),
   foreignKey({
     name: "fk_sched_event_installer",
     columns: [table.assignedInstallerId],
@@ -1300,6 +1349,7 @@ export type InsertConstructionScheduleEvent = typeof constructionScheduleEvents.
 // ─── Construction Kanban Tasks ─────────────────────────────────────────────
 export const constructionKanbanTasks = mysqlTable("construction_kanban_tasks", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
@@ -1313,6 +1363,8 @@ export const constructionKanbanTasks = mysqlTable("construction_kanban_tasks", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
+  index("idx_construction_kanban_tasks_tenant").on(table.tenantId),
+  index("idx_construction_kanban_tasks_tenant_due").on(table.tenantId, table.dueDate),
   foreignKey({
     name: "fk_kanban_task_installer",
     columns: [table.assignedTo],
@@ -1402,6 +1454,7 @@ export type InsertTaskTemplate = typeof taskTemplates.$inferInsert;
 // ─── Construction Kanban Templates ─────────────────────────────────────────
 export const constructionKanbanTemplates = mysqlTable("construction_kanban_templates", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
   defaultColumn: mysqlEnum("defaultColumn", ["backlog", "todo", "in_progress", "review", "done"]).default("todo").notNull(),
@@ -1409,7 +1462,10 @@ export const constructionKanbanTemplates = mysqlTable("construction_kanban_templ
   category: varchar("category", { length: 64 }).default("general"),
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_construction_kanban_templates_tenant").on(table.tenantId),
+  index("idx_construction_kanban_templates_tenant_active").on(table.tenantId, table.active),
+]);
 export type ConstructionKanbanTemplate = typeof constructionKanbanTemplates.$inferSelect;
 export type InsertConstructionKanbanTemplate = typeof constructionKanbanTemplates.$inferInsert;
 
@@ -1846,6 +1902,7 @@ export type InsertPortalMaintenanceRequest = typeof portalMaintenanceRequests.$i
 // CPC Subscription plans
 export const cpcPlans = mysqlTable("cpc_plans", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 128 }).notNull(),
   description: text("description"),
   frequency: mysqlEnum("frequency", ["annual", "seasonal", "premium"]).notNull(),
@@ -1857,13 +1914,17 @@ export const cpcPlans = mysqlTable("cpc_plans", {
   sortOrder: int("sortOrder").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_cpc_plans_tenant").on(table.tenantId),
+  tenantActiveIdx: index("idx_cpc_plans_tenant_active").on(table.tenantId, table.isActive),
+}));
 export type CpcPlan = typeof cpcPlans.$inferSelect;
 export type InsertCpcPlan = typeof cpcPlans.$inferInsert;
 
 // CPC Subscriptions
 export const cpcSubscriptions = mysqlTable("cpc_subscriptions", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   portalAccessId: int("portalAccessId").notNull().references(() => portalAccess.id, { onDelete: "cascade" }),
   constructionJobId: int("constructionJobId").notNull(),
   planId: int("planId").notNull().references(() => cpcPlans.id),
@@ -1877,13 +1938,18 @@ export const cpcSubscriptions = mysqlTable("cpc_subscriptions", {
   cancelledAt: timestamp("cancelledAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_cpc_subscriptions_tenant").on(table.tenantId),
+  tenantPortalIdx: index("idx_cpc_subscriptions_tenant_portal").on(table.tenantId, table.portalAccessId),
+  tenantJobIdx: index("idx_cpc_subscriptions_tenant_job").on(table.tenantId, table.constructionJobId),
+}));
 export type CpcSubscription = typeof cpcSubscriptions.$inferSelect;
 export type InsertCpcSubscription = typeof cpcSubscriptions.$inferInsert;
 
 // CPC Service history
 export const cpcServiceHistory = mysqlTable("cpc_service_history", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   subscriptionId: int("subscriptionId").notNull().references(() => cpcSubscriptions.id, { onDelete: "cascade" }),
   serviceDate: timestamp("serviceDate").notNull(),
   technicianName: varchar("technicianName", { length: 255 }),
@@ -1893,13 +1959,17 @@ export const cpcServiceHistory = mysqlTable("cpc_service_history", {
   reportUrl: text("reportUrl"),
   status: mysqlEnum("status", ["scheduled", "completed", "cancelled"]).default("scheduled").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_cpc_service_history_tenant").on(table.tenantId),
+  tenantSubscriptionIdx: index("idx_cpc_service_history_tenant_subscription").on(table.tenantId, table.subscriptionId),
+}));
 export type CpcServiceHistory = typeof cpcServiceHistory.$inferSelect;
 export type InsertCpcServiceHistory = typeof cpcServiceHistory.$inferInsert;
 
 // News articles for client portal
 export const portalNews = mysqlTable("portal_news", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   slug: varchar("slug", { length: 255 }).notNull().unique(),
   excerpt: text("excerpt"),
@@ -1912,13 +1982,17 @@ export const portalNews = mysqlTable("portal_news", {
   portalType: mysqlEnum("portalType", ["client", "trade", "da", "both", "all"]).default("both").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_portal_news_tenant").on(table.tenantId),
+  index("idx_portal_news_tenant_type").on(table.tenantId, table.portalType),
+]);
 export type PortalNewsArticle = typeof portalNews.$inferSelect;
 export type InsertPortalNewsArticle = typeof portalNews.$inferInsert;
 
 // Product offerings for cross-selling
 export const portalProducts = mysqlTable("portal_products", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   imageUrl: text("imageUrl"),
@@ -1931,7 +2005,10 @@ export const portalProducts = mysqlTable("portal_products", {
   sortOrder: int("sortOrder").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_portal_products_tenant").on(table.tenantId),
+  index("idx_portal_products_tenant_active").on(table.tenantId, table.isActive),
+]);
 export type PortalProduct = typeof portalProducts.$inferSelect;
 export type InsertPortalProduct = typeof portalProducts.$inferInsert;
 
@@ -2046,6 +2123,7 @@ export type InsertEmailEvent = typeof emailEvents.$inferInsert;
 // Admin-defined tags/flags for inbox messages
 export const inboxTags = mysqlTable("inbox_tags", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 64 }).notNull(),
   color: varchar("color", { length: 32 }).default("#6366f1").notNull(),
   description: varchar("description", { length: 255 }),
@@ -2053,7 +2131,10 @@ export const inboxTags = mysqlTable("inbox_tags", {
   sortOrder: int("sortOrder").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_inbox_tags_tenant").on(table.tenantId),
+  index("idx_inbox_tags_tenant_active").on(table.tenantId, table.active),
+]);
 export type InboxTag = typeof inboxTags.$inferSelect;
 export type InsertInboxTag = typeof inboxTags.$inferInsert;
 
@@ -2117,6 +2198,7 @@ export type InboxMessageTag = typeof inboxMessageTags.$inferSelect;
 // Per-user email signature blocks
 export const emailSignatures = mysqlTable("email_signatures", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("userId").notNull(),
   name: varchar("name", { length: 100 }).notNull(),
   htmlContent: mediumtext("htmlContent").notNull(),
@@ -2124,24 +2206,32 @@ export const emailSignatures = mysqlTable("email_signatures", {
   schedule: varchar("schedule", { length: 20 }).default("always"),  // 'always' | 'business_hours' | 'out_of_office'
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_email_signatures_tenant").on(table.tenantId),
+  index("idx_email_signatures_tenant_user").on(table.tenantId, table.userId),
+]);
 export type EmailSignature = typeof emailSignatures.$inferSelect;
 export type InsertEmailSignature = typeof emailSignatures.$inferInsert;
 
 // Inbox settings (singleton row per setting key)
 export const inboxSettings = mysqlTable("inbox_settings", {
   id: int("id").autoincrement().primaryKey(),
-  settingKey: varchar("settingKey", { length: 64 }).notNull().unique(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  settingKey: varchar("settingKey", { length: 64 }).notNull(),
   settingValue: text("settingValue").notNull(),
   updatedBy: int("updatedBy"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_inbox_settings_tenant").on(table.tenantId),
+  uniqueIndex("uq_inbox_settings_tenant_key").on(table.tenantId, table.settingKey),
+]);
 export type InboxSetting = typeof inboxSettings.$inferSelect;
 export type InsertInboxSetting = typeof inboxSettings.$inferInsert;
 
 // SLA action rules for inbox messages
 export const inboxSlaRules = mysqlTable("inbox_sla_rules", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 100 }).notNull(),
   warningHours: int("warningHours").default(24).notNull(),
   escalationHours: int("escalationHours").default(36).notNull(),
@@ -2150,7 +2240,10 @@ export const inboxSlaRules = mysqlTable("inbox_sla_rules", {
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_inbox_sla_rules_tenant").on(table.tenantId),
+  index("idx_inbox_sla_rules_tenant_active").on(table.tenantId, table.active),
+]);
 export type InboxSlaRule = typeof inboxSlaRules.$inferSelect;
 export type InsertInboxSlaRule = typeof inboxSlaRules.$inferInsert;
 
@@ -2717,6 +2810,7 @@ export type InsertPatioPlanner = typeof patioPlanner.$inferInsert;
 // ─── Render Cost Logs ─────────────────────────────────────────────────────────
 export const renderCostLogs = mysqlTable("render_cost_logs", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("userId").notNull(), // adviser who generated
   projectId: int("projectId"), // patio planner project ID (nullable for future use)
   renderMode: varchar("renderMode", { length: 16 }).notNull(), // "full" | "quick" | "batch"
@@ -2724,7 +2818,11 @@ export const renderCostLogs = mysqlTable("render_cost_logs", {
   creditCost: decimal("creditCost", { precision: 10, scale: 4 }).notNull(), // cost in credits
   renderCount: int("renderCount").default(1).notNull(), // number of renders (>1 for batch)
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_render_cost_logs_tenant").on(table.tenantId),
+  tenantCreatedIdx: index("idx_render_cost_logs_tenant_created").on(table.tenantId, table.createdAt),
+  tenantUserIdx: index("idx_render_cost_logs_tenant_user").on(table.tenantId, table.userId),
+}));
 export type RenderCostLog = typeof renderCostLogs.$inferSelect;
 export type InsertRenderCostLog = typeof renderCostLogs.$inferInsert;
 
@@ -2732,6 +2830,7 @@ export type InsertRenderCostLog = typeof renderCostLogs.$inferInsert;
 // ─── Project Subcontracts ─────────────────────────────────────────────────────
 export const projectSubcontracts = mysqlTable("project_subcontracts", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
   installerId: int("installerId").references(() => constructionInstallers.id, { onDelete: "set null" }),
   // Header fields
@@ -2768,7 +2867,11 @@ export const projectSubcontracts = mysqlTable("project_subcontracts", {
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_project_subcontracts_tenant").on(table.tenantId),
+  index("idx_project_subcontracts_tenant_job").on(table.tenantId, table.jobId),
+  index("idx_project_subcontracts_tenant_installer").on(table.tenantId, table.installerId),
+]);
 export type ProjectSubcontract = typeof projectSubcontracts.$inferSelect;
 export type InsertProjectSubcontract = typeof projectSubcontracts.$inferInsert;
 
@@ -2936,6 +3039,7 @@ export type InsertSiteInduction = typeof siteInductions.$inferInsert;
 // ─── Induction Form Configuration ──────────────────────────────────────────
 export const inductionFormConfig = mysqlTable("induction_form_config", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   // Certificates section (JSON array of certificate names to check)
   certificates: json("certificates").$type<string[]>().default([
     "White Card (Construction Induction)",
@@ -2973,7 +3077,10 @@ export const inductionFormConfig = mysqlTable("induction_form_config", {
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_induction_form_config_tenant").on(table.tenantId),
+  tenantUniqueIdx: uniqueIndex("uq_induction_form_config_tenant").on(table.tenantId),
+}));
 export type InductionFormConfig = typeof inductionFormConfig.$inferSelect;
 export type InsertInductionFormConfig = typeof inductionFormConfig.$inferInsert;
 
@@ -3175,6 +3282,7 @@ export type InsertSmartshopOrderStatusHistory = typeof smartshopOrderStatusHisto
 // ─── Order Templates (Kits) ─────────────────────────────────────────────────
 export const orderTemplates = mysqlTable("order_templates", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
   tag: varchar("tag", { length: 100 }).default(""),
@@ -3182,7 +3290,10 @@ export const orderTemplates = mysqlTable("order_templates", {
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_order_templates_tenant").on(table.tenantId),
+  index("idx_order_templates_tenant_active").on(table.tenantId, table.isActive),
+]);
 export type OrderTemplate = typeof orderTemplates.$inferSelect;
 export type InsertOrderTemplate = typeof orderTemplates.$inferInsert;
 
@@ -3278,6 +3389,7 @@ export type InsertConstructionPlanAuditLog = typeof constructionPlanAuditLog.$in
 // ─── Plan Conversions (Hand-Drawn to Architectural) ─────────────────────────
 export const planConversions = mysqlTable("plan_conversions", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("userId").notNull(),
   jobId: int("jobId"),
   clientName: varchar("clientName", { length: 255 }),
@@ -3297,7 +3409,11 @@ export const planConversions = mysqlTable("plan_conversions", {
   revision: varchar("revision", { length: 16 }).default("A"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_plan_conversions_tenant").on(table.tenantId),
+  tenantUserIdx: index("idx_plan_conversions_tenant_user").on(table.tenantId, table.userId),
+  tenantJobIdx: index("idx_plan_conversions_tenant_job").on(table.tenantId, table.jobId),
+}));
 export type PlanConversion = typeof planConversions.$inferSelect;
 export type InsertPlanConversion = typeof planConversions.$inferInsert;
 
@@ -3331,6 +3447,7 @@ export type InsertPlanConversionElement = typeof planConversionElements.$inferIn
 // ─── Product & Component Images ──────────────────────────────────────────────
 export const productImages = mysqlTable("product_images", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   category: varchar("category", { length: 64 }).notNull(), // 'bracket', 'connection', 'product', 'component'
   code: varchar("code", { length: 64 }).notNull(), // bracket code (EXT-STD) or connection type (BCH) or product code
   name: varchar("name", { length: 255 }).notNull(), // human-readable name
@@ -3341,7 +3458,11 @@ export const productImages = mysqlTable("product_images", {
   tags: json("tags").$type<string[]>(), // searchable tags
   sortOrder: int("sortOrder").default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_product_images_tenant").on(table.tenantId),
+  index("idx_product_images_tenant_category").on(table.tenantId, table.category),
+  index("idx_product_images_tenant_code").on(table.tenantId, table.code),
+]);
 export type ProductImage = typeof productImages.$inferSelect;
 export type InsertProductImage = typeof productImages.$inferInsert;
 
@@ -3370,6 +3491,7 @@ export type InsertPushSubscription = typeof pushSubscriptions.$inferInsert;
 // ─── Spec Section Templates (admin-managed) ────────────────────────────────
 export const specSectionTemplates = mysqlTable("spec_section_templates", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 128 }).notNull(),
   description: text("description"),
   hiddenSections: json("hiddenSections").notNull(), // string[] of section IDs to hide
@@ -3377,7 +3499,9 @@ export const specSectionTemplates = mysqlTable("spec_section_templates", {
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_spec_section_templates_tenant").on(table.tenantId),
+]);
 export type SpecSectionTemplate = typeof specSectionTemplates.$inferSelect;
 export type InsertSpecSectionTemplate = typeof specSectionTemplates.$inferInsert;
 
@@ -3624,6 +3748,7 @@ export type InsertSsQuoteCostAddition = typeof ssQuoteCostAdditions.$inferInsert
 // ─── Proposals (Centralised Proposal Generation) ─────────────────────────────
 export const proposals = mysqlTable("proposals", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   proposalNumber: varchar("proposalNumber", { length: 32 }).notNull().unique(),
   clientId: int("clientId"), // FK → crmLeads.id
   preparedBy: int("preparedBy"), // FK → users.id
@@ -3693,7 +3818,9 @@ export const proposals = mysqlTable("proposals", {
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_proposals_tenant").on(table.tenantId),
+]);
 export type Proposal = typeof proposals.$inferSelect;
 export type InsertProposal = typeof proposals.$inferInsert;
 
@@ -3714,6 +3841,7 @@ export type InsertProposalActivity = typeof proposalActivity.$inferInsert;
 // ─── Climbo Accounts (Google Review Integration) ─────────────────────────────
 export const climboAccounts = mysqlTable("climbo_accounts", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 128 }).notNull(),
   region: varchar("region", { length: 64 }),
   apiKey: varchar("apiKey", { length: 512 }),
@@ -3722,13 +3850,16 @@ export const climboAccounts = mysqlTable("climbo_accounts", {
   active: boolean("active").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_climbo_accounts_tenant").on(table.tenantId),
+}));
 export type ClimboAccount = typeof climboAccounts.$inferSelect;
 export type InsertClimboAccount = typeof climboAccounts.$inferInsert;
 
 // ─── Google Reviews ──────────────────────────────────────────────────────────
 export const googleReviews = mysqlTable("google_reviews", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   leadId: int("leadId"),
   climboAccountId: int("climboAccountId"),
   reviewerName: varchar("reviewerName", { length: 255 }),
@@ -3742,7 +3873,11 @@ export const googleReviews = mysqlTable("google_reviews", {
   source: varchar("source", { length: 64 }).default("climbo"),
   rawPayload: json("rawPayload").$type<Record<string, unknown>>(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_google_reviews_tenant").on(table.tenantId),
+  tenantLeadIdx: index("idx_google_reviews_tenant_lead").on(table.tenantId, table.leadId),
+  tenantGoogleIdx: index("idx_google_reviews_tenant_google_id").on(table.tenantId, table.googleReviewId),
+}));
 export type GoogleReview = typeof googleReviews.$inferSelect;
 export type InsertGoogleReview = typeof googleReviews.$inferInsert;
 
@@ -3750,12 +3885,14 @@ export type InsertGoogleReview = typeof googleReviews.$inferInsert;
 // ─── Territory Postcodes (DB-backed territory → branch → postcode mappings) ──
 export const territoryPostcodes = mysqlTable("territory_postcodes", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   territory: varchar("territory", { length: 128 }).notNull(),
   branchId: int("branchId").notNull().references(() => branches.id, { onDelete: "cascade" }),
   postcode: varchar("postcode", { length: 10 }).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (t) => [
-  uniqueIndex("uq_territory_postcode").on(t.territory, t.postcode),
+  uniqueIndex("uq_territory_postcode").on(t.tenantId, t.territory, t.postcode),
+  index("idx_territory_postcodes_tenant").on(t.tenantId),
 ]);
 export type TerritoryPostcode = typeof territoryPostcodes.$inferSelect;
 export type InsertTerritoryPostcode = typeof territoryPostcodes.$inferInsert;
@@ -3783,6 +3920,7 @@ export type InsertNylasGrant = typeof nylasGrants.$inferInsert;
 // ─── DA (Design Adviser) Commission Ledger ──────────────────────────────────
 export const daCommissions = mysqlTable("da_commissions", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   daUserId: int("daUserId").notNull().references(() => users.id),
   daName: varchar("daName", { length: 255 }).notNull(),
   // Link to job/quote
@@ -3805,7 +3943,11 @@ export const daCommissions = mysqlTable("da_commissions", {
   notes: text("notes"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_da_commissions_tenant").on(table.tenantId),
+  tenantUserIdx: index("idx_da_commissions_tenant_user").on(table.tenantId, table.daUserId),
+  tenantJobIdx: index("idx_da_commissions_tenant_job").on(table.tenantId, table.constructionJobId),
+}));
 export type DaCommission = typeof daCommissions.$inferSelect;
 export type InsertDaCommission = typeof daCommissions.$inferInsert;
 
@@ -3825,6 +3967,7 @@ export type InsertDaCommissionAdjustment = typeof daCommissionAdjustments.$infer
 // ─── DA Invoices ────────────────────────────────────────────────────────────
 export const daInvoices = mysqlTable("da_invoices", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   daUserId: int("daUserId").notNull().references(() => users.id),
   daName: varchar("daName", { length: 255 }).notNull(),
   invoiceNumber: varchar("invoiceNumber", { length: 64 }).notNull(),
@@ -3855,13 +3998,18 @@ export const daInvoices = mysqlTable("da_invoices", {
   xeroContactId: varchar("xeroContactId", { length: 128 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_da_invoices_tenant").on(table.tenantId),
+  tenantUserIdx: index("idx_da_invoices_tenant_user").on(table.tenantId, table.daUserId),
+  tenantCommissionIdx: index("idx_da_invoices_tenant_commission").on(table.tenantId, table.commissionId),
+}));
 export type DaInvoice = typeof daInvoices.$inferSelect;
 export type InsertDaInvoice = typeof daInvoices.$inferInsert;
 
 // ─── DA Personal Details ────────────────────────────────────────────────────
 export const daPersonalDetails = mysqlTable("da_personal_details", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
   fullName: varchar("fullName", { length: 255 }),
   email: varchar("email", { length: 320 }),
@@ -3875,7 +4023,10 @@ export const daPersonalDetails = mysqlTable("da_personal_details", {
   xeroContactId: varchar("xeroContactId", { length: 128 }), // linked Xero supplier card
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_da_personal_details_tenant").on(table.tenantId),
+  tenantUserIdx: index("idx_da_personal_details_tenant_user").on(table.tenantId, table.userId),
+}));
 export type DaPersonalDetails = typeof daPersonalDetails.$inferSelect;
 export type InsertDaPersonalDetails = typeof daPersonalDetails.$inferInsert;
 
@@ -3931,13 +4082,18 @@ export const crmDropdownOptions = mysqlTable("crm_dropdown_options", {
 // ─── User Notification Preferences ──────────────────────────────────────────
 export const userNotificationPreferences = mysqlTable("user_notification_preferences", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("userId").notNull(),
   eventType: varchar("eventType", { length: 64 }).notNull(), // e.g. "schedule_event", "document_uploaded", "activity_posted", "news_published", "invoice_status", "variation_created"
   channelEmail: boolean("channelEmail").default(true).notNull(),
   channelSms: boolean("channelSms").default(false).notNull(),
   channelPush: boolean("channelPush").default(true).notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_user_notification_preferences_tenant").on(table.tenantId),
+  index("idx_user_notification_preferences_user_tenant").on(table.tenantId, table.userId),
+  index("idx_user_notification_preferences_tenant_event").on(table.tenantId, table.eventType),
+]);
 
 
 // ─── Calendar View Members ──────────────────────────────────────────────────
@@ -4389,6 +4545,7 @@ export type InsertManufacturingPoReceipt = typeof manufacturingPoReceipts.$infer
 // ─── Manufacturing Supplier Invoices ──────────────────────────────────────────
 export const manufacturingSupplierInvoices = mysqlTable("manufacturing_supplier_invoices", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   invoiceNumber: varchar("invoice_number", { length: 100 }).notNull(),
   supplierName: varchar("supplier_name", { length: 255 }).notNull(),
   supplierEmail: varchar("supplier_email", { length: 255 }),
@@ -4409,7 +4566,10 @@ export const manufacturingSupplierInvoices = mysqlTable("manufacturing_supplier_
   xeroInvoiceId: varchar("xero_invoice_id", { length: 100 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_manufacturing_supplier_invoices_tenant").on(table.tenantId),
+  index("idx_manufacturing_supplier_invoices_tenant_po").on(table.tenantId, table.purchaseOrderId),
+]);
 export type ManufacturingSupplierInvoice = typeof manufacturingSupplierInvoices.$inferSelect;
 export type InsertManufacturingSupplierInvoice = typeof manufacturingSupplierInvoices.$inferInsert;
 
@@ -4452,6 +4612,7 @@ export type DriverLocation = typeof driverLocations.$inferSelect;
 // ─── User Geotracking (Trades & Construction) ───────────────────────────────
 export const userLocations = mysqlTable("user_locations", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   userId: int("user_id").notNull().references(() => users.id),
   latitude: decimal("latitude", { precision: 10, scale: 7 }).notNull(),
   longitude: decimal("longitude", { precision: 10, scale: 7 }).notNull(),
@@ -4459,12 +4620,16 @@ export const userLocations = mysqlTable("user_locations", {
   speed: decimal("speed", { precision: 6, scale: 2 }),
   accuracy: decimal("accuracy", { precision: 8, scale: 2 }),
   recordedAt: timestamp("recorded_at").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_user_locations_tenant").on(table.tenantId),
+  index("idx_user_locations_tenant_user_recorded").on(table.tenantId, table.userId, table.recordedAt),
+]);
 export type UserLocation = typeof userLocations.$inferSelect;
 
 // ─── Text Blocks (Engineering & Specifications) ──────────────────────────────
 export const textBlocks = mysqlTable("text_blocks", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   category: varchar("category", { length: 50 }).notNull().default("Engineering"), // Engineering | Specifications
   content: text("content").notNull(),
@@ -4474,7 +4639,10 @@ export const textBlocks = mysqlTable("text_blocks", {
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  tenantIdx: index("idx_text_blocks_tenant").on(table.tenantId),
+  tenantCategoryIdx: index("idx_text_blocks_tenant_category").on(table.tenantId, table.category, table.isActive),
+}));
 export type TextBlock = typeof textBlocks.$inferSelect;
 
 
@@ -4505,6 +4673,7 @@ export type InsertNotificationLogEntry = typeof notificationLog.$inferInsert;
 // ═══════════════════════════════════════════════════════════════════════════
 export const supplierFeedback = mysqlTable("supplier_feedback", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   supplierId: int("supplierId").notNull().references(() => suppliers.id, { onDelete: "cascade" }),
   userId: int("userId").notNull().references(() => users.id), // who submitted the feedback
   // Category ratings (1-5 scale)
@@ -4519,7 +4688,11 @@ export const supplierFeedback = mysqlTable("supplier_feedback", {
   jobId: int("jobId"), // link to constructionJobs if triggered from job context
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_supplier_feedback_tenant").on(table.tenantId),
+  index("idx_supplier_feedback_tenant_supplier").on(table.tenantId, table.supplierId),
+  index("idx_supplier_feedback_tenant_po").on(table.tenantId, table.poId),
+]);
 export type SupplierFeedbackRow = typeof supplierFeedback.$inferSelect;
 export type InsertSupplierFeedback = typeof supplierFeedback.$inferInsert;
 
@@ -4531,7 +4704,10 @@ export const userDashboardConfig = mysqlTable("user_dashboard_config", {
   widgetLayout: json("widgetLayout").$type<{ widgets: { id: string; visible: boolean; order: number }[] }>().notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_user_dashboard_config_tenant").on(table.tenantId),
+  index("idx_user_dashboard_config_tenant_user").on(table.tenantId, table.userId),
+]);
 
 
 // ─── Checklist Items (Admin-managed pricing for spec sheet checklist) ─────────
@@ -4556,6 +4732,7 @@ export type InsertChecklistItem = typeof checklistItems.$inferInsert;
 // ─── Chat System ──────────────────────────────────────────────────────────
 export const chatChannels = mysqlTable("chat_channels", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 255 }).notNull(),
   type: mysqlEnum("type", ["system", "job"]).notNull().default("job"),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
@@ -4563,12 +4740,17 @@ export const chatChannels = mysqlTable("chat_channels", {
   isArchived: boolean("isArchived").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  index("idx_chat_channels_tenant").on(table.tenantId),
+  index("idx_chat_channels_tenant_type").on(table.tenantId, table.type),
+  index("idx_chat_channels_tenant_job").on(table.tenantId, table.jobId),
+]);
 export type ChatChannel = typeof chatChannels.$inferSelect;
 export type InsertChatChannel = typeof chatChannels.$inferInsert;
 
 export const chatChannelMembers = mysqlTable("chat_channel_members", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   channelId: int("channelId").notNull().references(() => chatChannels.id, { onDelete: "cascade" }),
   userId: int("userId").references(() => users.id, { onDelete: "cascade" }),
   memberType: mysqlEnum("memberType", ["user", "trade"]).notNull().default("user"),
@@ -4576,12 +4758,17 @@ export const chatChannelMembers = mysqlTable("chat_channel_members", {
   role: mysqlEnum("role", ["admin", "member"]).notNull().default("member"),
   lastReadAt: timestamp("lastReadAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_chat_channel_members_tenant").on(table.tenantId),
+  index("idx_chat_channel_members_tenant_channel").on(table.tenantId, table.channelId),
+  index("idx_chat_channel_members_tenant_user").on(table.tenantId, table.userId),
+]);
 export type ChatChannelMember = typeof chatChannelMembers.$inferSelect;
 export type InsertChatChannelMember = typeof chatChannelMembers.$inferInsert;
 
 export const chatMessages = mysqlTable("chat_messages", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   channelId: int("channelId").notNull().references(() => chatChannels.id, { onDelete: "cascade" }),
   senderId: int("senderId").notNull().references(() => users.id, { onDelete: "cascade" }),
   senderName: varchar("senderName", { length: 255 }).notNull(),
@@ -4590,7 +4777,10 @@ export const chatMessages = mysqlTable("chat_messages", {
   mentions: json("mentions"), // Array of userId numbers
   isPinned: boolean("isPinned").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_chat_messages_tenant").on(table.tenantId),
+  index("idx_chat_messages_tenant_channel").on(table.tenantId, table.channelId),
+]);
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type InsertChatMessage = typeof chatMessages.$inferInsert;
 
@@ -4652,7 +4842,10 @@ export const invitations = mysqlTable("invitations", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   expiresAt: timestamp("expiresAt").notNull(),
   acceptedAt: timestamp("acceptedAt"),
-});
+}, (table) => ({
+  tenantIdx: index("idx_invitations_tenantId").on(table.tenantId),
+  tenantEmailStatusIdx: index("idx_invitations_tenant_email_status").on(table.tenantId, table.email, table.status),
+}));
 
 export type Invitation = typeof invitations.$inferSelect;
 export type InsertInvitation = typeof invitations.$inferInsert;
@@ -4758,6 +4951,7 @@ export type InsertExtensionOfTimeRecord = typeof extensionOfTimeRecords.$inferIn
 // ─── Approval Workflow Templates ────────────────────────────────────────────
 export const approvalWorkflowTemplates = mysqlTable("approval_workflow_templates", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   jurisdiction: mysqlEnum("jurisdiction", ["NSW", "ACT"]).notNull(),
   pathwayCode: varchar("pathwayCode", { length: 64 }).notNull(), // e.g. NSW_DA_CC_OC, ACT_DA_BA_COU
   name: varchar("name", { length: 255 }).notNull(),
@@ -4777,7 +4971,11 @@ export const approvalWorkflowTemplates = mysqlTable("approval_workflow_templates
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   createdByUserId: int("createdByUserId").references(() => users.id),
-});
+}, (table) => [
+  index("idx_approval_workflow_templates_tenant").on(table.tenantId),
+  index("idx_approval_workflow_templates_tenant_pathway").on(table.tenantId, table.pathwayCode),
+  index("idx_approval_workflow_templates_tenant_jurisdiction").on(table.tenantId, table.jurisdiction),
+]);
 export type ApprovalWorkflowTemplate = typeof approvalWorkflowTemplates.$inferSelect;
 export type InsertApprovalWorkflowTemplate = typeof approvalWorkflowTemplates.$inferInsert;
 

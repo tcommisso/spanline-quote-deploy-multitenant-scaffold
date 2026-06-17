@@ -6,9 +6,21 @@ import { ENV } from "./env";
 import { adminProcedure, publicProcedure, router, tenantAdminProcedure } from "./trpc";
 
 const TENANT_ID_TABLES = [
+  "tenant_settings",
+  "tenant_integration_settings",
+  "permission_overrides",
   "branches",
   "crm_dropdown_options",
+  "territory_postcodes",
   "quotes",
+  "quote_items",
+  "deck_quotes",
+  "eclipse_quotes",
+  "proposals",
+  "spec_mappings",
+  "spec_mapping_history",
+  "spec_section_templates",
+  "master_data",
   "crm_leads",
   "design_advisors",
   "crm_appointments",
@@ -18,6 +30,7 @@ const TENANT_ID_TABLES = [
   "sms_templates",
   "construction_installers",
   "construction_jobs",
+  "construction_progress",
   "construction_schedule_events",
   "construction_kanban_tasks",
   "task_tags",
@@ -25,8 +38,9 @@ const TENANT_ID_TABLES = [
   "task_comments",
   "task_templates",
   "equipment",
-  "equipment_bookings",
   "portal_access",
+  "portal_news",
+  "portal_products",
   "trade_portal_access",
   "permission_audit_log",
   "user_dashboard_config",
@@ -36,6 +50,10 @@ const TENANT_ID_TABLES = [
   "user_calendar_selections",
   "inbox_messages",
   "inbox_addresses",
+  "inbox_tags",
+  "email_signatures",
+  "inbox_settings",
+  "inbox_sla_rules",
   "nylas_grants",
   "suppliers",
   "supplier_categories",
@@ -44,20 +62,17 @@ const TENANT_ID_TABLES = [
   "inventory_transfers",
   "stocktakes",
   "manufacturing_drivers",
-  "manufacturing_orders",
-  "manufacturing_tasks",
-  "manufacturing_schedule",
   "manufacturing_purchase_orders",
   "manufacturing_po_audit_trail",
   "manufacturing_po_attachments",
   "manufacturing_po_returns",
-  "manufacturing_dispatches",
   "manufacturing_po_receipts",
   "manufacturing_supplier_invoices",
-  "driver_locations",
   "user_locations",
   "notification_log",
   "supplier_feedback",
+  "induction_form_config",
+  "plan_conversions",
   "checklist_items",
   "chat_channels",
   "chat_channel_members",
@@ -67,13 +82,37 @@ const TENANT_ID_TABLES = [
   "rain_days",
   "rain_day_job_impacts",
   "extension_of_time_records",
+  "project_subcontracts",
   "project_plan_templates",
+  "order_templates",
+  "construction_kanban_templates",
+  "email_templates",
+  "email_images",
+  "product_images",
+  "ss_pricing_settings",
+  "ss_pricing_matrix",
+  "ss_price_adjustments",
+  "ss_cost_additions",
+  "ss_product_options",
+  "ss_glass_infill",
+  "ss_colours",
+  "ss_quotes",
+  "ss_quote_items",
+  "ss_quote_item_options",
+  "ss_quote_cost_additions",
+  "ai_prompts",
+  "ai_knowledge_chunks",
+  "ai_feedback",
+  "ai_few_shot_examples",
+  "ai_corrections",
+  "approval_workflow_templates",
   "approval_projects",
   "approval_integration_credentials",
   "approval_sync_logs",
   "hbcf_builder_profiles",
   "hbcf_certificates",
   "hbcf_policy_matches",
+  "hbcf_sync_logs",
   "da_tracker_applications",
   "da_tracker_webhook_subscriptions",
   "da_tracker_webhook_deliveries",
@@ -172,6 +211,124 @@ async function repairTableTenant(db: any, tableName: string, columnName: "tenant
   return { table: tableName, column: columnName, status: ensureStatus, updated, nullRows, otherTenantRows };
 }
 
+async function safeRepairTableTenant(
+  db: any,
+  tableName: string,
+  columnName: "tenantId" | "appTenantId",
+  tenantId: number,
+) {
+  try {
+    return await repairTableTenant(db, tableName, columnName, tenantId);
+  } catch (error: any) {
+    return {
+      table: tableName,
+      column: columnName,
+      status: "failed",
+      updated: 0,
+      nullRows: 0,
+      otherTenantRows: 0,
+      error: error?.message || String(error),
+    };
+  }
+}
+
+async function tenantMembershipRepairPreview(db: any, tenantId: number) {
+  const usersExist = await tableExists(db, "users");
+  const membershipsExist = await tableExists(db, "tenant_memberships");
+  if (!usersExist || !membershipsExist) {
+    return {
+      table: "tenant_memberships",
+      status: "missing-table" as const,
+      totalUsers: 0,
+      linkedUsers: 0,
+      missingLinks: 0,
+    };
+  }
+
+  const result = await db.execute(sql`
+    SELECT
+      COUNT(*) AS totalUsers,
+      SUM(CASE WHEN tm.id IS NOT NULL THEN 1 ELSE 0 END) AS linkedUsers,
+      SUM(CASE WHEN tm.id IS NULL THEN 1 ELSE 0 END) AS missingLinks
+    FROM users u
+    LEFT JOIN tenant_memberships tm
+      ON tm.userId = u.id
+     AND tm.tenantId = ${tenantId}
+  `);
+  const rows = rowsFromExecuteResult(result);
+  return {
+    table: "tenant_memberships",
+    status: "preview" as const,
+    totalUsers: Number(rows?.[0]?.totalUsers || 0),
+    linkedUsers: Number(rows?.[0]?.linkedUsers || 0),
+    missingLinks: Number(rows?.[0]?.missingLinks || 0),
+  };
+}
+
+async function repairSingleTenantMemberships(db: any, tenantId: number) {
+  if (ENV.tenancyMode !== "single") {
+    return {
+      table: "tenant_memberships",
+      column: "tenantId",
+      status: "skipped-multi-tenant",
+      updated: 0,
+      nullRows: 0,
+      otherTenantRows: 0,
+    };
+  }
+
+  const preview = await tenantMembershipRepairPreview(db, tenantId);
+  if (preview.status === "missing-table") {
+    return {
+      table: "tenant_memberships",
+      column: "tenantId",
+      status: "missing-table",
+      updated: 0,
+      nullRows: 0,
+      otherTenantRows: 0,
+    };
+  }
+
+  const result = await db.execute(sql`
+    INSERT IGNORE INTO tenant_memberships
+      (tenantId, userId, role, isDefault, createdAt, updatedAt)
+    SELECT
+      ${tenantId},
+      u.id,
+      CASE
+        WHEN u.role = 'super_admin' THEN 'owner'
+        WHEN u.role = 'admin' THEN 'admin'
+        ELSE 'member'
+      END,
+      CASE
+        WHEN NOT EXISTS (
+          SELECT 1
+          FROM tenant_memberships tm_any
+          WHERE tm_any.userId = u.id
+        ) THEN 1
+        ELSE 0
+      END,
+      NOW(),
+      NOW()
+    FROM users u
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM tenant_memberships tm
+      WHERE tm.tenantId = ${tenantId}
+        AND tm.userId = u.id
+    )
+  `);
+
+  return {
+    table: "tenant_memberships",
+    column: "tenantId",
+    status: "created-links",
+    updated: affectedRowsFromExecuteResult(result),
+    nullRows: preview.missingLinks,
+    otherTenantRows: 0,
+  };
+}
+
 export const systemRouter = router({
   health: publicProcedure
     .input(
@@ -209,7 +366,8 @@ export const systemRouter = router({
       const exists = await tableExists(db, table);
       tables.push({ table, column: "appTenantId", exists, hasColumn: exists ? await columnExists(db, table, "appTenantId") : false });
     }
-    return { tenantId: ctx.tenant!.id, tenancyMode: ENV.tenancyMode, tables };
+    const memberships = await tenantMembershipRepairPreview(db, ctx.tenant!.id);
+    return { tenantId: ctx.tenant!.id, tenancyMode: ENV.tenancyMode, tables, memberships };
   }),
 
   repairTenantData: tenantAdminProcedure.mutation(async ({ ctx }) => {
@@ -218,16 +376,18 @@ export const systemRouter = router({
     const tenantId = ctx.tenant!.id;
     const results = [];
     for (const table of TENANT_ID_TABLES) {
-      results.push(await repairTableTenant(db, table, "tenantId", tenantId));
+      results.push(await safeRepairTableTenant(db, table, "tenantId", tenantId));
     }
     for (const table of APP_TENANT_ID_TABLES) {
-      results.push(await repairTableTenant(db, table, "appTenantId", tenantId));
+      results.push(await safeRepairTableTenant(db, table, "appTenantId", tenantId));
     }
+    results.push(await repairSingleTenantMemberships(db, tenantId));
     return {
       tenantId,
       tenancyMode: ENV.tenancyMode,
       updatedRows: results.reduce((sum, row) => sum + row.updated, 0),
       createdColumns: results.filter((row) => row.status === "created").length,
+      failedTables: results.filter((row) => row.status === "failed").length,
       results,
     };
   }),

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure, tenantAdminProcedure } from "./_core/trpc";
 import * as proposalDb from "./proposal-db";
 import * as db from "./db";
 import * as eclipseDb from "./eclipse-db";
@@ -15,25 +15,25 @@ const sectionSchema = z.object({
 
 export const proposalRouter = router({
   // ─── List proposals ─────────────────────────────────────────────────────────
-  list: protectedProcedure
+  list: tenantProcedure
     .input(z.object({
       status: z.string().optional(),
       clientId: z.number().optional(),
       search: z.string().optional(),
     }).optional())
-    .query(async ({ input }) => {
-      return proposalDb.listProposals(input);
+    .query(async ({ ctx, input }) => {
+      return proposalDb.listProposals(input, ctx.tenant.id);
     }),
 
   // ─── Get single proposal ────────────────────────────────────────────────────
-  get: protectedProcedure
+  get: tenantProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
-      return proposalDb.getProposalById(input.id);
+    .query(async ({ ctx, input }) => {
+      return proposalDb.getProposalById(input.id, ctx.tenant.id);
     }),
 
   // ─── Create proposal ────────────────────────────────────────────────────────
-  create: protectedProcedure
+  create: tenantProcedure
     .input(z.object({
       clientId: z.number(),
       sections: z.array(sectionSchema).optional(),
@@ -46,6 +46,7 @@ export const proposalRouter = router({
       const proposalNumber = await proposalDb.getNextProposalNumber();
       const result = await proposalDb.createProposal({
         proposalNumber,
+        tenantId: ctx.tenant.id,
         clientId: input.clientId,
         preparedBy: ctx.user.id,
         sections: input.sections || [],
@@ -64,7 +65,7 @@ export const proposalRouter = router({
     }),
 
   // ─── Update proposal ────────────────────────────────────────────────────────
-  update: protectedProcedure
+  update: tenantProcedure
     .input(z.object({
       id: z.number(),
       sections: z.array(sectionSchema).optional(),
@@ -121,7 +122,8 @@ export const proposalRouter = router({
         payload.otherCostAmount = otherCost;
         payload.otherCostLabel = "Other Cost";
       }
-      const result = await proposalDb.updateProposal(id, payload);
+      const result = await proposalDb.updateProposal(id, payload, ctx.tenant.id);
+      if (!result) throw new Error("Proposal not found");
       await proposalDb.logActivity({
         proposalId: id,
         action: "updated",
@@ -132,29 +134,29 @@ export const proposalRouter = router({
     }),
 
   // ─── Delete proposal ────────────────────────────────────────────────────────
-  delete: adminProcedure
+  delete: tenantAdminProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      await proposalDb.deleteProposal(input.id);
+      await proposalDb.deleteProposal(input.id, ctx.tenant!.id);
       return { success: true };
     }),
 
   // ─── Get active quotes for a client ─────────────────────────────────────────
-  clientQuotes: protectedProcedure
+  clientQuotes: tenantProcedure
     .input(z.object({ clientId: z.number() }))
-    .query(async ({ input }) => {
-      return proposalDb.getActiveQuotesForClient(input.clientId);
+    .query(async ({ ctx, input }) => {
+      return proposalDb.getActiveQuotesForClient(input.clientId, ctx.tenant.id);
     }),
 
   // ─── Get proposal activity log ─────────────────────────────────────────────
-  activity: protectedProcedure
+  activity: tenantProcedure
     .input(z.object({ proposalId: z.number() }))
-    .query(async ({ input }) => {
-      return proposalDb.getProposalActivity(input.proposalId);
+    .query(async ({ ctx, input }) => {
+      return proposalDb.getProposalActivity(input.proposalId, ctx.tenant.id);
     }),
 
   // ─── Mark as sent ───────────────────────────────────────────────────────────
-  markSent: protectedProcedure
+  markSent: tenantProcedure
     .input(z.object({
       id: z.number(),
       sentTo: z.string(),
@@ -162,7 +164,7 @@ export const proposalRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const now = new Date();
-      const proposal = await proposalDb.getProposalById(input.id);
+      const proposal = await proposalDb.getProposalById(input.id, ctx.tenant.id);
       if (!proposal) throw new Error("Proposal not found");
 
       const expiresAt = new Date(now.getTime() + (proposal.validityDays || 30) * 86400000);
@@ -173,11 +175,11 @@ export const proposalRouter = router({
         expiresAt,
         pdfUrl: input.pdfUrl,
         pdfGeneratedAt: now,
-      } as any);
+      } as any, ctx.tenant.id);
 
       // Sync section quote statuses
       const sections = (proposal.sections || []) as { type: string; quoteId: number }[];
-      await proposalDb.syncSectionStatuses(sections, "sent");
+      await proposalDb.syncSectionStatuses(sections, "sent", ctx.tenant.id);
 
       await proposalDb.logActivity({
         proposalId: input.id,
@@ -190,19 +192,19 @@ export const proposalRouter = router({
     }),
 
   // ─── Mark as accepted ───────────────────────────────────────────────────────
-  markAccepted: protectedProcedure
+  markAccepted: tenantProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const proposal = await proposalDb.getProposalById(input.id);
+      const proposal = await proposalDb.getProposalById(input.id, ctx.tenant.id);
       if (!proposal) throw new Error("Proposal not found");
 
       await proposalDb.updateProposal(input.id, {
         status: "accepted",
         signedAt: new Date(),
-      } as any);
+      } as any, ctx.tenant.id);
 
       const sections = (proposal.sections || []) as { type: string; quoteId: number }[];
-      await proposalDb.syncSectionStatuses(sections, "accepted");
+      await proposalDb.syncSectionStatuses(sections, "accepted", ctx.tenant.id);
 
       await proposalDb.logActivity({
         proposalId: input.id,
@@ -215,16 +217,16 @@ export const proposalRouter = router({
     }),
 
   // ─── Mark as declined ───────────────────────────────────────────────────────
-  markDeclined: protectedProcedure
+  markDeclined: tenantProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const proposal = await proposalDb.getProposalById(input.id);
+      const proposal = await proposalDb.getProposalById(input.id, ctx.tenant.id);
       if (!proposal) throw new Error("Proposal not found");
 
-      await proposalDb.updateProposal(input.id, { status: "declined" } as any);
+      await proposalDb.updateProposal(input.id, { status: "declined" } as any, ctx.tenant.id);
 
       const sections = (proposal.sections || []) as { type: string; quoteId: number }[];
-      await proposalDb.syncSectionStatuses(sections, "lost");
+      await proposalDb.syncSectionStatuses(sections, "lost", ctx.tenant.id);
 
       await proposalDb.logActivity({
         proposalId: input.id,
@@ -237,13 +239,14 @@ export const proposalRouter = router({
     }),
 
   // ─── Save PDF URL ───────────────────────────────────────────────────────────
-  savePdf: protectedProcedure
+  savePdf: tenantProcedure
     .input(z.object({ id: z.number(), pdfUrl: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      await proposalDb.updateProposal(input.id, {
+      const result = await proposalDb.updateProposal(input.id, {
         pdfUrl: input.pdfUrl,
         pdfGeneratedAt: new Date(),
-      } as any);
+      } as any, ctx.tenant.id);
+      if (!result) throw new Error("Proposal not found");
       await proposalDb.logActivity({
         proposalId: input.id,
         action: "pdf_generated",
@@ -254,28 +257,29 @@ export const proposalRouter = router({
     }),
 
   // ─── Get client info ────────────────────────────────────────────────────────
-  clientInfo: protectedProcedure
+  clientInfo: tenantProcedure
     .input(z.object({ clientId: z.number() }))
-    .query(async ({ input }) => {
-      return proposalDb.getClientInfo(input.clientId);
+    .query(async ({ ctx, input }) => {
+      return proposalDb.getClientInfo(input.clientId, ctx.tenant.id);
     }),
 
   // ─── Appendix Data (materials/units for PDF appendix pages) ─────────────────
-  appendixData: protectedProcedure
+  appendixData: tenantProcedure
     .input(z.object({
       sections: z.array(z.object({
         type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door", "security_screen"]),
         quoteId: z.number(),
       })),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const results: Record<string, Record<string, unknown>> = {};
       for (const section of input.sections) {
         const key = `${section.type}_${section.quoteId}`;
         if (section.type === "opq") {
-          const quote = await db.getQuoteById(section.quoteId);
+          const quote = await db.getQuoteById(section.quoteId, ctx.tenant.id);
+          if (!quote) continue;
           const components = await db.getComponentsByQuote(section.quoteId);
-          const items = await db.getQuoteItems(section.quoteId);
+          const items = await db.getQuoteItems(section.quoteId, ctx.tenant.id);
           const materials: Array<{ name: string; qty: number; unit: string; tab: string }> = [];
           for (const comp of (components || [])) {
             if (!comp.included) continue;
@@ -304,7 +308,8 @@ export const proposalRouter = router({
             specLength: quote?.specLength || null,
           };
         } else if (section.type === "eclipse") {
-          const quote = await eclipseDb.getEclipseQuoteById(section.quoteId);
+          const quote = await eclipseDb.getEclipseQuoteById(section.quoteId, ctx.tenant.id);
+          if (!quote) continue;
           const entries = await db.getEclipseByQuote(section.quoteId);
           // Safely parse units - may be JSON string, array, or null
           let rawUnits = quote?.units;
@@ -338,7 +343,8 @@ export const proposalRouter = router({
             totalSqm: quote?.totalSqm || null,
           };
         } else if (section.type === "deck") {
-          const quote = await deckDb.getDeckQuoteById(section.quoteId);
+          const quote = await deckDb.getDeckQuoteById(section.quoteId, ctx.tenant.id);
+          if (!quote) continue;
           results[key] = {
             boardType: quote?.deckingBrand || "",
             area: quote?.areaM2 || null,

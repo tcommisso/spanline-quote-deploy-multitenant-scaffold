@@ -14,6 +14,12 @@ import { toast } from "sonner";
 
 // ─── Price Adjustments Tab ──────────────────────────────────────────────────
 
+const DEFAULT_ADJUSTMENT_FORM = { effectiveDate: "", percentageIncrease: "", description: "" };
+const DEFAULT_COST_FORM = { category: "per_uom", name: "", description: "", cost: "", uom: "" };
+const DEFAULT_OPTION_FORM = { category: "door_handle", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "" };
+const DEFAULT_GLASS_FORM = { glassType: "", description: "", cost: "", uom: "m2" };
+const DEFAULT_COLOUR_FORM = { name: "", hexCode: "#000000", colorbondName: "", surchargePercent: "0" };
+
 function PricingSettingsTab() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.securityScreens.pricingSettings.get.useQuery();
@@ -66,14 +72,20 @@ function PriceAdjustmentsTab() {
   const utils = trpc.useUtils();
   const { data: adjustments = [], isLoading } = trpc.securityScreens.adjustments.list.useQuery();
   const createMutation = trpc.securityScreens.adjustments.create.useMutation({
-    onSuccess: () => { utils.securityScreens.adjustments.list.invalidate(); setOpen(false); toast.success("Adjustment added"); },
+    onSuccess: () => { utils.securityScreens.adjustments.list.invalidate(); setForm(DEFAULT_ADJUSTMENT_FORM); setOpen(false); toast.success("Adjustment added"); },
+    onError: (e) => toast.error(e.message),
   });
   const deleteMutation = trpc.securityScreens.adjustments.delete.useMutation({
     onSuccess: () => { utils.securityScreens.adjustments.list.invalidate(); toast.success("Adjustment removed"); },
+    onError: (e) => toast.error(e.message),
   });
 
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ effectiveDate: "", percentageIncrease: "", description: "" });
+  const [form, setForm] = useState(DEFAULT_ADJUSTMENT_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_ADJUSTMENT_FORM);
+    setOpen(nextOpen);
+  };
 
   const now = new Date();
   let cumulativeFactor = 1.0;
@@ -93,7 +105,7 @@ function PriceAdjustmentsTab() {
             <span className="font-mono font-bold text-primary">{(cumulativeFactor * 100 - 100).toFixed(2)}%</span> (×{cumulativeFactor.toFixed(4)})
           </p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild>
             <Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Adjustment</Button>
           </DialogTrigger>
@@ -103,7 +115,7 @@ function PriceAdjustmentsTab() {
               <div><Label>Effective Date</Label><Input type="date" value={form.effectiveDate} onChange={(e) => setForm({ ...form, effectiveDate: e.target.value })} /></div>
               <div><Label>Percentage Increase (%)</Label><Input type="number" step="0.01" value={form.percentageIncrease} onChange={(e) => setForm({ ...form, percentageIncrease: e.target.value })} placeholder="e.g. 5.0" /></div>
               <div><Label>Description (optional)</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="e.g. Annual CPI increase" /></div>
-              <Button className="w-full" disabled={!form.effectiveDate || !form.percentageIncrease} onClick={() => createMutation.mutate({ effectiveDate: form.effectiveDate, percentageIncrease: parseFloat(form.percentageIncrease), description: form.description || undefined })}>Save</Button>
+              <Button className="w-full" disabled={!form.effectiveDate || !form.percentageIncrease || createMutation.isPending} onClick={() => createMutation.mutate({ effectiveDate: form.effectiveDate, percentageIncrease: parseFloat(form.percentageIncrease), description: form.description || undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -145,19 +157,25 @@ function CostAdditionsTab() {
     selectedCategory !== "all" ? { category: selectedCategory } : undefined
   );
   const createMutation = trpc.securityScreens.costAdditions.create.useMutation({
-    onSuccess: () => { utils.securityScreens.costAdditions.list.invalidate(); setOpen(false); toast.success("Cost addition created"); },
+    onSuccess: () => { utils.securityScreens.costAdditions.list.invalidate(); setForm(DEFAULT_COST_FORM); setOpen(false); toast.success("Cost addition created"); },
+    onError: (e) => toast.error(e.message),
   });
   const deleteMutation = trpc.securityScreens.costAdditions.delete.useMutation({
     onSuccess: () => { utils.securityScreens.costAdditions.list.invalidate(); toast.success("Cost removed"); },
+    onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ category: "per_uom", name: "", description: "", cost: "", uom: "" });
+  const [form, setForm] = useState(DEFAULT_COST_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_COST_FORM);
+    setOpen(nextOpen);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div><h3 className="text-lg font-semibold">Cost Additions</h3><p className="text-sm text-muted-foreground">Additional costs applied to quotes</p></div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Cost</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>Add Cost Addition</DialogTitle></DialogHeader>
@@ -169,7 +187,7 @@ function CostAdditionsTab() {
                 <div><Label>Cost ($)</Label><Input type="number" step="0.01" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} /></div>
                 <div><Label>UOM</Label><Input value={form.uom} onChange={(e) => setForm({ ...form, uom: e.target.value })} placeholder="e.g. Ea, M², LM" /></div>
               </div>
-              <Button className="w-full" disabled={!form.name || !form.cost} onClick={() => createMutation.mutate({ category: form.category, name: form.name, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom || undefined })}>Save</Button>
+              <Button className="w-full" disabled={!form.name || !form.cost || createMutation.isPending} onClick={() => createMutation.mutate({ category: form.category, name: form.name, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom || undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -215,19 +233,25 @@ function ProductOptionsTab() {
     selectedCategory !== "all" ? { category: selectedCategory } : undefined
   );
   const createMutation = trpc.securityScreens.productOptions.create.useMutation({
-    onSuccess: () => { utils.securityScreens.productOptions.list.invalidate(); setOpen(false); toast.success("Option created"); },
+    onSuccess: () => { utils.securityScreens.productOptions.list.invalidate(); setForm(DEFAULT_OPTION_FORM); setOpen(false); toast.success("Option created"); },
+    onError: (e) => toast.error(e.message),
   });
   const deleteMutation = trpc.securityScreens.productOptions.delete.useMutation({
     onSuccess: () => { utils.securityScreens.productOptions.list.invalidate(); toast.success("Option removed"); },
+    onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ category: "door_handle", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "" });
+  const [form, setForm] = useState(DEFAULT_OPTION_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_OPTION_FORM);
+    setOpen(nextOpen);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div><h3 className="text-lg font-semibold">Product Options</h3><p className="text-sm text-muted-foreground">Door handles, closers, buildout frames, and other accessories</p></div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Option</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>Add Product Option</DialogTitle></DialogHeader>
@@ -243,7 +267,7 @@ function ProductOptionsTab() {
                 <div><Label>Cost Price ($)</Label><Input type="number" step="0.01" value={form.costPrice} onChange={(e) => setForm({ ...form, costPrice: e.target.value })} /></div>
                 <div><Label>Sell Price ($)</Label><Input type="number" step="0.01" value={form.sellPrice} onChange={(e) => setForm({ ...form, sellPrice: e.target.value })} /></div>
               </div>
-              <Button className="w-full" disabled={!form.name || !form.costPrice || !form.sellPrice} onClick={() => createMutation.mutate({ category: form.category, orderCode: form.orderCode || undefined, name: form.name, description: form.description || undefined, brand: form.brand || undefined, costPrice: parseFloat(form.costPrice), sellPrice: parseFloat(form.sellPrice) })}>Save</Button>
+              <Button className="w-full" disabled={!form.name || !form.costPrice || !form.sellPrice || createMutation.isPending} onClick={() => createMutation.mutate({ category: form.category, orderCode: form.orderCode || undefined, name: form.name, description: form.description || undefined, brand: form.brand || undefined, costPrice: parseFloat(form.costPrice), sellPrice: parseFloat(form.sellPrice) })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -285,19 +309,25 @@ function GlassInfillTab() {
   const utils = trpc.useUtils();
   const { data: glasses = [], isLoading } = trpc.securityScreens.glassInfill.list.useQuery();
   const createMutation = trpc.securityScreens.glassInfill.create.useMutation({
-    onSuccess: () => { utils.securityScreens.glassInfill.list.invalidate(); setOpen(false); toast.success("Glass type added"); },
+    onSuccess: () => { utils.securityScreens.glassInfill.list.invalidate(); setForm(DEFAULT_GLASS_FORM); setOpen(false); toast.success("Glass type added"); },
+    onError: (e) => toast.error(e.message),
   });
   const deleteMutation = trpc.securityScreens.glassInfill.delete.useMutation({
     onSuccess: () => { utils.securityScreens.glassInfill.list.invalidate(); toast.success("Glass type removed"); },
+    onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ glassType: "", description: "", cost: "", uom: "m2" });
+  const [form, setForm] = useState(DEFAULT_GLASS_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_GLASS_FORM);
+    setOpen(nextOpen);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div><h3 className="text-lg font-semibold">Glass Infill Options</h3><p className="text-sm text-muted-foreground">Glass types available for security screen infill panels</p></div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Glass Type</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>Add Glass Infill</DialogTitle></DialogHeader>
@@ -308,7 +338,7 @@ function GlassInfillTab() {
                 <div><Label>Cost ($)</Label><Input type="number" step="0.01" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} /></div>
                 <div><Label>UOM</Label><Input value={form.uom} onChange={(e) => setForm({ ...form, uom: e.target.value })} placeholder="e.g. m2, ea" /></div>
               </div>
-              <Button className="w-full" disabled={!form.glassType || !form.cost} onClick={() => createMutation.mutate({ glassType: form.glassType, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom })}>Save</Button>
+              <Button className="w-full" disabled={!form.glassType || !form.cost || createMutation.isPending} onClick={() => createMutation.mutate({ glassType: form.glassType, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -339,19 +369,25 @@ function ColoursTab() {
   const utils = trpc.useUtils();
   const { data: colours = [], isLoading } = trpc.securityScreens.colours.list.useQuery();
   const createMutation = trpc.securityScreens.colours.create.useMutation({
-    onSuccess: () => { utils.securityScreens.colours.list.invalidate(); setOpen(false); toast.success("Colour added"); },
+    onSuccess: () => { utils.securityScreens.colours.list.invalidate(); setForm(DEFAULT_COLOUR_FORM); setOpen(false); toast.success("Colour added"); },
+    onError: (e) => toast.error(e.message),
   });
   const deleteMutation = trpc.securityScreens.colours.delete.useMutation({
     onSuccess: () => { utils.securityScreens.colours.list.invalidate(); toast.success("Colour removed"); },
+    onError: (e) => toast.error(e.message),
   });
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", hexCode: "#000000", colorbondName: "", surchargePercent: "0" });
+  const [form, setForm] = useState(DEFAULT_COLOUR_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_COLOUR_FORM);
+    setOpen(nextOpen);
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div><h3 className="text-lg font-semibold">Colours</h3><p className="text-sm text-muted-foreground">Available colour options with optional surcharge percentage</p></div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Colour</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>Add Colour</DialogTitle></DialogHeader>
@@ -362,7 +398,7 @@ function ColoursTab() {
                 <div><Label>Colorbond Name (optional)</Label><Input value={form.colorbondName} onChange={(e) => setForm({ ...form, colorbondName: e.target.value })} /></div>
               </div>
               <div><Label>Surcharge % (0 for standard colours)</Label><Input type="number" step="0.01" value={form.surchargePercent} onChange={(e) => setForm({ ...form, surchargePercent: e.target.value })} /></div>
-              <Button className="w-full" disabled={!form.name || !form.hexCode} onClick={() => createMutation.mutate({ name: form.name, hexCode: form.hexCode, colorbondName: form.colorbondName || undefined, surchargePercent: parseFloat(form.surchargePercent) || 0 })}>Save</Button>
+              <Button className="w-full" disabled={!form.name || !form.hexCode || createMutation.isPending} onClick={() => createMutation.mutate({ name: form.name, hexCode: form.hexCode, colorbondName: form.colorbondName || undefined, surchargePercent: parseFloat(form.surchargePercent) || 0 })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>

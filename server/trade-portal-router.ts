@@ -43,6 +43,16 @@ function tradePortalAccessConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function tradePortalTenantId(ctx: any) {
+  return ctx.tradeAccess?.tenantId ?? tenantIdFromContext(ctx);
+}
+
+function tradePortalCmsConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, portalNews.tenantId, tradePortalTenantId(ctx));
+  return conditions;
+}
+
 function requireTradeAccessVisible(
   ctx: any,
   access: typeof tradePortalAccess.$inferSelect | null | undefined,
@@ -782,29 +792,31 @@ export const tradePortalRouter = router({
 
   // ─── News ───────────────────────────────────────────────────────────────────
 
-  getNews: protectedTradePortalProcedure.query(async () => {
+  getNews: protectedTradePortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     return db.select()
       .from(portalNews)
-      .where(and(
+      .where(and(...tradePortalCmsConditions(
+        ctx,
         eq(portalNews.isPublished, true),
         or(eq(portalNews.portalType, "trade"), eq(portalNews.portalType, "both"))
-      ))
+      )))
       .orderBy(desc(portalNews.publishedAt))
       .limit(20);
   }),
 
   getNewsArticle: protectedTradePortalProcedure
     .input(z.object({ slug: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const [article] = await db.select()
         .from(portalNews)
-        .where(and(
+        .where(and(...tradePortalCmsConditions(
+          ctx,
           eq(portalNews.slug, input.slug),
           eq(portalNews.isPublished, true),
           or(eq(portalNews.portalType, "trade"), eq(portalNews.portalType, "both"))
-        ))
+        )))
         .limit(1);
       return article || null;
     }),
@@ -1012,15 +1024,17 @@ export const tradePortalRouter = router({
       .from(portalNews)
       .where(
         ctx.tradeAccess.lastViewedNewsAt
-          ? and(
+          ? and(...tradePortalCmsConditions(
+              ctx,
               eq(portalNews.isPublished, true),
               or(eq(portalNews.portalType, "trade"), eq(portalNews.portalType, "both")),
               gt(portalNews.publishedAt, ctx.tradeAccess.lastViewedNewsAt)
-            )
-          : and(
+            ))
+          : and(...tradePortalCmsConditions(
+              ctx,
               eq(portalNews.isPublished, true),
               or(eq(portalNews.portalType, "trade"), eq(portalNews.portalType, "both"))
-            )
+            ))
       );
     return { count: unreadMessages, news: newsArticles.length };
   }),

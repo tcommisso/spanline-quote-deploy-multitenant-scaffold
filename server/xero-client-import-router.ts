@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { eq, isNull, and, isNotNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { protectedProcedure, router } from "./_core/trpc";
+import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import {
   constructionJobs,
@@ -15,7 +15,8 @@ import {
   getValidAccessToken,
   type XeroContact,
 } from "./xero-client";
-import { deriveBranchFromProjectName, extractPostcodeFromContact } from "./xero-gl-helpers";
+import { deriveBranchFromProjectName } from "./xero-gl-helpers";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 /**
  * Import Xero clients (orphan construction jobs with no leadId) into CRM Leads
@@ -24,12 +25,14 @@ import { deriveBranchFromProjectName, extractPostcodeFromContact } from "./xero-
  */
 
 // ─── Helper: resolve branchId from branch name ──────────────────────────────
-async function resolveBranchId(db: any, branchName: string): Promise<number | undefined> {
+async function resolveBranchId(db: any, branchName: string, tenantId?: number | null): Promise<number | undefined> {
   if (!branchName) return undefined;
+  const conditions: any[] = [eq(branches.name, branchName)];
+  appendTenantScope(conditions, branches.tenantId, tenantId);
   const [branch] = await db
     .select({ id: branches.id })
     .from(branches)
-    .where(eq(branches.name, branchName))
+    .where(and(...conditions))
     .limit(1);
   return branch?.id ?? undefined;
 }
@@ -111,15 +114,18 @@ export const xeroClientImportRouter = router({
   /**
    * Get stats on how many orphan jobs exist (no leadId)
    */
-  getOrphanStats: protectedProcedure.query(async () => {
+  getOrphanStats: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
+    const tenantId = tenantIdFromContext(ctx);
+    const orphanConditions: any[] = [isNull(constructionJobs.leadId)];
+    appendTenantScope(orphanConditions, constructionJobs.tenantId, tenantId);
 
     // First get count efficiently
     const [countResult] = await db
       .select({ count: sql<number>`COUNT(*)` })
       .from(constructionJobs)
-      .where(isNull(constructionJobs.leadId));
+      .where(and(...orphanConditions));
 
     const orphanCount = Number(countResult?.count || 0);
 
@@ -134,7 +140,7 @@ export const xeroClientImportRouter = router({
           status: constructionJobs.status,
         })
         .from(constructionJobs)
-        .where(isNull(constructionJobs.leadId))
+        .where(and(...orphanConditions))
         .limit(50);
     }
 
@@ -152,6 +158,7 @@ export const xeroClientImportRouter = router({
   bulkImportOrphans: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new Error("Database not available");
+    const tenantId = tenantIdFromContext(ctx);
 
     // Ensure Xero connection is available for fetching contact details
     const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
@@ -169,7 +176,14 @@ export const xeroClientImportRouter = router({
       })
       .from(constructionJobs)
       .leftJoin(xeroProjectMappings, eq(xeroProjectMappings.jobId, constructionJobs.id))
-      .where(isNull(constructionJobs.leadId));
+      .where(and(
+        isNull(constructionJobs.leadId),
+        ...(() => {
+          const conditions: any[] = [];
+          appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
+          return conditions;
+        })(),
+      ));
 
     if (orphanJobs.length === 0) {
       return { imported: 0, message: "No orphan jobs found — all jobs already have a linked lead." };
@@ -222,15 +236,16 @@ export const xeroClientImportRouter = router({
         // Derive branch from Xero project name
         if (job.xeroProjectName) {
           const branchName = deriveBranchFromProjectName(job.xeroProjectName);
-          branchId = await resolveBranchId(db, branchName);
+          branchId = await resolveBranchId(db, branchName, tenantId);
           constructionJobNumber = job.xeroProjectName;
         }
 
         // Generate lead number
-        const leadNumber = await crmDb.getNextLeadNumber();
+        const leadNumber = await crmDb.getNextLeadNumber(tenantId);
 
         // Create the lead with full contact details
         const result = await crmDb.createLead({
+          tenantId,
           leadNumber,
           contactFirstName: firstName,
           contactLastName: lastName,
@@ -254,7 +269,11 @@ export const xeroClientImportRouter = router({
         await db
           .update(constructionJobs)
           .set({ leadId: result.id })
-          .where(eq(constructionJobs.id, job.id));
+          .where(and(eq(constructionJobs.id, job.id), ...(() => {
+            const conditions: any[] = [];
+            appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
+            return conditions;
+          })()));
 
         imported++;
       } catch (err: any) {
@@ -280,6 +299,7 @@ export const xeroClientImportRouter = router({
   backfillContactDetails: protectedProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+    const tenantId = tenantIdFromContext(ctx);
 
     const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "construction" });
     if (!auth)
@@ -308,7 +328,13 @@ export const xeroClientImportRouter = router({
         and(
           eq(crmLeads.leadSource, "Xero Import"),
           isNotNull(xeroProjectMappings.xeroContactId),
-          sql`(${crmLeads.contactEmail} IS NULL OR ${crmLeads.contactPhone} IS NULL OR ${crmLeads.contactAddress} IS NULL OR ${crmLeads.clientNumber} IS NULL OR ${crmLeads.postcode} IS NULL OR ${crmLeads.branchId} IS NULL OR ${crmLeads.constructionJobNumber} IS NULL)`
+          sql`(${crmLeads.contactEmail} IS NULL OR ${crmLeads.contactPhone} IS NULL OR ${crmLeads.contactAddress} IS NULL OR ${crmLeads.clientNumber} IS NULL OR ${crmLeads.postcode} IS NULL OR ${crmLeads.branchId} IS NULL OR ${crmLeads.constructionJobNumber} IS NULL)`,
+          ...(() => {
+            const conditions: any[] = [];
+            appendTenantScope(conditions, crmLeads.tenantId, tenantId);
+            appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
+            return conditions;
+          })(),
         )
       );
 
@@ -347,7 +373,7 @@ export const xeroClientImportRouter = router({
         if (!lead.leadPostcode && details?.postcode) updates.postcode = details.postcode;
         if (!lead.leadBranchId && lead.xeroProjectName) {
           const branchName = deriveBranchFromProjectName(lead.xeroProjectName);
-          const branchId = await resolveBranchId(db, branchName);
+          const branchId = await resolveBranchId(db, branchName, tenantId);
           if (branchId) updates.branchId = branchId;
         }
         if (!lead.leadJobNumber && lead.xeroProjectName) {
@@ -366,7 +392,11 @@ export const xeroClientImportRouter = router({
         await db
           .update(crmLeads)
           .set(updates)
-          .where(eq(crmLeads.id, lead.leadId));
+          .where(and(eq(crmLeads.id, lead.leadId), ...(() => {
+            const conditions: any[] = [];
+            appendTenantScope(conditions, crmLeads.tenantId, tenantId);
+            return conditions;
+          })()));
 
         updated++;
       } catch (err: any) {
@@ -403,11 +433,12 @@ export async function ensureLeadForJob(
 
   // Check if job already has a lead
   const [job] = await db
-    .select({ leadId: constructionJobs.leadId })
+    .select({ leadId: constructionJobs.leadId, tenantId: constructionJobs.tenantId })
     .from(constructionJobs)
     .where(eq(constructionJobs.id, jobId));
 
   if (job?.leadId) return job.leadId;
+  const tenantId = job?.tenantId ?? null;
 
   try {
     // Parse client name
@@ -415,9 +446,10 @@ export async function ensureLeadForJob(
     const firstName = nameParts[0] || "Unknown";
     const lastName = nameParts.slice(1).join(" ") || "";
 
-    const leadNumber = await crmDb.getNextLeadNumber();
+    const leadNumber = await crmDb.getNextLeadNumber(tenantId);
 
     const result = await crmDb.createLead({
+      tenantId,
       leadNumber,
       contactFirstName: firstName,
       contactLastName: lastName,
@@ -435,7 +467,11 @@ export async function ensureLeadForJob(
     await db
       .update(constructionJobs)
       .set({ leadId: result.id })
-      .where(eq(constructionJobs.id, jobId));
+      .where(and(eq(constructionJobs.id, jobId), ...(() => {
+        const conditions: any[] = [];
+        appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
+        return conditions;
+      })()));
 
     return result.id;
   } catch (err) {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,8 +7,25 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Unlink, BookPlus, Package } from "lucide-react";
+import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Package } from "lucide-react";
 import { toast } from "sonner";
+
+function unitTypeFromUom(uom?: string) {
+  return /\b(lm|linear|metre|meter|m)\b/i.test(uom || "") ? "lm" : "unit";
+}
+
+function stockDescriptionFromProduct(product: any) {
+  return [
+    product.description,
+    product.colour ? `Colour: ${product.colour}` : "",
+    product.subGroup ? `Sub-group: ${product.subGroup}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function textOrNull(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
 
 export default function InventoryStockItems() {
   const [search, setSearch] = useState("");
@@ -43,7 +60,7 @@ export default function InventoryStockItems() {
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Warehouse className="h-6 w-6" /> Inventory
           </h1>
-          <p className="text-muted-foreground text-sm mt-1">Stock items linked to Construction Data (source of truth)</p>
+          <p className="text-muted-foreground text-sm mt-1">Stock items linked to Manufacturing Data (source of truth)</p>
         </div>
         <Button variant="brand" onClick={() => { setEditingItem(null); setShowDialog(true); }}>
           <Plus className="h-4 w-4 mr-1" /> Add Stock Item
@@ -101,7 +118,6 @@ export default function InventoryStockItems() {
                 <th className="text-right p-2 font-medium">On Hand</th>
                 <th className="text-right p-2 font-medium">Reorder Qty</th>
                 <th className="text-left p-2 font-medium">Condition</th>
-                <th className="text-left p-2 font-medium">Catalogue</th>
                 <th className="text-left p-2 font-medium">Branch</th>
                 <th className="p-2"></th>
               </tr>
@@ -126,17 +142,6 @@ export default function InventoryStockItems() {
                         {item.conditionIndicator === "off_cut" ? "Off Cut" : item.conditionIndicator}
                       </Badge>
                     </td>
-                    <td className="p-2">
-                      {(item as any).catalogueItemId ? (
-                        <Badge variant="outline" className="text-xs text-green-600 border-green-300">
-                          <Link2 className="h-3 w-3 mr-1" /> Linked
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-xs text-muted-foreground">
-                          Unlinked
-                        </Badge>
-                      )}
-                    </td>
                     <td className="p-2 text-muted-foreground text-xs">
                       {branches?.find(b => b.id === item.branchId)?.name || "-"}
                     </td>
@@ -145,7 +150,7 @@ export default function InventoryStockItems() {
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditingItem(item); setShowDialog(true); }}>
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Link to Catalogue" onClick={() => { setLinkingItem(item); setShowLinkDialog(true); }}>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" title="Refresh from Manufacturing Data" onClick={() => { setLinkingItem(item); setShowLinkDialog(true); }}>
                           <Link2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
@@ -158,13 +163,21 @@ export default function InventoryStockItems() {
         </div>
       )}
 
-      <StockItemDialog open={showDialog} onOpenChange={setShowDialog} item={editingItem} branches={branches || []} categories={categories || []} />
-      <CatalogueLinkDialog open={showLinkDialog} onOpenChange={setShowLinkDialog} stockItem={linkingItem} />
+      <StockItemDialog
+        open={showDialog}
+        onOpenChange={(nextOpen) => {
+          setShowDialog(nextOpen);
+          if (!nextOpen) setEditingItem(null);
+        }}
+        item={editingItem}
+        branches={branches || []}
+      />
+      <ManufacturingProductLinkDialog open={showLinkDialog} onOpenChange={setShowLinkDialog} stockItem={linkingItem} />
     </div>
   );
 }
 
-function StockItemDialog({ open, onOpenChange, item, branches, categories }: { open: boolean; onOpenChange: (v: boolean) => void; item: any; branches: any[]; categories: string[] }) {
+function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean; onOpenChange: (v: boolean) => void; item: any; branches: any[] }) {
   const [code, setCode] = useState(item?.code || "");
   const [name, setName] = useState(item?.name || "");
   const [category, setCategory] = useState(item?.category || "general");
@@ -177,42 +190,83 @@ function StockItemDialog({ open, onOpenChange, item, branches, categories }: { o
   const [description, setDescription] = useState(item?.description || "");
   const [supplier, setSupplier] = useState(item?.supplier || "");
   const [costPrice, setCostPrice] = useState(item?.costPrice || "");
+  const [productSearch, setProductSearch] = useState("");
   const utils = trpc.useUtils();
 
+  const trimmedProductSearch = productSearch.trim();
+  const { data: manufacturingProducts, isLoading: productsLoading } = trpc.manufacturingData.search.useQuery(
+    { query: trimmedProductSearch, limit: 8 },
+    { enabled: open && trimmedProductSearch.length >= 2 }
+  );
+
+  const resetForm = (sourceItem?: any) => {
+    setCode(sourceItem?.code || "");
+    setName(sourceItem?.name || "");
+    setCategory(sourceItem?.category || "general");
+    setUnit(sourceItem?.unit || "EA");
+    setUnitType(sourceItem?.unitType || "unit");
+    setReorderQty(sourceItem?.reorderQty || "");
+    setMinStockLevel(sourceItem?.minStockLevel || "");
+    setBranchId(sourceItem?.branchId ? String(sourceItem.branchId) : "");
+    setConditionIndicator(sourceItem?.conditionIndicator || "new");
+    setDescription(sourceItem?.description || "");
+    setSupplier(sourceItem?.supplier || "");
+    setCostPrice(sourceItem?.costPrice || "");
+    setProductSearch("");
+  };
+
+  useEffect(() => {
+    if (open) resetForm(item);
+  }, [open, item?.id]);
+
   const create = trpc.inventory.stockItems.create.useMutation({
-    onSuccess: () => { utils.inventory.stockItems.list.invalidate(); onOpenChange(false); toast.success("Stock item created"); },
+    onSuccess: async () => {
+      await Promise.all([
+        utils.inventory.stockItems.list.invalidate(),
+        utils.inventory.stockItems.categories.invalidate(),
+        utils.inventory.reports.onHandByCategory.invalidate(),
+      ]);
+      resetForm();
+      onOpenChange(false);
+      toast.success("Stock item created");
+    },
     onError: (e) => toast.error(e.message),
   });
   const update = trpc.inventory.stockItems.update.useMutation({
-    onSuccess: () => { utils.inventory.stockItems.list.invalidate(); onOpenChange(false); toast.success("Stock item updated"); },
+    onSuccess: async () => {
+      await Promise.all([
+        utils.inventory.stockItems.list.invalidate(),
+        utils.inventory.stockItems.categories.invalidate(),
+        utils.inventory.reports.onHandByCategory.invalidate(),
+      ]);
+      resetForm();
+      onOpenChange(false);
+      toast.success("Stock item updated");
+    },
     onError: (e) => toast.error(e.message),
   });
 
   const handleOpen = (v: boolean) => {
-    if (v && item) {
-      setCode(item.code); setName(item.name); setCategory(item.category); setUnit(item.unit);
-      setUnitType(item.unitType); setReorderQty(item.reorderQty || ""); setMinStockLevel(item.minStockLevel || "");
-      setBranchId(item.branchId ? String(item.branchId) : ""); setConditionIndicator(item.conditionIndicator);
-      setDescription(item.description || ""); setSupplier(item.supplier || ""); setCostPrice(item.costPrice || "");
-    } else if (v && !item) {
-      setCode(""); setName(""); setCategory("general"); setUnit("EA"); setUnitType("unit");
-      setReorderQty(""); setMinStockLevel(""); setBranchId(""); setConditionIndicator("new");
-      setDescription(""); setSupplier(""); setCostPrice("");
-    }
+    if (v) resetForm(item);
+    if (!v) resetForm();
     onOpenChange(v);
   };
 
   const handleSubmit = () => {
     if (!code.trim() || !name.trim()) return;
     const payload = {
-      code, name, category, unit, unitType: unitType as "unit" | "lm",
-      reorderQty: reorderQty || undefined,
-      minStockLevel: minStockLevel || undefined,
-      branchId: branchId ? Number(branchId) : undefined,
+      code: code.trim(),
+      name: name.trim(),
+      category: category.trim() || "general",
+      unit: unit.trim() || "EA",
+      unitType: unitType as "unit" | "lm",
+      reorderQty: textOrNull(reorderQty),
+      minStockLevel: textOrNull(minStockLevel),
+      branchId: branchId ? Number(branchId) : null,
       conditionIndicator: conditionIndicator as "new" | "damaged" | "off_cut",
-      description: description || undefined,
-      supplier: supplier || undefined,
-      costPrice: costPrice || undefined,
+      description: textOrNull(description),
+      supplier: textOrNull(supplier),
+      costPrice: textOrNull(costPrice),
     };
     if (item) {
       update.mutate({ id: item.id, ...payload });
@@ -221,11 +275,70 @@ function StockItemDialog({ open, onOpenChange, item, branches, categories }: { o
     }
   };
 
+  const applyManufacturingProduct = (product: any) => {
+    setCode(product.sku || "");
+    setName(product.description || "");
+    setCategory(product.category || product.subGroup || "general");
+    setUnit(product.uom || "EA");
+    setUnitType(unitTypeFromUom(product.uom));
+    setCostPrice(product.unitCost ? String(product.unitCost) : "");
+    setSupplier(product.supplier || "");
+    setDescription(stockDescriptionFromProduct(product));
+    setProductSearch("");
+    toast.success("Stock item details filled from Manufacturing Data");
+  };
+
   return (
     <Dialog open={open} onOpenChange={handleOpen}>
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader><DialogTitle>{item ? "Edit Stock Item" : "Add Stock Item"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
+          <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <Package className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label>Source from Manufacturing Data</Label>
+                <p className="text-xs text-muted-foreground">Search by code, description, category, sub-group, or colour. You can still enter a custom item manually.</p>
+              </div>
+            </div>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={productSearch}
+                onChange={(e) => setProductSearch(e.target.value)}
+                placeholder="Search manufacturing products..."
+                className="pl-8"
+              />
+            </div>
+            {trimmedProductSearch.length >= 2 && (
+              <div className="max-h-48 overflow-y-auto rounded-md border bg-background">
+                {productsLoading ? (
+                  <div className="p-3 text-sm text-muted-foreground">Searching...</div>
+                ) : !manufacturingProducts?.length ? (
+                  <div className="p-3 text-sm text-muted-foreground">No manufacturing products found. Enter the stock item manually.</div>
+                ) : (
+                  manufacturingProducts.map((product: any) => (
+                    <button
+                      key={product.id}
+                      type="button"
+                      onClick={() => applyManufacturingProduct(product)}
+                      className="w-full border-b p-3 text-left text-sm hover:bg-muted/40 last:border-b-0"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium">{product.description}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {product.sku || "No code"}{product.colour ? ` · ${product.colour}` : ""}{product.uom ? ` · ${product.uom}` : ""}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="shrink-0 text-xs">{product.category || "Uncategorised"}</Badge>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <div><Label>Code *</Label><Input value={code} onChange={e => setCode(e.target.value)} placeholder="e.g. BEAM-001" /></div>
             <div><Label>Name *</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="Item name" /></div>
@@ -275,9 +388,9 @@ function StockItemDialog({ open, onOpenChange, item, branches, categories }: { o
           <div><Label>Description</Label><Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} /></div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => handleOpen(false)}>Cancel</Button>
           <Button onClick={handleSubmit} disabled={create.isPending || update.isPending || !code.trim() || !name.trim()}>
-            {item ? "Update" : "Create"}
+            {create.isPending || update.isPending ? "Saving..." : item ? "Update" : "Create"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -285,41 +398,52 @@ function StockItemDialog({ open, onOpenChange, item, branches, categories }: { o
   );
 }
 
-// ─── Catalogue Link Dialog ─────────────────────────────────────────────────
-function CatalogueLinkDialog({ open, onOpenChange, stockItem }: { open: boolean; onOpenChange: (v: boolean) => void; stockItem: any }) {
-  const [catSearch, setCatSearch] = useState("");
-  const [showAddForm, setShowAddForm] = useState(false);
+// ─── Manufacturing Product Link Dialog ─────────────────────────────────────
+function ManufacturingProductLinkDialog({ open, onOpenChange, stockItem }: { open: boolean; onOpenChange: (v: boolean) => void; stockItem: any }) {
+  const [productSearch, setProductSearch] = useState("");
   const utils = trpc.useUtils();
+  const trimmedProductSearch = productSearch.trim();
 
-  const stableQuery = useMemo(() => catSearch, [catSearch]);
-  const { data: catResults, isLoading: catLoading } = trpc.inventory.catalogue.search.useQuery(
-    { query: stableQuery },
-    { enabled: stableQuery.length >= 2 }
+  const { data: manufacturingProducts, isLoading: productsLoading } = trpc.manufacturingData.search.useQuery(
+    { query: trimmedProductSearch, limit: 12 },
+    { enabled: open && trimmedProductSearch.length >= 2 }
   );
 
-  const { data: linkedItem } = trpc.inventory.catalogue.getLinked.useQuery(
-    { stockItemId: stockItem?.id },
-    { enabled: !!stockItem?.id }
-  );
-
-  const linkMutation = trpc.inventory.catalogue.linkItem.useMutation({
-    onSuccess: () => {
-      utils.inventory.stockItems.list.invalidate();
-      utils.inventory.catalogue.getLinked.invalidate();
-      toast.success("Linked to catalogue item");
+  const updateMutation = trpc.inventory.stockItems.update.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.inventory.stockItems.list.invalidate(),
+        utils.inventory.stockItems.categories.invalidate(),
+        utils.inventory.reports.onHandByCategory.invalidate(),
+      ]);
+      toast.success("Stock item refreshed from Manufacturing Data");
       onOpenChange(false);
     },
     onError: (e) => toast.error(e.message),
   });
 
-  const unlinkMutation = trpc.inventory.catalogue.unlinkItem.useMutation({
-    onSuccess: () => {
-      utils.inventory.stockItems.list.invalidate();
-      utils.inventory.catalogue.getLinked.invalidate();
-      toast.success("Unlinked from catalogue");
-    },
-    onError: (e) => toast.error(e.message),
-  });
+  useEffect(() => {
+    if (open && stockItem) {
+      setProductSearch([stockItem.code, stockItem.name].filter(Boolean).join(" "));
+    }
+    if (!open) setProductSearch("");
+  }, [open, stockItem?.id]);
+
+  const refreshFromProduct = (product: any) => {
+    if (!stockItem?.id) return;
+    const unitCost = Number(product.unitCost);
+    updateMutation.mutate({
+      id: stockItem.id,
+      code: product.sku || stockItem.code,
+      name: product.description || stockItem.name,
+      category: product.category || product.subGroup || stockItem.category || "general",
+      unit: product.uom || stockItem.unit || "EA",
+      unitType: unitTypeFromUom(product.uom),
+      supplier: product.supplier || null,
+      costPrice: Number.isFinite(unitCost) ? unitCost.toFixed(2) : null,
+      description: stockDescriptionFromProduct(product) || null,
+    });
+  };
 
   if (!stockItem) return null;
 
@@ -328,78 +452,68 @@ function CatalogueLinkDialog({ open, onOpenChange, stockItem }: { open: boolean;
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Package className="h-5 w-5" /> Link to Construction Data
+            <Package className="h-5 w-5" /> Refresh from Manufacturing Data
           </DialogTitle>
           <p className="text-sm text-muted-foreground">
             Stock Item: <span className="font-medium">{stockItem.code}</span> — {stockItem.name}
           </p>
         </DialogHeader>
 
-        {/* Currently linked item */}
-        {linkedItem && (
-          <div className="border rounded-lg p-3 bg-green-50 dark:bg-green-950/20 space-y-1">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-green-700 dark:text-green-400 flex items-center gap-1">
-                <Link2 className="h-4 w-4" /> Currently Linked
-              </p>
-              <Button size="sm" variant="outline" className="text-xs" onClick={() => unlinkMutation.mutate({ stockItemId: stockItem.id })}>
-                <Unlink className="h-3 w-3 mr-1" /> Unlink
-              </Button>
-            </div>
-            <p className="text-sm"><span className="font-mono">{linkedItem.spaCode}</span> — {linkedItem.description}</p>
-            <p className="text-xs text-muted-foreground">Category: {linkedItem.category} | UOM: {linkedItem.uom} | Price: ${linkedItem.price}</p>
-          </div>
-        )}
-
-        {/* Search catalogue */}
         <div className="space-y-2">
-          <Label>Search Construction Data</Label>
+          <Label>Search Manufacturing Data</Label>
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              value={catSearch}
-              onChange={(e) => setCatSearch(e.target.value)}
-              placeholder="Search by SPA code or description..."
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="Search by code, description, category, sub-group, or colour..."
               className="pl-8"
             />
           </div>
         </div>
 
-        {/* Search results */}
-        {catSearch.length >= 2 && (
+        {trimmedProductSearch.length >= 2 && (
           <div className="border rounded-lg max-h-[250px] overflow-y-auto">
-            {catLoading ? (
+            {productsLoading ? (
               <div className="p-4 text-center text-muted-foreground text-sm">Searching...</div>
-            ) : !catResults?.length ? (
+            ) : !manufacturingProducts?.length ? (
               <div className="p-4 text-center text-muted-foreground text-sm">
-                <p>No catalogue items found for "{catSearch}"</p>
-                <Button size="sm" variant="outline" className="mt-2" onClick={() => setShowAddForm(true)}>
-                  <BookPlus className="h-3.5 w-3.5 mr-1" /> Add to Catalogue
-                </Button>
+                <p>No manufacturing products found for "{trimmedProductSearch}".</p>
+                <p className="mt-1">Close this dialog and use Edit if this should remain a custom stock item.</p>
               </div>
             ) : (
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 sticky top-0">
                   <tr>
-                    <th className="text-left p-2 font-medium">SPA Code</th>
+                    <th className="text-left p-2 font-medium">Code</th>
                     <th className="text-left p-2 font-medium">Description</th>
                     <th className="text-left p-2 font-medium">Category</th>
-                    <th className="text-left p-2 font-medium">UOM</th>
+                    <th className="text-left p-2 font-medium">Sub-Group</th>
+                    <th className="text-left p-2 font-medium">Colour</th>
+                    <th className="text-left p-2 font-medium">Unit</th>
                     <th className="text-right p-2 font-medium">Price</th>
                     <th className="p-2"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {catResults.map((cat) => (
-                    <tr key={cat.id} className="border-t hover:bg-muted/30">
-                      <td className="p-2 font-mono text-xs">{cat.spaCode}</td>
-                      <td className="p-2">{cat.description}</td>
-                      <td className="p-2 text-xs">{cat.category}</td>
-                      <td className="p-2 text-xs">{cat.uom}</td>
-                      <td className="p-2 text-right">${cat.price}</td>
+                  {manufacturingProducts.map((product: any) => (
+                    <tr key={product.id} className="border-t hover:bg-muted/30">
+                      <td className="p-2 font-mono text-xs">{product.sku || "-"}</td>
+                      <td className="p-2">{product.description}</td>
+                      <td className="p-2 text-xs">{product.category || "-"}</td>
+                      <td className="p-2 text-xs">{product.subGroup || "-"}</td>
+                      <td className="p-2 text-xs">{product.colour || "-"}</td>
+                      <td className="p-2 text-xs">{product.uom || "EA"}</td>
+                      <td className="p-2 text-right">${Number(product.unitCost || 0).toFixed(2)}</td>
                       <td className="p-2">
-                        <Button size="sm" variant="outline" className="text-xs" onClick={() => linkMutation.mutate({ stockItemId: stockItem.id, catalogueItemId: cat.id })}>
-                          <Link2 className="h-3 w-3 mr-1" /> Link
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-xs"
+                          disabled={updateMutation.isPending}
+                          onClick={() => refreshFromProduct(product)}
+                        >
+                          <Link2 className="h-3 w-3 mr-1" /> Use
                         </Button>
                       </td>
                     </tr>
@@ -410,25 +524,10 @@ function CatalogueLinkDialog({ open, onOpenChange, stockItem }: { open: boolean;
           </div>
         )}
 
-        {/* Add to Catalogue form (workflow when item not found) */}
-        {showAddForm && (
-          <AddToCatalogueForm
-            stockItem={stockItem}
-            onSuccess={(newId) => {
-              linkMutation.mutate({ stockItemId: stockItem.id, catalogueItemId: newId });
-              setShowAddForm(false);
-            }}
-            onCancel={() => setShowAddForm(false)}
-          />
-        )}
-
-        {!showAddForm && catSearch.length < 2 && (
+        {trimmedProductSearch.length < 2 && (
           <div className="text-center py-3 text-muted-foreground text-sm">
-            <p>Type at least 2 characters to search the Construction Data.</p>
-            <p className="mt-1">If the item doesn't exist, you can add it to the catalogue.</p>
-            <Button size="sm" variant="outline" className="mt-2" onClick={() => setShowAddForm(true)}>
-              <BookPlus className="h-3.5 w-3.5 mr-1" /> Add New Catalogue Item
-            </Button>
+            <p>Type at least 2 characters to search Manufacturing Data.</p>
+            <p className="mt-1">Selecting a product updates this stock item with the manufacturing code, category, sub-group, colour, unit, and cost.</p>
           </div>
         )}
 
@@ -437,62 +536,5 @@ function CatalogueLinkDialog({ open, onOpenChange, stockItem }: { open: boolean;
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ─── Add to Catalogue Form (inline workflow) ────────────────────────────────
-function AddToCatalogueForm({ stockItem, onSuccess, onCancel }: { stockItem: any; onSuccess: (newId: number) => void; onCancel: () => void }) {
-  const [spaCode, setSpaCode] = useState(stockItem?.code || "");
-  const [description, setDescription] = useState(stockItem?.name || "");
-  const [category, setCategory] = useState(stockItem?.category || "");
-  const [subGroup, setSubGroup] = useState("");
-  const [uom, setUom] = useState(stockItem?.unit || "EA");
-  const [price, setPrice] = useState(stockItem?.costPrice || "");
-  const [colour, setColour] = useState("");
-  const [tags, setTags] = useState("");
-  const utils = trpc.useUtils();
-
-  const addMutation = trpc.inventory.catalogue.addToCatalogue.useMutation({
-    onSuccess: (data) => {
-      utils.inventory.catalogue.search.invalidate();
-      toast.success("Item added to Construction Data");
-      onSuccess(data.id);
-    },
-    onError: (e) => toast.error(e.message),
-  });
-
-  return (
-    <div className="border rounded-lg p-4 bg-blue-50 dark:bg-blue-950/20 space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="font-medium text-sm flex items-center gap-1">
-          <BookPlus className="h-4 w-4" /> Add New Item to Construction Data
-        </h4>
-        <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
-      </div>
-      <p className="text-xs text-muted-foreground">This will create a new catalogue entry and link it to the stock item.</p>
-      <div className="grid grid-cols-2 gap-2">
-        <div><Label className="text-xs">SPA Code *</Label><Input value={spaCode} onChange={e => setSpaCode(e.target.value)} placeholder="e.g. BEAM-ALU-100" className="h-8 text-sm" /></div>
-        <div><Label className="text-xs">Category *</Label><Input value={category} onChange={e => setCategory(e.target.value)} placeholder="e.g. Beams" className="h-8 text-sm" /></div>
-      </div>
-      <div><Label className="text-xs">Description *</Label><Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Full item description" className="h-8 text-sm" /></div>
-      <div className="grid grid-cols-3 gap-2">
-        <div><Label className="text-xs">Sub-Group</Label><Input value={subGroup} onChange={e => setSubGroup(e.target.value)} placeholder="e.g. Aluminium" className="h-8 text-sm" /></div>
-        <div><Label className="text-xs">UOM</Label><Input value={uom} onChange={e => setUom(e.target.value)} placeholder="EA" className="h-8 text-sm" /></div>
-        <div><Label className="text-xs">Price ($)</Label><Input type="number" step="0.01" value={price} onChange={e => setPrice(e.target.value)} className="h-8 text-sm" /></div>
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <div><Label className="text-xs">Colour</Label><Input value={colour} onChange={e => setColour(e.target.value)} placeholder="Optional" className="h-8 text-sm" /></div>
-        <div><Label className="text-xs">Tags (comma-separated)</Label><Input value={tags} onChange={e => setTags(e.target.value)} placeholder="e.g. Roof,Wall" className="h-8 text-sm" /></div>
-      </div>
-      <Button size="sm" onClick={() => {
-        if (!spaCode.trim() || !description.trim() || !category.trim()) {
-          toast.error("SPA Code, Description, and Category are required");
-          return;
-        }
-        addMutation.mutate({ spaCode, description, category, subGroup: subGroup || undefined, uom: uom || undefined, price: price || undefined, colour: colour || undefined, tags: tags || undefined });
-      }} disabled={addMutation.isPending}>
-        {addMutation.isPending ? "Adding..." : "Add to Catalogue & Link"}
-      </Button>
-    </div>
   );
 }

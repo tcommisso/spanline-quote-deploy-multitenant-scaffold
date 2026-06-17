@@ -1,25 +1,31 @@
 // Eclipse Opening Roof System - Database Helpers
-import { eq, desc, like, or } from "drizzle-orm";
+import { eq, desc, like, or, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { eclipseQuotes, eclipsePricing } from "../drizzle/schema";
 import type { InsertEclipseQuote, InsertEclipsePricing } from "../drizzle/schema";
 import { isAdminRole } from "../shared/const";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
 
 // ─── Eclipse Quotes ──────────────────────────────────────────────────────────
 
-export async function listEclipseQuotes(userId: number, role: string) {
-  if (isAdminRole(role)) {
-    return db.select().from(eclipseQuotes).orderBy(desc(eclipseQuotes.updatedAt));
+export async function listEclipseQuotes(userId: number, role: string, tenantId?: number | null) {
+  const conditions: any[] = [];
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  if (!isAdminRole(role)) {
+    conditions.push(eq(eclipseQuotes.userId, userId));
   }
-  return db.select().from(eclipseQuotes).where(eq(eclipseQuotes.userId, userId)).orderBy(desc(eclipseQuotes.updatedAt));
+  const where = conditions.length ? and(...conditions) : undefined;
+  return db.select().from(eclipseQuotes).where(where).orderBy(desc(eclipseQuotes.updatedAt));
 }
 
-export async function getEclipseQuoteById(id: number) {
-  const rows = await db.select().from(eclipseQuotes).where(eq(eclipseQuotes.id, id));
+export async function getEclipseQuoteById(id: number, tenantId?: number | null) {
+  const conditions: any[] = [eq(eclipseQuotes.id, id)];
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  const rows = await db.select().from(eclipseQuotes).where(and(...conditions));
   return rows[0] || null;
 }
 
@@ -28,20 +34,25 @@ export async function createEclipseQuote(data: InsertEclipseQuote) {
   return result[0].insertId;
 }
 
-export async function updateEclipseQuote(id: number, data: Partial<InsertEclipseQuote>) {
-  await db.update(eclipseQuotes).set(data).where(eq(eclipseQuotes.id, id));
+export async function updateEclipseQuote(id: number, data: Partial<InsertEclipseQuote>, tenantId?: number | null) {
+  const conditions: any[] = [eq(eclipseQuotes.id, id)];
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  await db.update(eclipseQuotes).set(data).where(and(...conditions));
 }
 
-export async function deleteEclipseQuote(id: number) {
-  await db.delete(eclipseQuotes).where(eq(eclipseQuotes.id, id));
+export async function deleteEclipseQuote(id: number, tenantId?: number | null) {
+  const conditions: any[] = [eq(eclipseQuotes.id, id)];
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  await db.delete(eclipseQuotes).where(and(...conditions));
 }
 
-export async function duplicateEclipseQuote(id: number, userId: number, newQuoteNumber: string) {
-  const original = await getEclipseQuoteById(id);
+export async function duplicateEclipseQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null) {
+  const original = await getEclipseQuoteById(id, tenantId);
   if (!original) throw new Error("Eclipse quote not found");
-  const { id: _id, createdAt, updatedAt, quoteNumber, ...rest } = original;
+  const { id: _id, createdAt, updatedAt, quoteNumber, tenantId: _tenantId, ...rest } = original;
   const newId = await createEclipseQuote({
     ...rest,
+    tenantId: tenantId ?? _tenantId,
     userId,
     quoteNumber: newQuoteNumber,
     status: "draft",

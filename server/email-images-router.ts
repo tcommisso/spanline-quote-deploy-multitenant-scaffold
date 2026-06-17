@@ -1,4 +1,4 @@
-import { protectedProcedure, router } from "./_core/trpc";
+import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { storagePut } from "./storage";
@@ -7,8 +7,8 @@ import sharp from "sharp";
 const MAX_EMAIL_WIDTH = 600;
 
 export const emailImagesRouter = router({
-  list: protectedProcedure.query(async () => {
-    return db.listEmailImages();
+  list: protectedProcedure.query(async ({ ctx }) => {
+    return db.listEmailImages(ctx.tenant!.id);
   }),
 
   upload: protectedProcedure
@@ -49,11 +49,12 @@ export const emailImagesRouter = router({
       // Upload to S3
       const randomSuffix = Math.random().toString(36).substring(2, 8);
       const ext = input.filename.split(".").pop() || "jpg";
-      const fileKey = `email-images/${Date.now()}-${randomSuffix}.${ext}`;
+      const fileKey = `tenants/${ctx.tenant!.id}/email-images/${Date.now()}-${randomSuffix}.${ext}`;
       const { url } = await storagePut(fileKey, resizedBuffer, input.contentType);
 
       // Save to DB
       const result = await db.createEmailImage({
+        tenantId: ctx.tenant!.id,
         filename: input.filename,
         url,
         fileKey,
@@ -74,18 +75,18 @@ export const emailImagesRouter = router({
       caption: z.string().optional(),
       tags: z.array(z.string()).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const updateData: { caption?: string; tags?: string[] } = {};
       if (input.caption !== undefined) updateData.caption = input.caption;
       if (input.tags !== undefined) updateData.tags = input.tags;
-      await db.updateEmailImage(input.id, updateData);
+      await db.updateEmailImage(input.id, updateData, ctx.tenant!.id);
       return { success: true };
     }),
 
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      await db.deleteEmailImage(input.id);
+    .mutation(async ({ ctx, input }) => {
+      await db.deleteEmailImage(input.id, ctx.tenant!.id);
       return { success: true };
     }),
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { eq, sql, and, desc, gt, inArray } from "drizzle-orm";
-import { protectedProcedure, router } from "./_core/trpc";
+import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import {
   chatChannels,
@@ -10,6 +10,7 @@ import {
   constructionJobs,
   constructionInstallers,
   constructionAssignments,
+  tenantMemberships,
   users,
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
@@ -17,6 +18,7 @@ import { storagePut } from "./storage";
 import crypto from "crypto";
 import { sendPushToUser } from "./push";
 import { pushToTradePortalByInstaller } from "./push-triggers";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -26,26 +28,52 @@ async function requireDb() {
   return db;
 }
 
+function channelTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, chatChannels.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function memberTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, chatChannelMembers.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function messageTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, chatMessages.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 /** Ensure user is a member of the channel (or auto-join system channels) */
-async function ensureMembership(db: any, channelId: number, userId: number) {
+async function ensureMembership(db: any, ctx: any, channelId: number, userId: number) {
   const [existing] = await db
     .select()
     .from(chatChannelMembers)
-    .where(and(eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, userId)))
+    .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, userId))))
     .limit(1);
 
   if (existing) return existing;
 
   // Auto-join system channels for any authenticated user
-  const [channel] = await db.select().from(chatChannels).where(eq(chatChannels.id, channelId)).limit(1);
+  const [channel] = await db.select().from(chatChannels)
+    .where(and(...channelTenantConditions(ctx, eq(chatChannels.id, channelId))))
+    .limit(1);
   if (!channel) throw new TRPCError({ code: "NOT_FOUND", message: "Channel not found" });
 
   if (channel.type === "system") {
     const [member] = await db
       .insert(chatChannelMembers)
-      .values({ channelId, userId, memberType: "user", memberId: userId, role: "member" })
+      .values({ tenantId: ctx.tenant!.id, channelId, userId, memberType: "user", memberId: userId, role: "member" })
       .$returningId();
-    return { id: member.id, channelId, userId, role: "member", lastReadAt: null };
+    return { id: member.id, tenantId: ctx.tenant!.id, channelId, userId, role: "member", lastReadAt: null };
   }
 
   throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this channel" });
@@ -62,13 +90,13 @@ export const chatRouter = router({
     const systemChannels = await db
       .select()
       .from(chatChannels)
-      .where(and(eq(chatChannels.type, "system"), eq(chatChannels.isArchived, false)))
+      .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "system"), eq(chatChannels.isArchived, false))))
       .orderBy(chatChannels.name);
 
     const memberChannelIds = await db
       .select({ channelId: chatChannelMembers.channelId })
       .from(chatChannelMembers)
-      .where(eq(chatChannelMembers.userId, ctx.user.id));
+      .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.userId, ctx.user.id))));
 
     const jobChannelIds = memberChannelIds.map((m) => m.channelId);
     let jobChannels: any[] = [];
@@ -76,7 +104,7 @@ export const chatRouter = router({
       jobChannels = await db
         .select()
         .from(chatChannels)
-        .where(and(eq(chatChannels.type, "job"), inArray(chatChannels.id, jobChannelIds), eq(chatChannels.isArchived, false)))
+        .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "job"), inArray(chatChannels.id, jobChannelIds), eq(chatChannels.isArchived, false))))
         .orderBy(desc(chatChannels.updatedAt));
     }
 
@@ -88,7 +116,7 @@ export const chatRouter = router({
       const [membership] = await db
         .select({ lastReadAt: chatChannelMembers.lastReadAt })
         .from(chatChannelMembers)
-        .where(and(eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id)))
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id))))
         .limit(1);
 
       const lastRead = membership?.lastReadAt;
@@ -97,8 +125,8 @@ export const chatRouter = router({
         .from(chatMessages)
         .where(
           lastRead
-            ? and(eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead))
-            : eq(chatMessages.channelId, channelId)
+            ? and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead)))
+            : and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId)))
         );
       unreadCounts[channelId] = unread?.count || 0;
     }
@@ -121,15 +149,15 @@ export const chatRouter = router({
     }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       let query = db
         .select()
         .from(chatMessages)
         .where(
           input.cursor
-            ? and(eq(chatMessages.channelId, input.channelId), sql`${chatMessages.id} < ${input.cursor}`)
-            : eq(chatMessages.channelId, input.channelId)
+            ? and(...messageTenantConditions(ctx, eq(chatMessages.channelId, input.channelId), sql`${chatMessages.id} < ${input.cursor}`))
+            : and(...messageTenantConditions(ctx, eq(chatMessages.channelId, input.channelId)))
         )
         .orderBy(desc(chatMessages.id))
         .limit(input.limit);
@@ -153,9 +181,10 @@ export const chatRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       const [result] = await db.insert(chatMessages).values({
+        tenantId: ctx.tenant!.id,
         channelId: input.channelId,
         senderId: ctx.user.id,
         senderName: ctx.user.name || "Unknown",
@@ -167,17 +196,17 @@ export const chatRouter = router({
       // Update channel updatedAt
       await db.update(chatChannels)
         .set({ updatedAt: new Date() })
-        .where(eq(chatChannels.id, input.channelId));
+        .where(and(...channelTenantConditions(ctx, eq(chatChannels.id, input.channelId))));
 
       // Mark as read for sender
       await db.update(chatChannelMembers)
         .set({ lastReadAt: new Date() })
-        .where(and(eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, ctx.user.id)));
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, ctx.user.id))));
 
       // Send push notifications for @mentions
       if (input.mentions && input.mentions.length > 0) {
         const [channel] = await db.select({ name: chatChannels.name }).from(chatChannels)
-          .where(eq(chatChannels.id, input.channelId)).limit(1);
+          .where(and(...channelTenantConditions(ctx, eq(chatChannels.id, input.channelId)))).limit(1);
         const channelName = channel?.name || "Chat";
         const senderName = ctx.user.name || "Someone";
         const preview = input.content.length > 80 ? input.content.slice(0, 80) + "..." : input.content;
@@ -201,11 +230,11 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       await db.update(chatChannelMembers)
         .set({ lastReadAt: new Date() })
-        .where(and(eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, ctx.user.id)));
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, ctx.user.id))));
 
       return { success: true };
     }),
@@ -216,14 +245,16 @@ export const chatRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
 
-      const [msg] = await db.select().from(chatMessages).where(eq(chatMessages.id, input.messageId)).limit(1);
+      const [msg] = await db.select().from(chatMessages)
+        .where(and(...messageTenantConditions(ctx, eq(chatMessages.id, input.messageId))))
+        .limit(1);
       if (!msg) throw new TRPCError({ code: "NOT_FOUND" });
 
-      await ensureMembership(db, msg.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, msg.channelId, ctx.user.id);
 
       await db.update(chatMessages)
         .set({ isPinned: input.pinned })
-        .where(eq(chatMessages.id, input.messageId));
+        .where(and(...messageTenantConditions(ctx, eq(chatMessages.id, input.messageId))));
 
       return { success: true };
     }),
@@ -233,12 +264,12 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number() }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       return db
         .select()
         .from(chatMessages)
-        .where(and(eq(chatMessages.channelId, input.channelId), eq(chatMessages.isPinned, true)))
+        .where(and(...messageTenantConditions(ctx, eq(chatMessages.channelId, input.channelId), eq(chatMessages.isPinned, true))))
         .orderBy(desc(chatMessages.createdAt));
     }),
 
@@ -250,13 +281,13 @@ export const chatRouter = router({
     const systemChannels = await db
       .select({ id: chatChannels.id })
       .from(chatChannels)
-      .where(eq(chatChannels.type, "system"));
+      .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "system"))));
 
     // Job channels user is a member of
     const memberChannels = await db
       .select({ channelId: chatChannelMembers.channelId })
       .from(chatChannelMembers)
-      .where(eq(chatChannelMembers.userId, ctx.user.id));
+      .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.userId, ctx.user.id))));
 
     const allChannelIds = [
       ...systemChannels.map((c) => c.id),
@@ -269,7 +300,7 @@ export const chatRouter = router({
       const [membership] = await db
         .select({ lastReadAt: chatChannelMembers.lastReadAt })
         .from(chatChannelMembers)
-        .where(and(eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id)))
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id))))
         .limit(1);
 
       const lastRead = membership?.lastReadAt;
@@ -281,7 +312,7 @@ export const chatRouter = router({
         .select({ count: sql<number>`COUNT(*)` })
         .from(chatMessages)
         .where(
-          and(eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead))
+          and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead)))
         );
       totalUnread += unread?.count || 0;
     }
@@ -296,10 +327,10 @@ export const chatRouter = router({
       filename: z.string(),
       mimeType: z.string(),
       base64Data: z.string(),
-    }))
+      }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       const buffer = Buffer.from(input.base64Data, "base64");
       const suffix = crypto.randomBytes(4).toString("hex");
@@ -314,7 +345,7 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number() }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      await ensureMembership(db, input.channelId, ctx.user.id);
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       const members = await db
         .select({
@@ -325,7 +356,7 @@ export const chatRouter = router({
         })
         .from(chatChannelMembers)
         .leftJoin(users, eq(chatChannelMembers.userId, users.id))
-        .where(eq(chatChannelMembers.channelId, input.channelId));
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId))));
 
       return members;
     }),
@@ -340,7 +371,9 @@ export const chatRouter = router({
       const db = await requireDb();
 
       // Get job info for channel name
-      const [job] = await db.select().from(constructionJobs).where(eq(constructionJobs.id, input.jobId)).limit(1);
+      const [job] = await db.select().from(constructionJobs)
+        .where(and(...jobTenantConditions(ctx, eq(constructionJobs.id, input.jobId))))
+        .limit(1);
       if (!job) throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
 
       const channelName = `${job.quoteNumber || `JOB-${job.id}`} - ${job.clientName || "Unknown Client"}`;
@@ -349,13 +382,14 @@ export const chatRouter = router({
       const [existing] = await db
         .select()
         .from(chatChannels)
-        .where(and(eq(chatChannels.type, "job"), eq(chatChannels.jobId, input.jobId)))
+        .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "job"), eq(chatChannels.jobId, input.jobId))))
         .limit(1);
 
       if (existing) return { channelId: existing.id, alreadyExisted: true };
 
       // Create channel
       const [channel] = await db.insert(chatChannels).values({
+        tenantId: ctx.tenant!.id,
         name: channelName,
         type: "job",
         jobId: input.jobId,
@@ -363,6 +397,7 @@ export const chatRouter = router({
 
       // Add creator as admin
       await db.insert(chatChannelMembers).values({
+        tenantId: ctx.tenant!.id,
         channelId: channel.id,
         userId: ctx.user.id,
         memberType: "user",
@@ -374,7 +409,7 @@ export const chatRouter = router({
       if (input.memberUserIds?.length) {
         const memberValues = input.memberUserIds
           .filter((uid) => uid !== ctx.user.id)
-          .map((uid) => ({ channelId: channel.id, userId: uid, memberType: "user" as const, memberId: uid, role: "member" as const }));
+          .map((uid) => ({ tenantId: ctx.tenant!.id, channelId: channel.id, userId: uid, memberType: "user" as const, memberId: uid, role: "member" as const }));
         if (memberValues.length > 0) {
           await db.insert(chatChannelMembers).values(memberValues);
         }
@@ -388,17 +423,25 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number(), userId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
+
+      const [tenantMember] = await db.select({ userId: tenantMemberships.userId })
+        .from(tenantMemberships)
+        .where(and(eq(tenantMemberships.tenantId, ctx.tenant!.id), eq(tenantMemberships.userId, input.userId)))
+        .limit(1);
+      if (!tenantMember) throw new TRPCError({ code: "NOT_FOUND", message: "User is not a member of this tenant" });
 
       // Check existing
       const [existing] = await db
         .select()
         .from(chatChannelMembers)
-        .where(and(eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId)))
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))))
         .limit(1);
 
       if (existing) return { success: true, alreadyMember: true };
 
       await db.insert(chatChannelMembers).values({
+        tenantId: ctx.tenant!.id,
         channelId: input.channelId,
         userId: input.userId,
         memberType: "user",
@@ -414,9 +457,10 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number(), userId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       await db.delete(chatChannelMembers)
-        .where(and(eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId)));
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))));
 
       return { success: true };
     }),
@@ -426,10 +470,11 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number(), userId: z.number(), role: z.enum(["admin", "member"]) }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
 
       await db.update(chatChannelMembers)
         .set({ role: input.role })
-        .where(and(eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId)));
+        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))));
 
       return { success: true };
     }),
@@ -439,6 +484,13 @@ export const chatRouter = router({
     .input(z.object({ messageId: z.number(), emoji: z.string().max(16) }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+
+      const [message] = await db.select({ id: chatMessages.id, channelId: chatMessages.channelId })
+        .from(chatMessages)
+        .where(and(...messageTenantConditions(ctx, eq(chatMessages.id, input.messageId))))
+        .limit(1);
+      if (!message) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
+      await ensureMembership(db, ctx, message.channelId, ctx.user.id);
 
       // Check if user already reacted with this emoji
       const [existing] = await db
@@ -473,6 +525,12 @@ export const chatRouter = router({
       const db = await requireDb();
       if (input.messageIds.length === 0) return [];
 
+      const visibleMessages = await db.select({ id: chatMessages.id })
+        .from(chatMessages)
+        .where(and(...messageTenantConditions(ctx, inArray(chatMessages.id, input.messageIds))));
+      const visibleMessageIds = visibleMessages.map((message) => message.id);
+      if (visibleMessageIds.length === 0) return [];
+
       const reactions = await db
         .select({
           id: chatMessageReactions.id,
@@ -483,7 +541,7 @@ export const chatRouter = router({
         })
         .from(chatMessageReactions)
         .leftJoin(users, eq(chatMessageReactions.userId, users.id))
-        .where(inArray(chatMessageReactions.messageId, input.messageIds));
+        .where(inArray(chatMessageReactions.messageId, visibleMessageIds));
 
       return reactions;
     }),
@@ -497,6 +555,7 @@ export const chatRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
       const updates: Record<string, any> = {};
       if (input.name !== undefined) updates.name = input.name;
       if (input.description !== undefined) updates.description = input.description;
@@ -504,7 +563,7 @@ export const chatRouter = router({
       if (Object.keys(updates).length > 0) {
         await db.update(chatChannels)
           .set(updates)
-          .where(eq(chatChannels.id, input.channelId));
+          .where(and(...channelTenantConditions(ctx, eq(chatChannels.id, input.channelId))));
       }
       return { success: true };
     }),
@@ -514,17 +573,20 @@ export const chatRouter = router({
     .input(z.object({ channelId: z.number(), archived: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureMembership(db, ctx, input.channelId, ctx.user.id);
       await db.update(chatChannels)
         .set({ isArchived: input.archived })
-        .where(eq(chatChannels.id, input.channelId));
+        .where(and(...channelTenantConditions(ctx, eq(chatChannels.id, input.channelId))));
       return { success: true };
     }),
 
   // ─── List all users (for add-member picker) ────────────────────────────────
-  allUsers: protectedProcedure.query(async () => {
+  allUsers: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     return db.select({ id: users.id, name: users.name, email: users.email, role: users.role })
       .from(users)
+      .innerJoin(tenantMemberships, eq(users.id, tenantMemberships.userId))
+      .where(eq(tenantMemberships.tenantId, ctx.tenant!.id))
       .orderBy(users.name);
   }),
 });

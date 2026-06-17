@@ -23,6 +23,12 @@ function approvalProjectScope(id: number, tenantId?: number | null) {
   return and(...conditions);
 }
 
+function workflowTemplateScope(id: number, tenantId?: number | null) {
+  const conditions: any[] = [eq(approvalWorkflowTemplates.id, id)];
+  appendTenantScope(conditions, approvalWorkflowTemplates.tenantId, tenantId);
+  return and(...conditions);
+}
+
 async function assertApprovalProjectAccess(projectId: number, tenantId?: number | null) {
   const project = await getApprovalProjectById(projectId, tenantId);
   if (!project) throw new Error("Approval project not found");
@@ -108,23 +114,23 @@ export async function deleteApprovalProject(id: number, tenantId?: number | null
 }
 
 // ─── Workflow Templates ─────────────────────────────────────────────────────
-export async function getWorkflowTemplates(jurisdiction?: string) {
+export async function getWorkflowTemplates(jurisdiction?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const conditions: any[] = [eq(approvalWorkflowTemplates.active, true)];
+  appendTenantScope(conditions, approvalWorkflowTemplates.tenantId, tenantId);
   if (jurisdiction && jurisdiction !== "all") {
-    return db.select().from(approvalWorkflowTemplates)
-      .where(and(eq(approvalWorkflowTemplates.active, true), eq(approvalWorkflowTemplates.jurisdiction, jurisdiction as any)))
-      .orderBy(desc(approvalWorkflowTemplates.updatedAt));
+    conditions.push(eq(approvalWorkflowTemplates.jurisdiction, jurisdiction as any));
   }
   return db.select().from(approvalWorkflowTemplates)
-    .where(eq(approvalWorkflowTemplates.active, true))
+    .where(and(...conditions))
     .orderBy(desc(approvalWorkflowTemplates.updatedAt));
 }
 
-export async function getWorkflowTemplateById(id: number) {
+export async function getWorkflowTemplateById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  const [template] = await db.select().from(approvalWorkflowTemplates).where(eq(approvalWorkflowTemplates.id, id)).limit(1);
+  const [template] = await db.select().from(approvalWorkflowTemplates).where(workflowTemplateScope(id, tenantId)).limit(1);
   return template || null;
 }
 
@@ -135,16 +141,16 @@ export async function createWorkflowTemplate(data: InsertApprovalWorkflowTemplat
   return result.id;
 }
 
-export async function updateWorkflowTemplate(id: number, data: Partial<InsertApprovalWorkflowTemplate>) {
+export async function updateWorkflowTemplate(id: number, data: Partial<InsertApprovalWorkflowTemplate>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(approvalWorkflowTemplates).set(data).where(eq(approvalWorkflowTemplates.id, id));
+  await db.update(approvalWorkflowTemplates).set(data).where(workflowTemplateScope(id, tenantId));
 }
 
-export async function deleteWorkflowTemplate(id: number) {
+export async function deleteWorkflowTemplate(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(approvalWorkflowTemplates).set({ active: false }).where(eq(approvalWorkflowTemplates.id, id));
+  await db.update(approvalWorkflowTemplates).set({ active: false }).where(workflowTemplateScope(id, tenantId));
 }
 
 // ─── Lodgements ─────────────────────────────────────────────────────────────
@@ -280,7 +286,20 @@ export async function updateRfi(id: number, data: Partial<InsertApprovalRfi>, te
  * Find open/in_progress RFIs that match a subject line (for email reply ingestion).
  * Matches by RFI number pattern [RFI-xxx] or by subject substring.
  */
-export async function findRfiBySubjectMatch(subject: string) {
+async function findOpenRfiByConditions(conditions: any[], tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) return null;
+  appendTenantScope(conditions, approvalProjects.tenantId, tenantId);
+  const [match] = await db
+    .select({ rfi: approvalRfis })
+    .from(approvalRfis)
+    .innerJoin(approvalProjects, eq(approvalRfis.projectId, approvalProjects.id))
+    .where(and(...conditions))
+    .limit(1);
+  return match?.rfi || null;
+}
+
+export async function findRfiBySubjectMatch(subject: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
 
@@ -288,24 +307,20 @@ export async function findRfiBySubjectMatch(subject: string) {
   const rfiNumberMatch = subject.match(/\[?RFI[- #]*(\d+)\]?/i);
   if (rfiNumberMatch) {
     const rfiNum = rfiNumberMatch[1];
-    const [match] = await db.select().from(approvalRfis)
-      .where(and(
+    const match = await findOpenRfiByConditions([
         eq(approvalRfis.rfiNumber, rfiNum),
         inArray(approvalRfis.status, ["open", "in_progress", "overdue"])
-      ))
-      .limit(1);
+      ], tenantId);
     if (match) return match;
   }
 
   // Fallback: try to match by subject substring (strip Re:/Fwd: prefixes)
   const cleanSubject = subject.replace(/^(Re:|Fwd:|FW:|RE:)\s*/gi, "").trim();
   if (cleanSubject.length > 5) {
-    const [match] = await db.select().from(approvalRfis)
-      .where(and(
+    const match = await findOpenRfiByConditions([
         like(approvalRfis.subject, `%${cleanSubject.slice(0, 80)}%`),
         inArray(approvalRfis.status, ["open", "in_progress", "overdue"])
-      ))
-      .limit(1);
+      ], tenantId);
     if (match) return match;
   }
 
@@ -610,11 +625,11 @@ export async function checkGateReadiness(projectId: number, gateNumber: number, 
   if (blockingInspections.length > 0) blockers.push(`${blockingInspections.length} pending inspection(s) blocking Gate ${gateNumber}`);
   if (blockingTasks.length > 0) blockers.push(`${blockingTasks.length} incomplete task(s) at Gate ${gateNumber}`);
 
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  const [project] = await db.select().from(approvalProjects).where(approvalProjectScope(projectId, tenantId)).limit(1);
   let isConstructionCommencementGate = gateNumber >= 3;
   if (project?.workflowTemplateId) {
     const [template] = await db.select().from(approvalWorkflowTemplates)
-      .where(eq(approvalWorkflowTemplates.id, project.workflowTemplateId))
+      .where(workflowTemplateScope(project.workflowTemplateId, tenantId))
       .limit(1);
     const gate = ((template?.gates as any[]) || []).find((item: any) => Number(item.gateNumber) === gateNumber);
     const gateText = [

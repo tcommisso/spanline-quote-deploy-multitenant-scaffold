@@ -1,4 +1,4 @@
-import { router, protectedProcedure, publicProcedure, tenantAdminProcedure } from "./_core/trpc";
+import { router, publicProcedure, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getActiveStorageProvider, isStorageConfigured, storagePut } from "./storage";
 import crypto from "crypto";
@@ -17,7 +17,7 @@ function loginBackgroundDataUrl(mimeType: string, base64: string) {
 
 export const globalSettingsRouter = router({
   // Get a setting by key (any authenticated user can read)
-  get: protectedProcedure
+  get: tenantProcedure
     .input(z.object({ key: z.string() }))
     .query(async ({ ctx, input }) => {
       return getTenantAppSetting(ctx.tenant?.id, input.key);
@@ -31,7 +31,7 @@ export const globalSettingsRouter = router({
     }),
 
   // Get colour palette config (convenience wrapper)
-  getColourPalette: protectedProcedure.query(async ({ ctx }) => {
+  getColourPalette: tenantProcedure.query(async ({ ctx }) => {
     // Expected shape: { defaultGroup: string, sectionOverrides: { [sectionKey]: string (comma-separated groups) } }
     return (await getTenantAppSetting(ctx.tenant?.id, "colourPalette") as { defaultGroup?: string; sectionOverrides?: Record<string, string> } | null) ?? { defaultGroup: "", sectionOverrides: {} };
   }),
@@ -47,7 +47,7 @@ export const globalSettingsRouter = router({
     }),
 
   // Get AI render pricing settings
-  getRenderPricing: protectedProcedure.query(async ({ ctx }) => {
+  getRenderPricing: tenantProcedure.query(async ({ ctx }) => {
     const stored = await getTenantAppSetting<Partial<RenderPricingSettings>>(ctx.tenant?.id, "renderPricing");
     return { ...getDefaultRenderPricing(), ...stored };
   }),
@@ -64,7 +64,7 @@ export const globalSettingsRouter = router({
       return setTenantAppSetting(ctx.tenant!.id, "renderPricing", input);
     }),
   // ─── Approvals Overdue Threshold ──────────────────────────────────────────────────
-  getBaOverdueThreshold: protectedProcedure.query(async ({ ctx }) => {
+  getBaOverdueThreshold: tenantProcedure.query(async ({ ctx }) => {
     return (await getTenantAppSetting<number>(ctx.tenant?.id, "baOverdueThresholdDays")) ?? 30;
   }),
   setBaOverdueThreshold: tenantAdminProcedure
@@ -140,7 +140,7 @@ export const globalSettingsRouter = router({
     }),
 
   // Get colour scheme hex values
-  getColourScheme: protectedProcedure.query(async ({ ctx }) => {
+  getColourScheme: tenantProcedure.query(async ({ ctx }) => {
     return (await getTenantAppSetting(ctx.tenant?.id, "colourSchemeHex") as Record<string, string> | null) ?? null;
   }),
 

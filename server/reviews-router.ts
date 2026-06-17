@@ -1,16 +1,16 @@
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { z } from "zod";
 import * as reviewsDb from "./reviews-db";
 
 export const reviewsRouter = router({
   // ─── Climbo Accounts CRUD (admin only) ─────────────────────────────────────
   climboAccounts: router({
-    list: protectedProcedure.query(async () => {
-      return reviewsDb.listClimboAccounts();
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return reviewsDb.listClimboAccounts(ctx.tenant!.id);
     }),
 
-    get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => {
-      return reviewsDb.getClimboAccount(input.id);
+    get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ ctx, input }) => {
+      return reviewsDb.getClimboAccount(input.id, ctx.tenant!.id);
     }),
 
     create: adminProcedure.input(z.object({
@@ -20,8 +20,8 @@ export const reviewsRouter = router({
       accountId: z.string().optional(),
       webhookUrl: z.string().optional(),
       active: z.boolean().optional(),
-    })).mutation(async ({ input }) => {
-      return reviewsDb.createClimboAccount(input);
+    })).mutation(async ({ ctx, input }) => {
+      return reviewsDb.createClimboAccount(input, ctx.tenant!.id);
     }),
 
     update: adminProcedure.input(z.object({
@@ -32,13 +32,13 @@ export const reviewsRouter = router({
       accountId: z.string().optional(),
       webhookUrl: z.string().optional(),
       active: z.boolean().optional(),
-    })).mutation(async ({ input }) => {
+    })).mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
-      await reviewsDb.updateClimboAccount(id, data);
+      await reviewsDb.updateClimboAccount(id, data, ctx.tenant!.id);
     }),
 
-    delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
-      await reviewsDb.deleteClimboAccount(input.id);
+    delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      await reviewsDb.deleteClimboAccount(input.id, ctx.tenant!.id);
     }),
   }),
 
@@ -47,15 +47,15 @@ export const reviewsRouter = router({
     leadId: z.number().optional(),
     limit: z.number().optional(),
     offset: z.number().optional(),
-  })).query(async ({ input }) => {
+  })).query(async ({ ctx, input }) => {
     if (input.leadId) {
-      return { rows: await reviewsDb.listReviewsByLead(input.leadId), total: 0 };
+      return { rows: await reviewsDb.listReviewsByLead(input.leadId, ctx.tenant!.id), total: 0 };
     }
-    return reviewsDb.listAllReviews({ limit: input.limit, offset: input.offset });
+    return reviewsDb.listAllReviews({ limit: input.limit, offset: input.offset }, ctx.tenant!.id);
   }),
 
-  stats: protectedProcedure.query(async () => {
-    return reviewsDb.getReviewStats();
+  stats: protectedProcedure.query(async ({ ctx }) => {
+    return reviewsDb.getReviewStats(ctx.tenant!.id);
   }),
 
   // ─── Request Review ────────────────────────────────────────────────────────
@@ -66,8 +66,8 @@ export const reviewsRouter = router({
     clientPhone: z.string().optional(),
     siteAddress: z.string().optional(),
     climboAccountId: z.number(),
-  })).mutation(async ({ input }) => {
-    const account = await reviewsDb.getClimboAccount(input.climboAccountId);
+  })).mutation(async ({ ctx, input }) => {
+    const account = await reviewsDb.getClimboAccount(input.climboAccountId, ctx.tenant!.id);
     if (!account || !account.webhookUrl) {
       throw new Error("Climbo account not found or no webhook URL configured");
     }
@@ -95,7 +95,7 @@ export const reviewsRouter = router({
     reviewDate: z.string().optional(),
     locationName: z.string().optional(),
     source: z.string().optional(),
-  })).mutation(async ({ input }) => {
+  })).mutation(async ({ ctx, input }) => {
     return reviewsDb.createReview({
       leadId: input.leadId ?? null,
       climboAccountId: input.climboAccountId ?? null,
@@ -109,6 +109,6 @@ export const reviewsRouter = router({
       replyDate: null,
       source: input.source ?? "manual",
       rawPayload: null,
-    });
+    }, ctx.tenant!.id);
   }),
 });

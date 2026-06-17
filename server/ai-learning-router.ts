@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import {
+  tenantProcedure as protectedProcedure,
+  tenantAdminProcedure as adminProcedure,
+  router,
+} from "./_core/trpc";
 import { getDb } from "./db";
 import { aiPrompts, aiKnowledgeChunks, aiFeedback, aiFewShotExamples, aiCorrections } from "../drizzle/schema";
 import { eq, desc, and, sql } from "drizzle-orm";

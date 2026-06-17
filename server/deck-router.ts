@@ -1,4 +1,4 @@
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import { protectedProcedure, adminProcedure, tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as deckDb from "./deck-db";
 import { calculateDeckPricing, type DeckCalcInput } from "./deck-calc";
@@ -238,21 +238,21 @@ export const deckRouter = router({
 
   // ─── Deck Quotes ──────────────────────────────────────────────────────────
   quotes: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: tenantProcedure.query(async ({ ctx }) => {
       if (isAdminRole(ctx.user.role)) {
-        return deckDb.getDeckQuotes();
+        return deckDb.getDeckQuotes(undefined, ctx.tenant.id);
       }
-      return deckDb.getDeckQuotes(ctx.user.id);
+      return deckDb.getDeckQuotes(ctx.user.id, ctx.tenant.id);
     }),
-    get: protectedProcedure
+    get: tenantProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await deckDb.getDeckQuoteById(input.id);
+        const quote = await deckDb.getDeckQuoteById(input.id, ctx.tenant.id);
         if (!quote) return null;
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) return null;
         return quote;
       }),
-    create: protectedProcedure
+    create: tenantProcedure
       .input(z.object({
         clientId: z.number().optional(),
         clientName: z.string().min(1),
@@ -266,31 +266,32 @@ export const deckRouter = router({
         const quoteNumber = await deckDb.getNextDeckQuoteNumber();
         const result = await deckDb.createDeckQuote({
           ...input,
+          tenantId: ctx.tenant.id,
           userId: ctx.user.id,
           quoteNumber,
           status: "draft",
-        });
+        }, ctx.tenant.id);
         // If the lead (clientId) is archived, unarchive it
         let leadUnarchived = false;
         if (input.clientId) {
           try {
             const { updateLead, getLead } = await import("./crm-db");
-            const lead = await getLead(input.clientId);
+            const lead = await getLead(input.clientId, ctx.tenant.id);
             if (lead && lead.archived) {
-              await updateLead(input.clientId, { archived: false } as any);
+              await updateLead(input.clientId, { archived: false } as any, ctx.tenant.id);
               leadUnarchived = true;
             }
           } catch (e) { /* non-blocking */ }
         }
         return { ...result, leadUnarchived };
       }),
-    update: protectedProcedure
+    update: tenantProcedure
       .input(z.object({
         id: z.number(),
         data: z.record(z.string(), z.any()),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await deckDb.getDeckQuoteById(input.id);
+        const quote = await deckDb.getDeckQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
@@ -350,51 +351,52 @@ export const deckRouter = router({
           ...input.data,
           ...hbcfRequirementFieldsForAmount(amount, "Deck quote"),
         };
-        return deckDb.updateDeckQuote(input.id, updates);
+        return deckDb.updateDeckQuote(input.id, updates, ctx.tenant.id);
       }),
-    delete: adminProcedure
+    delete: tenantAdminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        const quote = await deckDb.getDeckQuoteById(input.id);
+      .mutation(async ({ ctx, input }) => {
+        const tenantId = ctx.tenant!.id;
+        const quote = await deckDb.getDeckQuoteById(input.id, tenantId);
         if (!quote) throw new Error("Quote not found");
-        await deckDb.deleteDeckQuote(input.id);
+        await deckDb.deleteDeckQuote(input.id, tenantId);
         return { success: true };
       }),
-    archive: protectedProcedure
+    archive: tenantProcedure
       .input(z.object({ id: z.number(), archived: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await deckDb.getDeckQuoteById(input.id);
+        const quote = await deckDb.getDeckQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
         }
-        await deckDb.updateDeckQuote(input.id, { archived: input.archived });
+        await deckDb.updateDeckQuote(input.id, { archived: input.archived }, ctx.tenant.id);
         return { success: true };
       }),
-    duplicate: protectedProcedure
+    duplicate: tenantProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await deckDb.getDeckQuoteById(input.id);
+        const quote = await deckDb.getDeckQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Not authorized");
         }
         const newNumber = await deckDb.getNextDeckQuoteNumber();
-        const newQuote = await deckDb.duplicateDeckQuote(input.id, ctx.user.id, newNumber);
+        const newQuote = await deckDb.duplicateDeckQuote(input.id, ctx.user.id, newNumber, ctx.tenant.id);
         return { id: newQuote?.id, quoteNumber: newNumber };
       }),
-    overrideHistory: protectedProcedure
+    overrideHistory: tenantProcedure
       .input(z.object({ deckQuoteId: z.number() }))
       .query(async ({ ctx, input }) => {
         // Only admin can view override history
         if (!isAdminRole(ctx.user.role)) {
           throw new Error("Not authorized");
         }
-        return deckDb.getOverrideHistoryForQuote(input.deckQuoteId);
+        return deckDb.getOverrideHistoryForQuote(input.deckQuoteId, ctx.tenant.id);
       }),
-    lastOverrides: adminProcedure
-      .query(async () => {
-        return deckDb.getLastOverridePerQuote();
+    lastOverrides: tenantAdminProcedure
+      .query(async ({ ctx }) => {
+        return deckDb.getLastOverridePerQuote(ctx.tenant!.id);
       }),
   }),
 

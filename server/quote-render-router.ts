@@ -4,7 +4,7 @@
  * directly (no separate planner project needed).
  */
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { generateImage } from "./_core/imageGeneration";
 import { getPresetById } from "../shared/render-style-presets";
@@ -19,6 +19,7 @@ import { getDeckProductById } from "./deck-db";
 import { deckQuotes, eclipseQuotes } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { getCompanyName } from "./company-name";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ function parseRenderHistory(raw: unknown): RenderHistoryEntry[] {
 
 // ─── Deck helpers ───────────────────────────────────────────────────────────
 
-async function getDeckQuote(quoteId: number, userId: number, userRole?: string) {
+async function getDeckQuote(quoteId: number, userId: number, userRole?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   // Admin/super_admin can access any quote; non-admin must own it
@@ -53,6 +54,7 @@ async function getDeckQuote(quoteId: number, userId: number, userRole?: string) 
   const conditions = isAdmin
     ? [eq(deckQuotes.id, quoteId)]
     : [eq(deckQuotes.id, quoteId), eq(deckQuotes.userId, userId)];
+  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
   const [row] = await db.select().from(deckQuotes).where(and(...conditions)).limit(1);
   return row ?? null;
 }
@@ -110,7 +112,7 @@ function deckQuoteToRenderInput(quote: any, productImageUrl?: string): DeckRende
 
 // ─── Eclipse helpers ────────────────────────────────────────────────────────
 
-async function getEclipseQuote(quoteId: number, userId: number, userRole?: string) {
+async function getEclipseQuote(quoteId: number, userId: number, userRole?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   // Admin/super_admin can access any quote; non-admin must own it
@@ -118,6 +120,7 @@ async function getEclipseQuote(quoteId: number, userId: number, userRole?: strin
   const conditions = isAdmin
     ? [eq(eclipseQuotes.id, quoteId)]
     : [eq(eclipseQuotes.id, quoteId), eq(eclipseQuotes.userId, userId)];
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
   const [row] = await db.select().from(eclipseQuotes).where(and(...conditions)).limit(1);
   return row ?? null;
 }
@@ -208,14 +211,14 @@ export const quoteRenderRouter = router({
   /**
    * Generate an AI render for a Deck quote.
    */
-  generateDeck: protectedProcedure
+  generateDeck: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       mode: z.enum(["full", "quick"]).default("full"),
       stylePreset: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
       }
@@ -295,14 +298,14 @@ export const quoteRenderRouter = router({
   /**
    * Generate an AI render for an Eclipse quote.
    */
-  generateEclipse: protectedProcedure
+  generateEclipse: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       mode: z.enum(["full", "quick"]).default("full"),
       stylePreset: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
       }
@@ -366,10 +369,10 @@ export const quoteRenderRouter = router({
   /**
    * Get render history for a Deck quote.
    */
-  deckHistory: protectedProcedure
+  deckHistory: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
       return parseRenderHistory(quote.renderHistory);
     }),
@@ -377,10 +380,10 @@ export const quoteRenderRouter = router({
   /**
    * Get render history for an Eclipse quote.
    */
-  eclipseHistory: protectedProcedure
+  eclipseHistory: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
       return parseRenderHistory(quote.renderHistory);
     }),
@@ -388,10 +391,10 @@ export const quoteRenderRouter = router({
   /**
    * Delete a render from Deck quote history.
    */
-  deleteDeckRender: protectedProcedure
+  deleteDeckRender: tenantProcedure
     .input(z.object({ quoteId: z.number(), renderId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
 
       const history = parseRenderHistory(quote.renderHistory);
@@ -409,10 +412,10 @@ export const quoteRenderRouter = router({
   /**
    * Delete a render from Eclipse quote history.
    */
-  deleteEclipseRender: protectedProcedure
+  deleteEclipseRender: tenantProcedure
     .input(z.object({ quoteId: z.number(), renderId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
 
       const history = parseRenderHistory(quote.renderHistory);
@@ -430,10 +433,10 @@ export const quoteRenderRouter = router({
   /**
    * Toggle favourite on a Deck render.
    */
-  toggleDeckFavourite: protectedProcedure
+  toggleDeckFavourite: tenantProcedure
     .input(z.object({ quoteId: z.number(), renderId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
 
       const history = parseRenderHistory(quote.renderHistory);
@@ -452,10 +455,10 @@ export const quoteRenderRouter = router({
   /**
    * Toggle favourite on an Eclipse render.
    */
-  toggleEclipseFavourite: protectedProcedure
+  toggleEclipseFavourite: tenantProcedure
     .input(z.object({ quoteId: z.number(), renderId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
 
       const history = parseRenderHistory(quote.renderHistory);
@@ -474,7 +477,7 @@ export const quoteRenderRouter = router({
   /**
    * Upload a site photo for a Deck quote (used as base for AI render).
    */
-  uploadDeckPhoto: protectedProcedure
+  uploadDeckPhoto: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       base64: z.string(),
@@ -482,7 +485,7 @@ export const quoteRenderRouter = router({
       fileName: z.string(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
 
       const buffer = Buffer.from(input.base64, "base64");
@@ -503,7 +506,7 @@ export const quoteRenderRouter = router({
   /**
    * Upload a site photo for an Eclipse quote (used as base for AI render).
    */
-  uploadEclipsePhoto: protectedProcedure
+  uploadEclipsePhoto: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       base64: z.string(),
@@ -511,7 +514,7 @@ export const quoteRenderRouter = router({
       fileName: z.string(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
 
       const buffer = Buffer.from(input.base64, "base64");
@@ -532,10 +535,10 @@ export const quoteRenderRouter = router({
   /**
    * Remove the site photo from a Deck quote.
    */
-  removeDeckPhoto: protectedProcedure
+  removeDeckPhoto: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
 
       const db = await getDb();
@@ -550,10 +553,10 @@ export const quoteRenderRouter = router({
   /**
    * Remove the site photo from an Eclipse quote.
    */
-  removeEclipsePhoto: protectedProcedure
+  removeEclipsePhoto: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
 
       const db = await getDb();
@@ -568,10 +571,10 @@ export const quoteRenderRouter = router({
   /**
    * Get photo info for a Deck quote.
    */
-  getDeckPhoto: protectedProcedure
+  getDeckPhoto: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
       return { photoUrl: quote.photoUrl || null, calibrationData: quote.calibrationData || null };
     }),
@@ -579,17 +582,17 @@ export const quoteRenderRouter = router({
   /**
    * Get photo info for an Eclipse quote.
    */
-  getEclipsePhoto: protectedProcedure
+  getEclipsePhoto: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
       return { photoUrl: quote.photoUrl || null, calibrationData: quote.calibrationData || null };
     }),
   /**
    * Save calibration data for a Deck quote photo.
    */
-  saveDeckCalibration: protectedProcedure
+  saveDeckCalibration: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       calibrationData: z.object({
@@ -599,7 +602,7 @@ export const quoteRenderRouter = router({
       }).nullable(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
       const db = await getDb();
       if (db) {
@@ -612,7 +615,7 @@ export const quoteRenderRouter = router({
   /**
    * Save calibration data for an Eclipse quote photo.
    */
-  saveEclipseCalibration: protectedProcedure
+  saveEclipseCalibration: tenantProcedure
     .input(z.object({
       quoteId: z.number(),
       calibrationData: z.object({
@@ -622,7 +625,7 @@ export const quoteRenderRouter = router({
       }).nullable(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role);
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
       const db = await getDb();
       if (db) {

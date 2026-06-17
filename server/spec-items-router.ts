@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
+import { getQuoteById } from "./db";
 import {
   listSpecMappings,
   getActiveSpecMappings,
@@ -35,18 +36,24 @@ function extractSpecValues(quote: Record<string, any>): SpecValues {
   return specValues;
 }
 
+async function assertQuoteAccess(quoteId: number, tenantId: number) {
+  const quote = await getQuoteById(quoteId, tenantId);
+  if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
+  return quote;
+}
+
 export const specItemsRouter = router({
   // ─── Spec Mappings (Admin) ──────────────────────────────────────────────────
 
   mappings: router({
-    list: protectedProcedure.query(async () => {
-      return listSpecMappings();
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return listSpecMappings(ctx.tenant!.id);
     }),
 
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => {
-        const mapping = await getSpecMapping(input.id);
+      .query(async ({ input, ctx }) => {
+        const mapping = await getSpecMapping(input.id, ctx.tenant!.id);
         if (!mapping) throw new TRPCError({ code: "NOT_FOUND" });
         return mapping;
       }),
@@ -68,14 +75,14 @@ export const specItemsRouter = router({
         active: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        const id = await createSpecMapping(input);
+        const id = await createSpecMapping(input, ctx.tenant!.id);
         await logMappingChange({
           mappingId: id,
-          userId: ctx.user.id,
-          userName: ctx.user.name,
+          userId: ctx.user!.id,
+          userName: ctx.user!.name,
           action: "created",
           snapshot: { ...input, id },
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
@@ -99,51 +106,54 @@ export const specItemsRouter = router({
         }),
       }))
       .mutation(async ({ input, ctx }) => {
-        const before = await getSpecMapping(input.id);
-        await updateSpecMapping(input.id, input.data);
+        const before = await getSpecMapping(input.id, ctx.tenant!.id);
+        if (!before) throw new TRPCError({ code: "NOT_FOUND", message: "Spec mapping not found" });
+        await updateSpecMapping(input.id, input.data, ctx.tenant!.id);
         const changes = Object.entries(input.data)
           .filter(([k, v]) => v !== undefined && before && (before as any)[k] !== v)
           .map(([field, newValue]) => ({ field, oldValue: before ? (before as any)[field] : null, newValue }));
         await logMappingChange({
           mappingId: input.id,
-          userId: ctx.user.id,
-          userName: ctx.user.name,
+          userId: ctx.user!.id,
+          userName: ctx.user!.name,
           action: input.data.active !== undefined && input.data.active !== (before as any)?.active
             ? (input.data.active ? "activated" : "deactivated")
             : "updated",
           changes: changes.length > 0 ? changes : null,
           snapshot: { ...(before as any), ...input.data },
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        const before = await getSpecMapping(input.id);
-        await deleteSpecMapping(input.id);
+        const before = await getSpecMapping(input.id, ctx.tenant!.id);
+        if (!before) throw new TRPCError({ code: "NOT_FOUND", message: "Spec mapping not found" });
+        await deleteSpecMapping(input.id, ctx.tenant!.id);
         await logMappingChange({
           mappingId: input.id,
-          userId: ctx.user.id,
-          userName: ctx.user.name,
+          userId: ctx.user!.id,
+          userName: ctx.user!.name,
           action: "deleted",
           snapshot: before as any,
-        });
+        }, ctx.tenant!.id);
         return { success: true };
       }),
     bulkDelete: adminProcedure
       .input(z.object({ ids: z.array(z.number()).min(1) }))
       .mutation(async ({ input, ctx }) => {
         for (const id of input.ids) {
-          const before = await getSpecMapping(id);
-          await deleteSpecMapping(id);
+          const before = await getSpecMapping(id, ctx.tenant!.id);
+          if (!before) continue;
+          await deleteSpecMapping(id, ctx.tenant!.id);
           await logMappingChange({
             mappingId: id,
-            userId: ctx.user.id,
-            userName: ctx.user.name,
+            userId: ctx.user!.id,
+            userName: ctx.user!.name,
             action: "deleted",
             snapshot: before as any,
-          });
+          }, ctx.tenant!.id);
         }
         return { deleted: input.ids.length };
       }),
@@ -154,8 +164,9 @@ export const specItemsRouter = router({
   items: router({
     list: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
-      .query(async ({ input }) => {
-        return getQuoteItems(input.quoteId);
+      .query(async ({ input, ctx }) => {
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+        return getQuoteItems(input.quoteId, ctx.tenant!.id);
       }),
 
     create: protectedProcedure
@@ -171,12 +182,13 @@ export const specItemsRouter = router({
         notes: z.string().nullable().optional(),
         productId: z.number().nullable().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
         const id = await createQuoteItem({
           ...input,
           source: "manual",
           sortOrder: 999, // Manual items go at the end
-        });
+        }, ctx.tenant!.id);
         return { id };
       }),
 
@@ -194,29 +206,30 @@ export const specItemsRouter = router({
           sortOrder: z.number().optional(),
         }),
       }))
-      .mutation(async ({ input }) => {
-        await updateQuoteItem(input.id, input.data);
+      .mutation(async ({ input, ctx }) => {
+        await updateQuoteItem(input.id, input.data, ctx.tenant!.id);
         return { success: true };
       }),
 
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await deleteQuoteItem(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await deleteQuoteItem(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
     confirm: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await confirmQuoteItem(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await confirmQuoteItem(input.id, ctx.tenant!.id);
         return { success: true };
       }),
 
     confirmAll: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
-      .mutation(async ({ input }) => {
-        await confirmAllItems(input.quoteId);
+      .mutation(async ({ input, ctx }) => {
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+        await confirmAllItems(input.quoteId, ctx.tenant!.id);
         return { success: true };
       }),
   }),
@@ -230,6 +243,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, specValues } = input;
+      await assertQuoteAccess(quoteId, ctx.tenant!.id);
 
       // Enrich specValues with derived calculations
       const width = parseFloat(String(specValues.specWidth || "0")) || 0;
@@ -269,7 +283,7 @@ export const specItemsRouter = router({
       } catch { specValues.wasteFactor = 0; }
 
       // Get active mappings
-      const mappings = await getActiveSpecMappings();
+      const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       if (mappings.length === 0) {
         return { generated: 0, flagged: 0, message: "No active spec mappings configured. Please set up mappings in Admin → Spec Mappings." };
       }
@@ -290,10 +304,10 @@ export const specItemsRouter = router({
       );
 
       // Delete existing auto items for this quote
-      await deleteAutoItems(quoteId);
+      await deleteAutoItems(quoteId, ctx.tenant!.id);
 
       // Flag existing manual items for confirmation
-      await flagManualItemsForConfirmation(quoteId);
+      await flagManualItemsForConfirmation(quoteId, ctx.tenant!.id);
 
       // Insert new auto-generated items
       if (generatedItems.length > 0) {
@@ -312,13 +326,14 @@ export const specItemsRouter = router({
             costRate: item.costRate,
             sellRate: item.sellRate,
             sortOrder: idx,
-          }))
+          })),
+          ctx.tenant!.id
         );
       }
 
       // Count flagged manual items
       const { getQuoteItems: getItems } = await import("./spec-items-db");
-      const allItems = await getItems(quoteId);
+      const allItems = await getItems(quoteId, ctx.tenant!.id);
       const flaggedCount = allItems.filter(i => i.needsConfirmation).length;
 
       return {
@@ -339,6 +354,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, newBeamSize, beamIndex } = input;
+      await assertQuoteAccess(quoteId, ctx.tenant!.id);
 
       // Normalise beam size: replace unicode × with x for matching
       const normalisedSize = newBeamSize.replace(/\u00d7/g, "x").toLowerCase();
@@ -372,7 +388,7 @@ export const specItemsRouter = router({
       const { costRate, sellRate } = calculateRates(matchedProduct as any, markupRates, 2.2);
 
       // Find existing beam quote items for this quote
-      const existingItems = await getQuoteItems(quoteId);
+      const existingItems = await getQuoteItems(quoteId, ctx.tenant!.id);
       const beamItems = existingItems.filter(item =>
         item.tabName.toLowerCase().includes("beam") &&
         item.source === "auto"
@@ -392,7 +408,7 @@ export const specItemsRouter = router({
         description: matchedProduct.name,
         costRate,
         sellRate,
-      });
+      }, ctx.tenant!.id);
 
       return {
         success: true,
@@ -414,6 +430,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, angleCuttingMetres } = input;
+      await assertQuoteAccess(quoteId, ctx.tenant!.id);
 
       // If metres is 0 or negative, nothing to do (could optionally remove item)
       if (angleCuttingMetres <= 0) {
@@ -444,7 +461,7 @@ export const specItemsRouter = router({
       const { costRate, sellRate } = calculateRates(angleCuttingProduct as any, markupRates, 2.2);
 
       // Find existing angle cutting quote items for this quote
-      const existingItems = await getQuoteItems(quoteId);
+      const existingItems = await getQuoteItems(quoteId, ctx.tenant!.id);
       const angleCuttingItems = existingItems.filter(item =>
         (item.description.toLowerCase().includes("angle cutting") ||
          item.description.toLowerCase().includes("angle cut")) &&
@@ -459,7 +476,7 @@ export const specItemsRouter = router({
           costRate,
           sellRate,
           description: angleCuttingProduct.name,
-        });
+        }, ctx.tenant!.id);
         return {
           success: true,
           updatedItemId: targetItem.id,
@@ -481,7 +498,7 @@ export const specItemsRouter = router({
           costRate,
           sellRate,
           sortOrder: 900, // High sort order to appear near end
-        });
+        }, ctx.tenant!.id);
         return {
           success: true,
           createdItemId: newId,
@@ -501,9 +518,7 @@ export const specItemsRouter = router({
     .query(async ({ input, ctx }) => {
 
       // Load the quote
-      const { getQuoteById } = await import("./db");
-      const quote = await getQuoteById(input.quoteId);
-      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
+      const quote = await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
 
       // Extract spec values
       const specValues = extractSpecValues(quote as Record<string, any>);
@@ -540,7 +555,7 @@ export const specItemsRouter = router({
       } catch { specValues.wasteFactor = 0; }
 
       // Get active mappings and products
-      const mappings = await getActiveSpecMappings();
+      const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       const allProducts = await getAllProducts();
 
       // Markup rates
@@ -628,20 +643,20 @@ export const specItemsRouter = router({
       ];
 
       // Get existing mapping names to skip duplicates
-      const existing = await listSpecMappings();
+      const existing = await listSpecMappings(ctx.tenant!.id);
       const existingNames = new Set((existing as any[]).map(m => m.name));
 
       let created = 0;
       for (const tmpl of TEMPLATES) {
         if (existingNames.has(tmpl.name)) continue;
-        const id = await createSpecMapping({ ...tmpl, active: false });
+        const id = await createSpecMapping({ ...tmpl, active: false }, ctx.tenant!.id);
         await logMappingChange({
           mappingId: id,
-          userId: ctx.user.id,
-          userName: ctx.user.name,
+          userId: ctx.user!.id,
+          userName: ctx.user!.name,
           action: "created",
           snapshot: { ...tmpl, id, active: false, source: "seed_template" },
-        });
+        }, ctx.tenant!.id);
         created++;
       }
 
@@ -659,9 +674,12 @@ export const specItemsRouter = router({
       // Get the most recent quote with spec values
       const { getDb } = await import("./db");
       const { quotes } = await import("../drizzle/schema");
-      const { desc } = await import("drizzle-orm");
+      const { desc, eq } = await import("drizzle-orm");
       const db = (await getDb())!;
-      const [latestQuote] = await db.select().from(quotes).orderBy(desc(quotes.updatedAt)).limit(1);
+      const [latestQuote] = await db.select().from(quotes)
+        .where(eq(quotes.tenantId, ctx.tenant!.id))
+        .orderBy(desc(quotes.updatedAt))
+        .limit(1);
       if (!latestQuote) return { result: "No quotes found", formula };
 
       const specValues = extractSpecValues(latestQuote as any);
@@ -732,17 +750,17 @@ export const specItemsRouter = router({
   // ─── Mapping History (Audit Trail) ────────────────────────────────────────
   history: adminProcedure
     .input(z.object({ mappingId: z.number().optional(), limit: z.number().optional() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       if (input.mappingId) {
-        return getMappingHistory(input.mappingId);
+        return getMappingHistory(input.mappingId, ctx.tenant!.id);
       }
-      return getAllMappingHistory(input.limit || 50);
+      return getAllMappingHistory(input.limit || 50, ctx.tenant!.id);
     }),
 
   // ─── Validate All Mappings ─────────────────────────────────────────────────
   validateAll: adminProcedure
-    .query(async () => {
-      const mappings = await getActiveSpecMappings();
+    .query(async ({ ctx }) => {
+      const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       const allProds = await getAllProducts();
 
       // Valid spec fields (from schema + computed)

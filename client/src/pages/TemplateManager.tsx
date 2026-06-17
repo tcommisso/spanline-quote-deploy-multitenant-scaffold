@@ -275,7 +275,7 @@ function TemplateEditor({
     setDescription(t.description || "");
     setTag(t.tag || "");
     setItems(
-      t.items.map((item) => ({
+      t.items.map((item: TemplateItem) => ({
         catalogueProductId: item.catalogueProductId,
         spaCode: item.spaCode,
         description: item.description,

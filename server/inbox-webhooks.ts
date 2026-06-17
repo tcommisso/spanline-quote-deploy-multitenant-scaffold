@@ -79,7 +79,7 @@ async function fetchReceivedEmail(emailId: string) {
 /**
  * Fetch and store attachments from a received email to S3
  */
-async function processAttachments(emailId: string): Promise<Array<{ id: string; filename: string; contentType: string; size: number; url: string }>> {
+async function processAttachments(emailId: string, tenantId?: number | null): Promise<Array<{ id: string; filename: string; contentType: string; size: number; url: string }>> {
   try {
     const resend = getLegacyResendClient();
     if (!resend) return [];
@@ -95,7 +95,8 @@ async function processAttachments(emailId: string): Promise<Array<{ id: string; 
         if (attData && (attData as any).content) {
           const buffer = Buffer.from((attData as any).content, "base64");
           const suffix = crypto.randomUUID().slice(0, 8);
-          const key = `inbox-attachments/${emailId}/${suffix}-${att.filename || "attachment"}`;
+          const tenantPrefix = tenantId ? `tenants/${tenantId}` : "tenants/unassigned";
+          const key = `${tenantPrefix}/inbox-attachments/${emailId}/${suffix}-${att.filename || "attachment"}`;
           const { url } = await storagePut(key, buffer, att.content_type || "application/octet-stream");
           attachments.push({
             id: att.id,
@@ -127,11 +128,11 @@ async function sendAutoReply(params: {
   inboxMessageId: number;
   tenantId?: number | null;
 }) {
-  const template = await getSetting("auto_reply_template");
+  const template = await getSetting("auto_reply_template", params.tenantId);
   if (!template) return; // auto-reply disabled
 
-  const fromDomain = await getSetting("receiving_domain") || "commissogroup.au";
-  const companyName = await getSetting("company_name") || "Altaspan";
+  const fromDomain = await getSetting("receiving_domain", params.tenantId) || "commissogroup.au";
+  const companyName = await getSetting("company_name", params.tenantId) || "Altaspan";
 
   const greeting = params.toName ? `Hi ${params.toName}` : "Hi";
   const body = template
@@ -253,7 +254,7 @@ export function registerInboxWebhooks(app: Express) {
       tenantId = addressRule?.tenantId || tenantId;
 
       // Process attachments
-      const attachments = await processAttachments(emailId);
+      const attachments = await processAttachments(emailId, tenantId);
 
       // Derive thread ID
       const threadId = deriveThreadId(emailMessageId, inReplyTo, emailReferences);
@@ -297,7 +298,7 @@ export function registerInboxWebhooks(app: Express) {
       if (addressRule?.autoTagIds) {
         const tagIds = Array.isArray(addressRule.autoTagIds) ? addressRule.autoTagIds : [];
         for (const tagId of tagIds) {
-          try { await addTagToMessage(inboxMsgId, tagId as number); } catch { /* ignore duplicates */ }
+          try { await addTagToMessage(inboxMsgId, tagId as number, tenantId); } catch { /* ignore duplicates */ }
         }
       }
 
@@ -320,7 +321,7 @@ export function registerInboxWebhooks(app: Express) {
       }
 
       // Send auto-reply if configured
-      const autoReplyEnabled = await getSetting("auto_reply_enabled");
+      const autoReplyEnabled = await getSetting("auto_reply_enabled", tenantId);
       if (autoReplyEnabled === "true") {
         await sendAutoReply({
           toEmail: fromAddress,
@@ -359,7 +360,7 @@ export function registerInboxWebhooks(app: Express) {
       // If this inbound email subject matches an open RFI, auto-attach as response
       if (subject) {
         try {
-          const matchedRfi = await findRfiBySubjectMatch(subject);
+          const matchedRfi = await findRfiBySubjectMatch(subject, tenantId);
           if (matchedRfi) {
             // Build response notes from email body
             const replySnippet = textBody?.slice(0, 2000) || htmlBody?.replace(/<[^>]*>/g, "").slice(0, 2000) || "";
@@ -379,7 +380,7 @@ export function registerInboxWebhooks(app: Express) {
               responseNotes: updatedNotes + attachmentNote,
               status: matchedRfi.status === "open" || matchedRfi.status === "overdue" ? "in_progress" : matchedRfi.status,
               respondedAt: new Date(),
-            });
+            }, tenantId);
 
             // Link the inbox message to the approval project via matchedJobId
             await updateInboxMessage(inboxMsgId, {
@@ -451,45 +452,52 @@ export function registerInboxWebhooks(app: Express) {
         return res.status(403).json({ error: "cron-only" });
       }
 
-      const rule = await getActiveSlaRule();
-      if (!rule) {
-        return res.json({ ok: true, skipped: "no active SLA rule" });
-      }
+      const { getDb } = await import("./db");
+      const { tenants, users } = await import("../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
 
-      const breachingMessages = await getMessagesBreachingSla();
-      if (breachingMessages.length === 0) {
-        return res.json({ ok: true, checked: 0, reminders: 0 });
-      }
+      const tenantRows = await db
+        .select({ id: tenants.id })
+        .from(tenants)
+        .where(eq(tenants.status, "active"));
 
       let remindersSent = 0;
-      const targets: string[] = JSON.parse(rule.reminderTargets || '["assigned","manager"]');
+      let checked = 0;
+      let tenantsWithRules = 0;
 
-      for (const msg of breachingMessages) {
-        let assignedEmail: string | null = null;
-        if (targets.includes("assigned") && msg.assignedToId) {
-          // Look up the assigned user's email
-          const { getDb } = await import("./db");
-          const db = await getDb();
-          if (db) {
-            const { users } = await import("../drizzle/schema");
-            const { eq } = await import("drizzle-orm");
+      for (const tenant of tenantRows) {
+        const rule = await getActiveSlaRule(tenant.id);
+        if (!rule) continue;
+        tenantsWithRules++;
+
+        const breachingMessages = await getMessagesBreachingSla(tenant.id);
+        checked += breachingMessages.length;
+        if (breachingMessages.length === 0) continue;
+
+        const targets: string[] = JSON.parse(rule.reminderTargets || '["assigned","manager"]');
+
+        for (const msg of breachingMessages) {
+          let assignedEmail: string | null = null;
+          if (targets.includes("assigned") && msg.assignedToId) {
             const [assignedUser] = await db.select({ email: users.email }).from(users).where(eq(users.id, msg.assignedToId)).limit(1);
             assignedEmail = assignedUser?.email || null;
           }
-        }
 
-        await sendSlaReminder({
-          messageId: msg.id,
-          subject: msg.subject || "",
-          fromEmail: msg.fromAddress,
-          slaLevel: msg.slaLevel,
-          assignedToEmail: assignedEmail,
-          managerEmail: targets.includes("manager") ? rule.managerEmail : null,
-        });
-        remindersSent++;
+          await sendSlaReminder({
+            messageId: msg.id,
+            subject: msg.subject || "",
+            fromEmail: msg.fromAddress,
+            slaLevel: msg.slaLevel,
+            assignedToEmail: assignedEmail,
+            managerEmail: targets.includes("manager") ? rule.managerEmail : null,
+          });
+          remindersSent++;
+        }
       }
 
-      return res.json({ ok: true, checked: breachingMessages.length, reminders: remindersSent });
+      return res.json({ ok: true, tenants: tenantRows.length, tenantsWithRules, checked, reminders: remindersSent });
     } catch (err: any) {
       console.error("[Inbox SLA Check] Error:", err?.message, err?.stack);
       return res.status(500).json({

@@ -15,10 +15,11 @@ import {
   orderTemplates,
   orderTemplateItems,
 } from "../drizzle/schema.js";
-import { eq, and, like, or, sql, desc, asc, count, gte, lte } from "drizzle-orm";
+import { eq, and, like, or, sql, desc, asc, count, gte, lte, inArray } from "drizzle-orm";
 import { generateComponentOrderPdf } from "./smartshop-pdf.js";
 import { logNotification } from "./notification-gateway";
 import { sendNotificationEmail } from "./email";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 // The 14 product categories (same as before)
 const PRODUCT_CATEGORIES = [
@@ -37,6 +38,22 @@ const PRODUCT_CATEGORIES = [
   "Spanlites",
   "Touch Up Paint",
 ];
+
+function orderTemplateTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, orderTemplates.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+async function requireOrderTemplateAccess(db: any, ctx: any, templateId: number) {
+  const [template] = await db
+    .select()
+    .from(orderTemplates)
+    .where(and(...orderTemplateTenantConditions(ctx, eq(orderTemplates.id, templateId))))
+    .limit(1);
+  if (!template) throw new Error("Template not found");
+  return template;
+}
 
 export const smartshopRouter = router({
   /** List available product categories */
@@ -998,16 +1015,20 @@ export const smartshopRouter = router({
   /** List all templates with item count */
   listTemplates: protectedProcedure
     .input(z.object({ activeOnly: z.boolean().optional().default(true) }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
       const activeOnly = input?.activeOnly ?? true;
-      const conditions = activeOnly ? [eq(orderTemplates.isActive, true)] : [];
+      const conditions = orderTemplateTenantConditions(ctx);
+      if (activeOnly) conditions.push(eq(orderTemplates.isActive, true));
       const templates = await db
         .select()
         .from(orderTemplates)
         .where(conditions.length ? and(...conditions) : undefined)
         .orderBy(asc(orderTemplates.name));
+
+      const templateIds = templates.map((template) => template.id);
+      if (templateIds.length === 0) return [];
 
       // Get item counts for each template
       const itemCounts = await db
@@ -1016,6 +1037,7 @@ export const smartshopRouter = router({
           itemCount: count(orderTemplateItems.id),
         })
         .from(orderTemplateItems)
+        .where(inArray(orderTemplateItems.templateId, templateIds))
         .groupBy(orderTemplateItems.templateId);
       const countMap = new Map(itemCounts.map((r) => [r.templateId, Number(r.itemCount)]));
 
@@ -1028,15 +1050,10 @@ export const smartshopRouter = router({
   /** Get a single template with all its items */
   getTemplate: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      const [template] = await db
-        .select()
-        .from(orderTemplates)
-        .where(eq(orderTemplates.id, input.id))
-        .limit(1);
-      if (!template) throw new Error("Template not found");
+      const template = await requireOrderTemplateAccess(db, ctx, input.id);
 
       const items = await db
         .select()
@@ -1074,6 +1091,7 @@ export const smartshopRouter = router({
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const [result] = await db.insert(orderTemplates).values({
+        tenantId: tenantIdFromContext(ctx),
         name: input.name,
         description: input.description || null,
         tag: input.tag,
@@ -1113,16 +1131,19 @@ export const smartshopRouter = router({
         isActive: z.boolean().optional(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      await requireOrderTemplateAccess(db, ctx, input.id);
       const setData: Record<string, unknown> = {};
       if (input.name !== undefined) setData.name = input.name;
       if (input.description !== undefined) setData.description = input.description;
       if (input.tag !== undefined) setData.tag = input.tag;
       if (input.isActive !== undefined) setData.isActive = input.isActive;
       if (Object.keys(setData).length > 0) {
-        await db.update(orderTemplates).set(setData).where(eq(orderTemplates.id, input.id));
+        await db.update(orderTemplates)
+          .set(setData)
+          .where(and(...orderTemplateTenantConditions(ctx, eq(orderTemplates.id, input.id))));
       }
       return { success: true };
     }),
@@ -1130,10 +1151,11 @@ export const smartshopRouter = router({
   /** Delete a template (cascade deletes items) */
   deleteTemplate: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.delete(orderTemplates).where(eq(orderTemplates.id, input.id));
+      await db.delete(orderTemplates)
+        .where(and(...orderTemplateTenantConditions(ctx, eq(orderTemplates.id, input.id))));
       return { success: true };
     }),
 
@@ -1158,9 +1180,10 @@ export const smartshopRouter = router({
         ),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      await requireOrderTemplateAccess(db, ctx, input.templateId);
       // Delete existing items
       await db.delete(orderTemplateItems).where(eq(orderTemplateItems.templateId, input.templateId));
       // Insert new items
@@ -1193,7 +1216,7 @@ export const smartshopRouter = router({
       const [original] = await db
         .select()
         .from(orderTemplates)
-        .where(eq(orderTemplates.id, input.id))
+        .where(and(...orderTemplateTenantConditions(ctx, eq(orderTemplates.id, input.id))))
         .limit(1);
       if (!original) throw new Error("Template not found");
 
@@ -1203,6 +1226,7 @@ export const smartshopRouter = router({
         .where(eq(orderTemplateItems.templateId, input.id));
 
       const [result] = await db.insert(orderTemplates).values({
+        tenantId: tenantIdFromContext(ctx),
         name: `${original.name} (Copy)`,
         description: original.description,
         tag: original.tag,
@@ -1335,13 +1359,13 @@ export const smartshopRouter = router({
   /** Get template items formatted for the order form (apply kit) */
   getTemplateForOrder: protectedProcedure
     .input(z.object({ templateId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       const [template] = await db
         .select()
         .from(orderTemplates)
-        .where(and(eq(orderTemplates.id, input.templateId), eq(orderTemplates.isActive, true)))
+        .where(and(...orderTemplateTenantConditions(ctx, eq(orderTemplates.id, input.templateId), eq(orderTemplates.isActive, true))))
         .limit(1);
       if (!template) throw new Error("Template not found or inactive");
 

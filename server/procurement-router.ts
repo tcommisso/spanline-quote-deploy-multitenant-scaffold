@@ -44,6 +44,12 @@ function supplierTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function invoiceTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, manufacturingSupplierInvoices.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 async function requireManufacturingOrderAccess(db: any, ctx: any, orderId: number) {
   const [order] = await db.select({ order: manufacturingOrders })
     .from(manufacturingOrders)
@@ -72,7 +78,7 @@ async function requirePurchaseOrderAccess(db: any, ctx: any, purchaseOrderId: nu
 async function requireSupplierInvoiceAccess(db: any, ctx: any, invoiceId: number) {
   const [invoice] = await db.select()
     .from(manufacturingSupplierInvoices)
-    .where(eq(manufacturingSupplierInvoices.id, invoiceId))
+    .where(and(...invoiceTenantConditions(ctx, eq(manufacturingSupplierInvoices.id, invoiceId))))
     .limit(1);
   if (!invoice) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Invoice not found" });
@@ -226,7 +232,7 @@ export const procurementRouter = router({
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
 
-        const conditions = [];
+        const conditions = invoiceTenantConditions(ctx);
         if (input?.status) conditions.push(eq(manufacturingSupplierInvoices.status, input.status));
         if (input?.purchaseOrderId) {
           await requirePurchaseOrderAccess(db, ctx, input.purchaseOrderId);
@@ -287,6 +293,7 @@ export const procurementRouter = router({
 
         // Insert invoice header
         const [result] = await db.insert(manufacturingSupplierInvoices).values({
+          tenantId: ctx.tenant!.id,
           invoiceNumber: input.invoiceNumber,
           supplierName: input.supplierName,
           supplierEmail: input.supplierEmail || null,

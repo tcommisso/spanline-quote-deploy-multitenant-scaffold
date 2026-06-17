@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "./_core/trpc";
+import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { isAdminRole } from "@shared/const";
 import * as crmDb from "./crm-db";
 import * as emailTemplatesDb from "./email-templates-db";
@@ -21,6 +21,26 @@ async function assertAppointmentAccess(ctx: any, appointmentId: number) {
   if (!appointment) throw new Error("Appointment not found");
   await assertLeadAccess(ctx, appointment.leadId);
   return appointment;
+}
+
+async function assertQuoteAccess(ctx: any, quoteId: number, quoteType: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const tenantId = tenantIdFromContext(ctx);
+  const normalizedType = quoteType.toLowerCase();
+  const table =
+    normalizedType === "deck" ? deckQuotes :
+    normalizedType === "eclipse" ? eclipseQuotes :
+    normalizedType === "structure" || normalizedType === "quote" ? quotes :
+    null;
+
+  if (!table) throw new Error("Quote type not supported");
+
+  const conditions: any[] = [eq(table.id, quoteId)];
+  appendTenantScope(conditions, table.tenantId, tenantId);
+  const [quote] = await db.select({ id: table.id }).from(table).where(and(...conditions)).limit(1);
+  if (!quote) throw new Error("Quote not found");
+  return quote;
 }
 
 const appointmentParticipantSchema = z.object({
@@ -241,8 +261,9 @@ export const crmRouter = router({
           const { branches } = await import("../drizzle/schema");
           const db = await getDb();
           if (db) {
-            const { eq } = await import("drizzle-orm");
-            const branchRows = await db.select().from(branches).where(eq(branches.isActive, true));
+            const branchConditions: any[] = [eq(branches.isActive, true)];
+            appendTenantScope(branchConditions, branches.tenantId, tenantId);
+            const branchRows = await db.select().from(branches).where(and(...branchConditions));
             if (branchRows.length > 0) {
               const { makeRequest } = await import("./_core/map");
               const origins = branchRows.map(b => b.address).filter(Boolean).join("|");
@@ -350,7 +371,7 @@ export const crmRouter = router({
               // Create default progress stages
               const DEFAULT_STAGES = ["Site Prep", "Footings & Concrete", "Frame & Posts", "Roof Installation", "Electrical", "Plumbing", "Walls & Cladding", "Final Inspection"];
               for (const stage of DEFAULT_STAGES) {
-                await db.insert(constructionProgress).values({ jobId, stage, status: "pending" });
+                await db.insert(constructionProgress).values({ tenantId, jobId, stage, status: "pending" });
               }
 
               // Create check measure workbook (duplicate spec + components)
@@ -556,11 +577,13 @@ export const crmRouter = router({
       // Notify branch manager about bulk assignment
       try {
         const { getBranchManager } = await import("./territory-router");
-        const manager = await getBranchManager(input.branchId);
+        const manager = await getBranchManager(input.branchId, tenantId);
         const managerEmail = manager?.managerEmail || manager?.email;
         if (managerEmail && updated > 0) {
           const { sendNotificationEmail } = await import("./email");
-          const branch = await db.select({ name: branches.name }).from(branches).where(eq(branches.id, input.branchId)).limit(1);
+          const branchConditions: any[] = [eq(branches.id, input.branchId)];
+          appendTenantScope(branchConditions, branches.tenantId, tenantId);
+          const branch = await db.select({ name: branches.name }).from(branches).where(and(...branchConditions)).limit(1);
           const branchName = branch[0]?.name || `Branch #${input.branchId}`;
           await sendNotificationEmail({
             to: managerEmail,
@@ -814,15 +837,24 @@ export const crmRouter = router({
       });
       return { id };
     }),
-    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const note = await crmDb.getLeadNote(input.id);
+      if (!note) throw new Error("Note not found");
+      await assertLeadAccess(ctx, note.leadId);
       await crmDb.deleteLeadNote(input.id);
       return { success: true };
     }),
-    togglePin: protectedProcedure.input(z.object({ id: z.number(), pinned: z.boolean() })).mutation(async ({ input }) => {
+    togglePin: protectedProcedure.input(z.object({ id: z.number(), pinned: z.boolean() })).mutation(async ({ ctx, input }) => {
+      const note = await crmDb.getLeadNote(input.id);
+      if (!note) throw new Error("Note not found");
+      await assertLeadAccess(ctx, note.leadId);
       await crmDb.toggleLeadNotePin(input.id, input.pinned);
       return { success: true };
     }),
-    update: protectedProcedure.input(z.object({ id: z.number(), content: z.string().min(1), category: z.string().optional() })).mutation(async ({ input }) => {
+    update: protectedProcedure.input(z.object({ id: z.number(), content: z.string().min(1), category: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      const note = await crmDb.getLeadNote(input.id);
+      if (!note) throw new Error("Note not found");
+      await assertLeadAccess(ctx, note.leadId);
       await crmDb.updateLeadNote(input.id, input.content, input.category);
       return { success: true };
     }),
@@ -830,7 +862,8 @@ export const crmRouter = router({
 
   // ─── Quote Notes ─────────────────────────────────────────────────────────
   quoteNotes: router({
-    list: protectedProcedure.input(z.object({ quoteId: z.number(), quoteType: z.string() })).query(async ({ input }) => {
+    list: protectedProcedure.input(z.object({ quoteId: z.number(), quoteType: z.string() })).query(async ({ ctx, input }) => {
+      await assertQuoteAccess(ctx, input.quoteId, input.quoteType);
       return crmDb.getQuoteNotes(input.quoteId, input.quoteType);
     }),
     create: protectedProcedure.input(z.object({
@@ -838,6 +871,7 @@ export const crmRouter = router({
       quoteType: z.string(),
       content: z.string().min(1),
     })).mutation(async ({ ctx, input }) => {
+      await assertQuoteAccess(ctx, input.quoteId, input.quoteType);
       const id = await crmDb.createQuoteNote({
         quoteId: input.quoteId,
         quoteType: input.quoteType,
@@ -847,11 +881,17 @@ export const crmRouter = router({
       });
       return { id };
     }),
-    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const note = await crmDb.getQuoteNote(input.id);
+      if (!note) throw new Error("Note not found");
+      await assertQuoteAccess(ctx, note.quoteId, note.quoteType);
       await crmDb.deleteQuoteNote(input.id);
       return { success: true };
     }),
-    togglePin: protectedProcedure.input(z.object({ id: z.number(), pinned: z.boolean() })).mutation(async ({ input }) => {
+    togglePin: protectedProcedure.input(z.object({ id: z.number(), pinned: z.boolean() })).mutation(async ({ ctx, input }) => {
+      const note = await crmDb.getQuoteNote(input.id);
+      if (!note) throw new Error("Note not found");
+      await assertQuoteAccess(ctx, note.quoteId, note.quoteType);
       await crmDb.toggleQuoteNotePin(input.id, input.pinned);
       return { success: true };
     }),
@@ -1408,7 +1448,7 @@ export const crmRouter = router({
       placeholderContext.productType = lead.productType || "";
     }
     // Check for custom template in DB first
-    const customTemplate = await emailTemplatesDb.getTemplate(input.letterType);
+    const customTemplate = await emailTemplatesDb.getTemplate(input.letterType, tenantIdFromContext(ctx));
     const overrides: { subject?: string; body?: string; attachmentUrl?: string | null; attachmentName?: string | null } = {};
     if (customTemplate) {
       overrides.subject = input.subject || customTemplate.subject;
@@ -1432,12 +1472,12 @@ export const crmRouter = router({
 
   // ─── Email Templates (Admin) ──────────────────────────────────────────
   emailTemplates: router({
-    list: protectedProcedure.query(async () => {
-      return emailTemplatesDb.listTemplates();
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return emailTemplatesDb.listTemplates(tenantIdFromContext(ctx));
     }),
 
-    get: protectedProcedure.input(z.object({ letterType: z.string() })).query(async ({ input }) => {
-      return emailTemplatesDb.getTemplate(input.letterType);
+    get: protectedProcedure.input(z.object({ letterType: z.string() })).query(async ({ ctx, input }) => {
+      return emailTemplatesDb.getTemplate(input.letterType, tenantIdFromContext(ctx));
     }),
 
     upsert: protectedProcedure.input(z.object({
@@ -1449,16 +1489,16 @@ export const crmRouter = router({
       attachmentName: z.string().nullable().optional(),
     })).mutation(async ({ ctx, input }) => {
       if (!isAdminRole(ctx.user.role)) throw new Error("Admin only");
-      return emailTemplatesDb.upsertTemplate(input);
+      return emailTemplatesDb.upsertTemplate(input, tenantIdFromContext(ctx));
     }),
 
-    listByCategory: protectedProcedure.input(z.object({ category: z.string() })).query(async ({ input }) => {
-      return emailTemplatesDb.listByCategory(input.category);
+    listByCategory: protectedProcedure.input(z.object({ category: z.string() })).query(async ({ ctx, input }) => {
+      return emailTemplatesDb.listByCategory(input.category, tenantIdFromContext(ctx));
     }),
 
     delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
       if (!isAdminRole(ctx.user.role)) throw new Error("Admin only");
-      await emailTemplatesDb.deleteById(input.id);
+      await emailTemplatesDb.deleteById(input.id, tenantIdFromContext(ctx));
       return { success: true };
     }),
 
@@ -1466,7 +1506,7 @@ export const crmRouter = router({
       letterType: z.string(),
     })).mutation(async ({ ctx, input }) => {
       if (!isAdminRole(ctx.user.role)) throw new Error("Admin only");
-      await emailTemplatesDb.resetTemplate(input.letterType);
+      await emailTemplatesDb.resetTemplate(input.letterType, tenantIdFromContext(ctx));
       return { success: true };
     }),
 
@@ -1479,7 +1519,7 @@ export const crmRouter = router({
       const { storagePut } = await import("./storage");
       const buffer = Buffer.from(input.fileBase64, "base64");
       const suffix = Math.random().toString(36).slice(2, 8);
-      const key = `email-attachments/${input.letterType}-${suffix}-${input.fileName}`;
+      const key = `tenants/${ctx.tenant!.id}/crm-email-attachments/${input.letterType}-${suffix}-${input.fileName}`;
       const { url } = await storagePut(key, buffer, "application/pdf");
       return { url, fileName: input.fileName };
     }),
@@ -1493,7 +1533,7 @@ export const crmRouter = router({
       const buffer = Buffer.from(input.fileBase64, "base64");
       const suffix = Math.random().toString(36).slice(2, 8);
       const ext = input.fileName.split(".").pop() || "png";
-      const key = `email-images/${suffix}-${input.fileName}`;
+      const key = `tenants/${ctx.tenant!.id}/crm-email-images/${suffix}-${input.fileName}`;
       const mime = input.mimeType || `image/${ext}`;
       const { url } = await storagePut(key, buffer, mime);
       return { url, fileName: input.fileName };
@@ -1525,12 +1565,15 @@ export const crmRouter = router({
     })).mutation(async ({ ctx, input }) => {
       await assertLeadAccess(ctx, input.leadId);
       const buffer = Buffer.from(input.fileBase64, "base64");
-      const fileKey = `crm-docs/${input.leadId}/${Date.now()}-${input.fileName}`;
+      const fileKey = `tenants/${ctx.tenant!.id}/crm-docs/${input.leadId}/${Date.now()}-${input.fileName}`;
       const { url } = await storagePut(fileKey, buffer, input.contentType);
       return crmDb.createDocument({ leadId: input.leadId, fileName: input.fileName, fileUrl: url, fileKey });
     }),
 
-    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ ctx, input }) => {
+      const document = await crmDb.getDocument(input.id);
+      if (!document) throw new Error("Document not found");
+      await assertLeadAccess(ctx, document.leadId);
       await crmDb.deleteDocument(input.id);
       return { success: true };
     }),

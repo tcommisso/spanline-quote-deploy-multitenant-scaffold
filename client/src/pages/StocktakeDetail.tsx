@@ -110,7 +110,7 @@ export default function StocktakeDetail() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => navigate("/manufacturing/stocktake")}>
+          <Button variant="ghost" size="sm" onClick={() => navigate("/inventory/stocktake")}>
             <ArrowLeft className="w-4 h-4" />
           </Button>
           <div>
@@ -128,7 +128,7 @@ export default function StocktakeDetail() {
         </div>
         <div className="flex gap-2">
           {isEditable && (
-            <Button variant="outline" onClick={() => navigate(`/manufacturing/stocktake/${stocktakeId}/count`)}>
+            <Button variant="outline" onClick={() => navigate(`/inventory/stocktake/${stocktakeId}/count`)}>
               <Smartphone className="w-4 h-4 mr-2" /> Mobile Count
             </Button>
           )}

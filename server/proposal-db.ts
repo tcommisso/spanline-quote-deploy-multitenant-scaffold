@@ -7,9 +7,15 @@ import {
   type InsertProposalActivity,
   quotes, quoteComponents, deckQuotes, eclipseQuotes, ssQuotes, crmLeads,
 } from "../drizzle/schema";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
+
+function scopedWhere(conditions: any[], tenantColumn: any, tenantId?: number | null) {
+  appendTenantScope(conditions, tenantColumn, tenantId);
+  return and(...conditions);
+}
 
 // ─── Proposal Number Generation ─────────────────────────────────────────────
 export async function getNextProposalNumber(): Promise<string> {
@@ -29,14 +35,18 @@ export async function createProposal(data: Omit<InsertProposal, "id" | "createdA
 }
 
 // ─── Update ─────────────────────────────────────────────────────────────────
-export async function updateProposal(id: number, data: Partial<InsertProposal>) {
-  await db.update(proposals).set(data as any).where(eq(proposals.id, id));
-  return getProposalById(id);
+export async function updateProposal(id: number, data: Partial<InsertProposal>, tenantId?: number | null) {
+  const conditions: any[] = [eq(proposals.id, id)];
+  appendTenantScope(conditions, proposals.tenantId, tenantId);
+  await db.update(proposals).set(data as any).where(and(...conditions));
+  return getProposalById(id, tenantId);
 }
 
 // ─── Get by ID ──────────────────────────────────────────────────────────────
-export async function getProposalById(id: number) {
-  const rows = await db.select().from(proposals).where(eq(proposals.id, id)).limit(1);
+export async function getProposalById(id: number, tenantId?: number | null) {
+  const conditions: any[] = [eq(proposals.id, id)];
+  appendTenantScope(conditions, proposals.tenantId, tenantId);
+  const rows = await db.select().from(proposals).where(and(...conditions)).limit(1);
   return rows[0] || null;
 }
 
@@ -45,8 +55,9 @@ export async function listProposals(filters?: {
   status?: string;
   clientId?: number;
   search?: string;
-}) {
+}, tenantId?: number | null) {
   const conditions: any[] = [];
+  appendTenantScope(conditions, proposals.tenantId, tenantId);
   if (filters?.status) conditions.push(eq(proposals.status, filters.status as any));
   if (filters?.clientId) conditions.push(eq(proposals.clientId, filters.clientId));
   if (filters?.search) {
@@ -65,12 +76,16 @@ export async function listProposals(filters?: {
   const clientIds = Array.from(new Set(rows.map(r => r.clientId).filter((id): id is number => id !== null && id !== undefined)));
   const clientMap: Record<number, string> = {};
   if (clientIds.length > 0) {
+    const leadConditions: any[] = [
+      sql`${crmLeads.id} IN (${sql.join(clientIds.map(id => sql`${id}`), sql`, `)})`,
+    ];
+    appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
     const leads = await db.select({
       id: crmLeads.id,
       firstName: crmLeads.contactFirstName,
       lastName: crmLeads.contactLastName,
       company: crmLeads.company,
-    }).from(crmLeads).where(sql`${crmLeads.id} IN (${sql.join(clientIds.map(id => sql`${id}`), sql`, `)})`);
+    }).from(crmLeads).where(and(...leadConditions));
     for (const l of leads) {
       const name = [l.firstName, l.lastName].filter(Boolean).join(" ");
       clientMap[l.id] = name || l.company || "Unknown";
@@ -84,9 +99,13 @@ export async function listProposals(filters?: {
 }
 
 // ─── Delete ─────────────────────────────────────────────────────────────────
-export async function deleteProposal(id: number) {
+export async function deleteProposal(id: number, tenantId?: number | null) {
+  const existing = await getProposalById(id, tenantId);
+  if (!existing) return;
   await db.delete(proposalActivity).where(eq(proposalActivity.proposalId, id));
-  await db.delete(proposals).where(eq(proposals.id, id));
+  const conditions: any[] = [eq(proposals.id, id)];
+  appendTenantScope(conditions, proposals.tenantId, tenantId);
+  await db.delete(proposals).where(and(...conditions));
 }
 
 // ─── Activity Log ───────────────────────────────────────────────────────────
@@ -94,7 +113,9 @@ export async function logActivity(data: Omit<InsertProposalActivity, "id" | "cre
   await db.insert(proposalActivity).values(data as any);
 }
 
-export async function getProposalActivity(proposalId: number) {
+export async function getProposalActivity(proposalId: number, tenantId?: number | null) {
+  const existing = await getProposalById(proposalId, tenantId);
+  if (!existing) return [];
   return db.select().from(proposalActivity)
     .where(eq(proposalActivity.proposalId, proposalId))
     .orderBy(desc(proposalActivity.createdAt))
@@ -120,7 +141,11 @@ export type SharedCostItem = { name: string; amount: number; source: string };
 // ─── Get Active Quotes for a Client ─────────────────────────────────────────
 // Returns worksPrice = materials + labour ONLY (no shared costs)
 // Also returns sharedCosts[] from each section for auto-populating master proposal
-export async function getActiveQuotesForClient(clientId: number) {
+export async function getActiveQuotesForClient(clientId: number, tenantId?: number | null) {
+  const client = await getClientInfo(clientId, tenantId);
+  if (!client) {
+    return { opq: [], deck: [], eclipse: [], securityScreens: [] };
+  }
   const opqRows = await db.select({
     id: quotes.id,
     quoteNumber: quotes.quoteNumber,
@@ -133,7 +158,7 @@ export async function getActiveQuotesForClient(clientId: number) {
     councilFees: quotes.councilFees,
     homeWarranty: quotes.homeWarranty,
   }).from(quotes).where(
-    and(eq(quotes.clientId, clientId), eq(quotes.archived, false))
+    scopedWhere([eq(quotes.clientId, clientId), eq(quotes.archived, false)], quotes.tenantId, tenantId)
   );
 
   // Compute OPQ totals — worksPrice = components only (materials + labour)
@@ -182,7 +207,9 @@ export async function getActiveQuotesForClient(clientId: number) {
     demolitionRequired: deckQuotes.demolitionRequired,
     engineeringRequired: deckQuotes.engineeringRequired,
     permitRequired: deckQuotes.permitRequired,
-  }).from(deckQuotes).where(eq(deckQuotes.clientId, clientId));
+  }).from(deckQuotes).where(
+    scopedWhere([eq(deckQuotes.clientId, clientId)], deckQuotes.tenantId, tenantId)
+  );
 
   // Eclipse: totalSellPriceEx = unit sell prices only (additional costs are separate columns)
   const eclipseRows = await db.select({
@@ -206,7 +233,9 @@ export async function getActiveQuotesForClient(clientId: number) {
     electrical: eclipseQuotes.electrical,
     otherCost: eclipseQuotes.otherCost,
     otherCostDescription: eclipseQuotes.otherCostDescription,
-  }).from(eclipseQuotes).where(eq(eclipseQuotes.clientId, clientId));
+  }).from(eclipseQuotes).where(
+    scopedWhere([eq(eclipseQuotes.clientId, clientId)], eclipseQuotes.tenantId, tenantId)
+  );
 
   const securityScreenRows = await db.select({
     id: ssQuotes.id,
@@ -214,7 +243,9 @@ export async function getActiveQuotesForClient(clientId: number) {
     status: ssQuotes.status,
     subtotalExGst: ssQuotes.subtotalExGst,
     totalIncGst: ssQuotes.totalIncGst,
-  }).from(ssQuotes).where(eq(ssQuotes.leadId, clientId));
+  }).from(ssQuotes).where(
+    scopedWhere([eq(ssQuotes.leadId, clientId)], ssQuotes.tenantId, tenantId)
+  );
 
   return {
     opq: opqWithTotals,
@@ -278,23 +309,34 @@ export async function getActiveQuotesForClient(clientId: number) {
 // ─── Update Section Quote Statuses ──────────────────────────────────────────
 export async function syncSectionStatuses(
   sections: { type: string; quoteId: number }[],
-  newStatus: "sent" | "accepted" | "lost"
+  newStatus: "sent" | "accepted" | "lost",
+  tenantId?: number | null
 ) {
   for (const s of sections) {
     if (s.type === "opq") {
-      await db.update(quotes).set({ status: newStatus }).where(eq(quotes.id, s.quoteId));
+      await db.update(quotes).set({ status: newStatus }).where(
+        scopedWhere([eq(quotes.id, s.quoteId)], quotes.tenantId, tenantId)
+      );
     } else if (s.type === "deck") {
-      await db.update(deckQuotes).set({ status: newStatus } as any).where(eq(deckQuotes.id, s.quoteId));
+      await db.update(deckQuotes).set({ status: newStatus } as any).where(
+        scopedWhere([eq(deckQuotes.id, s.quoteId)], deckQuotes.tenantId, tenantId)
+      );
     } else if (s.type === "eclipse") {
-      await db.update(eclipseQuotes).set({ status: newStatus } as any).where(eq(eclipseQuotes.id, s.quoteId));
+      await db.update(eclipseQuotes).set({ status: newStatus } as any).where(
+        scopedWhere([eq(eclipseQuotes.id, s.quoteId)], eclipseQuotes.tenantId, tenantId)
+      );
     } else if (s.type === "security_screen") {
-      await db.update(ssQuotes).set({ status: newStatus } as any).where(eq(ssQuotes.id, s.quoteId));
+      await db.update(ssQuotes).set({ status: newStatus } as any).where(
+        scopedWhere([eq(ssQuotes.id, s.quoteId)], ssQuotes.tenantId, tenantId)
+      );
     }
   }
 }
 
 // ─── Get Client Info ────────────────────────────────────────────────────────
-export async function getClientInfo(clientId: number) {
-  const rows = await db.select().from(crmLeads).where(eq(crmLeads.id, clientId)).limit(1);
+export async function getClientInfo(clientId: number, tenantId?: number | null) {
+  const rows = await db.select().from(crmLeads).where(
+    scopedWhere([eq(crmLeads.id, clientId)], crmLeads.tenantId, tenantId)
+  ).limit(1);
   return rows[0] || null;
 }

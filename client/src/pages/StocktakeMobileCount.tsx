@@ -319,7 +319,7 @@ export default function StocktakeMobileCount() {
   if (error || !data) {
     return (
       <div className="min-h-screen bg-muted/30 p-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/manufacturing/stocktake")}>
+        <Button variant="ghost" size="sm" onClick={() => navigate("/inventory/stocktake")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <Card className="mt-4">
@@ -339,7 +339,7 @@ export default function StocktakeMobileCount() {
     <div className="min-h-screen bg-muted/30 pb-24">
       <div className="sticky top-0 z-20 border-b bg-background/95 px-3 py-3 shadow-sm backdrop-blur">
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => navigate(`/manufacturing/stocktake/${stocktakeId}`)}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(`/inventory/stocktake/${stocktakeId}`)}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div className="min-w-0 flex-1">

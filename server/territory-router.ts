@@ -4,16 +4,33 @@
  * Used by the Territory Management admin page and the Zapier API auto-allocation.
  */
 import { z } from "zod";
-import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
+import { tenantAdminProcedure, tenantProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { territoryPostcodes, branches } from "../drizzle/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+
+function territoryScope(ctx: any, ...conditions: any[]) {
+  appendTenantScope(conditions, territoryPostcodes.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+async function assertBranchBelongsToTenant(db: any, branchId: number, tenantId: number | null) {
+  const conditions: any[] = [eq(branches.id, branchId)];
+  appendTenantScope(conditions, branches.tenantId, tenantId);
+  const [branch] = await db
+    .select({ id: branches.id })
+    .from(branches)
+    .where(and(...conditions))
+    .limit(1);
+  if (!branch) throw new Error("Branch not found for this tenant");
+}
 
 export const territoryRouter = router({
   /**
    * List all territories grouped by territory name with their postcodes and branch info.
    */
-  list: protectedProcedure.query(async () => {
+  list: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
     const rows = await db
@@ -24,6 +41,7 @@ export const territoryRouter = router({
         postcode: territoryPostcodes.postcode,
       })
       .from(territoryPostcodes)
+      .where(and(...territoryScope(ctx)))
       .orderBy(territoryPostcodes.territory, territoryPostcodes.postcode);
 
     // Group by territory
@@ -40,17 +58,20 @@ export const territoryRouter = router({
   /**
    * Add postcodes to a territory. Creates the territory if it doesn't exist.
    */
-  addPostcodes: adminProcedure
+  addPostcodes: tenantAdminProcedure
     .input(z.object({
       territory: z.string().min(1),
       branchId: z.number(),
       postcodes: z.array(z.string().min(1)).min(1),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      const tenantId = tenantIdFromContext(ctx);
+      await assertBranchBelongsToTenant(db, input.branchId, tenantId);
 
       const values = input.postcodes.map(pc => ({
+        tenantId,
         territory: input.territory,
         branchId: input.branchId,
         postcode: pc.trim(),
@@ -74,60 +95,61 @@ export const territoryRouter = router({
   /**
    * Remove specific postcodes from a territory by their IDs.
    */
-  removePostcodes: adminProcedure
+  removePostcodes: tenantAdminProcedure
     .input(z.object({
       ids: z.array(z.number()).min(1),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.delete(territoryPostcodes).where(inArray(territoryPostcodes.id, input.ids));
+      await db.delete(territoryPostcodes).where(and(...territoryScope(ctx, inArray(territoryPostcodes.id, input.ids))));
       return { removed: input.ids.length };
     }),
 
   /**
    * Rename a territory.
    */
-  rename: adminProcedure
+  rename: tenantAdminProcedure
     .input(z.object({
       oldName: z.string().min(1),
       newName: z.string().min(1),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
       await db.update(territoryPostcodes)
         .set({ territory: input.newName })
-        .where(eq(territoryPostcodes.territory, input.oldName));
+        .where(and(...territoryScope(ctx, eq(territoryPostcodes.territory, input.oldName))));
       return { success: true };
     }),
 
   /**
    * Change the branch assignment for an entire territory.
    */
-  changeBranch: adminProcedure
+  changeBranch: tenantAdminProcedure
     .input(z.object({
       territory: z.string().min(1),
       branchId: z.number(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      await assertBranchBelongsToTenant(db, input.branchId, tenantIdFromContext(ctx));
       await db.update(territoryPostcodes)
         .set({ branchId: input.branchId })
-        .where(eq(territoryPostcodes.territory, input.territory));
+        .where(and(...territoryScope(ctx, eq(territoryPostcodes.territory, input.territory))));
       return { success: true };
     }),
 
   /**
    * Delete an entire territory (removes all its postcodes).
    */
-  deleteTerritory: adminProcedure
+  deleteTerritory: tenantAdminProcedure
     .input(z.object({ territory: z.string().min(1) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
-      await db.delete(territoryPostcodes).where(eq(territoryPostcodes.territory, input.territory));
+      await db.delete(territoryPostcodes).where(and(...territoryScope(ctx, eq(territoryPostcodes.territory, input.territory))));
       return { success: true };
     }),
 
@@ -135,15 +157,15 @@ export const territoryRouter = router({
    * Look up branch for a given postcode (used by API auto-allocation).
    * Returns the first matching territory's branchId (priority = order of territory creation).
    */
-  lookupPostcode: protectedProcedure
+  lookupPostcode: tenantProcedure
     .input(z.object({ postcode: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return null;
       const [row] = await db
         .select({ branchId: territoryPostcodes.branchId, territory: territoryPostcodes.territory })
         .from(territoryPostcodes)
-        .where(eq(territoryPostcodes.postcode, input.postcode.trim()))
+        .where(and(...territoryScope(ctx, eq(territoryPostcodes.postcode, input.postcode.trim()))))
         .limit(1);
       return row || null;
     }),
@@ -152,7 +174,7 @@ export const territoryRouter = router({
    * Territory coverage report: returns all mapped postcodes grouped by territory/branch,
    * plus a list of postcodes from CRM leads that are NOT in any territory.
    */
-  coverageReport: protectedProcedure.query(async () => {
+  coverageReport: tenantProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return { mapped: [], unmapped: [], stats: { totalMapped: 0, totalUnmapped: 0, totalTerritories: 0 } };
 
@@ -164,14 +186,17 @@ export const territoryRouter = router({
         postcode: territoryPostcodes.postcode,
       })
       .from(territoryPostcodes)
+      .where(and(...territoryScope(ctx)))
       .orderBy(territoryPostcodes.territory, territoryPostcodes.postcode);
 
     // Get all unique postcodes from CRM leads
     const { crmLeads } = await import("../drizzle/schema");
+    const leadConditions: any[] = [sql`${crmLeads.postcode} IS NOT NULL AND ${crmLeads.postcode} != ''`];
+    appendTenantScope(leadConditions, crmLeads.tenantId, tenantIdFromContext(ctx));
     const leadPostcodes = await db
       .selectDistinct({ postcode: crmLeads.postcode })
       .from(crmLeads)
-      .where(sql`${crmLeads.postcode} IS NOT NULL AND ${crmLeads.postcode} != ''`);
+      .where(and(...leadConditions));
 
     // Build set of mapped postcodes
     const mappedSet = new Set(mappedRows.map(r => r.postcode));
@@ -184,13 +209,15 @@ export const territoryRouter = router({
     // Count leads per unmapped postcode
     const unmappedWithCounts: { postcode: string; leadCount: number }[] = [];
     if (unmapped.length > 0) {
+      const leadCountConditions: any[] = [inArray(crmLeads.postcode, unmapped)];
+      appendTenantScope(leadCountConditions, crmLeads.tenantId, tenantIdFromContext(ctx));
       const counts = await db
         .select({
           postcode: crmLeads.postcode,
           count: sql<number>`COUNT(*)`.as("count"),
         })
         .from(crmLeads)
-        .where(inArray(crmLeads.postcode, unmapped))
+        .where(and(...leadCountConditions))
         .groupBy(crmLeads.postcode)
         .orderBy(sql`COUNT(*) DESC`);
       for (const c of counts) {
@@ -225,15 +252,17 @@ export const territoryRouter = router({
  * DB-backed postcode → branchId lookup for use in zapier-api.ts and other server code.
  * Replaces the static config file lookup.
  */
-export async function getBranchIdForPostcodeFromDb(postcode: string | undefined | null): Promise<{ branchId: number; territory: string } | null> {
+export async function getBranchIdForPostcodeFromDb(postcode: string | undefined | null, tenantId?: number | null): Promise<{ branchId: number; territory: string } | null> {
   if (!postcode) return null;
   const db = await getDb();
   if (!db) return null;
   const cleaned = postcode.trim();
+  const conditions: any[] = [eq(territoryPostcodes.postcode, cleaned)];
+  appendTenantScope(conditions, territoryPostcodes.tenantId, tenantId);
   const [row] = await db
     .select({ branchId: territoryPostcodes.branchId, territory: territoryPostcodes.territory })
     .from(territoryPostcodes)
-    .where(eq(territoryPostcodes.postcode, cleaned))
+    .where(and(...conditions))
     .limit(1);
   return row || null;
 }
@@ -241,9 +270,11 @@ export async function getBranchIdForPostcodeFromDb(postcode: string | undefined 
 /**
  * Get branch manager info for a given branchId.
  */
-export async function getBranchManager(branchId: number): Promise<{ managerUserId: number | null; managerName: string | null; email: string | null; managerEmail: string | null } | null> {
+export async function getBranchManager(branchId: number, tenantId?: number | null): Promise<{ managerUserId: number | null; managerName: string | null; email: string | null; managerEmail: string | null } | null> {
   const db = await getDb();
   if (!db) return null;
+  const conditions: any[] = [eq(branches.id, branchId)];
+  appendTenantScope(conditions, branches.tenantId, tenantId);
   const [row] = await db
     .select({
       managerUserId: branches.managerUserId,
@@ -252,7 +283,7 @@ export async function getBranchManager(branchId: number): Promise<{ managerUserI
       managerEmail: branches.managerEmail,
     })
     .from(branches)
-    .where(eq(branches.id, branchId))
+    .where(and(...conditions))
     .limit(1);
   return row || null;
 }

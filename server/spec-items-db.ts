@@ -2,22 +2,35 @@ import { eq, and, asc, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { specMappings, specMappingHistory, quoteItems, products } from "../drizzle/schema";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
 
+function withTenant(conditions: any[], column: any, tenantId?: number | null) {
+  appendTenantScope(conditions, column, tenantId);
+  return and(...conditions);
+}
+
 // ─── Spec Mappings CRUD ─────────────────────────────────────────────────────
 
-export async function listSpecMappings() {
-  return db.select().from(specMappings).orderBy(asc(specMappings.sortOrder), asc(specMappings.id));
+export async function listSpecMappings(tenantId?: number | null) {
+  const conditions: any[] = [];
+  appendTenantScope(conditions, specMappings.tenantId, tenantId);
+  return db.select().from(specMappings)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(asc(specMappings.sortOrder), asc(specMappings.id));
 }
 
-export async function getActiveSpecMappings() {
-  return db.select().from(specMappings).where(eq(specMappings.active, true)).orderBy(asc(specMappings.sortOrder));
+export async function getActiveSpecMappings(tenantId?: number | null) {
+  return db.select().from(specMappings)
+    .where(withTenant([eq(specMappings.active, true)], specMappings.tenantId, tenantId))
+    .orderBy(asc(specMappings.sortOrder));
 }
 
-export async function getSpecMapping(id: number) {
-  const [row] = await db.select().from(specMappings).where(eq(specMappings.id, id));
+export async function getSpecMapping(id: number, tenantId?: number | null) {
+  const [row] = await db.select().from(specMappings)
+    .where(withTenant([eq(specMappings.id, id)], specMappings.tenantId, tenantId));
   return row || null;
 }
 
@@ -35,8 +48,8 @@ export async function createSpecMapping(data: {
   uom?: string | null;
   sortOrder?: number;
   active?: boolean;
-}) {
-  const [result] = await db.insert(specMappings).values(data as any);
+}, tenantId?: number | null) {
+  const [result] = await db.insert(specMappings).values({ ...data, tenantId } as any);
   return result.insertId;
 }
 
@@ -54,12 +67,15 @@ export async function updateSpecMapping(id: number, data: Partial<{
   uom: string | null;
   sortOrder: number;
   active: boolean;
-}>) {
-  await db.update(specMappings).set(data as any).where(eq(specMappings.id, id));
+}>, tenantId?: number | null) {
+  await db.update(specMappings)
+    .set(data as any)
+    .where(withTenant([eq(specMappings.id, id)], specMappings.tenantId, tenantId));
 }
 
-export async function deleteSpecMapping(id: number) {
-  await db.delete(specMappings).where(eq(specMappings.id, id));
+export async function deleteSpecMapping(id: number, tenantId?: number | null) {
+  await db.delete(specMappings)
+    .where(withTenant([eq(specMappings.id, id)], specMappings.tenantId, tenantId));
 }
 
 // ─── Spec Mapping History ──────────────────────────────────────────────────
@@ -71,37 +87,42 @@ export async function logMappingChange(data: {
   action: string;
   changes?: Array<{ field: string; oldValue: any; newValue: any }> | null;
   snapshot?: Record<string, any> | null;
-}) {
-  await db.insert(specMappingHistory).values(data as any);
+}, tenantId?: number | null) {
+  await db.insert(specMappingHistory).values({ ...data, tenantId } as any);
 }
 
-export async function getMappingHistory(mappingId: number) {
+export async function getMappingHistory(mappingId: number, tenantId?: number | null) {
   return db.select().from(specMappingHistory)
-    .where(eq(specMappingHistory.mappingId, mappingId))
+    .where(withTenant([eq(specMappingHistory.mappingId, mappingId)], specMappingHistory.tenantId, tenantId))
     .orderBy(desc(specMappingHistory.createdAt));
 }
 
-export async function getAllMappingHistory(limit = 50) {
+export async function getAllMappingHistory(limit = 50, tenantId?: number | null) {
+  const conditions: any[] = [];
+  appendTenantScope(conditions, specMappingHistory.tenantId, tenantId);
   return db.select().from(specMappingHistory)
+    .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(specMappingHistory.createdAt))
     .limit(limit);
 }
 
 // ─── Quote Items CRUD ───────────────────────────────────────────────────────
 
-export async function getQuoteItems(quoteId: number) {
-  return db.select().from(quoteItems).where(eq(quoteItems.quoteId, quoteId)).orderBy(asc(quoteItems.sortOrder), asc(quoteItems.id));
+export async function getQuoteItems(quoteId: number, tenantId?: number | null) {
+  return db.select().from(quoteItems)
+    .where(withTenant([eq(quoteItems.quoteId, quoteId)], quoteItems.tenantId, tenantId))
+    .orderBy(asc(quoteItems.sortOrder), asc(quoteItems.id));
 }
 
-export async function getAutoItems(quoteId: number) {
+export async function getAutoItems(quoteId: number, tenantId?: number | null) {
   return db.select().from(quoteItems).where(
-    and(eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "auto"))
+    withTenant([eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "auto")], quoteItems.tenantId, tenantId)
   );
 }
 
-export async function getManualItems(quoteId: number) {
+export async function getManualItems(quoteId: number, tenantId?: number | null) {
   return db.select().from(quoteItems).where(
-    and(eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "manual"))
+    withTenant([eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "manual")], quoteItems.tenantId, tenantId)
   );
 }
 
@@ -120,9 +141,10 @@ export async function createQuoteItem(data: {
   needsConfirmation?: boolean;
   notes?: string | null;
   sortOrder?: number;
-}) {
+}, tenantId?: number | null) {
   const [result] = await db.insert(quoteItems).values({
     ...data,
+    tenantId,
     qty: String(data.qty),
     costRate: String(data.costRate),
     sellRate: String(data.sellRate),
@@ -145,10 +167,11 @@ export async function createQuoteItemsBatch(items: Array<{
   needsConfirmation?: boolean;
   notes?: string | null;
   sortOrder?: number;
-}>) {
+}>, tenantId?: number | null) {
   if (items.length === 0) return;
   const values = items.map((item, idx) => ({
     ...item,
+    tenantId,
     qty: String(item.qty),
     costRate: String(item.costRate),
     sellRate: String(item.sellRate),
@@ -168,36 +191,40 @@ export async function updateQuoteItem(id: number, data: Partial<{
   notes: string | null;
   sortOrder: number;
   source: "auto" | "manual";
-}>) {
+}>, tenantId?: number | null) {
   const updateData: any = { ...data };
   if (data.qty !== undefined) updateData.qty = String(data.qty);
   if (data.costRate !== undefined) updateData.costRate = String(data.costRate);
   if (data.sellRate !== undefined) updateData.sellRate = String(data.sellRate);
-  await db.update(quoteItems).set(updateData).where(eq(quoteItems.id, id));
+  await db.update(quoteItems).set(updateData)
+    .where(withTenant([eq(quoteItems.id, id)], quoteItems.tenantId, tenantId));
 }
 
-export async function deleteQuoteItem(id: number) {
-  await db.delete(quoteItems).where(eq(quoteItems.id, id));
+export async function deleteQuoteItem(id: number, tenantId?: number | null) {
+  await db.delete(quoteItems)
+    .where(withTenant([eq(quoteItems.id, id)], quoteItems.tenantId, tenantId));
 }
 
-export async function deleteAutoItems(quoteId: number) {
+export async function deleteAutoItems(quoteId: number, tenantId?: number | null) {
   await db.delete(quoteItems).where(
-    and(eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "auto"))
+    withTenant([eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "auto")], quoteItems.tenantId, tenantId)
   );
 }
 
-export async function flagManualItemsForConfirmation(quoteId: number) {
+export async function flagManualItemsForConfirmation(quoteId: number, tenantId?: number | null) {
   await db.update(quoteItems)
     .set({ needsConfirmation: true })
-    .where(and(eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "manual")));
+    .where(withTenant([eq(quoteItems.quoteId, quoteId), eq(quoteItems.source, "manual")], quoteItems.tenantId, tenantId));
 }
 
-export async function confirmQuoteItem(id: number) {
-  await db.update(quoteItems).set({ needsConfirmation: false }).where(eq(quoteItems.id, id));
+export async function confirmQuoteItem(id: number, tenantId?: number | null) {
+  await db.update(quoteItems).set({ needsConfirmation: false })
+    .where(withTenant([eq(quoteItems.id, id)], quoteItems.tenantId, tenantId));
 }
 
-export async function confirmAllItems(quoteId: number) {
-  await db.update(quoteItems).set({ needsConfirmation: false }).where(eq(quoteItems.quoteId, quoteId));
+export async function confirmAllItems(quoteId: number, tenantId?: number | null) {
+  await db.update(quoteItems).set({ needsConfirmation: false })
+    .where(withTenant([eq(quoteItems.quoteId, quoteId)], quoteItems.tenantId, tenantId));
 }
 
 // ─── Product Lookup ─────────────────────────────────────────────────────────

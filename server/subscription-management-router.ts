@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { adminProcedure, router } from "./_core/trpc";
+import { tenantAdminProcedure as adminProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
 import { cpcSubscriptions, cpcPlans, portalAccess, constructionJobs } from "../drizzle/schema";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { getStripe } from "./stripe";
 
 // ─── Subscription Management Admin Router ──────────────────────────────────
@@ -11,7 +11,7 @@ import { getStripe } from "./stripe";
 export const subscriptionManagementRouter = router({
 
   /** List all CPC subscriptions with joined plan + client info from DB */
-  listSubscriptions: adminProcedure.query(async () => {
+  listSubscriptions: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -45,6 +45,7 @@ export const subscriptionManagementRouter = router({
       .leftJoin(cpcPlans, eq(cpcSubscriptions.planId, cpcPlans.id))
       .leftJoin(portalAccess, eq(cpcSubscriptions.portalAccessId, portalAccess.id))
       .leftJoin(constructionJobs, eq(cpcSubscriptions.constructionJobId, constructionJobs.id))
+      .where(eq(cpcSubscriptions.tenantId, ctx.tenant!.id))
       .orderBy(desc(cpcSubscriptions.createdAt));
 
     // Enrich with Stripe data where available
@@ -118,7 +119,7 @@ export const subscriptionManagementRouter = router({
     .input(z.object({
       subscriptionId: z.number(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -126,7 +127,10 @@ export const subscriptionManagementRouter = router({
       const [sub] = await db
         .select()
         .from(cpcSubscriptions)
-        .where(eq(cpcSubscriptions.id, input.subscriptionId));
+        .where(and(
+          eq(cpcSubscriptions.id, input.subscriptionId),
+          eq(cpcSubscriptions.tenantId, ctx.tenant!.id)
+        ));
 
       if (!sub) throw new TRPCError({ code: "NOT_FOUND", message: "Subscription not found" });
 
@@ -181,7 +185,7 @@ export const subscriptionManagementRouter = router({
     }),
 
   /** Get subscription stats summary */
-  getStats: adminProcedure.query(async () => {
+  getStats: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -194,7 +198,8 @@ export const subscriptionManagementRouter = router({
         priceLarge: cpcPlans.priceLarge,
       })
       .from(cpcSubscriptions)
-      .leftJoin(cpcPlans, eq(cpcSubscriptions.planId, cpcPlans.id));
+      .leftJoin(cpcPlans, eq(cpcSubscriptions.planId, cpcPlans.id))
+      .where(eq(cpcSubscriptions.tenantId, ctx.tenant!.id));
 
     let totalActive = 0;
     let totalCancelled = 0;

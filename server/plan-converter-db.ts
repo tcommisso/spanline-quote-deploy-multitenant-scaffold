@@ -2,35 +2,44 @@ import { getDb } from "./db";
 import { planConversions, planConversionElements, productImages } from "../drizzle/schema";
 import { eq, desc, and, like, or, sql, inArray } from "drizzle-orm";
 
-export async function listPlanConversions(userId: number) {
+export async function listPlanConversions(userId: number, tenantId?: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(planConversions).where(eq(planConversions.userId, userId)).orderBy(desc(planConversions.updatedAt));
+  const conditions = [eq(planConversions.userId, userId)];
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  return db.select().from(planConversions).where(and(...conditions)).orderBy(desc(planConversions.updatedAt));
 }
 
-export async function listAllPlanConversions() {
+export async function listAllPlanConversions(tenantId?: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(planConversions).orderBy(desc(planConversions.updatedAt));
+  let query = db.select().from(planConversions).$dynamic();
+  if (tenantId) {
+    query = query.where(eq(planConversions.tenantId, tenantId));
+  }
+  return query.orderBy(desc(planConversions.updatedAt));
 }
 
-export async function listPlanConversionsByJob(jobId: number) {
+export async function listPlanConversionsByJob(jobId: number, tenantId?: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(planConversions).where(eq(planConversions.jobId, jobId)).orderBy(desc(planConversions.updatedAt));
+  const conditions = [eq(planConversions.jobId, jobId)];
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  return db.select().from(planConversions).where(and(...conditions)).orderBy(desc(planConversions.updatedAt));
 }
 
-export async function getPlanConversion(id: number, userId?: number) {
+export async function getPlanConversion(id: number, userId?: number, tenantId?: number) {
   const db = await getDb();
   if (!db) return null;
-  const conditions = userId
-    ? and(eq(planConversions.id, id), eq(planConversions.userId, userId))
-    : eq(planConversions.id, id);
-  const result = await db.select().from(planConversions).where(conditions).limit(1);
+  const conditions = [eq(planConversions.id, id)];
+  if (userId) conditions.push(eq(planConversions.userId, userId));
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  const result = await db.select().from(planConversions).where(and(...conditions)).limit(1);
   return result[0] || null;
 }
 
 export async function createPlanConversion(data: {
+  tenantId?: number;
   userId: number;
   projectTitle: string;
   diagramType: "floor_plan" | "elevation_front" | "elevation_side" | "elevation_rear";
@@ -64,27 +73,38 @@ export async function updatePlanConversion(id: number, data: Partial<{
   drawnBy: string;
   revision: string;
   jobId: number;
-}>) {
+}>, tenantId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(planConversions).set(data).where(eq(planConversions.id, id));
+  const conditions = [eq(planConversions.id, id)];
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  await db.update(planConversions).set(data).where(and(...conditions));
 }
 
-export async function deletePlanConversion(id: number, userId: number) {
+export async function deletePlanConversion(id: number, userId: number, tenantId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const conversion = await getPlanConversion(id, userId, tenantId);
+  if (!conversion) return false;
   await db.delete(planConversionElements).where(eq(planConversionElements.conversionId, id));
-  const result = await db.delete(planConversions).where(
-    and(eq(planConversions.id, id), eq(planConversions.userId, userId))
-  );
+  const conditions = [eq(planConversions.id, id), eq(planConversions.userId, userId)];
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  const result = await db.delete(planConversions).where(and(...conditions));
   return result[0].affectedRows > 0;
 }
 
-export async function adminDeletePlanConversion(id: number) {
+export async function adminDeletePlanConversion(id: number, tenantId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  if (tenantId) {
+    const conversion = await getPlanConversion(id, undefined, tenantId);
+    if (!conversion) return false;
+  }
   await db.delete(planConversionElements).where(eq(planConversionElements.conversionId, id));
-  await db.delete(planConversions).where(eq(planConversions.id, id));
+  const conditions = [eq(planConversions.id, id)];
+  if (tenantId) conditions.push(eq(planConversions.tenantId, tenantId));
+  await db.delete(planConversions).where(and(...conditions));
+  return true;
 }
 
 export async function getConversionElements(conversionId: number) {
@@ -132,43 +152,62 @@ export async function setConversionElements(conversionId: number, elements: Arra
 
 // ─── Product Images ──────────────────────────────────────────────────────────
 
-export async function listProductImages(category?: string) {
+function productImageConditions(tenantId?: number | null, ...conditions: any[]) {
+  const scoped = [...conditions];
+  if (tenantId) scoped.push(eq(productImages.tenantId, tenantId));
+  return scoped;
+}
+
+export async function listProductImages(category?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  if (category) {
-    return db.select().from(productImages).where(eq(productImages.category, category)).orderBy(productImages.sortOrder);
+  const conditions = productImageConditions(
+    tenantId,
+    ...(category ? [eq(productImages.category, category)] : [])
+  );
+  if (conditions.length) {
+    return db.select().from(productImages).where(and(...conditions)).orderBy(productImages.sortOrder);
   }
   return db.select().from(productImages).orderBy(productImages.sortOrder);
 }
 
-export async function getProductImagesByCode(code: string) {
+export async function getProductImagesByCode(code: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(productImages).where(eq(productImages.code, code)).orderBy(productImages.sortOrder);
+  return db
+    .select()
+    .from(productImages)
+    .where(and(...productImageConditions(tenantId, eq(productImages.code, code))))
+    .orderBy(productImages.sortOrder);
 }
 
-export async function searchProductImages(query: string) {
+export async function searchProductImages(query: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
   const searchTerm = `%${query}%`;
-  return db.select().from(productImages).where(
+  return db.select().from(productImages).where(and(
+    ...productImageConditions(tenantId),
     or(
       like(productImages.code, searchTerm),
       like(productImages.name, searchTerm),
       like(productImages.description, searchTerm),
       sql`JSON_SEARCH(${productImages.tags}, 'one', ${searchTerm}) IS NOT NULL`
     )
-  ).orderBy(productImages.sortOrder);
+  )).orderBy(productImages.sortOrder);
 }
 
-export async function getProductImageById(id: number) {
+export async function getProductImageById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  const rows = await db.select().from(productImages).where(eq(productImages.id, id));
+  const rows = await db
+    .select()
+    .from(productImages)
+    .where(and(...productImageConditions(tenantId, eq(productImages.id, id))));
   return rows[0] ?? null;
 }
 
 export async function createProductImage(data: {
+  tenantId?: number | null;
   category: string;
   code: string;
   name: string;
@@ -182,6 +221,7 @@ export async function createProductImage(data: {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const [result] = await db.insert(productImages).values({
+    tenantId: data.tenantId ?? null,
     category: data.category,
     code: data.code,
     name: data.name,
@@ -196,6 +236,7 @@ export async function createProductImage(data: {
 }
 
 export async function updateProductImage(id: number, data: {
+  tenantId?: number | null;
   category?: string;
   code?: string;
   name?: string;
@@ -218,26 +259,33 @@ export async function updateProductImage(id: number, data: {
   if (data.pageNumber !== undefined) updates.pageNumber = data.pageNumber;
   if (data.tags !== undefined) updates.tags = data.tags;
   if (data.sortOrder !== undefined) updates.sortOrder = data.sortOrder;
-  await db.update(productImages).set(updates).where(eq(productImages.id, id));
+  const conditions = productImageConditions(data.tenantId, eq(productImages.id, id));
+  await db.update(productImages).set(updates).where(and(...conditions));
 }
 
-export async function deleteProductImage(id: number) {
+export async function deleteProductImage(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.delete(productImages).where(eq(productImages.id, id));
+  await db.delete(productImages).where(and(...productImageConditions(tenantId, eq(productImages.id, id))));
 }
 
-export async function reorderProductImages(ids: number[]) {
+export async function reorderProductImages(ids: number[], tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   // Update sortOrder for each image based on its position in the ids array
   for (let i = 0; i < ids.length; i++) {
-    await db.update(productImages).set({ sortOrder: i }).where(eq(productImages.id, ids[i]));
+    await db
+      .update(productImages)
+      .set({ sortOrder: i })
+      .where(and(...productImageConditions(tenantId, eq(productImages.id, ids[i]))));
   }
 }
 
-export async function bulkUpdateProductImageCategory(ids: number[], category: string) {
+export async function bulkUpdateProductImageCategory(ids: number[], category: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(productImages).set({ category }).where(inArray(productImages.id, ids));
+  await db
+    .update(productImages)
+    .set({ category })
+    .where(and(...productImageConditions(tenantId, inArray(productImages.id, ids))));
 }

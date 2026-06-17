@@ -261,8 +261,9 @@ export const constructionRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new Error("Database unavailable");
+        const tenantId = tenantIdFromContext(ctx);
         const [result] = await db.insert(constructionJobs).values({
-          tenantId: tenantIdFromContext(ctx),
+          tenantId,
           quoteId: input.quoteId || null,
           quoteNumber: input.quoteNumber || null,
           clientName: input.clientName,
@@ -278,6 +279,7 @@ export const constructionRouter = router({
 
         for (const stage of DEFAULT_STAGES) {
           await db.insert(constructionProgress).values({
+            tenantId,
             jobId,
             stage,
             status: "pending",
@@ -312,6 +314,7 @@ export const constructionRouter = router({
 
         for (const stage of DEFAULT_STAGES) {
           await db.insert(constructionProgress).values({
+            tenantId: quote.tenantId ?? tenantId,
             jobId,
             stage,
             status: "pending",
@@ -802,6 +805,7 @@ export const constructionRouter = router({
         const [job] = await db.select({ id: constructionJobs.id }).from(constructionJobs).where(and(...jobConditions));
         if (!job) throw new Error("Job not found");
         const [result] = await db.insert(constructionProgress).values({
+          tenantId: tenantIdFromContext(ctx),
           jobId: input.jobId,
           stage: input.stage,
           status: "pending",

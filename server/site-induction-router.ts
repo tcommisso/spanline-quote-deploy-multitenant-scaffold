@@ -5,7 +5,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { protectedProcedure, publicProcedure, router, middleware } from "./_core/trpc";
+import { publicProcedure, router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import {
   createSiteInduction,
   getSiteInductionById,
@@ -254,18 +254,18 @@ export const siteInductionRouter = router({
   // List all inductions for a job (admin view)
   listByJob: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
-      const inductions = await getSiteInductionsByJob(input.jobId);
+    .query(async ({ input, ctx }) => {
+      const inductions = await getSiteInductionsByJob(input.jobId, ctx.tenant!.id);
       return inductions;
     }),
 
   // Get assigned trades for a job with their induction status
   getJobInductionStatus: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const [assignedTrades, inductions] = await Promise.all([
-        getAssignedInstallersForJob(input.jobId),
-        getSiteInductionsByJob(input.jobId),
+        getAssignedInstallersForJob(input.jobId, ctx.tenant!.id),
+        getSiteInductionsByJob(input.jobId, ctx.tenant!.id),
       ]);
       const inductionMap = new Map(inductions.map(i => [i.installerId, i]));
       return assignedTrades.map(trade => ({
@@ -278,8 +278,8 @@ export const siteInductionRouter = router({
   // Get a single induction
   getById: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
-      const induction = await getSiteInductionById(input.id);
+    .query(async ({ input, ctx }) => {
+      const induction = await getSiteInductionById(input.id, ctx.tenant!.id);
       if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
       return induction;
     }),
@@ -292,7 +292,7 @@ export const siteInductionRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       // Check if one already exists
-      const existing = await getSiteInductionByJobAndInstaller(input.jobId, input.installerId);
+      const existing = await getSiteInductionByJobAndInstaller(input.jobId, input.installerId, ctx.tenant!.id);
       if (existing) {
         throw new TRPCError({ code: "CONFLICT", message: "An induction already exists for this trade on this job" });
       }
@@ -300,7 +300,7 @@ export const siteInductionRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
       const [installer] = await db.select().from(constructionInstallers)
-        .where(eq(constructionInstallers.id, input.installerId)).limit(1);
+        .where(and(eq(constructionInstallers.id, input.installerId), eq(constructionInstallers.tenantId, ctx.tenant!.id))).limit(1);
       if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Installer not found" });
 
       const id = await createSiteInduction({
@@ -319,9 +319,9 @@ export const siteInductionRouter = router({
   // Create inductions for all assigned trades on a job
   createForAllTrades: protectedProcedure
     .input(z.object({ jobId: z.number() }))
-    .mutation(async ({ input }) => {
-      const assignedTrades = await getAssignedInstallersForJob(input.jobId);
-      const existingInductions = await getSiteInductionsByJob(input.jobId);
+    .mutation(async ({ input, ctx }) => {
+      const assignedTrades = await getAssignedInstallersForJob(input.jobId, ctx.tenant!.id);
+      const existingInductions = await getSiteInductionsByJob(input.jobId, ctx.tenant!.id);
       const existingInstallerIds = new Set(existingInductions.map(i => i.installerId));
       let created = 0;
       for (const trade of assignedTrades) {
@@ -329,7 +329,7 @@ export const siteInductionRouter = router({
           const db = await getDb();
           if (!db) continue;
           const [installer] = await db.select().from(constructionInstallers)
-            .where(eq(constructionInstallers.id, trade.installerId)).limit(1);
+            .where(and(eq(constructionInstallers.id, trade.installerId), eq(constructionInstallers.tenantId, ctx.tenant!.id))).limit(1);
           if (!installer) continue;
           await createSiteInduction({
             jobId: input.jobId,
@@ -356,7 +356,7 @@ export const siteInductionRouter = router({
       siteChecklist: z.array(siteChecklistItemSchema),
     }))
     .mutation(async ({ input, ctx }) => {
-      const induction = await getSiteInductionById(input.id);
+      const induction = await getSiteInductionById(input.id, ctx.tenant!.id);
       if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
       if (induction.status === "completed") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "This induction has already been completed" });
@@ -370,20 +370,20 @@ export const siteInductionRouter = router({
         completedAt: now,
         inductedByName: ctx.user?.name || "System",
         inductedByUserId: ctx.user?.id,
-      });
+      }, ctx.tenant!.id);
 
       // Generate PDF
-      const updated = await getSiteInductionById(input.id);
+      const updated = await getSiteInductionById(input.id, ctx.tenant!.id);
       if (updated) {
         const db = await getDb();
         if (db) {
           const [job] = await db.select().from(constructionJobs)
-            .where(eq(constructionJobs.id, updated.jobId)).limit(1);
+            .where(and(eq(constructionJobs.id, updated.jobId), eq(constructionJobs.tenantId, ctx.tenant!.id))).limit(1);
           try {
             const pdfBuffer = await generateInductionPdf(updated, job);
             const pdfKey = `inductions/induction-${input.id}-${Date.now()}.pdf`;
             const { url } = await storagePut(pdfKey, pdfBuffer, "application/pdf");
-            await updateSiteInduction(input.id, { pdfUrl: url });
+            await updateSiteInduction(input.id, { pdfUrl: url }, ctx.tenant!.id);
           } catch (err) {
             console.error("[SiteInduction] PDF generation failed:", err);
           }
@@ -405,7 +405,7 @@ export const siteInductionRouter = router({
                     <strong>Completed:</strong> ${now.toLocaleString("en-AU", { timeZone: "Australia/Sydney" })}</p>
                   `,
                 });
-                await updateSiteInduction(input.id, { notifiedSupervisorAt: now });
+                await updateSiteInduction(input.id, { notifiedSupervisorAt: now }, ctx.tenant!.id);
               } catch (err) {
                 console.error("[SiteInduction] Supervisor notification failed:", err);
               }
@@ -425,13 +425,13 @@ export const siteInductionRouter = router({
       siteChecklist: z.array(siteChecklistItemSchema),
     }))
     .mutation(async ({ input, ctx }) => {
-      const induction = await getSiteInductionById(input.id);
-      if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
-
       // Verify trade portal access
       if (!ctx.tradePortalAccess) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Trade portal session required" });
       }
+      const tenantId = ctx.tradePortalAccess.tenantId ?? undefined;
+      const induction = await getSiteInductionById(input.id, tenantId);
+      if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
       if (induction.installerId !== ctx.tradePortalAccess.installerId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "This induction belongs to a different trade" });
       }
@@ -447,20 +447,22 @@ export const siteInductionRouter = router({
         status: "completed",
         completedAt: now,
         inductedByName: induction.contractorName,
-      });
+      }, tenantId);
 
       // Generate PDF
-      const updated = await getSiteInductionById(input.id);
+      const updated = await getSiteInductionById(input.id, tenantId);
       if (updated) {
         const db = await getDb();
         if (db) {
           const [job] = await db.select().from(constructionJobs)
-            .where(eq(constructionJobs.id, updated.jobId)).limit(1);
+            .where(tenantId
+              ? and(eq(constructionJobs.id, updated.jobId), eq(constructionJobs.tenantId, tenantId))
+              : eq(constructionJobs.id, updated.jobId)).limit(1);
           try {
             const pdfBuffer = await generateInductionPdf(updated, job);
             const pdfKey = `inductions/induction-${input.id}-${Date.now()}.pdf`;
             const { url } = await storagePut(pdfKey, pdfBuffer, "application/pdf");
-            await updateSiteInduction(input.id, { pdfUrl: url });
+            await updateSiteInduction(input.id, { pdfUrl: url }, tenantId);
           } catch (err) {
             console.error("[SiteInduction] PDF generation failed:", err);
           }
@@ -482,7 +484,7 @@ export const siteInductionRouter = router({
                     <strong>Completed:</strong> ${now.toLocaleString("en-AU", { timeZone: "Australia/Sydney" })}</p>
                   `,
                 });
-                await updateSiteInduction(input.id, { notifiedSupervisorAt: now });
+                await updateSiteInduction(input.id, { notifiedSupervisorAt: now }, tenantId);
               } catch (err) {
                 console.error("[SiteInduction] Supervisor notification failed:", err);
               }
@@ -499,7 +501,8 @@ export const siteInductionRouter = router({
       if (!ctx.tradePortalAccess) {
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Trade portal session required" });
       }
-      const inductions = await getSiteInductionsByInstaller(ctx.tradePortalAccess.installerId);
+      const tenantId = ctx.tradePortalAccess.tenantId ?? undefined;
+      const inductions = await getSiteInductionsByInstaller(ctx.tradePortalAccess.installerId, tenantId);
       // Enrich with job data
       const db = await getDb();
       if (!db) return [];
@@ -509,7 +512,11 @@ export const siteInductionRouter = router({
           clientName: constructionJobs.clientName,
           siteAddress: constructionJobs.siteAddress,
           quoteNumber: constructionJobs.quoteNumber,
-        }).from(constructionJobs).where(eq(constructionJobs.id, ind.jobId)).limit(1);
+        }).from(constructionJobs)
+          .where(tenantId
+            ? and(eq(constructionJobs.id, ind.jobId), eq(constructionJobs.tenantId, tenantId))
+            : eq(constructionJobs.id, ind.jobId))
+          .limit(1);
         enriched.push({ ...ind, job: job || null });
       }
       return enriched;
@@ -518,8 +525,8 @@ export const siteInductionRouter = router({
   // Send reminder email to a trade
   sendReminder: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      const induction = await getSiteInductionById(input.id);
+    .mutation(async ({ input, ctx }) => {
+      const induction = await getSiteInductionById(input.id, ctx.tenant!.id);
       if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
       if (induction.status === "completed") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Induction already completed" });
@@ -531,7 +538,7 @@ export const siteInductionRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const [job] = await db.select().from(constructionJobs)
-        .where(eq(constructionJobs.id, induction.jobId)).limit(1);
+        .where(and(eq(constructionJobs.id, induction.jobId), eq(constructionJobs.tenantId, ctx.tenant!.id))).limit(1);
 
       await sendNotificationEmail({
         to: induction.contractorEmail,
@@ -547,40 +554,40 @@ export const siteInductionRouter = router({
         `,
       });
 
-      await updateSiteInduction(input.id, { reminderSentAt: new Date() });
+      await updateSiteInduction(input.id, { reminderSentAt: new Date() }, ctx.tenant!.id);
       return { success: true };
     }),
 
   // Download / generate PDF for a completed induction
   generatePdf: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      const induction = await getSiteInductionById(input.id);
+    .mutation(async ({ input, ctx }) => {
+      const induction = await getSiteInductionById(input.id, ctx.tenant!.id);
       if (!induction) throw new TRPCError({ code: "NOT_FOUND", message: "Induction not found" });
 
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const [job] = await db.select().from(constructionJobs)
-        .where(eq(constructionJobs.id, induction.jobId)).limit(1);
+        .where(and(eq(constructionJobs.id, induction.jobId), eq(constructionJobs.tenantId, ctx.tenant!.id))).limit(1);
 
       const pdfBuffer = await generateInductionPdf(induction, job);
       const pdfKey = `inductions/induction-${input.id}-${Date.now()}.pdf`;
       const { url } = await storagePut(pdfKey, pdfBuffer, "application/pdf");
-      await updateSiteInduction(input.id, { pdfUrl: url });
+      await updateSiteInduction(input.id, { pdfUrl: url }, ctx.tenant!.id);
       return { pdfUrl: url };
     }),
 
   // Delete an induction (admin only)
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      await deleteSiteInduction(input.id);
+    .mutation(async ({ input, ctx }) => {
+      await deleteSiteInduction(input.id, ctx.tenant!.id);
       return { success: true };
     }),
 
   // Get site rules and emergency procedures (dynamic from config or fallback to defaults)
-  getSiteRules: publicProcedure.query(async () => {
-    const config = await getInductionFormConfig();
+  getSiteRules: publicProcedure.query(async ({ ctx }) => {
+    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? undefined);
     return {
       siteRules: config?.siteRules
         ? config.siteRules.split("\n").filter((l: string) => l.trim())
@@ -592,8 +599,8 @@ export const siteInductionRouter = router({
   }),
 
   // Get default checklist items (dynamic from config or fallback to defaults)
-  getDefaults: publicProcedure.query(async () => {
-    const config = await getInductionFormConfig();
+  getDefaults: publicProcedure.query(async ({ ctx }) => {
+    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? undefined);
     return {
       certificates: config?.certificates
         ? (config.certificates as string[]).map(name => ({ name, expiryDate: "", status: "" }))
@@ -605,8 +612,8 @@ export const siteInductionRouter = router({
   }),
 
   // ─── Admin: Form Configuration ─────────────────────────────────────
-  getFormConfig: protectedProcedure.query(async () => {
-    const config = await getInductionFormConfig();
+  getFormConfig: protectedProcedure.query(async ({ ctx }) => {
+    const config = await getInductionFormConfig(ctx.tenant!.id);
     if (!config) {
       // Return defaults
       return {
@@ -638,7 +645,7 @@ export const siteInductionRouter = router({
         siteRules: input.siteRules,
         emergencyProcedures: input.emergencyProcedures,
         updatedBy: ctx.user?.id,
-      });
+      }, ctx.tenant!.id);
       return { success: true };
     }),
 });

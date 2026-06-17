@@ -195,7 +195,7 @@ const inventoryItems: MenuItem[] = [
   { icon: Warehouse, label: "Stock Items", path: "/inventory/stock-items" },
   { icon: ArrowDownUp, label: "Movements", path: "/inventory/movements" },
   { icon: ArrowRightLeft, label: "Transfers", path: "/inventory/transfers" },
-  { icon: ClipboardCheck, label: "Stocktake", path: "/manufacturing/stocktake" },
+  { icon: ClipboardCheck, label: "Stocktake", path: "/inventory/stocktake" },
   { icon: Package, label: "Warehouse Receiving", path: "/inventory/warehouse-receiving" },
   { icon: AlertTriangle, label: "Low Stock Alerts", path: "/inventory/low-stock-alerts" },
   { icon: BarChart3, label: "Reports", path: "/inventory/reports" },

@@ -9,9 +9,10 @@ import { getDb } from "./db";
 import { eq, and, desc, sql, inArray, or } from "drizzle-orm";
 import {
   daCommissions, daCommissionAdjustments, daInvoices,
-  daPersonalDetails, portalNews, users, designAdvisors,
+  daPersonalDetails, portalNews, designAdvisors,
 } from "../drizzle/schema";
-import { protectedProcedure, adminProcedure, router, middleware } from "./_core/trpc";
+import { tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure, router, middleware } from "./_core/trpc";
+import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
 // ─── DA Middleware ──────────────────────────────────────────────────────────
 const requireDA = middleware(async ({ ctx, next }) => {
@@ -33,13 +34,22 @@ async function requireDb() {
   return db;
 }
 
+function daPortalNewsConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, portalNews.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 export const daPortalRouter = router({
   // ─── Personal Details ─────────────────────────────────────────────────────
   getPersonalDetails: daProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const [details] = await db.select()
       .from(daPersonalDetails)
-      .where(eq(daPersonalDetails.userId, ctx.user.id))
+      .where(and(
+        eq(daPersonalDetails.tenantId, ctx.tenant!.id),
+        eq(daPersonalDetails.userId, ctx.user.id),
+      ))
       .limit(1);
     if (!details) {
       // Return defaults from user record
@@ -77,14 +87,21 @@ export const daPortalRouter = router({
       const db = await requireDb();
       const [existing] = await db.select()
         .from(daPersonalDetails)
-        .where(eq(daPersonalDetails.userId, ctx.user.id))
+        .where(and(
+          eq(daPersonalDetails.tenantId, ctx.tenant!.id),
+          eq(daPersonalDetails.userId, ctx.user.id),
+        ))
         .limit(1);
       if (existing) {
         await db.update(daPersonalDetails)
           .set(input)
-          .where(eq(daPersonalDetails.userId, ctx.user.id));
+          .where(and(
+            eq(daPersonalDetails.tenantId, ctx.tenant!.id),
+            eq(daPersonalDetails.userId, ctx.user.id),
+          ));
       } else {
         await db.insert(daPersonalDetails).values({
+          tenantId: ctx.tenant!.id,
           userId: ctx.user.id,
           ...input,
         });
@@ -97,10 +114,11 @@ export const daPortalRouter = router({
     const db = await requireDb();
     // Admin sees all, DA sees only their own
     const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
-    const conditions = isAdmin ? [] : [eq(daCommissions.daUserId, ctx.user.id)];
+    const conditions = [eq(daCommissions.tenantId, ctx.tenant!.id)];
+    if (!isAdmin) conditions.push(eq(daCommissions.daUserId, ctx.user.id));
     const commissions = await db.select()
       .from(daCommissions)
-      .where(conditions.length ? and(...conditions) : undefined)
+      .where(and(...conditions))
       .orderBy(desc(daCommissions.createdAt));
     return commissions;
   }),
@@ -111,7 +129,10 @@ export const daPortalRouter = router({
       const db = await requireDb();
       const [commission] = await db.select()
         .from(daCommissions)
-        .where(eq(daCommissions.id, input.id))
+        .where(and(
+          eq(daCommissions.tenantId, ctx.tenant!.id),
+          eq(daCommissions.id, input.id),
+        ))
         .limit(1);
       if (!commission) throw new TRPCError({ code: "NOT_FOUND" });
       const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
@@ -140,10 +161,11 @@ export const daPortalRouter = router({
       totalCommission: z.string(), // decimal as string
       notes: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const totalComm = parseFloat(input.totalCommission) || 0;
       const [result] = await db.insert(daCommissions).values({
+        tenantId: ctx.tenant!.id,
         daUserId: input.daUserId,
         daName: input.daName,
         constructionJobId: input.constructionJobId || null,
@@ -175,7 +197,7 @@ export const daPortalRouter = router({
       jobNo: z.string().optional(),
       contractNo: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const { id, ...updates } = input;
       const setData: Record<string, any> = {};
@@ -197,10 +219,13 @@ export const daPortalRouter = router({
       if (updates.contractNo !== undefined) setData.contractNo = updates.contractNo;
 
       if (Object.keys(setData).length > 0) {
-        await db.update(daCommissions).set(setData).where(eq(daCommissions.id, id));
+        await db.update(daCommissions).set(setData).where(and(
+          eq(daCommissions.tenantId, ctx.tenant!.id),
+          eq(daCommissions.id, id),
+        ));
       }
       // Recalculate balance
-      await recalculateBalance(db, id);
+      await recalculateBalance(db, id, ctx.tenant!.id);
       return { success: true };
     }),
 
@@ -213,15 +238,24 @@ export const daPortalRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      const [commission] = await db.select({ id: daCommissions.id })
+        .from(daCommissions)
+        .where(and(
+          eq(daCommissions.tenantId, ctx.tenant!.id),
+          eq(daCommissions.id, input.commissionId),
+        ))
+        .limit(1);
+      if (!commission) throw new TRPCError({ code: "NOT_FOUND" });
+
       await db.insert(daCommissionAdjustments).values({
         commissionId: input.commissionId,
         amount: input.amount,
         reason: input.reason,
-        adjustedByUserId: ctx.user.id,
-        adjustedByName: ctx.user.name || "Admin",
+        adjustedByUserId: ctx.user!.id,
+        adjustedByName: ctx.user!.name || "Admin",
       });
       // Recalculate adjustments total and balance
-      await recalculateBalance(db, input.commissionId);
+      await recalculateBalance(db, input.commissionId, ctx.tenant!.id);
       return { success: true };
     }),
 
@@ -231,12 +265,12 @@ export const daPortalRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
-      const conditions: any[] = [];
+      const conditions: any[] = [eq(daInvoices.tenantId, ctx.tenant!.id)];
       if (!isAdmin) conditions.push(eq(daInvoices.daUserId, ctx.user.id));
       if (input?.status) conditions.push(eq(daInvoices.status, input.status as any));
       return db.select()
         .from(daInvoices)
-        .where(conditions.length ? and(...conditions) : undefined)
+        .where(and(...conditions))
         .orderBy(desc(daInvoices.createdAt));
     }),
 
@@ -252,7 +286,10 @@ export const daPortalRouter = router({
       // Verify the commission belongs to this DA
       const [commission] = await db.select()
         .from(daCommissions)
-        .where(eq(daCommissions.id, input.commissionId))
+        .where(and(
+          eq(daCommissions.tenantId, ctx.tenant!.id),
+          eq(daCommissions.id, input.commissionId),
+        ))
         .limit(1);
       if (!commission) throw new TRPCError({ code: "NOT_FOUND" });
       const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
@@ -271,17 +308,24 @@ export const daPortalRouter = router({
       // Get DA personal details for ABN/bank
       const [details] = await db.select()
         .from(daPersonalDetails)
-        .where(eq(daPersonalDetails.userId, ctx.user.id))
+        .where(and(
+          eq(daPersonalDetails.tenantId, ctx.tenant!.id),
+          eq(daPersonalDetails.userId, ctx.user.id),
+        ))
         .limit(1);
       const gstAmount = amountExGst * 0.1;
       const totalIncGst = amountExGst + gstAmount;
       // Generate invoice number
       const [countResult] = await db.select({ count: sql<number>`COUNT(*)` })
         .from(daInvoices)
-        .where(eq(daInvoices.daUserId, ctx.user.id));
+        .where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.daUserId, ctx.user.id),
+        ));
       const invoiceNum = `DA-${ctx.user.id}-${String((countResult?.count || 0) + 1).padStart(4, "0")}`;
 
       const [result] = await db.insert(daInvoices).values({
+        tenantId: ctx.tenant!.id,
         daUserId: ctx.user.id,
         daName: ctx.user.name || "DA",
         invoiceNumber: invoiceNum,
@@ -302,11 +346,14 @@ export const daPortalRouter = router({
     }),
 
   // ─── Admin Invoice Approval ───────────────────────────────────────────────
-  listPendingInvoices: adminProcedure.query(async () => {
+  listPendingInvoices: adminProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     return db.select()
       .from(daInvoices)
-      .where(eq(daInvoices.status, "submitted"))
+      .where(and(
+        eq(daInvoices.tenantId, ctx.tenant!.id),
+        eq(daInvoices.status, "submitted"),
+      ))
       .orderBy(desc(daInvoices.submittedAt));
   }),
 
@@ -316,7 +363,10 @@ export const daPortalRouter = router({
       const db = await requireDb();
       const [invoice] = await db.select()
         .from(daInvoices)
-        .where(eq(daInvoices.id, input.invoiceId))
+        .where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.id, input.invoiceId),
+        ))
         .limit(1);
       if (!invoice) throw new TRPCError({ code: "NOT_FOUND" });
       if (invoice.status !== "submitted") {
@@ -325,9 +375,12 @@ export const daPortalRouter = router({
       await db.update(daInvoices).set({
         status: "approved",
         approvedAt: new Date(),
-        approvedByUserId: ctx.user.id,
-        approvedByName: ctx.user.name || "Admin",
-      }).where(eq(daInvoices.id, input.invoiceId));
+        approvedByUserId: ctx.user!.id,
+        approvedByName: ctx.user!.name || "Admin",
+      }).where(and(
+        eq(daInvoices.tenantId, ctx.tenant!.id),
+        eq(daInvoices.id, input.invoiceId),
+      ));
       return { success: true };
     }),
 
@@ -335,11 +388,23 @@ export const daPortalRouter = router({
     .input(z.object({ invoiceId: z.number(), reason: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      const [invoice] = await db.select({ id: daInvoices.id })
+        .from(daInvoices)
+        .where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.id, input.invoiceId),
+        ))
+        .limit(1);
+      if (!invoice) throw new TRPCError({ code: "NOT_FOUND" });
+
       await db.update(daInvoices).set({
         status: "rejected",
         rejectedAt: new Date(),
         rejectionReason: input.reason,
-      }).where(eq(daInvoices.id, input.invoiceId));
+      }).where(and(
+        eq(daInvoices.tenantId, ctx.tenant!.id),
+        eq(daInvoices.id, input.invoiceId),
+      ));
       return { success: true };
     }),
 
@@ -350,7 +415,10 @@ export const daPortalRouter = router({
       const db = await requireDb();
       const [invoice] = await db.select()
         .from(daInvoices)
-        .where(eq(daInvoices.id, input.invoiceId))
+        .where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.id, input.invoiceId),
+        ))
         .limit(1);
       if (!invoice) throw new TRPCError({ code: "NOT_FOUND" });
       if (invoice.status !== "approved") {
@@ -362,13 +430,16 @@ export const daPortalRouter = router({
       // Get DA's Xero contact ID
       const [details] = await db.select()
         .from(daPersonalDetails)
-        .where(eq(daPersonalDetails.userId, invoice.daUserId))
+        .where(and(
+          eq(daPersonalDetails.tenantId, ctx.tenant!.id),
+          eq(daPersonalDetails.userId, invoice.daUserId),
+        ))
         .limit(1);
       if (!details?.xeroContactId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "DA is not linked to a Xero contact. Please link in Personal Details." });
       }
       const { getValidAccessToken } = await import("./xero-client");
-      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "approvals" });
+      const auth = await getValidAccessToken({ appTenantId: ctx.tenant!.id, moduleKey: "approvals" });
       if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
 
       const billPayload = {
@@ -407,7 +478,10 @@ export const daPortalRouter = router({
       if (createdBill?.InvoiceID) {
         await db.update(daInvoices).set({
           xeroInvoiceId: createdBill.InvoiceID,
-        }).where(eq(daInvoices.id, input.invoiceId));
+        }).where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.id, input.invoiceId),
+        ));
       }
       return { success: true, xeroInvoiceId: createdBill?.InvoiceID };
     }),
@@ -415,63 +489,75 @@ export const daPortalRouter = router({
   // Mark invoice as paid (after Xero reconciliation or manual)
   markInvoicePaid: adminProcedure
     .input(z.object({ invoiceId: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const [invoice] = await db.select()
         .from(daInvoices)
-        .where(eq(daInvoices.id, input.invoiceId))
+        .where(and(
+          eq(daInvoices.tenantId, ctx.tenant!.id),
+          eq(daInvoices.id, input.invoiceId),
+        ))
         .limit(1);
       if (!invoice) throw new TRPCError({ code: "NOT_FOUND" });
       await db.update(daInvoices).set({
         status: "paid",
         paidAt: new Date(),
-      }).where(eq(daInvoices.id, input.invoiceId));
+      }).where(and(
+        eq(daInvoices.tenantId, ctx.tenant!.id),
+        eq(daInvoices.id, input.invoiceId),
+      ));
       // Update commission amountPaid
       if (invoice.commissionId) {
         const paidInvoices = await db.select({ total: sql<string>`SUM(amountExGst)` })
           .from(daInvoices)
           .where(and(
+            eq(daInvoices.tenantId, ctx.tenant!.id),
             eq(daInvoices.commissionId, invoice.commissionId),
             eq(daInvoices.status, "paid"),
           ));
-        const totalPaid = parseFloat(paidInvoices[0]?.total || "0") + parseFloat(invoice.amountExGst as any);
+        const totalPaid = parseFloat(paidInvoices[0]?.total || "0");
         await db.update(daCommissions).set({
           amountPaid: totalPaid.toFixed(2),
-        }).where(eq(daCommissions.id, invoice.commissionId));
-        await recalculateBalance(db, invoice.commissionId);
+        }).where(and(
+          eq(daCommissions.tenantId, ctx.tenant!.id),
+          eq(daCommissions.id, invoice.commissionId),
+        ));
+        await recalculateBalance(db, invoice.commissionId, ctx.tenant!.id);
       }
       return { success: true };
     }),
 
   // ─── News (DA-specific) ───────────────────────────────────────────────────
-  listNews: daProcedure.query(async () => {
+  listNews: daProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     return db.select()
       .from(portalNews)
-      .where(and(
+      .where(and(...daPortalNewsConditions(
+        ctx,
         eq(portalNews.isPublished, true),
         or(
           eq(portalNews.portalType, "da"),
           eq(portalNews.portalType, "all"),
         ),
-      ))
+      )))
       .orderBy(desc(portalNews.publishedAt));
   }),
 
   getNewsArticle: daProcedure
     .input(z.object({ slug: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const [article] = await db.select()
         .from(portalNews)
-        .where(and(
+        .where(and(...daPortalNewsConditions(
+          ctx,
           eq(portalNews.slug, input.slug),
           eq(portalNews.isPublished, true),
           or(
             eq(portalNews.portalType, "da"),
             eq(portalNews.portalType, "all"),
           ),
-        ))
+        )))
         .limit(1);
       if (!article) throw new TRPCError({ code: "NOT_FOUND" });
       return article;
@@ -481,7 +567,10 @@ export const daPortalRouter = router({
   listPayments: daProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
-    const conditions: any[] = [eq(daInvoices.status, "paid")];
+    const conditions: any[] = [
+      eq(daInvoices.tenantId, ctx.tenant!.id),
+      eq(daInvoices.status, "paid"),
+    ];
     if (!isAdmin) conditions.push(eq(daInvoices.daUserId, ctx.user.id));
     const invoices = await db.select({
       id: daInvoices.id,
@@ -499,7 +588,10 @@ export const daPortalRouter = router({
     const commIds = Array.from(new Set(invoices.map(i => i.commissionId).filter(Boolean))) as number[];
     const comms = commIds.length > 0
       ? await db.select({ id: daCommissions.id, clientName: daCommissions.clientName, jobNo: daCommissions.jobNo })
-          .from(daCommissions).where(inArray(daCommissions.id, commIds))
+          .from(daCommissions).where(and(
+            eq(daCommissions.tenantId, ctx.tenant!.id),
+            inArray(daCommissions.id, commIds),
+          ))
       : [];
     const commMap = Object.fromEntries(comms.map(c => [c.id, c]));
     return invoices.map(inv => ({
@@ -514,7 +606,10 @@ export const daPortalRouter = router({
     const db = await requireDb();
     const [record] = await db.select()
       .from(designAdvisors)
-      .where(eq(designAdvisors.userId, ctx.user.id))
+      .where(and(
+        eq(designAdvisors.tenantId, ctx.tenant!.id),
+        eq(designAdvisors.userId, ctx.user.id),
+      ))
       .limit(1);
     return record || null;
   }),
@@ -523,17 +618,21 @@ export const daPortalRouter = router({
   getDashboardSummary: daProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const isAdmin = ["admin", "super_admin"].includes(ctx.user.role);
-    const userCondition = isAdmin ? undefined : eq(daCommissions.daUserId, ctx.user.id);
+    const balanceConditions: any[] = [eq(daCommissions.tenantId, ctx.tenant!.id)];
+    if (!isAdmin) balanceConditions.push(eq(daCommissions.daUserId, ctx.user.id));
 
     // Total unclaimed balance
     const [balanceResult] = await db.select({
       totalBalance: sql<string>`COALESCE(SUM(balanceDue), 0)`,
       totalCommissions: sql<number>`COUNT(*)`,
     }).from(daCommissions)
-      .where(userCondition);
+      .where(and(...balanceConditions));
 
     // Pending invoices count
-    const invoiceConditions: any[] = [eq(daInvoices.status, "submitted")];
+    const invoiceConditions: any[] = [
+      eq(daInvoices.tenantId, ctx.tenant!.id),
+      eq(daInvoices.status, "submitted"),
+    ];
     if (!isAdmin) invoiceConditions.push(eq(daInvoices.daUserId, ctx.user.id));
     const [invoiceResult] = await db.select({
       pendingCount: sql<number>`COUNT(*)`,
@@ -542,6 +641,7 @@ export const daPortalRouter = router({
 
     // Active commissions (not closed/fully_paid)
     const activeConditions: any[] = [
+      eq(daCommissions.tenantId, ctx.tenant!.id),
       sql`${daCommissions.status} NOT IN ('fully_paid', 'closed')`,
     ];
     if (!isAdmin) activeConditions.push(eq(daCommissions.daUserId, ctx.user.id));
@@ -560,10 +660,13 @@ export const daPortalRouter = router({
 });
 
 // ─── Helper: Recalculate balance ────────────────────────────────────────────
-async function recalculateBalance(db: any, commissionId: number) {
+async function recalculateBalance(db: any, commissionId: number, tenantId: number) {
   const [commission] = await db.select()
     .from(daCommissions)
-    .where(eq(daCommissions.id, commissionId))
+    .where(and(
+      eq(daCommissions.tenantId, tenantId),
+      eq(daCommissions.id, commissionId),
+    ))
     .limit(1);
   if (!commission) return;
 
@@ -578,6 +681,7 @@ async function recalculateBalance(db: any, commissionId: number) {
     total: sql<string>`COALESCE(SUM(amountExGst), 0)`,
   }).from(daInvoices)
     .where(and(
+      eq(daInvoices.tenantId, tenantId),
       eq(daInvoices.commissionId, commissionId),
       eq(daInvoices.status, "paid"),
     ));
@@ -591,5 +695,8 @@ async function recalculateBalance(db: any, commissionId: number) {
     adjustmentsTotal: adjustmentsTotal.toFixed(2),
     amountPaid: amountPaid.toFixed(2),
     balanceDue: balanceDue.toFixed(2),
-  }).where(eq(daCommissions.id, commissionId));
+  }).where(and(
+    eq(daCommissions.tenantId, tenantId),
+    eq(daCommissions.id, commissionId),
+  ));
 }

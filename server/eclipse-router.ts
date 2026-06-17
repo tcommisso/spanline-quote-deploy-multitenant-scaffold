@@ -1,5 +1,5 @@
 // Eclipse Opening Roof System - tRPC Router
-import { protectedProcedure, adminProcedure, router } from "./_core/trpc";
+import { protectedProcedure, adminProcedure, tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as eclipseDb from "./eclipse-db";
 import { isAdminRole } from "../shared/const";
@@ -51,14 +51,14 @@ const unitInputSchema = z.object({
 export const eclipseRouter = router({
   // ─── Quotes ──────────────────────────────────────────────────────────────────
   quotes: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
-      return eclipseDb.listEclipseQuotes(ctx.user.id, ctx.user.role);
+    list: tenantProcedure.query(async ({ ctx }) => {
+      return eclipseDb.listEclipseQuotes(ctx.user.id, ctx.user.role, ctx.tenant.id);
     }),
 
-    get: protectedProcedure
+    get: tenantProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
@@ -66,7 +66,7 @@ export const eclipseRouter = router({
         return quote;
       }),
 
-    create: protectedProcedure
+    create: tenantProcedure
       .input(z.object({
         clientId: z.number().optional(),
         clientName: z.string().min(1),
@@ -78,6 +78,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quoteNumber = await eclipseDb.getNextEclipseQuoteNumber();
         const id = await eclipseDb.createEclipseQuote({
+          tenantId: ctx.tenant.id,
           userId: ctx.user.id,
           quoteNumber,
           clientId: input.clientId || null,
@@ -93,9 +94,9 @@ export const eclipseRouter = router({
         if (input.clientId) {
           try {
             const { updateLead, getLead } = await import("./crm-db");
-            const lead = await getLead(input.clientId);
+            const lead = await getLead(input.clientId, ctx.tenant.id);
             if (lead && lead.archived) {
-              await updateLead(input.clientId, { archived: false } as any);
+              await updateLead(input.clientId, { archived: false } as any, ctx.tenant.id);
               leadUnarchived = true;
             }
           } catch (e) { /* non-blocking */ }
@@ -103,7 +104,7 @@ export const eclipseRouter = router({
         return { id, quoteNumber, leadUnarchived };
       }),
 
-    update: protectedProcedure
+    update: tenantProcedure
       .input(z.object({
         id: z.number(),
         clientId: z.number().nullable().optional(),
@@ -162,7 +163,7 @@ export const eclipseRouter = router({
         specData: z.any().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
@@ -182,40 +183,41 @@ export const eclipseRouter = router({
         await eclipseDb.updateEclipseQuote(id, {
           ...data,
           ...hbcfRequirementFieldsForAmount(amount, "Eclipse quote"),
-        } as any);
+        } as any, ctx.tenant.id);
         return { success: true };
       }),
 
-    delete: adminProcedure
+    delete: tenantAdminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id);
+      .mutation(async ({ ctx, input }) => {
+        const tenantId = ctx.tenant!.id;
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, tenantId);
         if (!quote) throw new Error("Eclipse quote not found");
-        await eclipseDb.deleteEclipseQuote(input.id);
+        await eclipseDb.deleteEclipseQuote(input.id, tenantId);
         return { success: true };
       }),
 
-    archive: protectedProcedure
+    archive: tenantProcedure
       .input(z.object({ id: z.number(), archived: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
-        await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived });
+        await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived }, ctx.tenant.id);
         return { success: true };
       }),
-    duplicate: protectedProcedure
+    duplicate: tenantProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
         if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
           throw new Error("Unauthorized");
         }
         const newNumber = await eclipseDb.getNextEclipseQuoteNumber();
-        const newId = await eclipseDb.duplicateEclipseQuote(input.id, ctx.user.id, newNumber);
+        const newId = await eclipseDb.duplicateEclipseQuote(input.id, ctx.user.id, newNumber, ctx.tenant.id);
         return { id: newId, quoteNumber: newNumber };
       }),
   }),
@@ -280,14 +282,14 @@ export const eclipseRouter = router({
       }),
   }),
 
-  generateDescription: protectedProcedure
+  generateDescription: tenantProcedure
     .input(z.object({
       eclipseQuoteId: z.number(),
       refinementInstruction: z.string().optional(),
       previousDescription: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId);
+      const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId, ctx.tenant.id);
       if (!quote) throw new Error("Eclipse quote not found");
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Unauthorized");

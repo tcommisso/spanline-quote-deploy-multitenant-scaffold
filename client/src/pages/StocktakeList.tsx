@@ -38,7 +38,7 @@ export default function StocktakeList() {
       setNewBranchId("");
       setNewNotes("");
       stocktakes.refetch();
-      navigate(`/manufacturing/stocktake/${data.id}`);
+      navigate(`/inventory/stocktake/${data.id}`);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -97,7 +97,7 @@ export default function StocktakeList() {
           const progress = st.totalItems > 0 ? Math.round((st.itemsCounted / st.totalItems) * 100) : 0;
           return (
             <Card key={st.id} className="hover:shadow-md transition-shadow cursor-pointer"
-              onClick={() => navigate(`/manufacturing/stocktake/${st.id}`)}>
+              onClick={() => navigate(`/inventory/stocktake/${st.id}`)}>
               <CardContent className="py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">

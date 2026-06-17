@@ -59,6 +59,16 @@ function portalAccessConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function portalTenantId(ctx: any) {
+  return ctx.portalAccess?.tenantId ?? tenantIdFromContext(ctx);
+}
+
+function portalCmsConditions(ctx: any, column: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, column, portalTenantId(ctx));
+  return conditions;
+}
+
 function requirePortalAccessVisible(
   ctx: any,
   access: typeof portalAccess.$inferSelect | null | undefined,
@@ -506,38 +516,49 @@ export const portalRouter = router({
 
   // ─── CPC Subscription ──────────────────────────────────────────────────────
 
-  getPlans: publicPortalProcedure.query(async () => {
+  getPlans: publicPortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
+    const conditions = [eq(cpcPlans.isActive, true)];
+    appendTenantScope(conditions, cpcPlans.tenantId, tenantIdFromContext(ctx));
     return db
       .select()
       .from(cpcPlans)
-      .where(eq(cpcPlans.isActive, true))
+      .where(and(...conditions))
       .orderBy(cpcPlans.sortOrder);
   }),
 
   getMySubscription: protectedPortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
+    const subscriptionConditions = [
+      eq(cpcSubscriptions.portalAccessId, ctx.portalAccess.id),
+      eq(cpcSubscriptions.constructionJobId, ctx.portalAccess.constructionJobId)
+    ];
+    appendTenantScope(subscriptionConditions, cpcSubscriptions.tenantId, portalTenantId(ctx));
+
     const [subscription] = await db
       .select()
       .from(cpcSubscriptions)
-      .where(and(
-        eq(cpcSubscriptions.portalAccessId, ctx.portalAccess.id),
-        eq(cpcSubscriptions.constructionJobId, ctx.portalAccess.constructionJobId)
-      ))
+      .where(and(...subscriptionConditions))
       .limit(1);
 
     if (!subscription) return null;
 
+    const planConditions = [eq(cpcPlans.id, subscription.planId)];
+    appendTenantScope(planConditions, cpcPlans.tenantId, portalTenantId(ctx));
+
     const [plan] = await db
       .select()
       .from(cpcPlans)
-      .where(eq(cpcPlans.id, subscription.planId))
+      .where(and(...planConditions))
       .limit(1);
+
+    const historyConditions = [eq(cpcServiceHistory.subscriptionId, subscription.id)];
+    appendTenantScope(historyConditions, cpcServiceHistory.tenantId, portalTenantId(ctx));
 
     const history = await db
       .select()
       .from(cpcServiceHistory)
-      .where(eq(cpcServiceHistory.subscriptionId, subscription.id))
+      .where(and(...historyConditions))
       .orderBy(desc(cpcServiceHistory.serviceDate));
 
     return { subscription, plan, history };
@@ -558,7 +579,9 @@ export const portalRouter = router({
       const stripe = getStripe();
 
       // Get the plan
-      const [plan] = await db.select().from(cpcPlans).where(eq(cpcPlans.id, input.planId)).limit(1);
+      const planConditions = [eq(cpcPlans.id, input.planId)];
+      appendTenantScope(planConditions, cpcPlans.tenantId, portalTenantId(ctx));
+      const [plan] = await db.select().from(cpcPlans).where(and(...planConditions)).limit(1);
       if (!plan) throw new TRPCError({ code: "NOT_FOUND", message: "Plan not found" });
 
       const priceInCents = getPriceInCents(plan, input.structureSize);
@@ -566,6 +589,7 @@ export const portalRouter = router({
 
       // Create a local subscription record (pending until Stripe confirms)
       const [newSub] = await db.insert(cpcSubscriptions).values({
+        tenantId: portalTenantId(ctx),
         portalAccessId: ctx.portalAccess.id,
         constructionJobId: ctx.portalAccess.constructionJobId,
         planId: input.planId,
@@ -595,6 +619,7 @@ export const portalRouter = router({
         customer_email: ctx.portalAccess.clientEmail,
         metadata: {
           cpc_subscription_id: String(newSub.id),
+          tenant_id: String(portalTenantId(ctx) ?? ""),
           portal_access_id: String(ctx.portalAccess.id),
           plan_name: plan.name,
           structure_size: input.structureSize,
@@ -612,11 +637,14 @@ export const portalRouter = router({
       const db = await requireDb();
       const { getStripe } = await import("./stripe");
 
-      const [subscription] = await db.select().from(cpcSubscriptions)
-        .where(and(
+      const subscriptionConditions = [
           eq(cpcSubscriptions.portalAccessId, ctx.portalAccess.id),
           eq(cpcSubscriptions.status, "active")
-        ))
+      ];
+      appendTenantScope(subscriptionConditions, cpcSubscriptions.tenantId, portalTenantId(ctx));
+
+      const [subscription] = await db.select().from(cpcSubscriptions)
+        .where(and(...subscriptionConditions))
         .limit(1);
 
       if (!subscription) throw new TRPCError({ code: "NOT_FOUND", message: "No active subscription" });
@@ -630,7 +658,7 @@ export const portalRouter = router({
 
       await db.update(cpcSubscriptions)
         .set({ status: "cancelled", cancelledAt: new Date() })
-        .where(eq(cpcSubscriptions.id, subscription.id));
+        .where(and(...subscriptionConditions, eq(cpcSubscriptions.id, subscription.id)));
 
       return { success: true };
     }),
@@ -639,7 +667,7 @@ export const portalRouter = router({
 
   getNews: publicPortalProcedure
     .input(z.object({ limit: z.number().default(10), offset: z.number().default(0) }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const limit = input?.limit || 10;
       const offset = input?.offset || 0;
@@ -647,10 +675,12 @@ export const portalRouter = router({
       return db
         .select()
         .from(portalNews)
-        .where(and(
+        .where(and(...portalCmsConditions(
+          ctx,
+          portalNews.tenantId,
           eq(portalNews.isPublished, true),
           or(eq(portalNews.portalType, "client"), eq(portalNews.portalType, "both"))
-        ))
+        )))
         .orderBy(desc(portalNews.publishedAt))
         .limit(limit)
         .offset(offset);
@@ -658,28 +688,30 @@ export const portalRouter = router({
 
   getNewsArticle: publicPortalProcedure
     .input(z.object({ slug: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const [article] = await db
         .select()
         .from(portalNews)
-        .where(and(
+        .where(and(...portalCmsConditions(
+          ctx,
+          portalNews.tenantId,
           eq(portalNews.slug, input.slug),
           eq(portalNews.isPublished, true),
           or(eq(portalNews.portalType, "client"), eq(portalNews.portalType, "both"))
-        ))
+        )))
         .limit(1);
 
       if (!article) throw new TRPCError({ code: "NOT_FOUND" });
       return article;
     }),
 
-  getProducts: publicPortalProcedure.query(async () => {
+  getProducts: publicPortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     return db
       .select()
       .from(portalProducts)
-      .where(eq(portalProducts.isActive, true))
+      .where(and(...portalCmsConditions(ctx, portalProducts.tenantId, eq(portalProducts.isActive, true))))
       .orderBy(portalProducts.sortOrder);
   }),
 
@@ -972,13 +1004,16 @@ export const portalRouter = router({
 
     // Find the construction job to get its leadId
     const [job] = await db
-      .select({ id: constructionJobs.id, leadId: constructionJobs.leadId })
+      .select({ id: constructionJobs.id, leadId: constructionJobs.leadId, tenantId: constructionJobs.tenantId })
       .from(constructionJobs)
       .where(eq(constructionJobs.id, jobId))
       .limit(1);
     if (!job || !job.leadId) return { project: null, milestones: [] };
 
     // Find the approval project linked to this lead
+    const tenantId = ctx.portalAccess.tenantId ?? job.tenantId ?? tenantIdFromContext(ctx);
+    const projectConditions: any[] = [eq(approvalProjects.crmLeadId, job.leadId)];
+    appendTenantScope(projectConditions, approvalProjects.tenantId, tenantId);
     const [project] = await db
       .select({
         id: approvalProjects.id,
@@ -988,7 +1023,7 @@ export const portalRouter = router({
         createdAt: approvalProjects.createdAt,
       })
       .from(approvalProjects)
-      .where(eq(approvalProjects.crmLeadId, job.leadId))
+      .where(and(...projectConditions))
       .limit(1);
     if (!project) return { project: null, milestones: [] };
 

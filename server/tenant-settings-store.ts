@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { globalSettings, tenants, tenantSettings } from "../drizzle/schema";
 import { getDb } from "./db";
+import { ENV } from "./_core/env";
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
@@ -32,7 +33,7 @@ export async function getTenantAppSetting<T = unknown>(
   options: { fallbackToGlobal?: boolean } = {},
 ): Promise<T | null> {
   const db = await getDb();
-  const fallbackToGlobal = options.fallbackToGlobal ?? true;
+  const fallbackToGlobal = (options.fallbackToGlobal ?? true) && (ENV.tenancyMode !== "multi" || !tenantId);
   if (!db) return null;
 
   if (tenantId) {

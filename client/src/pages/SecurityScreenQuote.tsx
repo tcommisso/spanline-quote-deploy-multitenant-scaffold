@@ -13,6 +13,13 @@ import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileTex
 import { toast } from "sonner";
 import { Link, useParams, useLocation } from "wouter";
 
+const DEFAULT_SECURITY_SCREEN_QUOTE_FORM = {
+  clientName: "",
+  clientEmail: "",
+  clientPhone: "",
+  siteAddress: "",
+};
+
 // ─── Door/Window Configuration Diagram ──────────────────────────────────────
 
 function ConfigDiagram({ productType, handleSide, hingeSide, openingDirection }: { productType: string; handleSide: string; hingeSide: string; openingDirection: string }) {
@@ -486,10 +493,22 @@ function QuoteList() {
   const { data: quotes = [], isLoading } = trpc.securityScreens.quotes.list.useQuery();
   const [, setLocation] = useLocation();
   const createMutation = trpc.securityScreens.quotes.create.useMutation({
-    onSuccess: (data) => { setLocation(`/security-screens/quote/${data.id}`); toast.success(`Quote ${data.quoteNumber} created`); },
+    onSuccess: (data) => {
+      setForm(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
+      setCreateOpen(false);
+      setLocation(`/security-screens/quote/${data.id}`);
+      toast.success(`Quote ${data.quoteNumber} created`);
+    },
+    onError: (e) => toast.error(e.message || "Could not create security screen quote"),
   });
   const createFromLeadMutation = trpc.securityScreens.quotes.createFromLead.useMutation({
-    onSuccess: (data) => { setLocation(`/security-screens/quote/${data.id}`); toast.success(`Quote ${data.quoteNumber} created from lead`); },
+    onSuccess: (data) => {
+      setLeadQuery("");
+      setLeadSearchOpen(false);
+      setLocation(`/security-screens/quote/${data.id}`);
+      toast.success(`Quote ${data.quoteNumber} created from lead`);
+    },
+    onError: (e) => toast.error(e.message || "Could not create quote from lead"),
   });
   const cloneMutation = trpc.securityScreens.quotes.clone.useMutation({
     onSuccess: (data) => {
@@ -504,7 +523,17 @@ function QuoteList() {
   const [leadSearchOpen, setLeadSearchOpen] = useState(false);
   const [leadQuery, setLeadQuery] = useState("");
   const { data: leadResults = [] } = trpc.securityScreens.leads.search.useQuery({ query: leadQuery }, { enabled: leadQuery.length >= 2 });
-  const [form, setForm] = useState({ clientName: "", clientEmail: "", clientPhone: "", siteAddress: "" });
+  const [form, setForm] = useState(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
+
+  const handleCreateOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
+    setCreateOpen(nextOpen);
+  };
+
+  const handleLeadSearchOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setLeadQuery("");
+    setLeadSearchOpen(nextOpen);
+  };
 
   return (
     <div className="space-y-6">
@@ -514,8 +543,8 @@ function QuoteList() {
           <p className="text-muted-foreground">Create and manage security screen quotations</p>
         </div>
         <div className="flex gap-2">
-          <Dialog open={leadSearchOpen} onOpenChange={setLeadSearchOpen}>
-            <Button variant="outline" onClick={() => setLeadSearchOpen(true)}><UserPlus className="h-4 w-4 mr-1" /> From Lead</Button>
+          <Dialog open={leadSearchOpen} onOpenChange={handleLeadSearchOpenChange}>
+            <Button variant="outline" onClick={() => handleLeadSearchOpenChange(true)}><UserPlus className="h-4 w-4 mr-1" /> From Lead</Button>
             <DialogContent>
               <DialogHeader><DialogTitle>Create Quote from CRM Lead</DialogTitle></DialogHeader>
               <div className="space-y-4">
@@ -527,7 +556,12 @@ function QuoteList() {
                   {leadQuery.length < 2 ? <p className="text-center text-muted-foreground py-4 text-sm">Type at least 2 characters to search</p>
                   : leadResults.length === 0 ? <p className="text-center text-muted-foreground py-4 text-sm">No leads found</p>
                   : leadResults.map((lead: any) => (
-                    <button key={lead.id} className="w-full flex items-center justify-between p-3 rounded border hover:border-primary/50 hover:bg-primary/5 transition-all text-left" onClick={() => { createFromLeadMutation.mutate({ leadId: lead.id }); setLeadSearchOpen(false); }}>
+                    <button
+                      key={lead.id}
+                      className="w-full flex items-center justify-between p-3 rounded border hover:border-primary/50 hover:bg-primary/5 transition-all text-left disabled:opacity-60"
+                      disabled={createFromLeadMutation.isPending}
+                      onClick={() => createFromLeadMutation.mutate({ leadId: lead.id })}
+                    >
                       <div>
                         <p className="font-medium text-sm">{[lead.contactFirstName, lead.contactLastName].filter(Boolean).join(" ") || lead.company || "Unknown"}</p>
                         <p className="text-xs text-muted-foreground">{lead.contactAddress || lead.suburb || "No address"}</p>
@@ -539,8 +573,8 @@ function QuoteList() {
               </div>
             </DialogContent>
           </Dialog>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4 mr-1" /> New Quote</Button>
+          <Dialog open={createOpen} onOpenChange={handleCreateOpenChange}>
+            <Button onClick={() => handleCreateOpenChange(true)}><Plus className="h-4 w-4 mr-1" /> New Quote</Button>
           <DialogContent>
             <DialogHeader><DialogTitle>New Security Screen Quote</DialogTitle></DialogHeader>
             <div className="space-y-4">
@@ -550,7 +584,17 @@ function QuoteList() {
                 <div><Label>Phone</Label><Input value={form.clientPhone} onChange={(e) => setForm({ ...form, clientPhone: e.target.value })} /></div>
               </div>
               <div><Label>Site Address</Label><Input value={form.siteAddress} onChange={(e) => setForm({ ...form, siteAddress: e.target.value })} /></div>
-              <Button className="w-full" disabled={!form.clientName || createMutation.isPending} onClick={() => createMutation.mutate({ clientName: form.clientName, clientEmail: form.clientEmail || undefined, clientPhone: form.clientPhone || undefined, siteAddress: form.siteAddress || undefined })}>
+              <Button
+                type="button"
+                className="w-full"
+                disabled={!form.clientName.trim() || createMutation.isPending}
+                onClick={() => createMutation.mutate({
+                  clientName: form.clientName.trim(),
+                  clientEmail: form.clientEmail.trim() || undefined,
+                  clientPhone: form.clientPhone.trim() || undefined,
+                  siteAddress: form.siteAddress.trim() || undefined,
+                })}
+              >
                 {createMutation.isPending ? "Creating..." : "Create Quote"}
               </Button>
             </div>
@@ -561,7 +605,7 @@ function QuoteList() {
 
       {isLoading ? <p className="text-center text-muted-foreground py-8">Loading quotes...</p>
       : quotes.length === 0 ? (
-        <Card><CardContent className="py-12 text-center"><FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" /><p className="text-muted-foreground">No security screen quotes yet</p><Button className="mt-4" onClick={() => setCreateOpen(true)}>Create First Quote</Button></CardContent></Card>
+        <Card><CardContent className="py-12 text-center"><FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" /><p className="text-muted-foreground">No security screen quotes yet</p><Button className="mt-4" onClick={() => handleCreateOpenChange(true)}>Create First Quote</Button></CardContent></Card>
       ) : (
         <Table>
           <TableHeader><TableRow><TableHead>Quote #</TableHead><TableHead>Client</TableHead><TableHead>Address</TableHead><TableHead>Status</TableHead><TableHead>Total (inc GST)</TableHead><TableHead>Created</TableHead><TableHead className="w-12"></TableHead></TableRow></TableHeader>

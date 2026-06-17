@@ -28,6 +28,18 @@ async function assertPortalJobAccess(ctx: any, jobId: number) {
   return { db, job };
 }
 
+function portalNewsConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, portalNews.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function portalProductConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, portalProducts.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 export const adminPortalRouter = router({
   // ─── Portal Access Management ──────────────────────────────────────────────
 
@@ -413,10 +425,11 @@ export const adminPortalRouter = router({
 
   // ─── News Articles CMS ─────────────────────────────────────────────────────
 
-  listNews: adminProcedure.query(async () => {
+  listNews: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
     return db.select().from(portalNews)
+      .where(and(...portalNewsConditions(ctx)))
       .orderBy(desc(portalNews.createdAt));
   }),
 
@@ -435,6 +448,7 @@ export const adminPortalRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const [result] = await db.insert(portalNews).values({
+        tenantId: ctx.tenant?.id ?? null,
         title: input.title,
         slug: input.slug,
         excerpt: input.excerpt || null,
@@ -467,35 +481,37 @@ export const adminPortalRouter = router({
       isPublished: z.boolean().optional(),
       portalType: z.enum(["client", "trade", "da", "both", "all"]).optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const { id, ...updates } = input;
       const setData: any = { ...updates };
       if (updates.isPublished === true) {
         const [existing] = await db.select({ publishedAt: portalNews.publishedAt })
-          .from(portalNews).where(eq(portalNews.id, id)).limit(1);
+          .from(portalNews).where(and(...portalNewsConditions(ctx, eq(portalNews.id, id)))).limit(1);
         if (!existing?.publishedAt) setData.publishedAt = new Date();
       }
-      await db.update(portalNews).set(setData).where(eq(portalNews.id, id));
+      await db.update(portalNews).set(setData).where(and(...portalNewsConditions(ctx, eq(portalNews.id, id))));
       return { success: true };
     }),
 
   deleteNewsArticle: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await db.delete(portalNews).where(eq(portalNews.id, input.id));
+      await db.delete(portalNews).where(and(...portalNewsConditions(ctx, eq(portalNews.id, input.id))));
       return { success: true };
     }),
 
   // ─── Products CMS ──────────────────────────────────────────────────────────
 
-  listProducts: adminProcedure.query(async () => {
+  listProducts: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    return db.select().from(portalProducts).orderBy(portalProducts.sortOrder);
+    return db.select().from(portalProducts)
+      .where(and(...portalProductConditions(ctx)))
+      .orderBy(portalProducts.sortOrder);
   }),
 
   createProduct: adminProcedure
@@ -511,10 +527,11 @@ export const adminPortalRouter = router({
       isFeatured: z.boolean().default(false),
       sortOrder: z.number().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const [result] = await db.insert(portalProducts).values({
+        tenantId: ctx.tenant?.id ?? null,
         name: input.name,
         description: input.description || null,
         imageUrl: input.imageUrl || null,
@@ -543,29 +560,33 @@ export const adminPortalRouter = router({
       isFeatured: z.boolean().optional(),
       sortOrder: z.number().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const { id, ...updates } = input;
-      await db.update(portalProducts).set(updates as any).where(eq(portalProducts.id, id));
+      await db.update(portalProducts).set(updates as any).where(and(...portalProductConditions(ctx, eq(portalProducts.id, id))));
       return { success: true };
     }),
 
   deleteProduct: adminProcedure
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await db.delete(portalProducts).where(eq(portalProducts.id, input.id));
+      await db.delete(portalProducts).where(and(...portalProductConditions(ctx, eq(portalProducts.id, input.id))));
       return { success: true };
     }),
 
   // ─── CPC Plans Management ─────────────────────────────────────────────────
 
-  listPlans: adminProcedure.query(async () => {
+  listPlans: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    return db.select().from(cpcPlans).orderBy(cpcPlans.sortOrder);
+    const conditions: any[] = [];
+    appendTenantScope(conditions, cpcPlans.tenantId, tenantIdFromContext(ctx));
+    return db.select().from(cpcPlans)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(cpcPlans.sortOrder);
   }),
 
   createPlan: adminProcedure
@@ -580,10 +601,11 @@ export const adminPortalRouter = router({
       isActive: z.boolean().default(true),
       sortOrder: z.number().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const [result] = await db.insert(cpcPlans).values({
+        tenantId: ctx.tenant?.id ?? null,
         name: input.name,
         description: input.description || null,
         frequency: input.frequency,
@@ -609,11 +631,13 @@ export const adminPortalRouter = router({
       isActive: z.boolean().optional(),
       sortOrder: z.number().optional(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const { id, ...updates } = input;
-      await db.update(cpcPlans).set(updates as any).where(eq(cpcPlans.id, id));
+      const conditions = [eq(cpcPlans.id, id)];
+      appendTenantScope(conditions, cpcPlans.tenantId, tenantIdFromContext(ctx));
+      await db.update(cpcPlans).set(updates as any).where(and(...conditions));
       return { success: true };
     }),
 

@@ -28,6 +28,12 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 function purchaseOrderTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   const tenantId = tenantIdFromContext(ctx);
@@ -837,10 +843,13 @@ export const manufacturingRouter = router({
   }),
 
   // ─── Branches (for dropdown) ───────────────────────────────────────────────
-  branches: protectedProcedure.query(async () => {
-    const db = await getDb();
-    if (!db) return [];
-    return db.select({ id: branches.id, name: branches.name }).from(branches).where(eq(branches.isActive, true)).orderBy(asc(branches.name));
+  branches: protectedProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    return db
+      .select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))))
+      .orderBy(asc(branches.name));
   }),
 
   // ─── Xero PO Sync ─────────────────────────────────────────────────────────

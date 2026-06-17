@@ -952,6 +952,11 @@ export async function getDocuments(leadId: number) {
   return db.select().from(crmDocuments).where(eq(crmDocuments.leadId, leadId)).orderBy(desc(crmDocuments.uploadedAt));
 }
 
+export async function getDocument(id: number) {
+  const [document] = await db.select().from(crmDocuments).where(eq(crmDocuments.id, id)).limit(1);
+  return document || null;
+}
+
 export async function createDocument(data: { leadId: number; fileName: string; fileUrl: string; fileKey: string }) {
   const [result] = await db.insert(crmDocuments).values(data as any);
   return { id: (result as any).insertId };
@@ -1360,6 +1365,11 @@ export async function getLeadNotes(leadId: number, section?: string) {
   });
 }
 
+export async function getLeadNote(noteId: number) {
+  const [note] = await db.select().from(leadNotes).where(eq(leadNotes.id, noteId)).limit(1);
+  return note || null;
+}
+
 export async function createLeadNote(data: { leadId: number; section?: string; userId: number; userName: string; content: string; category?: string }) {
   const [result] = await db.insert(leadNotes).values({ ...data, section: data.section || "general", category: data.category || "general" }).$returningId();
   return result.id;
@@ -1391,6 +1401,11 @@ export async function getQuoteNotes(quoteId: number, quoteType: string) {
   });
 }
 
+export async function getQuoteNote(noteId: number) {
+  const [note] = await db.select().from(quoteNotes).where(eq(quoteNotes.id, noteId)).limit(1);
+  return note || null;
+}
+
 export async function createQuoteNote(data: { quoteId: number; quoteType: string; userId: number; userName: string; content: string }) {
   const [result] = await db.insert(quoteNotes).values(data).$returningId();
   return result.id;
@@ -1408,9 +1423,11 @@ export async function toggleQuoteNotePin(noteId: number, pinned: boolean) {
 // ─── Branch Performance Stats ──────────────────────────────────────────────
 export async function getBranchPerformance(fyStart?: string, fyEnd?: string, designAdvisor?: string, branchId?: number, tenantId?: number | null) {
   // Get all active branches
+  const branchConditions: any[] = [eq(branches.isActive, true)];
+  appendTenantScope(branchConditions, branches.tenantId, tenantId);
   const allBranches = await db.select({ id: branches.id, name: branches.name })
     .from(branches)
-    .where(eq(branches.isActive, true));
+    .where(and(...branchConditions));
 
   const fyStartDate = fyStart ? fyStart.slice(0, 10) : null;
   const fyEndDate = fyEnd ? fyEnd.slice(0, 10) : null;

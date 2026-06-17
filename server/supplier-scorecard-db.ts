@@ -1,6 +1,7 @@
 import { getDb } from "./db";
 import { supplierFeedback, suppliers, users } from "../drizzle/schema";
-import { eq, desc, avg, count, sql } from "drizzle-orm";
+import { and, eq, desc, avg, count, sql } from "drizzle-orm";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 export interface ScorecardData {
   supplier: { id: number; name: string; email: string | null; phone: string | null };
@@ -30,7 +31,19 @@ export interface ScorecardData {
   }>;
 }
 
-export async function getSupplierScorecard(supplierId: number): Promise<ScorecardData | null> {
+function feedbackConditions(tenantId: number | null | undefined, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, supplierFeedback.tenantId, tenantId);
+  return conditions;
+}
+
+function supplierConditions(tenantId: number | null | undefined, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, suppliers.tenantId, tenantId);
+  return conditions;
+}
+
+export async function getSupplierScorecard(supplierId: number, tenantId?: number | null): Promise<ScorecardData | null> {
   const db = await getDb();
   if (!db) return null;
 
@@ -40,7 +53,9 @@ export async function getSupplierScorecard(supplierId: number): Promise<Scorecar
     name: suppliers.name,
     email: suppliers.email,
     phone: suppliers.phone,
-  }).from(suppliers).where(eq(suppliers.id, supplierId)).limit(1);
+  }).from(suppliers)
+    .where(and(...supplierConditions(tenantId, eq(suppliers.id, supplierId))))
+    .limit(1);
 
   if (!supplierRow) return null;
 
@@ -54,7 +69,7 @@ export async function getSupplierScorecard(supplierId: number): Promise<Scorecar
     totalReviews: count(),
   })
     .from(supplierFeedback)
-    .where(eq(supplierFeedback.supplierId, supplierId));
+    .where(and(...feedbackConditions(tenantId, eq(supplierFeedback.supplierId, supplierId))));
 
   if (!summaryRow || summaryRow.totalReviews === 0) return null;
 
@@ -65,7 +80,7 @@ export async function getSupplierScorecard(supplierId: number): Promise<Scorecar
     reviewCount: count(),
   })
     .from(supplierFeedback)
-    .where(eq(supplierFeedback.supplierId, supplierId))
+    .where(and(...feedbackConditions(tenantId, eq(supplierFeedback.supplierId, supplierId))))
     .groupBy(sql`DATE_FORMAT(${supplierFeedback.createdAt}, '%Y-%m')`)
     .orderBy(sql`DATE_FORMAT(${supplierFeedback.createdAt}, '%Y-%m')`);
 
@@ -83,7 +98,7 @@ export async function getSupplierScorecard(supplierId: number): Promise<Scorecar
   })
     .from(supplierFeedback)
     .leftJoin(users, eq(supplierFeedback.userId, users.id))
-    .where(eq(supplierFeedback.supplierId, supplierId))
+    .where(and(...feedbackConditions(tenantId, eq(supplierFeedback.supplierId, supplierId))))
     .orderBy(desc(supplierFeedback.createdAt))
     .limit(20);
 

@@ -67,7 +67,10 @@ export const appCentralRouter = router({
       const [existing] = await db
         .select({ id: userDashboardConfig.id })
         .from(userDashboardConfig)
-        .where(eq(userDashboardConfig.userId, ctx.user.id))
+        .where(and(
+          eq(userDashboardConfig.userId, ctx.user.id),
+          tenantScoped(userDashboardConfig.tenantId, ctx.tenant.id),
+        ))
         .limit(1);
 
       if (existing) {

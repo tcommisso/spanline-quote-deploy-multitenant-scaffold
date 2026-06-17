@@ -18,17 +18,46 @@ function templateConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
-async function ensureProjectPlanTemplateTenantColumn(db: any) {
-  const [rows] = await db.execute(sql`
+function rowsFromExecuteResult(result: any): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+async function getSingleActiveTenantId(db: any) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count, MIN(id) AS tenantId
+    FROM tenants
+    WHERE status = 'active'
+  `);
+  const rows = rowsFromExecuteResult(result);
+  const row = rows[0];
+  return Number(row?.count || 0) === 1 ? Number(row?.tenantId) : null;
+}
+
+async function ensureProjectPlanTemplateTenantColumn(db: any, tenantId?: number | null) {
+  const result = await db.execute(sql`
     SELECT COUNT(*) AS count
     FROM information_schema.columns
     WHERE table_schema = DATABASE()
       AND table_name = 'project_plan_templates'
       AND column_name = 'tenantId'
   `);
-  if (Number(rows?.[0]?.count || 0) > 0) return;
-  await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD COLUMN `tenantId` int NULL"));
-  await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD KEY `idx_project_plan_templates_tenant` (`tenantId`)"));
+  const rows = rowsFromExecuteResult(result);
+  if (Number(rows?.[0]?.count || 0) === 0) {
+    await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD COLUMN `tenantId` int NULL"));
+    await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD KEY `idx_project_plan_templates_tenant` (`tenantId`)"));
+  }
+  const singleTenantId = await getSingleActiveTenantId(db);
+  const backfillTenantId = singleTenantId && (!tenantId || singleTenantId === tenantId) ? singleTenantId : null;
+  if (backfillTenantId) {
+    await db.execute(sql`
+      UPDATE project_plan_templates
+      SET tenantId = ${backfillTenantId}
+      WHERE tenantId IS NULL
+    `);
+  }
 }
 
 // ─── Input Schemas ─────────────────────────────────────────────────────────
@@ -62,7 +91,7 @@ export const projectPlanTemplatesRouter = router({
   list: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    await ensureProjectPlanTemplateTenantColumn(db);
+    await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
     const templates = await db
       .select()
@@ -79,7 +108,7 @@ export const projectPlanTemplatesRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       const [template] = await db
         .select()
@@ -137,7 +166,7 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       // If setting as default, unset other defaults
       if (input.isDefault) {
@@ -189,7 +218,7 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       const [existing] = await db
         .select()
@@ -254,7 +283,7 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       // Get original template
       const [original] = await db
@@ -320,7 +349,7 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       await db
         .delete(projectPlanTemplates)
@@ -333,7 +362,7 @@ export const projectPlanTemplatesRouter = router({
   listActive: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
-    await ensureProjectPlanTemplateTenantColumn(db);
+    await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
     const templates = await db
       .select({
@@ -380,7 +409,7 @@ export const projectPlanTemplatesRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await ensureProjectPlanTemplateTenantColumn(db);
+      await ensureProjectPlanTemplateTenantColumn(db, tenantIdFromContext(ctx));
 
       // Get template with stages and tasks
       const [template] = await db
@@ -398,10 +427,12 @@ export const projectPlanTemplatesRouter = router({
 
       let stagesCreated = 0;
       let tasksCreated = 0;
+      const tenantId = tenantIdFromContext(ctx);
 
       for (const stage of stages) {
         // Create construction progress entry
         await db.insert(constructionProgress).values({
+          tenantId,
           jobId: input.jobId,
           stage: stage.name,
           status: "pending",
@@ -419,6 +450,7 @@ export const projectPlanTemplatesRouter = router({
 
         for (const task of tasks) {
           await db.insert(constructionKanbanTasks).values({
+            tenantId,
             jobId: input.jobId,
             title: task.title,
             description: task.description || null,

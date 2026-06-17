@@ -16,6 +16,7 @@ import {
   type InsertDeckQuote,
   type InsertDeckAddonOverrideHistory,
 } from "../drizzle/schema";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 // ─── Deck Products ──────────────────────────────────────────────────────────
 
@@ -207,34 +208,41 @@ export async function deleteDeckAddonItem(id: number) {
 
 // ─── Deck Quotes ────────────────────────────────────────────────────────────
 
-export async function getDeckQuotes(userId?: number) {
+export async function getDeckQuotes(userId?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const conditions: any[] = [];
+  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
   if (userId) {
-    return db.select().from(deckQuotes).where(eq(deckQuotes.userId, userId)).orderBy(desc(deckQuotes.updatedAt));
+    conditions.push(eq(deckQuotes.userId, userId));
   }
-  return db.select().from(deckQuotes).orderBy(desc(deckQuotes.updatedAt));
+  const where = conditions.length ? and(...conditions) : undefined;
+  return db.select().from(deckQuotes).where(where).orderBy(desc(deckQuotes.updatedAt));
 }
 
-export async function getDeckQuoteById(id: number) {
+export async function getDeckQuoteById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  const rows = await db.select().from(deckQuotes).where(eq(deckQuotes.id, id));
+  const conditions: any[] = [eq(deckQuotes.id, id)];
+  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  const rows = await db.select().from(deckQuotes).where(and(...conditions));
   return rows[0] || null;
 }
 
-export async function createDeckQuote(data: Omit<InsertDeckQuote, "id" | "createdAt" | "updatedAt">) {
+export async function createDeckQuote(data: Omit<InsertDeckQuote, "id" | "createdAt" | "updatedAt">, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const [result] = await db.insert(deckQuotes).values(data as InsertDeckQuote);
-  return getDeckQuoteById(result.insertId);
+  return getDeckQuoteById(result.insertId, tenantId ?? data.tenantId ?? null);
 }
 
-export async function updateDeckQuote(id: number, data: Partial<Omit<InsertDeckQuote, "id" | "createdAt" | "updatedAt">>) {
+export async function updateDeckQuote(id: number, data: Partial<Omit<InsertDeckQuote, "id" | "createdAt" | "updatedAt">>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  await db.update(deckQuotes).set(data).where(eq(deckQuotes.id, id));
-  return getDeckQuoteById(id);
+  const conditions: any[] = [eq(deckQuotes.id, id)];
+  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  await db.update(deckQuotes).set(data).where(and(...conditions));
+  return getDeckQuoteById(id, tenantId);
 }
 
 export async function getNextDeckQuoteNumber(): Promise<string> {
@@ -246,14 +254,15 @@ export async function getNextDeckQuoteNumber(): Promise<string> {
   return `DQ-${String(lastNum + 1).padStart(4, "0")}`;
 }
 
-export async function duplicateDeckQuote(id: number, userId: number, newQuoteNumber: string) {
+export async function duplicateDeckQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const original = await getDeckQuoteById(id);
+  const original = await getDeckQuoteById(id, tenantId);
   if (!original) throw new Error("Deck quote not found");
-  const { id: _id, createdAt, updatedAt, quoteNumber, ...rest } = original;
+  const { id: _id, createdAt, updatedAt, quoteNumber, tenantId: _tenantId, ...rest } = original;
   const [result] = await db.insert(deckQuotes).values({
     ...rest,
+    tenantId: tenantId ?? _tenantId,
     userId,
     quoteNumber: newQuoteNumber,
     status: "draft",
@@ -261,13 +270,15 @@ export async function duplicateDeckQuote(id: number, userId: number, newQuoteNum
     proposalSentAt: null,
     proposalSentTo: null,
   } as any);
-  return getDeckQuoteById(result.insertId);
+  return getDeckQuoteById(result.insertId, tenantId ?? _tenantId);
 }
 
-export async function deleteDeckQuote(id: number) {
+export async function deleteDeckQuote(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.delete(deckQuotes).where(eq(deckQuotes.id, id));
+  const conditions: any[] = [eq(deckQuotes.id, id)];
+  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  await db.delete(deckQuotes).where(and(...conditions));
 }
 
 // ─── Deck Add-On Override History ───────────────────────────────────────────────
@@ -279,17 +290,24 @@ export async function insertOverrideHistoryEntries(entries: InsertDeckAddonOverr
   await db.insert(deckAddonOverrideHistory).values(entries);
 }
 
-export async function getOverrideHistoryForQuote(deckQuoteId: number) {
+export async function getOverrideHistoryForQuote(deckQuoteId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const quote = await getDeckQuoteById(deckQuoteId, tenantId);
+  if (!quote) return [];
   return db.select().from(deckAddonOverrideHistory)
     .where(eq(deckAddonOverrideHistory.deckQuoteId, deckQuoteId))
     .orderBy(desc(deckAddonOverrideHistory.changedAt));
 }
 
-export async function getLastOverridePerQuote(): Promise<Array<{ deckQuoteId: number; changedAt: Date; changedByName: string | null }>> {
+export async function getLastOverridePerQuote(tenantId?: number | null): Promise<Array<{ deckQuoteId: number; changedAt: Date; changedByName: string | null }>> {
   const db = await getDb();
   if (!db) return [];
+  const quoteConditions: any[] = [];
+  appendTenantScope(quoteConditions, deckQuotes.tenantId, tenantId);
+  const visibleQuotes = await db.select({ id: deckQuotes.id }).from(deckQuotes)
+    .where(quoteConditions.length ? and(...quoteConditions) : undefined);
+  const visibleQuoteIds = new Set(visibleQuotes.map(q => q.id));
   // Get the most recent override entry per quote using a subquery approach
   const all = await db.select({
     id: deckAddonOverrideHistory.id,
@@ -302,6 +320,7 @@ export async function getLastOverridePerQuote(): Promise<Array<{ deckQuoteId: nu
   const seen = new Set<number>();
   const result: Array<{ deckQuoteId: number; changedAt: Date; changedByName: string | null }> = [];
   for (const row of all) {
+    if (!visibleQuoteIds.has(row.deckQuoteId)) continue;
     if (!seen.has(row.deckQuoteId)) {
       seen.add(row.deckQuoteId);
       result.push({ deckQuoteId: row.deckQuoteId, changedAt: row.changedAt, changedByName: row.changedByName });

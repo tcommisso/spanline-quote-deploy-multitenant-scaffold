@@ -6,7 +6,7 @@ import { eq, and, desc, like, sql, or, gte, lte, inArray, isNull, isNotNull, asc
 import { getDb } from "./db";
 import {
   inboxMessages, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
-  crmLeads, portalAccess, constructionJobs, clientActivities, users,
+  crmLeads, portalAccess, constructionJobs, clientActivities, users, tenantMemberships,
   type InboxMessage, type InsertInboxMessage,
   type InboxTag, type InsertInboxTag,
   type EmailSignature, type InsertEmailSignature,
@@ -14,6 +14,7 @@ import {
   type InboxSlaRule, type InsertInboxSlaRule,
   type InboxAddress, type InsertInboxAddress,
 } from "../drizzle/schema";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 // ─── Inbox Messages ─────────────────────────────────────────────────────────
 
@@ -266,10 +267,12 @@ export async function matchEmailToClient(fromEmail: string, tenantId?: number | 
 
 // ─── Tags ───────────────────────────────────────────────────────────────────
 
-export async function listTags() {
+export async function listTags(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  return db.select().from(inboxTags).where(eq(inboxTags.active, true)).orderBy(asc(inboxTags.sortOrder));
+  const conditions: any[] = [eq(inboxTags.active, true)];
+  appendTenantScope(conditions, inboxTags.tenantId, tenantId);
+  return db.select().from(inboxTags).where(and(...conditions)).orderBy(asc(inboxTags.sortOrder));
 }
 
 export async function createTag(data: Omit<InsertInboxTag, "id">) {
@@ -279,32 +282,48 @@ export async function createTag(data: Omit<InsertInboxTag, "id">) {
   return { id: (result as any).insertId };
 }
 
-export async function updateTag(id: number, data: Partial<InsertInboxTag>) {
+export async function updateTag(id: number, data: Partial<InsertInboxTag>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.update(inboxTags).set(data).where(eq(inboxTags.id, id));
+  const conditions: any[] = [eq(inboxTags.id, id)];
+  appendTenantScope(conditions, inboxTags.tenantId, tenantId);
+  await db.update(inboxTags).set(data).where(and(...conditions));
 }
 
-export async function deleteTag(id: number) {
+export async function deleteTag(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.update(inboxTags).set({ active: false }).where(eq(inboxTags.id, id));
+  const conditions: any[] = [eq(inboxTags.id, id)];
+  appendTenantScope(conditions, inboxTags.tenantId, tenantId);
+  await db.update(inboxTags).set({ active: false }).where(and(...conditions));
 }
 
-export async function getMessageTags(messageId: number) {
+export async function getMessageTags(messageId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [eq(inboxMessageTags.messageId, messageId)];
+  appendTenantScope(conditions, inboxTags.tenantId, tenantId);
   const rows = await db
     .select({ tag: inboxTags })
     .from(inboxMessageTags)
     .innerJoin(inboxTags, eq(inboxMessageTags.tagId, inboxTags.id))
-    .where(eq(inboxMessageTags.messageId, messageId));
+    .where(and(...conditions));
   return rows.map(r => r.tag);
 }
 
-export async function addTagToMessage(messageId: number, tagId: number) {
+export async function addTagToMessage(messageId: number, tagId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const tagConditions: any[] = [eq(inboxTags.id, tagId), eq(inboxTags.active, true)];
+  appendTenantScope(tagConditions, inboxTags.tenantId, tenantId);
+  const [visibleTag] = await db.select({ id: inboxTags.id }).from(inboxTags).where(and(...tagConditions)).limit(1);
+  if (!visibleTag) throw new Error("Tag not found");
+
+  const messageConditions: any[] = [eq(inboxMessages.id, messageId)];
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
+  const [visibleMessage] = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions)).limit(1);
+  if (!visibleMessage) throw new Error("Message not found");
+
   // Check if already exists
   const [existing] = await db
     .select()
@@ -315,9 +334,19 @@ export async function addTagToMessage(messageId: number, tagId: number) {
   await db.insert(inboxMessageTags).values({ messageId, tagId });
 }
 
-export async function removeTagFromMessage(messageId: number, tagId: number) {
+export async function removeTagFromMessage(messageId: number, tagId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const tagConditions: any[] = [eq(inboxTags.id, tagId)];
+  appendTenantScope(tagConditions, inboxTags.tenantId, tenantId);
+  const [visibleTag] = await db.select({ id: inboxTags.id }).from(inboxTags).where(and(...tagConditions)).limit(1);
+  if (!visibleTag) return;
+
+  const messageConditions: any[] = [eq(inboxMessages.id, messageId)];
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
+  const [visibleMessage] = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions)).limit(1);
+  if (!visibleMessage) return;
+
   await db.delete(inboxMessageTags).where(
     and(eq(inboxMessageTags.messageId, messageId), eq(inboxMessageTags.tagId, tagId))
   );
@@ -325,20 +354,24 @@ export async function removeTagFromMessage(messageId: number, tagId: number) {
 
 // ─── Email Signatures ───────────────────────────────────────────────────────
 
-export async function getUserSignatures(userId: number) {
+export async function getUserSignatures(userId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  return db.select().from(emailSignatures).where(eq(emailSignatures.userId, userId)).orderBy(desc(emailSignatures.isDefault));
+  const conditions: any[] = [eq(emailSignatures.userId, userId)];
+  appendTenantScope(conditions, emailSignatures.tenantId, tenantId);
+  return db.select().from(emailSignatures).where(and(...conditions)).orderBy(desc(emailSignatures.isDefault));
 }
 
-export async function getDefaultSignature(userId: number) {
+export async function getDefaultSignature(userId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   // Get all user signatures to check schedule-based selection
+  const conditions: any[] = [eq(emailSignatures.userId, userId)];
+  appendTenantScope(conditions, emailSignatures.tenantId, tenantId);
   const userSigs = await db
     .select()
     .from(emailSignatures)
-    .where(eq(emailSignatures.userId, userId));
+    .where(and(...conditions));
   
   if (userSigs.length > 0) {
     const isBusinessHours = checkIsBusinessHours();
@@ -357,7 +390,7 @@ export async function getDefaultSignature(userId: number) {
     if (anyDefault) return anyDefault;
   }
   // Fall back to company-wide default signature if user has no personal default
-  return getCompanyDefaultSignature();
+  return getCompanyDefaultSignature(tenantId);
 }
 
 /** Check if current time is within business hours (Mon-Fri 8am-6pm Australia/Sydney, DST-aware) */
@@ -381,13 +414,15 @@ function checkIsBusinessHours(): boolean {
   return true;
 }
 
-export async function getCompanyDefaultSignature() {
+export async function getCompanyDefaultSignature(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
+  const conditions: any[] = [eq(inboxSettings.settingKey, "company_default_signature")];
+  appendTenantScope(conditions, inboxSettings.tenantId, tenantId);
   const [row] = await db
     .select()
     .from(inboxSettings)
-    .where(eq(inboxSettings.settingKey, "company_default_signature"))
+    .where(and(...conditions))
     .limit(1);
   if (!row || !row.settingValue) return null;
   try {
@@ -407,50 +442,62 @@ export async function getCompanyDefaultSignature() {
   }
 }
 
-export async function setCompanyDefaultSignature(name: string, htmlContent: string, updatedBy: number) {
-  await setSetting("company_default_signature", JSON.stringify({ name, htmlContent }), updatedBy);
+export async function setCompanyDefaultSignature(name: string, htmlContent: string, updatedBy: number, tenantId?: number | null) {
+  await setSetting("company_default_signature", JSON.stringify({ name, htmlContent }), updatedBy, tenantId);
 }
 
-export async function upsertSignature(data: Omit<InsertEmailSignature, "id">) {
+export async function upsertSignature(data: Omit<InsertEmailSignature, "id">, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   // If setting as default, unset other defaults for this user
   if (data.isDefault) {
-    await db.update(emailSignatures).set({ isDefault: false }).where(eq(emailSignatures.userId, data.userId));
+    const conditions: any[] = [eq(emailSignatures.userId, data.userId)];
+    appendTenantScope(conditions, emailSignatures.tenantId, tenantId);
+    await db.update(emailSignatures).set({ isDefault: false }).where(and(...conditions));
   }
   const [result] = await db.insert(emailSignatures).values(data);
   return { id: (result as any).insertId };
 }
 
-export async function updateSignature(id: number, userId: number, data: Partial<InsertEmailSignature>) {
+export async function updateSignature(id: number, userId: number, data: Partial<InsertEmailSignature>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (data.isDefault) {
-    await db.update(emailSignatures).set({ isDefault: false }).where(eq(emailSignatures.userId, userId));
+    const defaultConditions: any[] = [eq(emailSignatures.userId, userId)];
+    appendTenantScope(defaultConditions, emailSignatures.tenantId, tenantId);
+    await db.update(emailSignatures).set({ isDefault: false }).where(and(...defaultConditions));
   }
-  await db.update(emailSignatures).set(data).where(and(eq(emailSignatures.id, id), eq(emailSignatures.userId, userId)));
+  const conditions: any[] = [eq(emailSignatures.id, id), eq(emailSignatures.userId, userId)];
+  appendTenantScope(conditions, emailSignatures.tenantId, tenantId);
+  await db.update(emailSignatures).set(data).where(and(...conditions));
 }
 
-export async function deleteSignature(id: number, userId: number) {
+export async function deleteSignature(id: number, userId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.delete(emailSignatures).where(and(eq(emailSignatures.id, id), eq(emailSignatures.userId, userId)));
+  const conditions: any[] = [eq(emailSignatures.id, id), eq(emailSignatures.userId, userId)];
+  appendTenantScope(conditions, emailSignatures.tenantId, tenantId);
+  await db.delete(emailSignatures).where(and(...conditions));
 }
 
-export async function duplicateCompanySignatureToUsers(name: string, htmlContent: string, forceAll = false) {
+export async function duplicateCompanySignatureToUsers(name: string, htmlContent: string, forceAll = false, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   // Get all staff users
-  const staffUsers = await listStaffUsers();
+  const staffUsers = await listStaffUsers(tenantId);
   // Get users who already have at least one signature
+  const signatureConditions: any[] = [];
+  appendTenantScope(signatureConditions, emailSignatures.tenantId, tenantId);
   const existingSignatures = await db
     .select({ userId: emailSignatures.userId })
-    .from(emailSignatures);
+    .from(emailSignatures)
+    .where(signatureConditions.length ? and(...signatureConditions) : undefined);
   const usersWithSig = new Set(existingSignatures.map(s => s.userId));
   let created = 0;
   for (const user of staffUsers) {
     if (forceAll || !usersWithSig.has(user.id)) {
       await db.insert(emailSignatures).values({
+        tenantId: tenantId ?? null,
         userId: user.id,
         name,
         htmlContent,
@@ -463,11 +510,16 @@ export async function duplicateCompanySignatureToUsers(name: string, htmlContent
   return { created, skipped: staffUsers.length - created, total: staffUsers.length };
 }
 
-export async function getSignatureAnalytics() {
+export async function getSignatureAnalytics(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const staffUsers = await listStaffUsers();
-  const allSignatures = await db.select().from(emailSignatures);
+  const staffUsers = await listStaffUsers(tenantId);
+  const signatureConditions: any[] = [];
+  appendTenantScope(signatureConditions, emailSignatures.tenantId, tenantId);
+  const allSignatures = await db
+    .select()
+    .from(emailSignatures)
+    .where(signatureConditions.length ? and(...signatureConditions) : undefined);
   const sigsByUser = new Map<number, typeof allSignatures>();
   for (const sig of allSignatures) {
     if (!sigsByUser.has(sig.userId)) sigsByUser.set(sig.userId, []);
@@ -498,29 +550,35 @@ export async function getSignatureAnalytics() {
 
 // ─── Inbox Settings ─────────────────────────────────────────────────────────
 
-export async function getSetting(key: string): Promise<string | null> {
+export async function getSetting(key: string, tenantId?: number | null): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;
-  const [row] = await db.select().from(inboxSettings).where(eq(inboxSettings.settingKey, key)).limit(1);
+  const conditions: any[] = [eq(inboxSettings.settingKey, key)];
+  appendTenantScope(conditions, inboxSettings.tenantId, tenantId);
+  const [row] = await db.select().from(inboxSettings).where(and(...conditions)).limit(1);
   return row?.settingValue || null;
 }
 
-export async function setSetting(key: string, value: string, updatedBy?: number) {
+export async function setSetting(key: string, value: string, updatedBy?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   // Upsert
-  const [existing] = await db.select().from(inboxSettings).where(eq(inboxSettings.settingKey, key)).limit(1);
+  const conditions: any[] = [eq(inboxSettings.settingKey, key)];
+  appendTenantScope(conditions, inboxSettings.tenantId, tenantId);
+  const [existing] = await db.select().from(inboxSettings).where(and(...conditions)).limit(1);
   if (existing) {
     await db.update(inboxSettings).set({ settingValue: value, updatedBy }).where(eq(inboxSettings.id, existing.id));
   } else {
-    await db.insert(inboxSettings).values({ settingKey: key, settingValue: value, updatedBy });
+    await db.insert(inboxSettings).values({ tenantId: tenantId ?? null, settingKey: key, settingValue: value, updatedBy });
   }
 }
 
-export async function getAllSettings(): Promise<Record<string, string>> {
+export async function getAllSettings(tenantId?: number | null): Promise<Record<string, string>> {
   const db = await getDb();
   if (!db) return {};
-  const rows = await db.select().from(inboxSettings);
+  const conditions: any[] = [];
+  appendTenantScope(conditions, inboxSettings.tenantId, tenantId);
+  const rows = await db.select().from(inboxSettings).where(conditions.length ? and(...conditions) : undefined);
   const result: Record<string, string> = {};
   for (const row of rows) result[row.settingKey] = row.settingValue;
   return result;
@@ -528,44 +586,52 @@ export async function getAllSettings(): Promise<Record<string, string>> {
 
 // ─── SLA Rules ──────────────────────────────────────────────────────────────
 
-export async function listSlaRules() {
+export async function listSlaRules(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  return db.select().from(inboxSlaRules).orderBy(asc(inboxSlaRules.id));
+  const conditions: any[] = [];
+  appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
+  return db.select().from(inboxSlaRules).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(inboxSlaRules.id));
 }
 
-export async function getActiveSlaRule(): Promise<InboxSlaRule | null> {
+export async function getActiveSlaRule(tenantId?: number | null): Promise<InboxSlaRule | null> {
   const db = await getDb();
   if (!db) return null;
-  const [rule] = await db.select().from(inboxSlaRules).where(eq(inboxSlaRules.active, true)).limit(1);
+  const conditions: any[] = [eq(inboxSlaRules.active, true)];
+  appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
+  const [rule] = await db.select().from(inboxSlaRules).where(and(...conditions)).limit(1);
   return rule || null;
 }
 
-export async function upsertSlaRule(data: Omit<InsertInboxSlaRule, "id"> & { id?: number }) {
+export async function upsertSlaRule(data: Omit<InsertInboxSlaRule, "id"> & { id?: number }, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (data.id) {
     const { id, ...rest } = data;
-    await db.update(inboxSlaRules).set(rest).where(eq(inboxSlaRules.id, id));
+    const conditions: any[] = [eq(inboxSlaRules.id, id)];
+    appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
+    await db.update(inboxSlaRules).set(rest).where(and(...conditions));
     return { id };
   }
-  const [result] = await db.insert(inboxSlaRules).values(data);
+  const [result] = await db.insert(inboxSlaRules).values({ ...data, tenantId: tenantId ?? null });
   return { id: (result as any).insertId };
 }
 
-export async function deleteSlaRule(id: number) {
+export async function deleteSlaRule(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.delete(inboxSlaRules).where(eq(inboxSlaRules.id, id));
+  const conditions: any[] = [eq(inboxSlaRules.id, id)];
+  appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
+  await db.delete(inboxSlaRules).where(and(...conditions));
 }
 
 // ─── SLA Check: get messages breaching SLA ──────────────────────────────────
 
-export async function getMessagesBreachingSla(): Promise<Array<InboxMessage & { slaLevel: "warning" | "escalation" }>> {
+export async function getMessagesBreachingSla(tenantId?: number | null): Promise<Array<InboxMessage & { slaLevel: "warning" | "escalation" }>> {
   const db = await getDb();
   if (!db) return [];
 
-  const rule = await getActiveSlaRule();
+  const rule = await getActiveSlaRule(tenantId);
   if (!rule) return [];
 
   const now = Date.now();
@@ -573,16 +639,17 @@ export async function getMessagesBreachingSla(): Promise<Array<InboxMessage & { 
   const escalationCutoff = new Date(now - rule.escalationHours * 60 * 60 * 1000);
 
   // Get inbound messages that are not closed/replied/spam
+  const conditions: any[] = [
+    eq(inboxMessages.direction, "inbound"),
+    or(eq(inboxMessages.status, "new"), eq(inboxMessages.status, "open")),
+    lte(inboxMessages.createdAt, warningCutoff),
+  ];
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+
   const openMessages = await db
     .select()
     .from(inboxMessages)
-    .where(
-      and(
-        eq(inboxMessages.direction, "inbound"),
-        or(eq(inboxMessages.status, "new"), eq(inboxMessages.status, "open")),
-        lte(inboxMessages.createdAt, warningCutoff),
-      )
-    )
+    .where(and(...conditions))
     .orderBy(asc(inboxMessages.createdAt));
 
   return openMessages.map(msg => {
@@ -594,21 +661,28 @@ export async function getMessagesBreachingSla(): Promise<Array<InboxMessage & { 
 
 // ─── Users list (for assignment picker) ─────────────────────────────────────
 
-export async function listStaffUsers() {
+export async function listStaffUsers(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const roleCondition = or(
+    eq(users.role, "admin"),
+    eq(users.role, "super_admin"),
+    eq(users.role, "office_user"),
+    eq(users.role, "design_adviser"),
+    eq(users.role, "construction_user"),
+  );
+  if (!tenantId) {
+    return db
+      .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+      .from(users)
+      .where(roleCondition)
+      .orderBy(asc(users.name));
+  }
   return db
     .select({ id: users.id, name: users.name, email: users.email, role: users.role })
     .from(users)
-    .where(
-      or(
-        eq(users.role, "admin"),
-        eq(users.role, "super_admin"),
-        eq(users.role, "office_user"),
-        eq(users.role, "design_adviser"),
-        eq(users.role, "construction_user"),
-      )
-    )
+    .innerJoin(tenantMemberships, eq(tenantMemberships.userId, users.id))
+    .where(and(eq(tenantMemberships.tenantId, tenantId), roleCondition))
     .orderBy(asc(users.name));
 }
 
@@ -754,6 +828,11 @@ export async function bulkAssignMessages(ids: number[], assignedToId: number | n
 export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  const tagConditions: any[] = [eq(inboxTags.id, tagId), eq(inboxTags.active, true)];
+  appendTenantScope(tagConditions, inboxTags.tenantId, tenantId);
+  const [visibleTag] = await db.select({ id: inboxTags.id }).from(inboxTags).where(and(...tagConditions)).limit(1);
+  if (!visibleTag) throw new Error("Tag not found");
+
   const messageConditions: any[] = [inArray(inboxMessages.id, ids)];
   if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
   const ownedMessages = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions));
