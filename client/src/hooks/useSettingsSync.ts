@@ -143,5 +143,6 @@ export function useSettingsSync() {
     syncFavicon,
     syncCustomLogo,
     isLoaded: hasApplied.current || isSuccess,
+    serverSettings,
   };
 }

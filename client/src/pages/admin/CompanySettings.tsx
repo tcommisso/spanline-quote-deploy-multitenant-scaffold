@@ -95,16 +95,53 @@ export default function CompanySettings() {
   const updateBranch = trpc.branches.update.useMutation();
   const deleteBranch = trpc.branches.delete.useMutation();
   const utils = trpc.useUtils();
-  const { syncCompanyDetails, syncAppIcon, syncFavicon, syncCustomLogo } = useSettingsSync();
+  const { syncCompanyDetails, syncAppIcon, syncFavicon, syncCustomLogo, serverSettings } = useSettingsSync();
 
   // Company Details state (from proposalStore)
   const [company, setCompany] = useState<CompanyDetails>(loadCompanyDetails());
   const [logo, setLogo] = useState<CustomLogo | null>(loadCustomLogo());
   const [appIcon, setAppIcon] = useState<AppIcon | null>(loadAppIcon());
   const [favicon, setFavicon] = useState<Favicon | null>(loadFavicon());
+  const settingsHydratedRef = useRef(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const appIconInputRef = useRef<HTMLInputElement>(null);
   const faviconInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!serverSettings || settingsHydratedRef.current) return;
+    settingsHydratedRef.current = true;
+
+    const settings = serverSettings as any;
+    const hasField = (key: string) => Object.prototype.hasOwnProperty.call(settings, key);
+
+    if (settings.companyDetails) {
+      setCompany(settings.companyDetails as CompanyDetails);
+    }
+    if (hasField("customLogoUrl")) {
+      setLogo(settings.customLogoUrl ? {
+        dataUrl: settings.customLogoUrl,
+        fileName: "synced-logo",
+        width: 200,
+        height: 60,
+      } : null);
+    }
+    if (hasField("appIconUrl")) {
+      setAppIcon(settings.appIconUrl ? {
+        dataUrl: settings.appIconUrl,
+        fileName: "synced-icon",
+        width: 64,
+        height: 64,
+      } : null);
+    }
+    if (hasField("faviconUrl")) {
+      setFavicon(settings.faviconUrl ? {
+        dataUrl: settings.faviconUrl,
+        fileName: "synced-favicon",
+        width: 32,
+        height: 32,
+      } : null);
+    }
+  }, [serverSettings]);
 
   // Branch form state
   const [newBranch, setNewBranch] = useState({ name: "", address: "", phone: "", email: "", smsNumber: "", managerName: "", managerEmail: "" });

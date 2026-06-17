@@ -37,13 +37,17 @@ export async function getTenantAppSetting<T = unknown>(
 
   if (tenantId) {
     const [row] = await db
-      .select({ appSettings: tenantSettings.appSettings })
+      .select({ appSettings: tenantSettings.appSettings, branding: tenantSettings.branding })
       .from(tenantSettings)
       .where(eq(tenantSettings.tenantId, tenantId))
       .limit(1);
     const appSettings = asRecord(row?.appSettings);
     if (Object.prototype.hasOwnProperty.call(appSettings, key)) {
       return appSettings[key] as T;
+    }
+    const branding = asRecord(row?.branding);
+    if (Object.prototype.hasOwnProperty.call(branding, key)) {
+      return branding[key] as T;
     }
   }
 
@@ -112,16 +116,18 @@ export async function removeTenantAppSetting(
   }
 
   const [row] = await db
-    .select({ appSettings: tenantSettings.appSettings })
+    .select({ appSettings: tenantSettings.appSettings, branding: tenantSettings.branding })
     .from(tenantSettings)
     .where(eq(tenantSettings.tenantId, tenantId))
     .limit(1);
   const appSettings = { ...asRecord(row?.appSettings) };
+  const branding = { ...asRecord(row?.branding) };
   delete appSettings[key];
+  delete branding[key];
 
   await db
     .update(tenantSettings)
-    .set({ appSettings })
+    .set({ appSettings, branding })
     .where(eq(tenantSettings.tenantId, tenantId));
 
   return { success: true };

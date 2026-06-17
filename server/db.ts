@@ -1523,6 +1523,21 @@ function legacyBrandingFromUserSettings(row: typeof userSettings.$inferSelect | 
   };
 }
 
+async function getLegacyBrandingFallback(): Promise<TenantBrandingRecord | null> {
+  const db = await getDb();
+  if (!db) return null;
+
+  const legacyRows = await db.select().from(userSettings).limit(10);
+  const legacy = legacyRows.find((row) =>
+    row.companyDetails ||
+    row.customLogoUrl ||
+    row.appIconUrl ||
+    row.faviconUrl ||
+    row.companyTheme
+  );
+  return legacyBrandingFromUserSettings(legacy);
+}
+
 export async function getTenantBrandingSettings(tenantId?: number | null): Promise<TenantBrandingRecord | null> {
   const db = await getDb();
   if (!db) return null;
@@ -1538,25 +1553,26 @@ export async function getTenantBrandingSettings(tenantId?: number | null): Promi
 
   if (tenantRow) {
     const branding = objectRecord(tenantRow.branding);
+    const legacy = await getLegacyBrandingFallback();
+    const mergedBranding = { ...(legacy?.branding ?? {}), ...branding };
+    const fieldOrFallback = <T = unknown>(key: string, fallback: T | null | undefined): T | null => {
+      if (Object.prototype.hasOwnProperty.call(branding, key)) {
+        return (branding[key] as T | null | undefined) ?? null;
+      }
+      return fallback ?? null;
+    };
+
     return {
-      companyDetails: tenantRow.companyDetails,
-      customLogoUrl: (branding.customLogoUrl as string | null | undefined) ?? null,
-      appIconUrl: (branding.appIconUrl as string | null | undefined) ?? null,
-      faviconUrl: (branding.faviconUrl as string | null | undefined) ?? null,
-      companyTheme: branding.companyTheme,
-      branding,
+      companyDetails: tenantRow.companyDetails ?? legacy?.companyDetails ?? null,
+      customLogoUrl: fieldOrFallback<string>("customLogoUrl", legacy?.customLogoUrl),
+      appIconUrl: fieldOrFallback<string>("appIconUrl", legacy?.appIconUrl),
+      faviconUrl: fieldOrFallback<string>("faviconUrl", legacy?.faviconUrl),
+      companyTheme: fieldOrFallback("companyTheme", legacy?.companyTheme),
+      branding: mergedBranding,
     };
   }
 
-  const legacyRows = await db.select().from(userSettings).limit(5);
-  const legacy = legacyRows.find((row) =>
-    row.companyDetails ||
-    row.customLogoUrl ||
-    row.appIconUrl ||
-    row.faviconUrl ||
-    row.companyTheme
-  );
-  return legacyBrandingFromUserSettings(legacy);
+  return getLegacyBrandingFallback();
 }
 
 export async function upsertTenantBrandingSettings(
