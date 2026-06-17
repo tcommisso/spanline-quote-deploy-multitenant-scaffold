@@ -272,6 +272,7 @@ const adminGroups: AdminGroup[] = [
     items: [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
       { icon: Package, label: "Construction Data", path: "/admin/component-catalogue" },
+      { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
       { icon: History, label: "Import History", path: "/admin/import-history" },

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,17 @@ type LineItem = {
   unitPrice: string;
   colour?: string;
   description?: string;
+};
+
+type ManufacturingCatalogueProduct = {
+  id: number;
+  sku?: string;
+  description: string;
+  uom?: string;
+  unitCost?: number;
+  colour?: string;
+  category?: string;
+  supplier?: string;
 };
 
 export default function ManufacturingPurchaseOrders() {
@@ -207,6 +218,20 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     setLineItems(items);
   };
 
+  const applyCatalogueItem = (idx: number, product: ManufacturingCatalogueProduct) => {
+    const items = [...lineItems];
+    items[idx] = {
+      ...items[idx],
+      productName: product.description,
+      productCode: product.sku || undefined,
+      unit: product.uom || items[idx].unit || "ea",
+      unitPrice: String(product.unitCost ?? 0),
+      colour: product.colour || items[idx].colour,
+      description: product.category || items[idx].description,
+    };
+    setLineItems(items);
+  };
+
   const removeLineItem = (idx: number) => {
     if (lineItems.length <= 1) return;
     setLineItems(lineItems.filter((_, i) => i !== idx));
@@ -286,12 +311,14 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 <div key={idx} className="grid grid-cols-[1fr_60px_80px_60px_30px] gap-2 items-end">
                   <div>
                     {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product Name</Label>}
-                    <Input
+                    <ManufacturingProductInput
                       value={item.productName}
-                      onChange={(e) => updateLineItem(idx, "productName", e.target.value)}
+                      onValueChange={(value) => updateLineItem(idx, "productName", value)}
+                      onSelect={(product) => applyCatalogueItem(idx, product)}
                       placeholder="Product name"
                       className="h-8 text-xs"
                     />
+                    {item.productCode && <p className="mt-0.5 text-[10px] text-muted-foreground">{item.productCode}</p>}
                   </div>
                   <div>
                     {idx === 0 && <Label className="text-[10px] text-muted-foreground">Qty</Label>}
@@ -391,6 +418,20 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
     setLineItems(items);
   };
 
+  const applyCatalogueItem = (idx: number, product: ManufacturingCatalogueProduct) => {
+    const items = [...lineItems];
+    items[idx] = {
+      ...items[idx],
+      productName: product.description,
+      productCode: product.sku || undefined,
+      unit: product.uom || items[idx].unit || "ea",
+      unitPrice: String(product.unitCost ?? 0),
+      colour: product.colour || items[idx].colour,
+      description: product.category || items[idx].description,
+    };
+    setLineItems(items);
+  };
+
   const removeItem = (idx: number) => {
     if (lineItems.length <= 1) return;
     setLineItems(lineItems.filter((_, i) => i !== idx));
@@ -435,12 +476,14 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
               <div key={idx} className="grid grid-cols-[1fr_80px_60px_80px_60px_30px] gap-2 items-end">
                 <div>
                   {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product</Label>}
-                  <Input
+                  <ManufacturingProductInput
                     value={item.productName}
-                    onChange={(e) => updateItem(idx, "productName", e.target.value)}
+                    onValueChange={(value) => updateItem(idx, "productName", value)}
+                    onSelect={(product) => applyCatalogueItem(idx, product)}
                     placeholder="Product name"
                     className="h-8 text-xs"
                   />
+                  {item.productCode && <p className="mt-0.5 text-[10px] text-muted-foreground">{item.productCode}</p>}
                 </div>
                 <div>
                   {idx === 0 && <Label className="text-[10px] text-muted-foreground">Colour</Label>}
@@ -504,5 +547,53 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ManufacturingProductInput({
+  value,
+  onValueChange,
+  onSelect,
+  placeholder,
+  className,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  onSelect: (product: ManufacturingCatalogueProduct) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  const listId = useId().replace(/:/g, "-");
+  const { data: products = [] } = trpc.manufacturingData.search.useQuery(
+    { query: value, limit: 8 },
+    { enabled: value.trim().length >= 2 }
+  );
+
+  const handleChange = (nextValue: string) => {
+    onValueChange(nextValue);
+    const match = products.find((product: ManufacturingCatalogueProduct) =>
+      product.description.toLowerCase() === nextValue.toLowerCase() ||
+      (product.sku || "").toLowerCase() === nextValue.toLowerCase()
+    );
+    if (match) onSelect(match);
+  };
+
+  return (
+    <>
+      <Input
+        list={listId}
+        value={value}
+        onChange={(event) => handleChange(event.target.value)}
+        placeholder={placeholder}
+        className={className}
+      />
+      <datalist id={listId}>
+        {products.map((product: ManufacturingCatalogueProduct) => (
+          <option key={product.id} value={product.description}>
+            {[product.sku, product.uom, product.unitCost != null ? `$${Number(product.unitCost).toFixed(2)}` : null].filter(Boolean).join(" · ")}
+          </option>
+        ))}
+      </datalist>
+    </>
   );
 }

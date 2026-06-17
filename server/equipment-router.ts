@@ -25,6 +25,18 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function normalizeKey(value: unknown) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const importEquipmentRow = z.object({
+  name: z.string().min(1),
+  category: z.string().optional().nullable(),
+  description: z.string().optional().nullable(),
+  serialNumber: z.string().optional().nullable(),
+  isActive: z.boolean().optional(),
+});
+
 async function requireEquipmentAccess(db: any, ctx: any, equipmentId: number) {
   const [row] = await db.select()
     .from(equipment)
@@ -158,6 +170,72 @@ export const equipmentRouter = router({
       await requireEquipmentAccess(db, ctx, input.id);
       await db.delete(equipment).where(and(...equipmentTenantConditions(ctx, eq(equipment.id, input.id))));
       return { success: true };
+    }),
+
+  importCsvRows: tenantAdminProcedure
+    .input(z.object({
+      rows: z.array(importEquipmentRow).max(5000),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdFromContext(ctx);
+      const existingRows = await db.select().from(equipment)
+        .where(tenantScoped(equipment.tenantId, tenantId));
+      const bySerial = new Map<string, any>();
+      const byNameCategory = new Map<string, any>();
+      for (const row of existingRows) {
+        const serialKey = normalizeKey(row.serialNumber);
+        if (serialKey) bySerial.set(serialKey, row);
+        byNameCategory.set(`${normalizeKey(row.name)}|${normalizeKey(row.category)}`, row);
+      }
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (let idx = 0; idx < input.rows.length; idx += 1) {
+        const row = input.rows[idx];
+        const name = row.name.trim();
+        if (!name) {
+          skipped += 1;
+          continue;
+        }
+        const serialNumber = row.serialNumber?.trim() || null;
+        const category = row.category?.trim() || null;
+        const description = row.description?.trim() || null;
+        const serialKey = normalizeKey(serialNumber);
+        const nameCategoryKey = `${normalizeKey(name)}|${normalizeKey(category)}`;
+        const existing = serialKey ? bySerial.get(serialKey) : byNameCategory.get(nameCategoryKey);
+        const values = {
+          tenantId,
+          name,
+          category,
+          description,
+          serialNumber,
+          isActive: row.isActive ?? true,
+        };
+
+        try {
+          if (existing) {
+            await db.update(equipment).set(values).where(eq(equipment.id, existing.id));
+            updated += 1;
+            const refreshed = { ...existing, ...values };
+            if (serialKey) bySerial.set(serialKey, refreshed);
+            byNameCategory.set(nameCategoryKey, refreshed);
+          } else {
+            const [result] = await db.insert(equipment).values(values);
+            const inserted = { id: result.insertId, ...values };
+            created += 1;
+            if (serialKey) bySerial.set(serialKey, inserted);
+            byNameCategory.set(nameCategoryKey, inserted);
+          }
+        } catch (err: any) {
+          errors.push(`Row ${idx + 2}: ${err?.message || "import failed"}`);
+        }
+      }
+
+      return { created, updated, skipped, errors };
     }),
 
   // ─── Equipment Bookings ───────────────────────────────────────────────────

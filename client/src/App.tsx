@@ -125,6 +125,7 @@ const PatioEditorPage = lazy(() => import("./pages/PatioEditorPage"));
 const SmartshopOrderForm = lazy(() => import("./pages/SmartshopOrderForm"));
 const OrderHistory = lazy(() => import("./pages/OrderHistory"));
 const ComponentCatalogueAdmin = lazy(() => import("./pages/ComponentCatalogueAdmin"));
+const ManufacturingDataAdmin = lazy(() => import("./pages/ManufacturingDataAdmin"));
 const AdminTextBlocks = lazy(() => import("./pages/AdminTextBlocks"));
 const TemplateManager = lazy(() => import("./pages/TemplateManager"));
 const AdminChecklistPricing = lazy(() => import("./pages/AdminChecklistPricing"));
@@ -493,6 +494,7 @@ function MainRouter() {
         <Route path="/manufacturing/suppliers">{() => <AdminRoute><SupplierDirectory supplierScope="manufacturing" /></AdminRoute>}</Route>
         <Route path="/admin/supplier-feedback">{() => <AdminRoute><SupplierFeedback /></AdminRoute>}</Route>
         <Route path="/admin/component-catalogue">{() => <AdminRoute><ComponentCatalogueAdmin /></AdminRoute>}</Route>
+        <Route path="/admin/manufacturing-data">{() => <AdminRoute><ManufacturingDataAdmin /></AdminRoute>}</Route>
         <Route path="/admin/text-blocks">{() => <AdminRoute><AdminTextBlocks /></AdminRoute>}</Route>
         <Route path="/admin/order-templates">{() => <AdminRoute><TemplateManager /></AdminRoute>}</Route>
         <Route path="/admin/checklist-pricing">{() => <AdminRoute><AdminChecklistPricing /></AdminRoute>}</Route>

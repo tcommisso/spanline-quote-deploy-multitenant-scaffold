@@ -73,6 +73,7 @@ import { profileRouter } from "./profile-router";
 import { crmDropdownRouter } from "./crm-dropdown-router";
 import { calendarViewsRouter } from "./calendar-views-router";
 import { manufacturingRouter } from "./manufacturing-router";
+import { manufacturingDataRouter } from "./manufacturing-data-router";
 import { manufacturingDispatchRouter } from "./manufacturing-dispatch-router";
 import { inventoryRouter } from "./inventory-router";
 import { stocktakeRouter } from "./stocktake-router";
@@ -2139,6 +2140,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   proposals: proposalRouter,
   reviews: reviewsRouter,
   manufacturing: manufacturingRouter,
+  manufacturingData: manufacturingDataRouter,
   manufacturingDispatch: manufacturingDispatchRouter,
   inventory: inventoryRouter,
   stocktake: stocktakeRouter,

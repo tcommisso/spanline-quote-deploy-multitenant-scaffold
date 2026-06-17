@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
-  Plus, Pencil, Trash2, Package, Search, Wrench,
+  Plus, Pencil, Trash2, Package, Search, Wrench, Upload, Download,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,10 +28,58 @@ const EQUIPMENT_CATEGORIES = [
   "Other",
 ];
 
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (char === '"' && inQuotes && next === '"') {
+      value += '"';
+      i += 1;
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "," && !inQuotes) {
+      row.push(value);
+      value = "";
+    } else if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") i += 1;
+      row.push(value);
+      if (row.some((cell) => cell.trim())) rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+
+  row.push(value);
+  if (row.some((cell) => cell.trim())) rows.push(row);
+  return rows;
+}
+
+function normaliseHeader(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function parseActive(value: string | undefined) {
+  if (value == null || !value.trim()) return undefined;
+  return !["false", "0", "no", "inactive", "archived"].includes(value.trim().toLowerCase());
+}
+
+function escapeCsv(value: unknown) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
 export default function AdminEquipment() {
   const [showCreate, setShowCreate] = useState(false);
   const [editItem, setEditItem] = useState<any>(null);
   const [search, setSearch] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const equipmentQuery = trpc.equipment.list.useQuery();
   const tenantSummaryQuery = trpc.equipment.tenantSummary.useQuery();
@@ -66,6 +114,22 @@ export default function AdminEquipment() {
     },
     onError: (err) => toast.error(err.message),
   });
+  const importMutation = trpc.equipment.importCsvRows.useMutation({
+    onSuccess: (result) => {
+      equipmentQuery.refetch();
+      tenantSummaryQuery.refetch();
+      const parts = [
+        `${result.created} created`,
+        `${result.updated} updated`,
+      ];
+      if (result.skipped) parts.push(`${result.skipped} skipped`);
+      toast.success(`Equipment import complete: ${parts.join(", ")}`);
+      if (result.errors?.length) {
+        toast.warning(`${result.errors.length} row${result.errors.length === 1 ? "" : "s"} could not be imported`);
+      }
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const items = (equipmentQuery.data || []).filter(
     (e) =>
@@ -79,6 +143,69 @@ export default function AdminEquipment() {
     tenantSummary.unassigned > 0 ||
     (tenantSummary.tenancyMode === "single" && tenantSummary.otherTenants > 0)
   );
+  const allRows = equipmentQuery.data || [];
+
+  const handleImportFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const parsed = parseCsv(await file.text());
+      if (parsed.length < 2) {
+        toast.error("CSV must include a header row and at least one equipment row");
+        return;
+      }
+      const headers = parsed[0].map(normaliseHeader);
+      const indexOf = (...names: string[]) => {
+        const normalised = names.map(normaliseHeader);
+        return headers.findIndex((header) => normalised.includes(header));
+      };
+      const nameIdx = indexOf("name", "equipment", "equipmentname", "asset", "assetname");
+      const categoryIdx = indexOf("category", "type");
+      const serialIdx = indexOf("serialnumber", "serial", "serialno", "sn");
+      const descriptionIdx = indexOf("description", "notes", "details");
+      const activeIdx = indexOf("isactive", "active", "status");
+      if (nameIdx < 0) {
+        toast.error("CSV needs a Name or Equipment Name column");
+        return;
+      }
+      const rows = parsed.slice(1).map((cols) => ({
+        name: cols[nameIdx]?.trim() || "",
+        category: categoryIdx >= 0 ? cols[categoryIdx]?.trim() || null : null,
+        serialNumber: serialIdx >= 0 ? cols[serialIdx]?.trim() || null : null,
+        description: descriptionIdx >= 0 ? cols[descriptionIdx]?.trim() || null : null,
+        isActive: activeIdx >= 0 ? parseActive(cols[activeIdx]) : undefined,
+      })).filter((row) => row.name);
+      if (rows.length === 0) {
+        toast.error("No equipment rows found in the CSV");
+        return;
+      }
+      importMutation.mutate({ rows });
+    } catch (err: any) {
+      toast.error(err?.message || "Could not read equipment CSV");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const exportEquipment = () => {
+    const header = ["name", "category", "serialNumber", "description", "isActive"];
+    const rows = allRows.map((item) => [
+      item.name,
+      item.category || "",
+      item.serialNumber || "",
+      item.description || "",
+      item.isActive ? "true" : "false",
+    ]);
+    const csv = [header, ...rows].map((row) => row.map(escapeCsv).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `equipment-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -87,20 +214,40 @@ export default function AdminEquipment() {
           <Package className="h-7 w-7 text-primary" />
           <h1 className="text-2xl font-bold">Equipment</h1>
         </div>
-        <Dialog open={showCreate} onOpenChange={setShowCreate}>
-          <DialogTrigger asChild>
-            <Button variant="brand"><Plus className="h-4 w-4 mr-2" /> Add Equipment</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>Add Equipment</DialogTitle>
-            </DialogHeader>
-            <EquipmentForm
-              onSubmit={(data) => createMutation.mutate(data)}
-              loading={createMutation.isPending}
-            />
-          </DialogContent>
-        </Dialog>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(event) => handleImportFile(event.target.files?.[0] || null)}
+          />
+          <Button
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importMutation.isPending}
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            {importMutation.isPending ? "Importing..." : "Import CSV"}
+          </Button>
+          <Button variant="outline" onClick={exportEquipment} disabled={allRows.length === 0}>
+            <Download className="h-4 w-4 mr-2" /> Export CSV
+          </Button>
+          <Dialog open={showCreate} onOpenChange={setShowCreate}>
+            <DialogTrigger asChild>
+              <Button variant="brand"><Plus className="h-4 w-4 mr-2" /> Add Equipment</Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Add Equipment</DialogTitle>
+              </DialogHeader>
+              <EquipmentForm
+                onSubmit={(data) => createMutation.mutate(data)}
+                loading={createMutation.isPending}
+              />
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {/* Search */}
@@ -134,7 +281,14 @@ export default function AdminEquipment() {
                   </Button>
                 </div>
               ) : (
-                <p>No equipment found. Add your first piece of equipment to get started.</p>
+                <div className="space-y-2">
+                  <p>No equipment records are available for this tenant.</p>
+                  {tenantSummary?.total === 0 && (
+                    <p className="text-sm">
+                      Production currently has no equipment source rows. Import a CSV or add the first item manually.
+                    </p>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
