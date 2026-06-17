@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Receipt, Plus, ExternalLink, Pencil, CloudUpload, X } from "lucide-react";
+import { Receipt, Plus, ExternalLink, Pencil, CloudUpload, X, Package, Layers, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 
@@ -41,6 +41,7 @@ type ManufacturingCatalogueProduct = {
   unitCost?: number;
   colour?: string;
   category?: string;
+  subGroup?: string;
 };
 
 type SupplierOption = {
@@ -51,6 +52,76 @@ type SupplierOption = {
   email?: string | null;
   address?: string | null;
 };
+
+function formatCurrency(value: number | string | undefined) {
+  return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
+}
+
+function catalogueLineItem(product: ManufacturingCatalogueProduct, quantity: number): LineItem {
+  return {
+    productName: product.description,
+    productCode: product.sku || undefined,
+    quantity: String(quantity || 1),
+    unit: product.uom || "ea",
+    unitPrice: String(product.unitCost ?? 0),
+    colour: product.colour || undefined,
+    description: product.category || undefined,
+  };
+}
+
+function lineIdentity(item: LineItem) {
+  return [
+    item.productCode || "",
+    item.productName.trim().toLowerCase(),
+    item.colour || "",
+    item.unit || "",
+    item.unitPrice || "",
+  ].join("|");
+}
+
+function addOrMergeLineItem(items: LineItem[], next: LineItem) {
+  const nextKey = lineIdentity(next);
+  const existingIndex = items.findIndex((item) => lineIdentity(item) === nextKey);
+  if (existingIndex < 0) return [...items, next];
+  return items.map((item, index) => {
+    if (index !== existingIndex) return item;
+    const quantity = Number(item.quantity || 0) + Number(next.quantity || 0);
+    return { ...item, quantity: String(quantity || 1) };
+  });
+}
+
+function colourStyle(colour: string | undefined) {
+  const normalized = (colour || "").trim().toLowerCase();
+  const named: Record<string, string> = {
+    black: "#111827",
+    ebony: "#111827",
+    "ebony/black matt": "#111827",
+    white: "#ffffff",
+    surfmist: "#f5f2e8",
+    primrose: "#f3e3a5",
+    merino: "#d9c7a1",
+    paperbark: "#cdbb93",
+    monument: "#4b5563",
+    mill: "#b6b8ba",
+    galvanised: "#9ca3af",
+    galvanized: "#9ca3af",
+  };
+  if (!normalized) return { backgroundColor: "transparent" };
+  if (named[normalized]) return { backgroundColor: named[normalized] };
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i += 1) hash = (hash * 31 + normalized.charCodeAt(i)) % 360;
+  return { backgroundColor: `hsl(${hash} 65% 55%)` };
+}
+
+function ProductColour({ colour }: { colour?: string }) {
+  if (!colour) return <span className="text-muted-foreground">-</span>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="h-3.5 w-3.5 rounded-full border border-border shadow-sm" style={colourStyle(colour)} />
+      <span>{colour}</span>
+    </span>
+  );
+}
 
 export default function ManufacturingPurchaseOrders() {
   const [status, setStatus] = useState("all");
@@ -215,9 +286,7 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const [orderId, setOrderId] = useState(STANDALONE_ORDER_VALUE);
   const [requiredByDate, setRequiredByDate] = useState("");
   const [notes, setNotes] = useState("");
-  const [lineItems, setLineItems] = useState<LineItem[]>([
-    { productName: "", quantity: "1", unitPrice: "", unit: "ea" },
-  ]);
+  const [lineItems, setLineItems] = useState<LineItem[]>([]);
   const utils = trpc.useUtils();
 
   const { data: orders } = trpc.manufacturing.orders.list.useQuery({ status: "all" });
@@ -228,7 +297,7 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
       toast.success(`PO ${data.poNumber} created`);
       setSupplier(""); setSupplierEmail(""); setSupplierPhone(""); setSupplierAddress(""); setSupplierAbn("");
       setOrderId(STANDALONE_ORDER_VALUE); setRequiredByDate(""); setNotes("");
-      setLineItems([{ productName: "", quantity: "1", unitPrice: "", unit: "ea" }]);
+      setLineItems([]);
     },
     onError: (err) => toast.error(err.message || "Failed to create PO"),
   });
@@ -243,22 +312,11 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     setLineItems(items);
   };
 
-  const applyCatalogueItem = (idx: number, product: ManufacturingCatalogueProduct) => {
-    const items = [...lineItems];
-    items[idx] = {
-      ...items[idx],
-      productName: product.description,
-      productCode: product.sku || undefined,
-      unit: product.uom || items[idx].unit || "ea",
-      unitPrice: String(product.unitCost ?? 0),
-      colour: product.colour || items[idx].colour,
-      description: product.category || items[idx].description,
-    };
-    setLineItems(items);
+  const addCatalogueItem = (product: ManufacturingCatalogueProduct, quantity: number) => {
+    setLineItems((items) => addOrMergeLineItem(items, catalogueLineItem(product, quantity)));
   };
 
   const removeLineItem = (idx: number) => {
-    if (lineItems.length <= 1) return;
     setLineItems(lineItems.filter((_, i) => i !== idx));
   };
 
@@ -303,24 +361,24 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-6xl max-h-[88vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create Purchase Order</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Manufacturing Order</Label>
+              <Label>Linked Manufacturing Order</Label>
               <Select value={orderId} onValueChange={setOrderId}>
                 <SelectTrigger><SelectValue placeholder="Standalone PO" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={STANDALONE_ORDER_VALUE}>Standalone PO number</SelectItem>
+                  <SelectItem value={STANDALONE_ORDER_VALUE}>No linked order - auto PO number</SelectItem>
                   {(orders || []).map((o: any) => (
                     <SelectItem key={o.id} value={String(o.id)}>{o.orderNumber} - {o.clientName}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="mt-1 text-[11px] text-muted-foreground">A PO number is generated automatically.</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">Optional. A PO number is generated automatically.</p>
             </div>
             <div>
               <Label>Required By</Label>
@@ -343,77 +401,15 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             </div>
           </div>
 
-          {/* Line Items */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <Label className="font-medium">Line Items</Label>
-              <Button type="button" variant="ghost" size="sm" onClick={addLineItem}>
-                <Plus className="h-3 w-3 mr-1" /> Add Item
-              </Button>
-            </div>
-            <div className="space-y-2">
-              {lineItems.map((item, idx) => (
-                <div key={idx} className="grid grid-cols-[1fr_60px_80px_60px_30px] gap-2 items-end">
-                  <div>
-                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product / Custom Item</Label>}
-                    <ManufacturingProductInput
-                      value={item.productName}
-                      onValueChange={(value) => updateLineItem(idx, "productName", value)}
-                      onSelect={(product) => applyCatalogueItem(idx, product)}
-                      placeholder="Search manufacturing products or type custom"
-                      className="h-8 text-xs"
-                    />
-                    {(item.productCode || item.colour) && (
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">
-                        {[item.productCode, item.colour].filter(Boolean).join(" · ")}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Qty</Label>}
-                    <Input
-                      type="number"
-                      value={item.quantity}
-                      onChange={(e) => updateLineItem(idx, "quantity", e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                  </div>
-                  <div>
-                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Unit $</Label>}
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={item.unitPrice}
-                      onChange={(e) => updateLineItem(idx, "unitPrice", e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                  </div>
-                  <div>
-                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Unit</Label>}
-                    <Input
-                      value={item.unit || ""}
-                      onChange={(e) => updateLineItem(idx, "unit", e.target.value)}
-                      placeholder="ea"
-                      className="h-8 text-xs"
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                    onClick={() => removeLineItem(idx)}
-                    disabled={lineItems.length <= 1}
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-            <div className="text-right mt-2">
-              <span className="text-sm font-medium">Total: ${totalAmount.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</span>
-            </div>
-          </div>
+          <ManufacturingProductCatalogue onAddProduct={addCatalogueItem} />
+
+          <SelectedLineItemsEditor
+            lineItems={lineItems}
+            onAddCustomLine={addLineItem}
+            onUpdateLine={updateLineItem}
+            onRemoveLine={removeLineItem}
+            totalAmount={totalAmount}
+          />
 
           <div>
             <Label>Notes</Label>
@@ -467,22 +463,11 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
     setLineItems(items);
   };
 
-  const applyCatalogueItem = (idx: number, product: ManufacturingCatalogueProduct) => {
-    const items = [...lineItems];
-    items[idx] = {
-      ...items[idx],
-      productName: product.description,
-      productCode: product.sku || undefined,
-      unit: product.uom || items[idx].unit || "ea",
-      unitPrice: String(product.unitCost ?? 0),
-      colour: product.colour || items[idx].colour,
-      description: product.category || items[idx].description,
-    };
-    setLineItems(items);
+  const addCatalogueItem = (product: ManufacturingCatalogueProduct, quantity: number) => {
+    setLineItems((items) => addOrMergeLineItem(items, catalogueLineItem(product, quantity)));
   };
 
   const removeItem = (idx: number) => {
-    if (lineItems.length <= 1) return;
     setLineItems(lineItems.filter((_, i) => i !== idx));
   };
 
@@ -509,88 +494,19 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
 
   return (
     <Dialog open onOpenChange={() => onClose()}>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-6xl max-h-[88vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Line Items — {po.poNumber}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label className="font-medium">Line Items</Label>
-            <Button type="button" variant="ghost" size="sm" onClick={addLineItem}>
-              <Plus className="h-3 w-3 mr-1" /> Add Item
-            </Button>
-          </div>
-          <div className="space-y-2">
-            {lineItems.map((item, idx) => (
-              <div key={idx} className="grid grid-cols-[1fr_80px_60px_80px_60px_30px] gap-2 items-end">
-                <div>
-                  {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product</Label>}
-                  <ManufacturingProductInput
-                    value={item.productName}
-                    onValueChange={(value) => updateItem(idx, "productName", value)}
-                    onSelect={(product) => applyCatalogueItem(idx, product)}
-                    placeholder="Product name"
-                    className="h-8 text-xs"
-                  />
-                  {(item.productCode || item.colour) && (
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {[item.productCode, item.colour].filter(Boolean).join(" · ")}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  {idx === 0 && <Label className="text-[10px] text-muted-foreground">Colour</Label>}
-                  <Input
-                    value={item.colour || ""}
-                    onChange={(e) => updateItem(idx, "colour", e.target.value)}
-                    placeholder="Colour"
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div>
-                  {idx === 0 && <Label className="text-[10px] text-muted-foreground">Qty</Label>}
-                  <Input
-                    type="number"
-                    value={item.quantity}
-                    onChange={(e) => updateItem(idx, "quantity", e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div>
-                  {idx === 0 && <Label className="text-[10px] text-muted-foreground">Unit $</Label>}
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={item.unitPrice}
-                    onChange={(e) => updateItem(idx, "unitPrice", e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div>
-                  {idx === 0 && <Label className="text-[10px] text-muted-foreground">Unit</Label>}
-                  <Input
-                    value={item.unit || ""}
-                    onChange={(e) => updateItem(idx, "unit", e.target.value)}
-                    placeholder="ea"
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                  onClick={() => removeItem(idx)}
-                  disabled={lineItems.length <= 1}
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            ))}
-          </div>
-          <div className="text-right">
-            <span className="text-sm font-medium">Total: ${totalAmount.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</span>
-          </div>
+          <ManufacturingProductCatalogue onAddProduct={addCatalogueItem} />
+          <SelectedLineItemsEditor
+            lineItems={lineItems}
+            onAddCustomLine={addLineItem}
+            onUpdateLine={updateItem}
+            onRemoveLine={removeItem}
+            totalAmount={totalAmount}
+          />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
@@ -600,6 +516,278 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ManufacturingProductCatalogue({
+  onAddProduct,
+}: {
+  onAddProduct: (product: ManufacturingCatalogueProduct, quantity: number) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [subGroup, setSubGroup] = useState("all");
+  const [quantities, setQuantities] = useState<Record<number, string>>({});
+  const facetsQuery = trpc.manufacturingData.facets.useQuery();
+  const productsQuery = trpc.manufacturingData.list.useQuery({
+    search,
+    category,
+    subGroup,
+    activeState: "active",
+    limit: 120,
+  });
+  const categories = (facetsQuery.data?.categories || []) as string[];
+  const subGroups = (facetsQuery.data?.subGroups || []) as string[];
+  const products = (productsQuery.data || []) as ManufacturingCatalogueProduct[];
+
+  const addProduct = (product: ManufacturingCatalogueProduct) => {
+    const quantity = Math.max(1, Number(quantities[product.id] || 1));
+    onAddProduct(product, quantity);
+    setQuantities((current) => ({ ...current, [product.id]: "1" }));
+    toast.success(`${product.description} added to PO`);
+  };
+
+  return (
+    <div className="rounded-lg border bg-card">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Package className="h-4 w-4 text-primary" />
+          <div>
+            <h3 className="font-semibold">Product Catalogue</h3>
+            <p className="text-xs text-muted-foreground">Browse manufacturing products and add them to this PO.</p>
+          </div>
+        </div>
+        <Badge variant="secondary">{products.length} shown</Badge>
+      </div>
+
+      <div className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-muted-foreground">Category</span>
+          <Button
+            type="button"
+            variant={category === "all" ? "default" : "outline"}
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => setCategory("all")}
+          >
+            <Layers className="mr-1 h-3.5 w-3.5" />
+            All
+          </Button>
+          {categories.map((item) => (
+            <Button
+              key={item}
+              type="button"
+              variant={category === item ? "default" : "outline"}
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => setCategory(item)}
+            >
+              {item}
+            </Button>
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-2 md:flex-row">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Search products by code, description, colour, category..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </div>
+          <Select value={subGroup} onValueChange={setSubGroup}>
+            <SelectTrigger className="w-full md:w-[240px]">
+              <SelectValue placeholder="Sub-group" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sub-Groups</SelectItem>
+              {subGroups.map((item) => (
+                <SelectItem key={item} value={item}>{item}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="max-h-[330px] overflow-auto rounded-lg border">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-10 bg-muted">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Code</th>
+                <th className="px-3 py-2 text-left font-medium">Description</th>
+                <th className="px-3 py-2 text-left font-medium">Colour</th>
+                <th className="px-3 py-2 text-left font-medium">UOM</th>
+                <th className="px-3 py-2 text-right font-medium">Unit $</th>
+                <th className="px-3 py-2 text-center font-medium">Qty</th>
+                <th className="w-[72px] px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {productsQuery.isLoading ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">Loading products...</td></tr>
+              ) : !products.length ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No products found. Try another category or search.</td></tr>
+              ) : products.map((product) => (
+                <tr key={product.id} className="hover:bg-muted/30">
+                  <td className="px-3 py-2 font-mono">{product.sku || "-"}</td>
+                  <td className="px-3 py-2">
+                    <div className="font-medium">{product.description}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {[product.category, product.subGroup].filter(Boolean).join(" · ") || "-"}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2"><ProductColour colour={product.colour} /></td>
+                  <td className="px-3 py-2">{product.uom || "ea"}</td>
+                  <td className="px-3 py-2 text-right">{formatCurrency(product.unitCost)}</td>
+                  <td className="px-3 py-2 text-center">
+                    <Input
+                      type="number"
+                      min="1"
+                      value={quantities[product.id] || "1"}
+                      onChange={(event) => setQuantities((current) => ({ ...current, [product.id]: event.target.value }))}
+                      className="mx-auto h-8 w-16 text-center text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <Button type="button" size="sm" className="h-8 text-xs" onClick={() => addProduct(product)}>
+                      <Plus className="mr-1 h-3 w-3" />
+                      Add
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SelectedLineItemsEditor({
+  lineItems,
+  onAddCustomLine,
+  onUpdateLine,
+  onRemoveLine,
+  totalAmount,
+}: {
+  lineItems: LineItem[];
+  onAddCustomLine: () => void;
+  onUpdateLine: (idx: number, field: keyof LineItem, value: string) => void;
+  onRemoveLine: (idx: number) => void;
+  totalAmount: number;
+}) {
+  return (
+    <div className="rounded-lg border bg-card">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <div>
+          <h3 className="font-semibold">PO Line Items</h3>
+          <p className="text-xs text-muted-foreground">Review selected products or add a custom one-off item.</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onAddCustomLine}>
+          <Plus className="mr-1 h-3 w-3" />
+          Custom Item
+        </Button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="min-w-[240px] px-3 py-2 text-left font-medium">Product / Custom Item</th>
+              <th className="min-w-[120px] px-3 py-2 text-left font-medium">Code</th>
+              <th className="min-w-[140px] px-3 py-2 text-left font-medium">Colour</th>
+              <th className="w-[80px] px-3 py-2 text-left font-medium">UOM</th>
+              <th className="w-[90px] px-3 py-2 text-right font-medium">Unit $</th>
+              <th className="w-[80px] px-3 py-2 text-center font-medium">Qty</th>
+              <th className="w-[100px] px-3 py-2 text-right font-medium">Total</th>
+              <th className="w-[48px] px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {!lineItems.length ? (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                  Add products from the catalogue above or add a custom item.
+                </td>
+              </tr>
+            ) : lineItems.map((item, idx) => {
+              const quantity = Number(item.quantity || 0);
+              const unitPrice = Number(item.unitPrice || 0);
+              return (
+                <tr key={`${lineIdentity(item)}-${idx}`}>
+                  <td className="px-3 py-2">
+                    <Input
+                      value={item.productName}
+                      onChange={(event) => onUpdateLine(idx, "productName", event.target.value)}
+                      placeholder="Product name"
+                      className="h-8 text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      value={item.productCode || ""}
+                      onChange={(event) => onUpdateLine(idx, "productCode", event.target.value)}
+                      placeholder="Code"
+                      className="h-8 font-mono text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      value={item.colour || ""}
+                      onChange={(event) => onUpdateLine(idx, "colour", event.target.value)}
+                      placeholder="Colour"
+                      className="h-8 text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      value={item.unit || ""}
+                      onChange={(event) => onUpdateLine(idx, "unit", event.target.value)}
+                      placeholder="ea"
+                      className="h-8 text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={item.unitPrice}
+                      onChange={(event) => onUpdateLine(idx, "unitPrice", event.target.value)}
+                      className="h-8 text-right text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={item.quantity}
+                      onChange={(event) => onUpdateLine(idx, "quantity", event.target.value)}
+                      className="h-8 text-center text-xs"
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-right font-medium">{formatCurrency(quantity * unitPrice)}</td>
+                  <td className="px-3 py-2 text-right">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      onClick={() => onRemoveLine(idx)}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex justify-end border-t px-4 py-3">
+        <span className="text-sm font-semibold">Total: {formatCurrency(totalAmount)}</span>
+      </div>
+    </div>
   );
 }
 
@@ -642,63 +830,6 @@ function SupplierInput({
           <option key={supplier.id} value={supplier.name}>
             {[supplier.email, supplier.phone].filter(Boolean).join(" · ")}
           </option>
-        ))}
-      </datalist>
-    </>
-  );
-}
-
-function productOptionValue(product: ManufacturingCatalogueProduct) {
-  return [
-    product.description,
-    product.sku ? `Code: ${product.sku}` : null,
-    product.colour ? `Colour: ${product.colour}` : null,
-    product.uom ? `Unit: ${product.uom}` : null,
-    product.unitCost != null ? `$${Number(product.unitCost).toFixed(2)}` : null,
-  ].filter(Boolean).join(" | ");
-}
-
-function ManufacturingProductInput({
-  value,
-  onValueChange,
-  onSelect,
-  placeholder,
-  className,
-}: {
-  value: string;
-  onValueChange: (value: string) => void;
-  onSelect: (product: ManufacturingCatalogueProduct) => void;
-  placeholder?: string;
-  className?: string;
-}) {
-  const listId = useId().replace(/:/g, "-");
-  const { data: products = [] } = trpc.manufacturingData.search.useQuery(
-    { query: value, limit: 8 },
-    { enabled: value.trim().length >= 2 }
-  );
-
-  const handleChange = (nextValue: string) => {
-    onValueChange(nextValue);
-    const match = products.find((product: ManufacturingCatalogueProduct) =>
-      productOptionValue(product).toLowerCase() === nextValue.toLowerCase() ||
-      product.description.toLowerCase() === nextValue.toLowerCase() ||
-      (product.sku || "").toLowerCase() === nextValue.toLowerCase()
-    );
-    if (match) onSelect(match);
-  };
-
-  return (
-    <>
-      <Input
-        list={listId}
-        value={value}
-        onChange={(event) => handleChange(event.target.value)}
-        placeholder={placeholder}
-        className={className}
-      />
-      <datalist id={listId}>
-        {products.map((product: ManufacturingCatalogueProduct) => (
-          <option key={product.id} value={productOptionValue(product)} />
         ))}
       </datalist>
     </>
