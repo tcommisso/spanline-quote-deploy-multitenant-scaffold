@@ -11,9 +11,9 @@ import {
   checkMeasureWorkbooks,
   branches,
 } from "../drizzle/schema";
-import { eq, desc, and, gte, lte, inArray, sql, asc } from "drizzle-orm";
+import { eq, desc, and, gte, lte, inArray, sql, asc, or, isNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -25,6 +25,19 @@ async function requireDb() {
 function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function purchaseOrderTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  const tenantId = tenantIdFromContext(ctx);
+  const poScope = tenantScoped(manufacturingPurchaseOrders.tenantId, tenantId);
+  const legacyJobScope = tenantScoped(constructionJobs.tenantId, tenantId);
+  if (poScope && legacyJobScope) {
+    conditions.push(or(poScope, and(isNull(manufacturingPurchaseOrders.tenantId), legacyJobScope))!);
+  } else if (poScope) {
+    conditions.push(poScope);
+  }
   return conditions;
 }
 
@@ -108,9 +121,9 @@ async function requireScheduleAccess(db: any, ctx: any, scheduleId: number) {
 async function requirePurchaseOrderAccess(db: any, ctx: any, poId: number) {
   const [row] = await db.select({ po: manufacturingPurchaseOrders })
     .from(manufacturingPurchaseOrders)
-    .innerJoin(manufacturingOrders, eq(manufacturingPurchaseOrders.orderId, manufacturingOrders.id))
-    .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
-    .where(and(...jobTenantConditions(ctx, eq(manufacturingPurchaseOrders.id, poId))))
+    .leftJoin(manufacturingOrders, eq(manufacturingPurchaseOrders.orderId, manufacturingOrders.id))
+    .leftJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+    .where(and(...purchaseOrderTenantConditions(ctx, eq(manufacturingPurchaseOrders.id, poId))))
     .limit(1);
   if (!row?.po) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Purchase order not found" });
@@ -557,13 +570,17 @@ export const manufacturingRouter = router({
           conditions.push(eq(manufacturingPurchaseOrders.orderId, input.orderId));
         }
         if (input?.status && input.status !== "all") conditions.push(eq(manufacturingPurchaseOrders.status, input.status as any));
-        appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+        conditions.push(...purchaseOrderTenantConditions(ctx));
         return db.select({
           id: manufacturingPurchaseOrders.id,
+          tenantId: manufacturingPurchaseOrders.tenantId,
           orderId: manufacturingPurchaseOrders.orderId,
           poNumber: manufacturingPurchaseOrders.poNumber,
           supplier: manufacturingPurchaseOrders.supplier,
           supplierEmail: manufacturingPurchaseOrders.supplierEmail,
+          supplierPhone: manufacturingPurchaseOrders.supplierPhone,
+          supplierAddress: manufacturingPurchaseOrders.supplierAddress,
+          supplierAbn: manufacturingPurchaseOrders.supplierAbn,
           status: manufacturingPurchaseOrders.status,
           lineItems: manufacturingPurchaseOrders.lineItems,
           totalAmount: manufacturingPurchaseOrders.totalAmount,
@@ -575,18 +592,20 @@ export const manufacturingRouter = router({
           orderNumber: manufacturingOrders.orderNumber,
           clientName: manufacturingOrders.clientName,
         }).from(manufacturingPurchaseOrders)
-          .innerJoin(manufacturingOrders, eq(manufacturingPurchaseOrders.orderId, manufacturingOrders.id))
-          .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+          .leftJoin(manufacturingOrders, eq(manufacturingPurchaseOrders.orderId, manufacturingOrders.id))
+          .leftJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(manufacturingPurchaseOrders.createdAt));
       }),
 
     create: protectedProcedure
       .input(z.object({
-        orderId: z.number(),
+        orderId: z.number().nullable().optional(),
         supplier: z.string(),
         supplierEmail: z.string().optional(),
         supplierPhone: z.string().optional(),
+        supplierAddress: z.string().optional(),
+        supplierAbn: z.string().optional(),
         lineItems: z.array(z.object({
           productName: z.string(),
           productCode: z.string().optional(),
@@ -603,16 +622,21 @@ export const manufacturingRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const db = await requireDb();
-        await requireOrderAccess(db, ctx, input.orderId);
+        if (input.orderId) {
+          await requireOrderAccess(db, ctx, input.orderId);
+        }
         // Generate PO number
         const [countResult] = await db.select({ count: sql<number>`COUNT(*)` }).from(manufacturingPurchaseOrders);
         const poNum = `MPO-${String((countResult?.count || 0) + 1).padStart(5, "0")}`;
         const [result] = await db.insert(manufacturingPurchaseOrders).values({
-          orderId: input.orderId,
+          tenantId: tenantIdFromContext(ctx),
+          orderId: input.orderId ?? null,
           poNumber: poNum,
           supplier: input.supplier,
           supplierEmail: input.supplierEmail,
           supplierPhone: input.supplierPhone,
+          supplierAddress: input.supplierAddress,
+          supplierAbn: input.supplierAbn,
           status: "draft",
           lineItems: input.lineItems,
           totalAmount: input.totalAmount?.toString(),
@@ -634,7 +658,7 @@ export const manufacturingRouter = router({
     updateStatus: protectedProcedure
       .input(z.object({
         id: z.number(),
-        status: z.enum(["draft", "issued", "confirmed", "received", "cancelled"]),
+        status: z.enum(["draft", "issued", "confirmed", "partially_received", "received", "paid", "cancelled"]),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
@@ -676,6 +700,8 @@ export const manufacturingRouter = router({
         supplier: z.string().optional(),
         supplierEmail: z.string().optional(),
         supplierPhone: z.string().optional(),
+        supplierAddress: z.string().optional(),
+        supplierAbn: z.string().optional(),
         requiredByDate: z.string().nullable().optional(),
         notes: z.string().nullable().optional(),
       }))
@@ -687,6 +713,8 @@ export const manufacturingRouter = router({
         if (updates.supplier !== undefined) setData.supplier = updates.supplier;
         if (updates.supplierEmail !== undefined) setData.supplierEmail = updates.supplierEmail;
         if (updates.supplierPhone !== undefined) setData.supplierPhone = updates.supplierPhone;
+        if (updates.supplierAddress !== undefined) setData.supplierAddress = updates.supplierAddress;
+        if (updates.supplierAbn !== undefined) setData.supplierAbn = updates.supplierAbn;
         if (updates.requiredByDate !== undefined) setData.requiredByDate = updates.requiredByDate ? new Date(updates.requiredByDate) : null;
         if (updates.notes !== undefined) setData.notes = updates.notes;
         if (Object.keys(setData).length > 0) {

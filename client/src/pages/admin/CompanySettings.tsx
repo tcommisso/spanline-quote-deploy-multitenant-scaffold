@@ -90,7 +90,7 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 export default function CompanySettings() {
-  const { data: branchList, isLoading } = trpc.branches.list.useQuery();
+  const { data: branchList, isLoading } = trpc.branches.listAll.useQuery();
   const createBranch = trpc.branches.create.useMutation();
   const updateBranch = trpc.branches.update.useMutation();
   const deleteBranch = trpc.branches.delete.useMutation();
@@ -283,6 +283,7 @@ export default function CompanySettings() {
       toast.success(`Branch "${newBranch.name}" added`);
       setNewBranch({ name: "", address: "", phone: "", email: "", smsNumber: "", managerName: "", managerEmail: "" });
       utils.branches.list.invalidate();
+      utils.branches.listAll.invalidate();
     } catch (err: any) {
       toast.error(err.message || "Failed to add branch");
     }
@@ -307,6 +308,7 @@ export default function CompanySettings() {
       toast.success(`Branch "${editBranch.name}" updated`);
       setEditingId(null);
       utils.branches.list.invalidate();
+      utils.branches.listAll.invalidate();
     } catch (err: any) {
       toast.error(err.message || "Failed to update branch");
     }
@@ -318,8 +320,23 @@ export default function CompanySettings() {
       await deleteBranch.mutateAsync({ id: branch.id });
       toast.success(`Branch "${branch.name}" deactivated`);
       utils.branches.list.invalidate();
+      utils.branches.listAll.invalidate();
     } catch (err: any) {
       toast.error(err.message || "Failed to delete branch");
+    }
+  };
+
+  const handleRestoreBranch = async (branch: Branch) => {
+    try {
+      await updateBranch.mutateAsync({
+        id: branch.id,
+        isActive: true,
+      });
+      toast.success(`Branch "${branch.name}" restored`);
+      utils.branches.list.invalidate();
+      utils.branches.listAll.invalidate();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to restore branch");
     }
   };
 
@@ -720,7 +737,14 @@ export default function CompanySettings() {
                               <div className="flex items-start gap-3">
                                 <MapPin className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
                                 <div className="flex-1 min-w-0">
-                                  <p className="font-medium text-sm">{branch.name}</p>
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-medium text-sm">{branch.name}</p>
+                                    {!branch.isActive && (
+                                      <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                        Inactive
+                                      </span>
+                                    )}
+                                  </div>
                                   {branch.address && (
                                     <p className="text-xs text-muted-foreground mt-0.5">{branch.address}</p>
                                   )}
@@ -748,6 +772,17 @@ export default function CompanySettings() {
                                   )}
                                 </div>
                                 <div className="flex gap-1 shrink-0">
+                                  {!branch.isActive && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-xs"
+                                      onClick={() => handleRestoreBranch(branch)}
+                                      disabled={updateBranch.isPending}
+                                    >
+                                      Restore
+                                    </Button>
+                                  )}
                                   <Button
                                     size="sm"
                                     variant="ghost"

@@ -4340,6 +4340,7 @@ export const userDashboardConfig = mysqlTable("user_dashboard_config", {
 // ─── Checklist Items (Admin-managed pricing for spec sheet checklist) ─────────
 export const checklistItems = mysqlTable("checklist_items", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   section: varchar("section", { length: 64 }).notNull(), // e.g. "site_works", "electrical", "plumbing"
   label: varchar("label", { length: 255 }).notNull(),
   unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull().default("0"),
@@ -4348,7 +4349,9 @@ export const checklistItems = mysqlTable("checklist_items", {
   isActive: boolean("isActive").notNull().default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (t) => [
+  index("idx_checklist_items_tenant").on(t.tenantId),
+]);
 export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type InsertChecklistItem = typeof checklistItems.$inferInsert;
 

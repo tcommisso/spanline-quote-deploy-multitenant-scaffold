@@ -15,9 +15,13 @@ const PO_STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300",
   issued: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
   confirmed: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  partially_received: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
   received: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  paid: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
   cancelled: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 };
+
+const STANDALONE_ORDER_VALUE = "standalone";
 
 type LineItem = {
   productName: string;
@@ -38,6 +42,15 @@ type ManufacturingCatalogueProduct = {
   colour?: string;
   category?: string;
   supplier?: string;
+};
+
+type SupplierOption = {
+  id: number;
+  name: string;
+  abn?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
 };
 
 export default function ManufacturingPurchaseOrders() {
@@ -117,9 +130,13 @@ export default function ManufacturingPurchaseOrders() {
                       {po.supplierEmail && <div className="text-xs text-muted-foreground">{po.supplierEmail}</div>}
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      <Link href={`/manufacturing/orders/${po.orderId}`}>
-                        <span className="text-primary hover:underline cursor-pointer">{po.orderNumber} - {po.clientName}</span>
-                      </Link>
+                      {po.orderId ? (
+                        <Link href={`/manufacturing/orders/${po.orderId}`}>
+                          <span className="text-primary hover:underline cursor-pointer">{po.orderNumber} - {po.clientName}</span>
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">Standalone manufacturing PO</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <Select
@@ -135,7 +152,9 @@ export default function ManufacturingPurchaseOrders() {
                           <SelectItem value="draft">Draft</SelectItem>
                           <SelectItem value="issued">Issued</SelectItem>
                           <SelectItem value="confirmed">Confirmed</SelectItem>
+                          <SelectItem value="partially_received">Partially received</SelectItem>
                           <SelectItem value="received">Received</SelectItem>
+                          <SelectItem value="paid">Paid</SelectItem>
                           <SelectItem value="cancelled">Cancelled</SelectItem>
                         </SelectContent>
                       </Select>
@@ -162,9 +181,11 @@ export default function ManufacturingPurchaseOrders() {
                         <Button variant="ghost" size="sm" onClick={() => setEditingPO(po)}>
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        <Link href={`/manufacturing/orders/${po.orderId}`}>
-                          <Button variant="ghost" size="sm"><ExternalLink className="h-4 w-4" /></Button>
-                        </Link>
+                        {po.orderId && (
+                          <Link href={`/manufacturing/orders/${po.orderId}`}>
+                            <Button variant="ghost" size="sm"><ExternalLink className="h-4 w-4" /></Button>
+                          </Link>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -189,7 +210,10 @@ export default function ManufacturingPurchaseOrders() {
 function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const [supplier, setSupplier] = useState("");
   const [supplierEmail, setSupplierEmail] = useState("");
-  const [orderId, setOrderId] = useState("");
+  const [supplierPhone, setSupplierPhone] = useState("");
+  const [supplierAddress, setSupplierAddress] = useState("");
+  const [supplierAbn, setSupplierAbn] = useState("");
+  const [orderId, setOrderId] = useState(STANDALONE_ORDER_VALUE);
   const [requiredByDate, setRequiredByDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lineItems, setLineItems] = useState<LineItem[]>([
@@ -203,9 +227,11 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
       utils.manufacturing.purchaseOrders.list.invalidate();
       onOpenChange(false);
       toast.success(`PO ${data.poNumber} created`);
-      setSupplier(""); setSupplierEmail(""); setOrderId(""); setRequiredByDate(""); setNotes("");
+      setSupplier(""); setSupplierEmail(""); setSupplierPhone(""); setSupplierAddress(""); setSupplierAbn("");
+      setOrderId(STANDALONE_ORDER_VALUE); setRequiredByDate(""); setNotes("");
       setLineItems([{ productName: "", quantity: "1", unitPrice: "", unit: "ea" }]);
     },
+    onError: (err) => toast.error(err.message || "Failed to create PO"),
   });
 
   const addLineItem = () => {
@@ -240,15 +266,28 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const totalAmount = lineItems.reduce(
     (sum, item) => sum + (parseFloat(item.quantity || "0") * parseFloat(item.unitPrice || "0")), 0
   );
+  const validLineItems = lineItems.filter(li => li.productName.trim());
+
+  const applySupplier = (nextSupplier: SupplierOption) => {
+    setSupplier(nextSupplier.name);
+    setSupplierEmail(nextSupplier.email || "");
+    setSupplierPhone(nextSupplier.phone || "");
+    setSupplierAddress(nextSupplier.address || "");
+    setSupplierAbn(nextSupplier.abn || "");
+  };
 
   const handleSubmit = () => {
-    if (!supplier || !orderId) return;
+    if (!supplier.trim() || validLineItems.length === 0) return;
+    const linkedOrderId = orderId === STANDALONE_ORDER_VALUE ? undefined : Number(orderId);
     createPO.mutate({
-      orderId: Number(orderId),
-      supplier,
+      orderId: linkedOrderId,
+      supplier: supplier.trim(),
       supplierEmail: supplierEmail || undefined,
-      lineItems: lineItems.filter(li => li.productName).map(li => ({
-        productName: li.productName,
+      supplierPhone: supplierPhone || undefined,
+      supplierAddress: supplierAddress || undefined,
+      supplierAbn: supplierAbn || undefined,
+      lineItems: validLineItems.map(li => ({
+        productName: li.productName.trim(),
         productCode: li.productCode,
         quantity: Number(li.quantity) || 1,
         unit: li.unit,
@@ -272,15 +311,17 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Manufacturing Order *</Label>
+              <Label>Manufacturing Order</Label>
               <Select value={orderId} onValueChange={setOrderId}>
-                <SelectTrigger><SelectValue placeholder="Select order" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Standalone PO" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={STANDALONE_ORDER_VALUE}>Standalone PO number</SelectItem>
                   {(orders || []).map((o: any) => (
                     <SelectItem key={o.id} value={String(o.id)}>{o.orderNumber} - {o.clientName}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="mt-1 text-[11px] text-muted-foreground">A PO number is generated automatically.</p>
             </div>
             <div>
               <Label>Required By</Label>
@@ -290,7 +331,12 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Supplier Name *</Label>
-              <Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Supplier name" />
+              <SupplierInput
+                value={supplier}
+                onValueChange={setSupplier}
+                onSelect={applySupplier}
+                placeholder="Select manufacturing supplier or type custom"
+              />
             </div>
             <div>
               <Label>Supplier Email</Label>
@@ -310,12 +356,12 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               {lineItems.map((item, idx) => (
                 <div key={idx} className="grid grid-cols-[1fr_60px_80px_60px_30px] gap-2 items-end">
                   <div>
-                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product Name</Label>}
+                    {idx === 0 && <Label className="text-[10px] text-muted-foreground">Product / Custom Item</Label>}
                     <ManufacturingProductInput
                       value={item.productName}
                       onValueChange={(value) => updateLineItem(idx, "productName", value)}
                       onSelect={(product) => applyCatalogueItem(idx, product)}
-                      placeholder="Product name"
+                      placeholder="Search manufacturing products or type custom"
                       className="h-8 text-xs"
                     />
                     {item.productCode && <p className="mt-0.5 text-[10px] text-muted-foreground">{item.productCode}</p>}
@@ -373,7 +419,7 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={createPO.isPending || !supplier || !orderId}>
+          <Button onClick={handleSubmit} disabled={createPO.isPending || !supplier.trim() || validLineItems.length === 0}>
             {createPO.isPending ? "Creating..." : "Create PO"}
           </Button>
         </DialogFooter>
@@ -547,6 +593,51 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SupplierInput({
+  value,
+  onValueChange,
+  onSelect,
+  placeholder,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  onSelect: (supplier: SupplierOption) => void;
+  placeholder?: string;
+}) {
+  const listId = useId().replace(/:/g, "-");
+  const { data: suppliers = [] } = trpc.suppliers.list.useQuery({
+    search: value.trim() || undefined,
+    supplierScope: "manufacturing",
+    activeOnly: true,
+  });
+
+  const handleChange = (nextValue: string) => {
+    onValueChange(nextValue);
+    const match = suppliers.find((supplier: SupplierOption) =>
+      supplier.name.toLowerCase() === nextValue.trim().toLowerCase()
+    );
+    if (match) onSelect(match);
+  };
+
+  return (
+    <>
+      <Input
+        list={listId}
+        value={value}
+        onChange={(event) => handleChange(event.target.value)}
+        placeholder={placeholder}
+      />
+      <datalist id={listId}>
+        {suppliers.map((supplier: SupplierOption) => (
+          <option key={supplier.id} value={supplier.name}>
+            {[supplier.email, supplier.phone].filter(Boolean).join(" · ")}
+          </option>
+        ))}
+      </datalist>
+    </>
   );
 }
 
