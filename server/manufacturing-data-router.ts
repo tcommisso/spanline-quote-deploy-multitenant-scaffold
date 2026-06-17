@@ -91,19 +91,27 @@ export const manufacturingDataRouter = router({
       category: z.string().optional(),
       subGroup: z.string().optional(),
       activeOnly: z.boolean().optional(),
-      limit: z.number().min(1).max(1000).default(500),
+      activeState: z.enum(["active", "archived", "all"]).optional(),
+      limit: z.number().min(1).max(5000).default(500),
     }).optional())
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       await ensureManufacturingCatalogueTable(db);
       const tenantId = tenantIdForContext(ctx);
       const conditions = [tenantSql(tenantId)];
-      if (input?.activeOnly) conditions.push(sql`isActive = 1`);
+      if (input?.activeState === "active" || input?.activeOnly) conditions.push(sql`isActive = 1`);
+      if (input?.activeState === "archived") conditions.push(sql`isActive = 0`);
       if (input?.category && input.category !== "all") conditions.push(sql`category = ${input.category}`);
       if (input?.subGroup && input.subGroup !== "all") conditions.push(sql`subGroup = ${input.subGroup}`);
       if (input?.search?.trim()) {
         const term = `%${input.search.trim().toLowerCase()}%`;
-        conditions.push(sql`(LOWER(COALESCE(sku, '')) LIKE ${term} OR LOWER(description) LIKE ${term} OR LOWER(COALESCE(supplier, '')) LIKE ${term})`);
+        conditions.push(sql`(
+          LOWER(COALESCE(sku, '')) LIKE ${term}
+          OR LOWER(description) LIKE ${term}
+          OR LOWER(COALESCE(category, '')) LIKE ${term}
+          OR LOWER(COALESCE(subGroup, '')) LIKE ${term}
+          OR LOWER(COALESCE(colour, '')) LIKE ${term}
+        )`);
       }
       const where = sql`WHERE ${sql.join(conditions, sql` AND `)}`;
       const [rowsResult] = await db.execute(sql`
@@ -128,7 +136,13 @@ export const manufacturingDataRouter = router({
       const conditions = [tenantSql(tenantId), sql`isActive = 1`];
       if (input?.query?.trim()) {
         const term = `%${input.query.trim().toLowerCase()}%`;
-        conditions.push(sql`(LOWER(COALESCE(sku, '')) LIKE ${term} OR LOWER(description) LIKE ${term} OR LOWER(COALESCE(supplier, '')) LIKE ${term})`);
+        conditions.push(sql`(
+          LOWER(COALESCE(sku, '')) LIKE ${term}
+          OR LOWER(description) LIKE ${term}
+          OR LOWER(COALESCE(category, '')) LIKE ${term}
+          OR LOWER(COALESCE(subGroup, '')) LIKE ${term}
+          OR LOWER(COALESCE(colour, '')) LIKE ${term}
+        )`);
       }
       const [rowsResult] = await db.execute(sql`
         SELECT id, tenantId, sku, description, category, subGroup, uom, unitCost, supplier, colour, isActive, createdAt, updatedAt

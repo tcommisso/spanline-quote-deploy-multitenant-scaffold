@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Download, Factory, PackagePlus, Pencil, Search, Trash2, Upload } from "lucide-react";
+import { Archive, Download, Factory, PackagePlus, Pencil, RotateCcw, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 type ManufacturingProduct = {
@@ -20,7 +20,6 @@ type ManufacturingProduct = {
   subGroup: string;
   uom: string;
   unitCost: number;
-  supplier: string;
   colour: string;
   isActive: boolean;
 };
@@ -32,7 +31,6 @@ const BLANK_PRODUCT = {
   subGroup: "",
   uom: "ea",
   unitCost: 0,
-  supplier: "",
   colour: "",
   isActive: true,
 };
@@ -82,16 +80,49 @@ function parseBool(value: string | undefined) {
   return !["0", "false", "no", "inactive", "archived"].includes(value.trim().toLowerCase());
 }
 
+function colourStyle(colour: string) {
+  const normalized = colour.trim().toLowerCase();
+  const named: Record<string, string> = {
+    black: "#111827",
+    ebony: "#111827",
+    "ebony/black matt": "#111827",
+    white: "#ffffff",
+    surfmist: "#f5f2e8",
+    primrose: "#f3e3a5",
+    merino: "#d9c7a1",
+    paperbark: "#cdbb93",
+    monument: "#4b5563",
+    mill: "#b6b8ba",
+    galvanised: "#9ca3af",
+    galvanized: "#9ca3af",
+  };
+  if (named[normalized]) return { backgroundColor: named[normalized] };
+  let hash = 0;
+  for (let i = 0; i < normalized.length; i += 1) hash = (hash * 31 + normalized.charCodeAt(i)) % 360;
+  return { backgroundColor: `hsl(${hash} 65% 55%)` };
+}
+
+function ColourSwatch({ colour }: { colour: string }) {
+  if (!colour) return <span>-</span>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="h-4 w-4 rounded-full border border-border shadow-sm" style={colourStyle(colour)} />
+      <span>{colour}</span>
+    </span>
+  );
+}
+
 export default function ManufacturingDataAdmin() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [subGroup, setSubGroup] = useState("all");
+  const [activeState, setActiveState] = useState<"active" | "archived" | "all">("active");
   const [showCreate, setShowCreate] = useState(false);
   const [editItem, setEditItem] = useState<ManufacturingProduct | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const utils = trpc.useUtils();
 
-  const listQuery = trpc.manufacturingData.list.useQuery({ search, category, subGroup, limit: 1000 });
+  const listQuery = trpc.manufacturingData.list.useQuery({ search, category, subGroup, activeState, limit: 2000 });
   const facetsQuery = trpc.manufacturingData.facets.useQuery();
   const products = (listQuery.data || []) as ManufacturingProduct[];
   const categories = (facetsQuery.data?.categories || []) as string[];
@@ -115,14 +146,18 @@ export default function ManufacturingDataAdmin() {
     },
     onError: (err) => toast.error(err.message),
   });
-  const deleteMutation = trpc.manufacturingData.delete.useMutation({
-    onSuccess: () => {
-      utils.manufacturingData.list.invalidate();
-      utils.manufacturingData.facets.invalidate();
-      toast.success("Manufacturing product deleted");
-    },
-    onError: (err) => toast.error(err.message),
-  });
+  const archiveProduct = (product: ManufacturingProduct, isActive: boolean) => {
+    updateMutation.mutate({
+      ...product,
+      id: product.id,
+      sku: product.sku || null,
+      category: product.category || null,
+      subGroup: product.subGroup || null,
+      uom: product.uom || null,
+      colour: product.colour || null,
+      isActive,
+    });
+  };
   const importMutation = trpc.manufacturingData.importCsvRows.useMutation({
     onSuccess: (result) => {
       utils.manufacturingData.list.invalidate();
@@ -135,8 +170,8 @@ export default function ManufacturingDataAdmin() {
   });
 
   const exportCsv = () => {
-    const header = ["sku", "description", "category", "subGroup", "uom", "unitCost", "supplier", "colour", "isActive"];
-    const body = products.map((p) => [p.sku, p.description, p.category, p.subGroup, p.uom, p.unitCost, p.supplier, p.colour, p.isActive]);
+    const header = ["sku", "description", "category", "subGroup", "uom", "unitCost", "colour", "isActive"];
+    const body = products.map((p) => [p.sku, p.description, p.category, p.subGroup, p.uom, p.unitCost, p.colour, p.isActive]);
     const csv = [header, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -166,7 +201,6 @@ export default function ManufacturingDataAdmin() {
       const subGroupIdx = idx("subGroup", "sub_group", "group");
       const uomIdx = idx("uom", "unit");
       const costIdx = idx("unitCost", "unitPrice", "price", "cost");
-      const supplierIdx = idx("supplier");
       const colourIdx = idx("colour", "color");
       const activeIdx = idx("isActive", "active", "status");
       const parsed = data.map((cols) => ({
@@ -176,7 +210,6 @@ export default function ManufacturingDataAdmin() {
         subGroup: subGroupIdx >= 0 ? cols[subGroupIdx]?.trim() || null : null,
         uom: uomIdx >= 0 ? cols[uomIdx]?.trim() || null : null,
         unitCost: costIdx >= 0 ? Number(cols[costIdx] || 0) : 0,
-        supplier: supplierIdx >= 0 ? cols[supplierIdx]?.trim() || null : null,
         colour: colourIdx >= 0 ? cols[colourIdx]?.trim() || null : null,
         isActive: activeIdx >= 0 ? parseBool(cols[activeIdx]) : undefined,
       })).filter((row) => row.description);
@@ -226,7 +259,7 @@ export default function ManufacturingDataAdmin() {
         <CardContent className="p-4 flex flex-wrap gap-3">
           <div className="relative min-w-[260px] flex-1">
             <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-9" placeholder="Search code, description, supplier..." value={search} onChange={(event) => setSearch(event.target.value)} />
+            <Input className="pl-9" placeholder="Search code, description, category, colour..." value={search} onChange={(event) => setSearch(event.target.value)} />
           </div>
           <Select value={category} onValueChange={setCategory}>
             <SelectTrigger className="w-[220px]"><SelectValue placeholder="Category" /></SelectTrigger>
@@ -242,6 +275,14 @@ export default function ManufacturingDataAdmin() {
               {subGroups.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Select value={activeState} onValueChange={(value) => setActiveState(value as "active" | "archived" | "all")}>
+            <SelectTrigger className="w-[180px]"><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="archived">Archived</SelectItem>
+              <SelectItem value="all">All Products</SelectItem>
+            </SelectContent>
+          </Select>
         </CardContent>
       </Card>
 
@@ -252,38 +293,50 @@ export default function ManufacturingDataAdmin() {
               <tr>
                 <th className="text-left px-4 py-3 font-medium">Code</th>
                 <th className="text-left px-4 py-3 font-medium">Description</th>
+                <th className="text-left px-4 py-3 font-medium">Details</th>
+                <th className="text-left px-4 py-3 font-medium">Colour</th>
                 <th className="text-left px-4 py-3 font-medium">Category</th>
-                <th className="text-left px-4 py-3 font-medium">Supplier</th>
                 <th className="text-right px-4 py-3 font-medium">Unit Cost</th>
+                <th className="text-left px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {listQuery.isLoading ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
               ) : !products.length ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">No manufacturing products found. Import a CSV or add the first product.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No manufacturing products found. Import a CSV or add the first product.</td></tr>
               ) : products.map((product) => (
                 <tr key={product.id} className={!product.isActive ? "opacity-60" : ""}>
                   <td className="px-4 py-3 font-mono text-xs">{product.sku || "-"}</td>
                   <td className="px-4 py-3">
                     <div className="font-medium">{product.description}</div>
-                    <div className="text-xs text-muted-foreground">{[product.subGroup, product.uom, product.colour].filter(Boolean).join(" · ")}</div>
                   </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {[product.subGroup, product.uom].filter(Boolean).join(" · ") || "-"}
+                  </td>
+                  <td className="px-4 py-3 text-xs"><ColourSwatch colour={product.colour} /></td>
                   <td className="px-4 py-3">{product.category ? <Badge variant="secondary">{product.category}</Badge> : "-"}</td>
-                  <td className="px-4 py-3">{product.supplier || "-"}</td>
                   <td className="px-4 py-3 text-right">${Number(product.unitCost || 0).toLocaleString("en-AU", { minimumFractionDigits: 2 })}</td>
+                  <td className="px-4 py-3">
+                    <Badge variant={product.isActive ? "default" : "secondary"}>{product.isActive ? "Active" : "Archived"}</Badge>
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <Button variant="ghost" size="icon" onClick={() => setEditItem(product)}><Pencil className="h-4 w-4" /></Button>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="text-destructive hover:text-destructive"
+                      className={product.isActive ? "text-muted-foreground" : "text-primary"}
                       onClick={() => {
-                        if (confirm(`Delete "${product.description}"?`)) deleteMutation.mutate({ id: product.id });
+                        if (product.isActive) {
+                          if (confirm(`Archive "${product.description}"? It will be hidden from purchase order product search.`)) archiveProduct(product, false);
+                        } else {
+                          archiveProduct(product, true);
+                        }
                       }}
+                      title={product.isActive ? "Archive product" : "Restore product"}
                     >
-                      <Trash2 className="h-4 w-4" />
+                      {product.isActive ? <Archive className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}
                     </Button>
                   </td>
                 </tr>
@@ -345,7 +398,7 @@ function ProductForm({
           <Input value={form.subGroup || ""} onChange={(event) => setForm({ ...form, subGroup: event.target.value })} />
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>UOM</Label>
           <Input value={form.uom || ""} onChange={(event) => setForm({ ...form, uom: event.target.value })} placeholder="ea" />
@@ -353,10 +406,6 @@ function ProductForm({
         <div>
           <Label>Colour</Label>
           <Input value={form.colour || ""} onChange={(event) => setForm({ ...form, colour: event.target.value })} />
-        </div>
-        <div>
-          <Label>Supplier</Label>
-          <Input value={form.supplier || ""} onChange={(event) => setForm({ ...form, supplier: event.target.value })} />
         </div>
       </div>
       {initial && (

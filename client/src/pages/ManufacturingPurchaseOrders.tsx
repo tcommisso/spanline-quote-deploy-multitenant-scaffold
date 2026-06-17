@@ -41,7 +41,6 @@ type ManufacturingCatalogueProduct = {
   unitCost?: number;
   colour?: string;
   category?: string;
-  supplier?: string;
 };
 
 type SupplierOption = {
@@ -364,7 +363,11 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                       placeholder="Search manufacturing products or type custom"
                       className="h-8 text-xs"
                     />
-                    {item.productCode && <p className="mt-0.5 text-[10px] text-muted-foreground">{item.productCode}</p>}
+                    {(item.productCode || item.colour) && (
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        {[item.productCode, item.colour].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
                   </div>
                   <div>
                     {idx === 0 && <Label className="text-[10px] text-muted-foreground">Qty</Label>}
@@ -529,7 +532,11 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
                     placeholder="Product name"
                     className="h-8 text-xs"
                   />
-                  {item.productCode && <p className="mt-0.5 text-[10px] text-muted-foreground">{item.productCode}</p>}
+                  {(item.productCode || item.colour) && (
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {[item.productCode, item.colour].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
                 </div>
                 <div>
                   {idx === 0 && <Label className="text-[10px] text-muted-foreground">Colour</Label>}
@@ -641,6 +648,16 @@ function SupplierInput({
   );
 }
 
+function productOptionValue(product: ManufacturingCatalogueProduct) {
+  return [
+    product.description,
+    product.sku ? `Code: ${product.sku}` : null,
+    product.colour ? `Colour: ${product.colour}` : null,
+    product.uom ? `Unit: ${product.uom}` : null,
+    product.unitCost != null ? `$${Number(product.unitCost).toFixed(2)}` : null,
+  ].filter(Boolean).join(" | ");
+}
+
 function ManufacturingProductInput({
   value,
   onValueChange,
@@ -663,6 +680,7 @@ function ManufacturingProductInput({
   const handleChange = (nextValue: string) => {
     onValueChange(nextValue);
     const match = products.find((product: ManufacturingCatalogueProduct) =>
+      productOptionValue(product).toLowerCase() === nextValue.toLowerCase() ||
       product.description.toLowerCase() === nextValue.toLowerCase() ||
       (product.sku || "").toLowerCase() === nextValue.toLowerCase()
     );
@@ -680,9 +698,7 @@ function ManufacturingProductInput({
       />
       <datalist id={listId}>
         {products.map((product: ManufacturingCatalogueProduct) => (
-          <option key={product.id} value={product.description}>
-            {[product.sku, product.uom, product.unitCost != null ? `$${Number(product.unitCost).toFixed(2)}` : null].filter(Boolean).join(" · ")}
-          </option>
+          <option key={product.id} value={productOptionValue(product)} />
         ))}
       </datalist>
     </>
