@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Trash2, Percent, DollarSign, Palette, Shield, GlassWater } from "lucide-react";
+import { Plus, Trash2, Percent, DollarSign, Palette, Shield, GlassWater, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 // ─── Price Adjustments Tab ──────────────────────────────────────────────────
@@ -429,9 +429,28 @@ function ColoursTab() {
 // ─── Pricing Matrix Preview Tab ─────────────────────────────────────────────
 
 function PricingMatrixTab() {
+  const utils = trpc.useUtils();
   const [brand, setBrand] = useState<string>("alugard");
   const [productType, setProductType] = useState<string>("window");
   const { data: matrix = [], isLoading } = trpc.securityScreens.getMatrix.useQuery({ brand, productType });
+  const importMutation = trpc.securityScreens.importMatrixCsv.useMutation({
+    onSuccess: (result) => {
+      utils.securityScreens.getMatrix.invalidate({ brand, productType });
+      toast.success(`Imported ${result.imported} pricing rows`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const handleImportCsv = async (file: File | undefined) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      toast.error("Please upload a CSV file");
+      return;
+    }
+
+    const csv = await file.text();
+    importMutation.mutate({ brand, productType, csv });
+  };
 
   const heights = Array.from(new Set(matrix.map((r: any) => r.heightMm))).sort((a: number, b: number) => a - b);
   const widths = Array.from(new Set(matrix.map((r: any) => r.widthMm))).sort((a: number, b: number) => a - b);
@@ -448,6 +467,20 @@ function PricingMatrixTab() {
         <div className="flex gap-2">
           <Select value={brand} onValueChange={setBrand}><SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="alugard">Alu-Gard</SelectItem><SelectItem value="invisigard">Invisi-Gard</SelectItem></SelectContent></Select>
           <Select value={productType} onValueChange={setProductType}><SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="window">Window</SelectItem><SelectItem value="door">Door</SelectItem></SelectContent></Select>
+          <Label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border bg-background px-3 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground">
+            <Upload className="h-4 w-4" />
+            {importMutation.isPending ? "Importing..." : "Import CSV"}
+            <Input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              disabled={importMutation.isPending}
+              onChange={(event) => {
+                handleImportCsv(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+            />
+          </Label>
         </div>
       </div>
       {isLoading ? <p className="text-center text-muted-foreground py-8">Loading matrix...</p>

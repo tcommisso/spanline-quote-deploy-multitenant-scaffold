@@ -21,6 +21,12 @@ import {
 } from "../drizzle/schema";
 import { storagePut } from "./storage";
 
+type ParsedMatrixRow = {
+  widthMm: number;
+  heightMm: number;
+  priceIncGst: number;
+};
+
 async function requireDb() {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
@@ -67,6 +73,133 @@ function createQuoteNumber() {
   const timestamp = Date.now().toString(36).toUpperCase();
   const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `SS-${timestamp}-${suffix}`;
+}
+
+function compactKey(value: unknown) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function canonicalBrand(value: string) {
+  const key = compactKey(value);
+  if (key.includes("invisi")) return "invisigard";
+  if (key.includes("alu")) return "alugard";
+  return key;
+}
+
+function canonicalProductType(value: string) {
+  const key = compactKey(value);
+  if (key.includes("door")) return "door";
+  if (key.includes("window") || key.includes("screen")) return "window";
+  return key;
+}
+
+function compactSql(column: any) {
+  return sql`LOWER(REPLACE(REPLACE(REPLACE(REPLACE(${column}, '-', ''), ' ', ''), '_', ''), '/', ''))`;
+}
+
+function pricingMatrixIdentity(brand: string, productType: string) {
+  return and(
+    sql`${compactSql(ssPricingMatrix.brand)} = ${canonicalBrand(brand)}`,
+    sql`${compactSql(ssPricingMatrix.productType)} = ${canonicalProductType(productType)}`,
+  );
+}
+
+function parseCsvRows(csv: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let i = 0; i < csv.length; i++) {
+    const char = csv[i];
+    const next = csv[i + 1];
+
+    if (char === '"') {
+      if (quoted && next === '"') {
+        cell += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (char === "," && !quoted) {
+      row.push(cell.trim());
+      cell = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") i++;
+      row.push(cell.trim());
+      if (row.some((value) => value.length > 0)) rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell.trim());
+  if (row.some((value) => value.length > 0)) rows.push(row);
+  return rows;
+}
+
+function numberFromCell(value: unknown): number | null {
+  const cleaned = String(value ?? "").replace(/[$,\s]/g, "");
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parsePricingMatrixCsv(csv: string, brand: string, productType: string): ParsedMatrixRow[] {
+  const rows = parseCsvRows(csv);
+  if (rows.length < 2) return [];
+
+  const headers = rows[0]!.map(compactKey);
+  const dataRows = rows.slice(1);
+  const findHeader = (...aliases: string[]) => {
+    const keys = aliases.map(compactKey);
+    return headers.findIndex((header) => keys.includes(header));
+  };
+
+  const brandIndex = findHeader("brand");
+  const productTypeIndex = findHeader("productType", "type", "product");
+  const heightIndex = findHeader("heightMm", "height", "h");
+  const widthIndex = findHeader("widthMm", "width", "w");
+  const priceIndex = findHeader("priceIncGst", "price", "incGst", "priceGst", "sellPrice");
+
+  if (heightIndex >= 0 && widthIndex >= 0 && priceIndex >= 0) {
+    return dataRows.flatMap((row) => {
+      if (brandIndex >= 0 && canonicalBrand(row[brandIndex] || "") !== canonicalBrand(brand)) return [];
+      if (productTypeIndex >= 0 && canonicalProductType(row[productTypeIndex] || "") !== canonicalProductType(productType)) return [];
+
+      const heightMm = numberFromCell(row[heightIndex]);
+      const widthMm = numberFromCell(row[widthIndex]);
+      const priceIncGst = numberFromCell(row[priceIndex]);
+      if (!heightMm || !widthMm || !priceIncGst) return [];
+      return [{ heightMm: Math.round(heightMm), widthMm: Math.round(widthMm), priceIncGst }];
+    });
+  }
+
+  const pivotWidthIndexes = headers
+    .map((_, index) => ({ index, width: index === 0 ? null : numberFromCell(rows[0]![index]) }))
+    .filter((entry): entry is { index: number; width: number } => Number.isFinite(entry.width));
+
+  if (pivotWidthIndexes.length === 0) return [];
+
+  return dataRows.flatMap((row) => {
+    const heightMm = numberFromCell(row[0]);
+    if (!heightMm) return [];
+
+    return pivotWidthIndexes.flatMap(({ index, width }) => {
+      const priceIncGst = numberFromCell(row[index]);
+      if (!priceIncGst) return [];
+      return [{ heightMm: Math.round(heightMm), widthMm: Math.round(width), priceIncGst }];
+    });
+  });
 }
 
 async function nullableExistingUserId(db: any, userId: unknown): Promise<number | null> {
@@ -129,8 +262,7 @@ async function interpolatePrice(
     .from(ssPricingMatrix)
     .where(and(
       scope(ssPricingMatrix.tenantId, tenantId),
-      eq(ssPricingMatrix.brand, brand),
-      eq(ssPricingMatrix.productType, productType),
+      pricingMatrixIdentity(brand, productType),
     ));
 
   if (rows.length === 0) return null;
@@ -298,7 +430,48 @@ export const securityScreensRouter = router({
       return db
         .select()
         .from(ssPricingMatrix)
-        .where(and(scope(ssPricingMatrix.tenantId, tenantId), eq(ssPricingMatrix.brand, input.brand), eq(ssPricingMatrix.productType, input.productType)));
+        .where(and(scope(ssPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(input.brand, input.productType)));
+    }),
+
+  importMatrixCsv: tenantAdminProcedure
+    .input(z.object({
+      brand: z.string().min(1),
+      productType: z.string().min(1),
+      csv: z.string().min(1).max(5_000_000),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdForContext(ctx);
+      const rows = parsePricingMatrixCsv(input.csv, input.brand, input.productType);
+
+      if (rows.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No pricing rows found. Upload a CSV with brand/productType/widthMm/heightMm/priceIncGst columns, or a matrix with heights down the first column and widths across the header row.",
+        });
+      }
+
+      const brand = canonicalBrand(input.brand);
+      const productType = canonicalProductType(input.productType);
+
+      await db
+        .delete(ssPricingMatrix)
+        .where(and(scope(ssPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(brand, productType)));
+
+      const chunkSize = 500;
+      for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        await db.insert(ssPricingMatrix).values(chunk.map((row) => ({
+          tenantId,
+          brand,
+          productType,
+          heightMm: row.heightMm,
+          widthMm: row.widthMm,
+          priceIncGst: row.priceIncGst.toFixed(2),
+        })));
+      }
+
+      return { imported: rows.length, brand, productType };
     }),
 
   calculatePrice: tenantProcedure
@@ -307,7 +480,15 @@ export const securityScreensRouter = router({
       const db = await requireDb();
       const tenantId = tenantIdForContext(ctx);
       const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
-      if (!price) return { basePrice: null, adjustedPrice: null, factor: 1, warnings: ["No pricing matrix exists for this brand/product type."], outOfRange: false };
+      if (!price) {
+        return {
+          basePrice: null,
+          adjustedPrice: null,
+          factor: 1,
+          warnings: ["No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix."],
+          outOfRange: false,
+        };
+      }
       const factor = await getCumulativeAdjustmentFactor(db, tenantId);
       return {
         ...price,
@@ -638,8 +819,14 @@ export const securityScreensRouter = router({
         const existingItems = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
         const itemNumber = existingItems.length + 1;
         const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
+        if (!price) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix before adding this item.",
+          });
+        }
         const factor = await getCumulativeAdjustmentFactor(db, tenantId);
-        const basePrice = price?.basePrice ?? 0;
+        const basePrice = price.basePrice;
         const adjustedPrice = basePrice * factor;
 
         let colourSurcharge = 0;
