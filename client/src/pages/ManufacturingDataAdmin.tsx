@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,13 @@ type ManufacturingProduct = {
   unitCost: number;
   colour: string;
   isActive: boolean;
+};
+
+type ColourOption = {
+  value: string;
+  detail: string;
+  hex?: string | null;
+  fromMaster: boolean;
 };
 
 const BLANK_PRODUCT = {
@@ -102,6 +109,47 @@ function colourStyle(colour: string) {
   return { backgroundColor: `hsl(${hash} 65% 55%)` };
 }
 
+function metadataHex(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const record = metadata as Record<string, unknown>;
+  const hex = record.hexCode || record.hex || record.colourHex || record.colorHex;
+  return typeof hex === "string" && hex.trim() ? hex.trim() : null;
+}
+
+function buildColourOptions(masterColours: Array<{ key?: string | null; value?: string | null; metadata?: unknown }>, currentColour?: string | null) {
+  const seen = new Set<string>();
+  const options: ColourOption[] = [];
+
+  for (const colour of masterColours) {
+    const name = String(colour.key || "").trim();
+    if (!name) continue;
+    const normalized = name.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    const detail = String(colour.value || "").trim();
+    options.push({
+      value: name,
+      detail: detail && detail.toLowerCase() !== normalized ? detail : "",
+      hex: metadataHex(colour.metadata),
+      fromMaster: true,
+    });
+  }
+
+  const current = String(currentColour || "").trim();
+  if (current && !seen.has(current.toLowerCase())) {
+    options.unshift({
+      value: current,
+      detail: "Imported value not in master colours",
+      fromMaster: false,
+    });
+  }
+
+  return options.sort((a, b) => {
+    if (a.fromMaster !== b.fromMaster) return a.fromMaster ? 1 : -1;
+    return a.value.localeCompare(b.value);
+  });
+}
+
 function ColourSwatch({ colour }: { colour: string }) {
   if (!colour) return <span>-</span>;
   return (
@@ -125,9 +173,11 @@ export default function ManufacturingDataAdmin() {
 
   const listQuery = trpc.manufacturingData.list.useQuery({ search, category, subGroup, activeState, limit: 2000 });
   const facetsQuery = trpc.manufacturingData.facets.useQuery();
+  const coloursQuery = trpc.masterData.getByCategory.useQuery({ category: "colour" });
   const products = (listQuery.data || []) as ManufacturingProduct[];
   const categories = (facetsQuery.data?.categories || []) as string[];
   const subGroups = (facetsQuery.data?.subGroups || []) as string[];
+  const masterColourOptions = useMemo(() => buildColourOptions(coloursQuery.data || []), [coloursQuery.data]);
   const selectedIdSet = new Set(selectedIds);
   const allVisibleSelected = products.length > 0 && products.every((product) => selectedIdSet.has(product.id));
 
@@ -288,7 +338,11 @@ export default function ManufacturingDataAdmin() {
             </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>Add Manufacturing Product</DialogTitle></DialogHeader>
-              <ProductForm loading={createMutation.isPending} onSubmit={(data) => createMutation.mutate(data)} />
+              <ProductForm
+                colourOptions={masterColourOptions}
+                loading={createMutation.isPending}
+                onSubmit={(data) => createMutation.mutate(data)}
+              />
             </DialogContent>
           </Dialog>
         </div>
@@ -462,6 +516,7 @@ export default function ManufacturingDataAdmin() {
           {editItem && (
             <ProductForm
               initial={editItem}
+              colourOptions={masterColourOptions}
               loading={updateMutation.isPending}
               onSubmit={(data) => updateMutation.mutate({ id: editItem.id, ...data })}
             />
@@ -474,14 +529,22 @@ export default function ManufacturingDataAdmin() {
 
 function ProductForm({
   initial,
+  colourOptions,
   loading,
   onSubmit,
 }: {
   initial?: Partial<ManufacturingProduct>;
+  colourOptions: ColourOption[];
   loading: boolean;
   onSubmit: (data: typeof BLANK_PRODUCT) => void;
 }) {
   const [form, setForm] = useState({ ...BLANK_PRODUCT, ...initial });
+  const availableColours = useMemo(() => buildColourOptions(
+    colourOptions.map((colour) => ({ key: colour.value, value: colour.detail, metadata: colour.hex ? { hex: colour.hex } : undefined })),
+    form.colour,
+  ), [colourOptions, form.colour]);
+  const selectedColour = availableColours.find((colour) => colour.value === form.colour);
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
@@ -515,7 +578,38 @@ function ProductForm({
         </div>
         <div>
           <Label>Colour</Label>
-          <Input value={form.colour || ""} onChange={(event) => setForm({ ...form, colour: event.target.value })} />
+          <Select
+            value={form.colour || "__none__"}
+            onValueChange={(value) => setForm({ ...form, colour: value === "__none__" ? "" : value })}
+            disabled={!availableColours.length}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={availableColours.length ? "Select colour" : "No master colours configured"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">No colour</SelectItem>
+              {availableColours.map((colour) => (
+                <SelectItem key={`${colour.fromMaster ? "master" : "legacy"}-${colour.value}`} value={colour.value}>
+                  <span className="inline-flex items-center gap-2">
+                    <span
+                      className="h-4 w-4 rounded-full border border-border shadow-sm"
+                      style={colour.hex ? { backgroundColor: colour.hex } : colourStyle(colour.value)}
+                    />
+                    <span>{colour.value}</span>
+                    {colour.detail && <span className="text-xs text-muted-foreground">({colour.detail})</span>}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Colours are managed in Admin &gt; Data &amp; Pricing &gt; Sales Data &gt; General &gt; Colours.
+          </p>
+          {selectedColour && !selectedColour.fromMaster && (
+            <p className="mt-1 text-xs text-amber-700">
+              This imported colour is not in the master colour list yet.
+            </p>
+          )}
         </div>
       </div>
       {initial && (
