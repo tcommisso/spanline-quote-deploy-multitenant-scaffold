@@ -306,6 +306,9 @@ export async function getInboxMessageById(id: number, tenantId?: number | null) 
 export async function listInboxMessages(filters: {
   direction?: "inbound" | "outbound";
   status?: string;
+  priority?: InboxTicketPriority;
+  channel?: InboxTicketChannel;
+  slaState?: "breached" | "warning" | "due" | "none";
   assignedToId?: number;
   assignedState?: "unassigned";
   isRead?: boolean;
@@ -324,6 +327,17 @@ export async function listInboxMessages(filters: {
   const conditions: any[] = [];
   appendTenantScope(conditions, inboxTickets.tenantId, filters.tenantId);
   if (filters.direction) conditions.push(eq(inboxTickets.latestDirection, filters.direction));
+  if (filters.priority) conditions.push(eq(inboxTickets.priority, filters.priority));
+  if (filters.channel) conditions.push(eq(inboxTickets.channel, filters.channel));
+  if (filters.slaState === "breached") {
+    conditions.push(isNotNull(inboxTickets.slaBreachedAt));
+  } else if (filters.slaState === "warning") {
+    conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaWarningAt), lte(inboxTickets.slaWarningAt, new Date()));
+  } else if (filters.slaState === "due") {
+    conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaDueAt));
+  } else if (filters.slaState === "none") {
+    conditions.push(isNull(inboxTickets.slaDueAt));
+  }
   if (filters.assignedToId !== undefined) conditions.push(eq(inboxTickets.assignedToId, filters.assignedToId));
   if (filters.assignedState === "unassigned") conditions.push(isNull(inboxTickets.assignedToId));
   if (filters.isRead === true) conditions.push(eq(inboxTickets.unreadCount, 0));
@@ -1330,6 +1344,30 @@ export async function bulkAssignThreads(threadIds: string[], assignedToId: numbe
   }).where(and(...conditions));
   await syncTicketsForThreads(threadIds, tenantId);
   return threadIds.length;
+}
+
+export async function bulkUpdateTickets(
+  threadIds: string[],
+  data: {
+    priority?: InboxTicketPriority;
+    channel?: InboxTicketChannel;
+    status?: InboxTicketStatus;
+    resolutionNotes?: string | null;
+    closedReason?: string | null;
+  },
+  tenantId?: number | null,
+  userId?: number | null,
+  userName?: string | null,
+) {
+  const uniqueThreadIds = Array.from(new Set(threadIds.filter(Boolean)));
+  let updatedCount = 0;
+
+  for (const threadId of uniqueThreadIds) {
+    const ticket = await updateTicketMetadata(threadId, data, tenantId, userId, userName);
+    if (ticket) updatedCount += 1;
+  }
+
+  return updatedCount;
 }
 
 export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number | null) {

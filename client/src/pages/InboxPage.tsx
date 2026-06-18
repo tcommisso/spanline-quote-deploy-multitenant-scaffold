@@ -37,6 +37,9 @@ import {
 
 type StatusFilter = "all" | InboxTicketStatus;
 type DirectionFilter = "all" | "inbound" | "outbound";
+type PriorityFilter = "all" | InboxTicketPriority;
+type ChannelFilter = "all" | InboxTicketChannel;
+type SlaFilter = "all" | "breached" | "warning" | "due" | "none";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
@@ -82,6 +85,9 @@ export default function InboxPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [directionFilter, setDirectionFilter] = useState<DirectionFilter>("all");
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
+  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
+  const [slaFilter, setSlaFilter] = useState<SlaFilter>("all");
   const [assignedFilter, setAssignedFilter] = useState<string>("all");
   const [addressFilter, setAddressFilter] = useState<string>("all");
   const [tagFilter, setTagFilter] = useState<number | null>(null);
@@ -99,6 +105,9 @@ export default function InboxPage() {
     search: search || undefined,
     status: statusFilter !== "all" ? statusFilter : undefined,
     direction: directionFilter !== "all" ? (directionFilter as "inbound" | "outbound") : undefined,
+    priority: priorityFilter !== "all" ? priorityFilter : undefined,
+    channel: channelFilter !== "all" ? channelFilter : undefined,
+    slaState: slaFilter !== "all" ? slaFilter : undefined,
     assignedToId: assignedFilter === "mine" ? user?.id : undefined,
     assignedState: assignedFilter === "unassigned" ? "unassigned" as const : undefined,
     isRead: undefined as boolean | undefined,
@@ -106,7 +115,7 @@ export default function InboxPage() {
     tagIds: tagFilter ? [tagFilter] : undefined,
     limit: pageSize,
     offset: page * pageSize,
-  }), [search, statusFilter, directionFilter, assignedFilter, addressFilter, tagFilter, page, user?.id]);
+  }), [search, statusFilter, directionFilter, priorityFilter, channelFilter, slaFilter, assignedFilter, addressFilter, tagFilter, page, user?.id]);
 
   const utils = trpc.useUtils();
   const { data, isLoading, refetch } = trpc.inbox.list.useQuery(queryInput, {
@@ -164,6 +173,15 @@ export default function InboxPage() {
     },
     onError: (err) => toast.error(err.message),
   });
+  const bulkUpdateTicketMut = trpc.inbox.bulkUpdateTickets.useMutation({
+    onSuccess: (res) => {
+      toast.success(`${res.count} ticket${res.count > 1 ? "s" : ""} updated`);
+      setSelectedIds(new Set());
+      refetch();
+      utils.inbox.unreadCount.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const messages = data?.messages || [];
   const total = data?.total || 0;
@@ -179,6 +197,15 @@ export default function InboxPage() {
   }, [messages, selectedIds]);
   const allSelected = allPageIds.length > 0 && allPageIds.every((id: number) => selectedIds.has(id));
   const someSelected = selectedThreadIds.length > 0;
+  const hasActiveFilters = Boolean(search)
+    || statusFilter !== "all"
+    || directionFilter !== "all"
+    || priorityFilter !== "all"
+    || channelFilter !== "all"
+    || slaFilter !== "all"
+    || assignedFilter !== "all"
+    || addressFilter !== "all"
+    || tagFilter !== null;
 
   function toggleSelect(id: number) {
     setSelectedIds(prev => {
@@ -290,7 +317,7 @@ export default function InboxPage() {
 
       {/* Bulk Action Bar */}
       {someSelected && (
-      <div className="flex items-center gap-2 mb-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
+      <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
           <span className="text-sm font-medium text-primary mr-2">
             {selectedThreadIds.length} ticket{selectedThreadIds.length !== 1 ? "s" : ""} selected
           </span>
@@ -319,6 +346,54 @@ export default function InboxPage() {
           >
             <TagIcon className="h-4 w-4 mr-1" /> Tag
           </Button>
+          <Select
+            disabled={bulkUpdateTicketMut.isPending || selectedThreadIds.length === 0}
+            onValueChange={(value) => bulkUpdateTicketMut.mutate({
+              threadIds: selectedThreadIds,
+              status: value as InboxTicketStatus,
+            })}
+          >
+            <SelectTrigger className="h-8 w-[145px] text-xs bg-background">
+              <SelectValue placeholder="Set Status" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(INBOX_TICKET_STATUS_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            disabled={bulkUpdateTicketMut.isPending || selectedThreadIds.length === 0}
+            onValueChange={(value) => bulkUpdateTicketMut.mutate({
+              threadIds: selectedThreadIds,
+              priority: value as InboxTicketPriority,
+            })}
+          >
+            <SelectTrigger className="h-8 w-[140px] text-xs bg-background">
+              <SelectValue placeholder="Set Priority" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(INBOX_TICKET_PRIORITY_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            disabled={bulkUpdateTicketMut.isPending || selectedThreadIds.length === 0}
+            onValueChange={(value) => bulkUpdateTicketMut.mutate({
+              threadIds: selectedThreadIds,
+              channel: value as InboxTicketChannel,
+            })}
+          >
+            <SelectTrigger className="h-8 w-[140px] text-xs bg-background">
+              <SelectValue placeholder="Set Channel" />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(INBOX_TICKET_CHANNEL_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {isAdmin && (
             <Button
               variant="outline"
@@ -330,7 +405,7 @@ export default function InboxPage() {
               <Trash2 className="h-4 w-4 mr-1" /> Delete
             </Button>
           )}
-          <div className="ml-auto">
+          <div className="sm:ml-auto">
             <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
               <X className="h-4 w-4 mr-1" /> Clear
             </Button>
@@ -392,6 +467,43 @@ export default function InboxPage() {
               </SelectContent>
             </Select>
 
+            <Select value={priorityFilter} onValueChange={(v) => { setPriorityFilter(v as PriorityFilter); setPage(0); }}>
+              <SelectTrigger className="w-[135px] h-8 text-xs">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Priority</SelectItem>
+                {Object.entries(INBOX_TICKET_PRIORITY_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={channelFilter} onValueChange={(v) => { setChannelFilter(v as ChannelFilter); setPage(0); }}>
+              <SelectTrigger className="w-[130px] h-8 text-xs">
+                <SelectValue placeholder="Channel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Channels</SelectItem>
+                {Object.entries(INBOX_TICKET_CHANNEL_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={slaFilter} onValueChange={(v) => { setSlaFilter(v as SlaFilter); setPage(0); }}>
+              <SelectTrigger className="w-[130px] h-8 text-xs">
+                <SelectValue placeholder="SLA" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All SLA</SelectItem>
+                <SelectItem value="breached">Breached</SelectItem>
+                <SelectItem value="warning">Warning</SelectItem>
+                <SelectItem value="due">Has due time</SelectItem>
+                <SelectItem value="none">No SLA</SelectItem>
+              </SelectContent>
+            </Select>
+
             <Select value={assignedFilter} onValueChange={(v) => { setAssignedFilter(v); setPage(0); }}>
               <SelectTrigger className="w-[150px] h-8 text-xs">
                 <SelectValue placeholder="Assigned" />
@@ -441,6 +553,9 @@ export default function InboxPage() {
             <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => {
               setStatusFilter("all");
               setDirectionFilter("all");
+              setPriorityFilter("all");
+              setChannelFilter("all");
+              setSlaFilter("all");
               setAssignedFilter("all");
               setAddressFilter("all");
               setTagFilter(null);
@@ -465,7 +580,7 @@ export default function InboxPage() {
           <Mail className="h-12 w-12 mb-4 opacity-30" />
           <p className="text-lg font-medium">No tickets found</p>
           <p className="text-sm">
-            {search || statusFilter !== "all" ? "Try adjusting your filters" : "Your inbox queue is empty"}
+            {hasActiveFilters ? "Try adjusting your filters" : "Your inbox queue is empty"}
           </p>
         </div>
       ) : (

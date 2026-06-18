@@ -19,6 +19,7 @@ const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
 const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]);
 const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
+const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
 
 export const inboxRouter = router({
   // ─── Messages ─────────────────────────────────────────────────────────────
@@ -27,6 +28,9 @@ export const inboxRouter = router({
     .input(z.object({
       direction: z.enum(["inbound", "outbound"]).optional(),
       status: z.string().optional(),
+      priority: inboxTicketPrioritySchema.optional(),
+      channel: inboxTicketChannelSchema.optional(),
+      slaState: inboxTicketSlaStateSchema.optional(),
       assignedToId: z.number().optional(),
       assignedState: z.enum(["unassigned"]).optional(),
       isRead: z.boolean().optional(),
@@ -160,6 +164,43 @@ export const inboxRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const count = await inboxDb.bulkAddTagToThreads(input.threadIds, input.tagId, ctx.tenant!.id);
+      return { success: true, count };
+    }),
+
+  bulkUpdateTickets: protectedProcedure
+    .input(z.object({
+      threadIds: z.array(z.string()).min(1).max(100),
+      status: inboxTicketStatusSchema.optional(),
+      priority: inboxTicketPrioritySchema.optional(),
+      channel: inboxTicketChannelSchema.optional(),
+      resolutionNotes: z.string().nullable().optional(),
+      closedReason: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (
+        !input.status &&
+        !input.priority &&
+        !input.channel &&
+        input.resolutionNotes === undefined &&
+        input.closedReason === undefined
+      ) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No ticket fields provided" });
+      }
+
+      const count = await inboxDb.bulkUpdateTickets(
+        input.threadIds,
+        {
+          status: input.status,
+          priority: input.priority,
+          channel: input.channel,
+          resolutionNotes: input.resolutionNotes,
+          closedReason: input.closedReason,
+        },
+        ctx.tenant!.id,
+        ctx.user!.id,
+        ctx.user!.name || ctx.user!.email || null,
+      );
+
       return { success: true, count };
     }),
 
