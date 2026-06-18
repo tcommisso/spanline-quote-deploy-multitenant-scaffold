@@ -264,7 +264,7 @@ const adminGroups: AdminGroup[] = [
       { icon: BarChart3, label: "Territory Coverage", path: "/admin/territory-coverage" },
       { icon: CalendarDays, label: "Calendar Views", path: "/admin/calendar-views" },
       { icon: Palette, label: "Colour Scheme", path: "/admin/colour-scheme" },
-      { icon: Phone, label: "VOCPhone Extensions", path: "/admin/extensions" },
+      { icon: Phone, label: "VOCPhone Recordings", path: "/admin/extensions" },
     ],
   },
   {

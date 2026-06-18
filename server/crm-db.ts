@@ -24,6 +24,23 @@ function tenantClause(alias: string, tenantId?: number | null) {
     : { sql: "", params: [] };
 }
 
+function latestContractPerLead(alias: string) {
+  return `(
+    SELECT c.*
+    FROM crm_contracts c
+    INNER JOIN (
+      SELECT leadId, MAX(id) AS id
+      FROM crm_contracts
+      WHERE leadId IS NOT NULL
+      GROUP BY leadId
+    ) latest_contract ON latest_contract.id = c.id
+  ) ${alias}`;
+}
+
+function logicalLeadKey(alias: string) {
+  return `COALESCE(NULLIF(${alias}.leadNumber, ''), CONCAT('id:', ${alias}.id))`;
+}
+
 // ─── Lead Number Generation ─────────────────────────────────────────────────
 export async function getNextLeadNumber(tenantId?: number | null): Promise<string> {
   const [rows] = await pool.execute(
@@ -1105,7 +1122,7 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     activeLeadDateClause = ' AND l.leadDate >= ? AND l.leadDate <= ?';
     activeBaseParams.push(fyStartDate, fyEndDate);
   }
-  const activeSql = `SELECT COUNT(*) as count FROM crm_leads l WHERE l.status NOT IN ('completed', 'won', 'cancelled')${activeLeadDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
+  const activeSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l WHERE l.status NOT IN ('completed', 'won', 'cancelled')${activeLeadDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
   const [activeRows] = await pool.execute(activeSql, buildLeadParams(activeBaseParams));
   const activeLeads = (activeRows as any[])[0]?.count || 0;
 
@@ -1116,7 +1133,7 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     completedDateClause = ' AND c.contractDate >= ? AND c.contractDate <= ?';
     completedBaseParams.push(fyStartDate, fyEndDate);
   }
-  const completedSql = `SELECT COUNT(DISTINCT l.id) as count FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id WHERE l.status IN ('completed', 'won')${completedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
+  const completedSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id WHERE l.status IN ('completed', 'won')${completedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
   const [completedRows] = await pool.execute(completedSql, buildLeadParams(completedBaseParams));
   const completedLeads = (completedRows as any[])[0]?.count || 0;
 
@@ -1137,26 +1154,35 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     contractDateClause = ' AND c2.contractDate >= ? AND c2.contractDate <= ?';
     contractCountParams.push(fyStartDate, fyEndDate);
   }
-  let contractJoin = '';
+  const contractJoin = ' INNER JOIN crm_leads l2 ON l2.id = c2.leadId';
   const contractTenant = tenantClause("l2", tenantId);
-  if (designAdvisor || branchId || tenantId) {
-    contractJoin = ' INNER JOIN crm_leads l2 ON l2.id = c2.leadId';
-    if (designAdvisor) {
-      contractDaClause = ' AND l2.designAdvisor = ?';
-      contractCountParams.push(designAdvisor);
-    }
-    if (branchId) {
-      contractBranchClause = ' AND l2.branchId = ?';
-      contractCountParams.push(branchId);
-    }
-    contractCountParams.push(...contractTenant.params);
+  if (designAdvisor) {
+    contractDaClause = ' AND l2.designAdvisor = ?';
+    contractCountParams.push(designAdvisor);
   }
-  const contractCountSql = `SELECT COUNT(*) as count FROM crm_contracts c2${contractJoin} WHERE 1=1${contractDateClause}${contractDaClause}${contractBranchClause}${contractTenant.sql}`;
+  if (branchId) {
+    contractBranchClause = ' AND l2.branchId = ?';
+    contractCountParams.push(branchId);
+  }
+  contractCountParams.push(...contractTenant.params);
+  const contractCountSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l2")}) as count FROM ${latestContractPerLead("c2")}${contractJoin} WHERE 1=1${contractDateClause}${contractDaClause}${contractBranchClause}${contractTenant.sql}`;
   const [contractCountRows] = await pool.execute(contractCountSql, contractCountParams);
   const contractsCount = (contractCountRows as any[])[0]?.count || 0;
 
   const pipelineParams = [...contractCountParams];
-  const pipelineSql = `SELECT COALESCE(SUM(c2.contractValue), 0) as total FROM crm_contracts c2${contractJoin} WHERE 1=1${contractDateClause}${contractDaClause}${contractBranchClause}`;
+  const pipelineSql = `
+    SELECT COALESCE(SUM(contractValue), 0) as total
+    FROM (
+      SELECT c2.contractValue,
+        ROW_NUMBER() OVER (
+          PARTITION BY ${logicalLeadKey("l2")}
+          ORDER BY c2.contractDate DESC, c2.id DESC
+        ) as rn
+      FROM ${latestContractPerLead("c2")}${contractJoin}
+      WHERE 1=1${contractDateClause}${contractDaClause}${contractBranchClause}${contractTenant.sql}
+    ) dedup_contracts
+    WHERE rn = 1
+  `;
   const [pipelineRows] = await pool.execute(pipelineSql, pipelineParams);
   const pipelineValue = (pipelineRows as any[])[0]?.total || 0;
 
@@ -1174,7 +1200,7 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     uncontractedParams.push(branchId);
   }
   uncontractedParams.push(...leadTenant.params);
-  const uncontractedSql = `SELECT COUNT(*) as count FROM crm_leads l WHERE l.id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)${uncontractedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
+  const uncontractedSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l WHERE l.id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)${uncontractedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
   const [uncontractedRows] = await pool.execute(uncontractedSql, uncontractedParams);
   const uncontractedLeads = (uncontractedRows as any[])[0]?.count || 0;
 
@@ -1210,7 +1236,20 @@ export async function getRecentLeads(limit = 10, designAdvisor?: string, fyStart
   const tenant = tenantClause("l", tenantId);
   params.push(...tenant.params);
   const [rows] = await pool.execute(
-    `SELECT l.* FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql} ORDER BY c.contractDate DESC LIMIT ${Number(limit)}`,
+    `SELECT *
+     FROM (
+       SELECT l.*, c.contractDate as _latestContractDate,
+         ROW_NUMBER() OVER (
+           PARTITION BY ${logicalLeadKey("l")}
+           ORDER BY c.contractDate DESC, c.id DESC, l.id DESC
+         ) as rn
+       FROM crm_leads l
+       INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+       WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
+     ) ranked_leads
+     WHERE rn = 1
+     ORDER BY _latestContractDate DESC
+     LIMIT ${Number(limit)}`,
     params
   );
   return rows as any[];
@@ -1237,7 +1276,19 @@ export async function getLeadsByStatus(designAdvisor?: string, fyStart?: string,
   const tenant = tenantClause("l", tenantId);
   params.push(...tenant.params);
   const [rows] = await pool.execute(
-    `SELECT l.status, COUNT(DISTINCT l.id) as count FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql} GROUP BY l.status`,
+    `SELECT status, COUNT(*) as count
+     FROM (
+       SELECT l.status,
+         ROW_NUMBER() OVER (
+           PARTITION BY ${logicalLeadKey("l")}
+           ORDER BY c.contractDate DESC, c.id DESC, l.id DESC
+         ) as rn
+       FROM crm_leads l
+       INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+       WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
+     ) ranked_statuses
+     WHERE rn = 1
+     GROUP BY status`,
     params
   );
   return rows as { status: string; count: number }[];
@@ -1264,14 +1315,23 @@ export async function getContractedSales(designAdvisor?: string, fyStart?: strin
   const tenant = tenantClause("l", tenantId);
   params.push(...tenant.params);
   const [rows] = await pool.execute(
-    `SELECT l.id, l.leadNumber, l.contactFirstName, l.contactLastName, l.suburb, l.state, l.postcode,
-      l.designAdvisor, l.productType, l.status,
-      c.contractDate, c.contractValue, c.depositAmount
-    FROM crm_leads l
-    INNER JOIN crm_contracts c ON c.leadId = l.id
-    WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
-    ORDER BY c.contractDate DESC
-    LIMIT ${Number(limit)}`,
+    `SELECT id, leadNumber, contactFirstName, contactLastName, suburb, state, postcode,
+      designAdvisor, productType, status, contractDate, contractValue, depositAmount
+     FROM (
+       SELECT l.id, l.leadNumber, l.contactFirstName, l.contactLastName, l.suburb, l.state, l.postcode,
+         l.designAdvisor, l.productType, l.status,
+         c.contractDate, c.contractValue, c.depositAmount,
+         ROW_NUMBER() OVER (
+           PARTITION BY ${logicalLeadKey("l")}
+           ORDER BY c.contractDate DESC, c.id DESC, l.id DESC
+         ) as rn
+       FROM crm_leads l
+       INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+       WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
+     ) ranked_contracts
+     WHERE rn = 1
+     ORDER BY contractDate DESC
+     LIMIT ${Number(limit)}`,
     params
   );
   return rows as any[];
@@ -1591,7 +1651,7 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
   revParams.push(...tenant.params);
   const [revRows] = await pool.execute(
     `SELECT l.designAdvisor, COALESCE(SUM(c.contractValue), 0) as totalRevenue
-    FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id
+    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
     WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${revDateClause}${revBranchClause}${tenant.sql}
     GROUP BY l.designAdvisor`,
     revParams
@@ -1696,7 +1756,7 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
   wonBaseParams.push(...tenant.params);
   const [wonRows] = await pool.execute(
     `SELECT DATE_FORMAT(c.contractDate, '%Y-%m') as ym, COUNT(DISTINCT l.id) as cnt, COALESCE(SUM(c.contractValue), 0) as revenue
-    FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id
+    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
     WHERE l.status IN ('completed', 'won')
       AND c.contractDate >= ? AND c.contractDate <= ?${wonDaClause}${wonBranchClause}${tenant.sql}
     GROUP BY ym`,
@@ -1761,8 +1821,8 @@ export async function getAdviserTimeToClose(fyStart?: string, fyEnd?: string, br
       ROUND(AVG(DATEDIFF(c.contractDate, l.leadDate))) as avgDays,
       MIN(DATEDIFF(c.contractDate, l.leadDate)) as minDays,
       MAX(DATEDIFF(c.contractDate, l.leadDate)) as maxDays,
-      COUNT(*) as sampleSize
-    FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id
+      COUNT(DISTINCT l.id) as sampleSize
+    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
     WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''
       AND l.leadDate IS NOT NULL AND c.contractDate IS NOT NULL${dateClause}${branchClause}${tenant.sql}
     GROUP BY l.designAdvisor`,
@@ -1841,7 +1901,7 @@ export async function getLeadSourceBreakdown(fyStart?: string, fyEnd?: string, d
     `SELECT 
       COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
       COALESCE(SUM(c.contractValue), 0) as revenue
-    FROM crm_leads l INNER JOIN crm_contracts c ON c.leadId = l.id
+    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
     WHERE 1=1${revDateClause}${revDaClause}${revBranchClause}${tenant.sql}
     GROUP BY source`,
     revParams

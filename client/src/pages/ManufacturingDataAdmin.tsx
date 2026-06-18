@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Archive, Download, Factory, PackagePlus, Pencil, RotateCcw, Search, Upload } from "lucide-react";
+import { Archive, Download, Factory, PackagePlus, Pencil, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 type ManufacturingProduct = {
@@ -119,6 +119,7 @@ export default function ManufacturingDataAdmin() {
   const [activeState, setActiveState] = useState<"active" | "archived" | "all">("active");
   const [showCreate, setShowCreate] = useState(false);
   const [editItem, setEditItem] = useState<ManufacturingProduct | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const utils = trpc.useUtils();
 
@@ -127,12 +128,19 @@ export default function ManufacturingDataAdmin() {
   const products = (listQuery.data || []) as ManufacturingProduct[];
   const categories = (facetsQuery.data?.categories || []) as string[];
   const subGroups = (facetsQuery.data?.subGroups || []) as string[];
+  const selectedIdSet = new Set(selectedIds);
+  const allVisibleSelected = products.length > 0 && products.every((product) => selectedIdSet.has(product.id));
+
+  const refreshProducts = () => {
+    setSelectedIds([]);
+    utils.manufacturingData.list.invalidate();
+    utils.manufacturingData.facets.invalidate();
+  };
 
   const createMutation = trpc.manufacturingData.create.useMutation({
     onSuccess: () => {
       setShowCreate(false);
-      utils.manufacturingData.list.invalidate();
-      utils.manufacturingData.facets.invalidate();
+      refreshProducts();
       toast.success("Manufacturing product added");
     },
     onError: (err) => toast.error(err.message),
@@ -140,8 +148,7 @@ export default function ManufacturingDataAdmin() {
   const updateMutation = trpc.manufacturingData.update.useMutation({
     onSuccess: () => {
       setEditItem(null);
-      utils.manufacturingData.list.invalidate();
-      utils.manufacturingData.facets.invalidate();
+      refreshProducts();
       toast.success("Manufacturing product updated");
     },
     onError: (err) => toast.error(err.message),
@@ -160,14 +167,46 @@ export default function ManufacturingDataAdmin() {
   };
   const importMutation = trpc.manufacturingData.importCsvRows.useMutation({
     onSuccess: (result) => {
-      utils.manufacturingData.list.invalidate();
-      utils.manufacturingData.facets.invalidate();
+      refreshProducts();
       toast.success(`Import complete: ${result.created} created, ${result.updated} updated`);
       if (result.skipped) toast.info(`${result.skipped} row${result.skipped === 1 ? "" : "s"} skipped`);
       if (result.errors?.length) toast.warning(`${result.errors.length} row${result.errors.length === 1 ? "" : "s"} failed`);
     },
     onError: (err) => toast.error(err.message),
   });
+  const deleteMutation = trpc.manufacturingData.delete.useMutation({
+    onSuccess: () => {
+      refreshProducts();
+      toast.success("Manufacturing product deleted");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const bulkArchiveMutation = trpc.manufacturingData.bulkArchive.useMutation({
+    onSuccess: (result) => {
+      refreshProducts();
+      toast.success(`${result.updated} product${result.updated === 1 ? "" : "s"} updated`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const bulkDeleteMutation = trpc.manufacturingData.bulkDelete.useMutation({
+    onSuccess: (result) => {
+      refreshProducts();
+      toast.success(`${result.deleted} product${result.deleted === 1 ? "" : "s"} deleted`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const toggleSelection = (id: number) => {
+    setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
+
+  const toggleAllVisible = () => {
+    if (allVisibleSelected) {
+      setSelectedIds((current) => current.filter((id) => !products.some((product) => product.id === id)));
+      return;
+    }
+    setSelectedIds((current) => Array.from(new Set([...current, ...products.map((product) => product.id)])));
+  };
 
   const exportCsv = () => {
     const header = ["sku", "description", "category", "subGroup", "uom", "unitCost", "colour", "isActive"];
@@ -286,42 +325,99 @@ export default function ManufacturingDataAdmin() {
         </CardContent>
       </Card>
 
+      {selectedIds.length > 0 && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-medium">{selectedIds.length} selected</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={bulkArchiveMutation.isPending}
+                onClick={() => bulkArchiveMutation.mutate({ ids: selectedIds, isActive: false })}
+              >
+                <Archive className="h-4 w-4 mr-2" /> Archive
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={bulkArchiveMutation.isPending}
+                onClick={() => bulkArchiveMutation.mutate({ ids: selectedIds, isActive: true })}
+              >
+                <RotateCcw className="h-4 w-4 mr-2" /> Restore
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={bulkDeleteMutation.isPending}
+                onClick={() => {
+                  if (confirm(`Permanently delete ${selectedIds.length} manufacturing product${selectedIds.length === 1 ? "" : "s"}?`)) {
+                    bulkDeleteMutation.mutate({ ids: selectedIds });
+                  }
+                }}
+              >
+                <Trash2 className="h-4 w-4 mr-2" /> Delete
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>Clear</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="border rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Code</th>
-                <th className="text-left px-4 py-3 font-medium">Description</th>
-                <th className="text-left px-4 py-3 font-medium">Details</th>
-                <th className="text-left px-4 py-3 font-medium">Colour</th>
-                <th className="text-left px-4 py-3 font-medium">Category</th>
-                <th className="text-right px-4 py-3 font-medium">Unit Cost</th>
-                <th className="text-left px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3"></th>
+                <th className="w-10 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-border"
+                    checked={allVisibleSelected}
+                    onChange={toggleAllVisible}
+                    aria-label="Select all visible products"
+                  />
+                </th>
+                <th className="text-left px-3 py-2 font-medium">Code</th>
+                <th className="text-left px-3 py-2 font-medium">Description</th>
+                <th className="text-left px-3 py-2 font-medium">Details</th>
+                <th className="text-left px-3 py-2 font-medium">Colour</th>
+                <th className="text-left px-3 py-2 font-medium">Category</th>
+                <th className="text-right px-3 py-2 font-medium">Unit Cost</th>
+                <th className="text-left px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {listQuery.isLoading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
               ) : !products.length ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No manufacturing products found. Import a CSV or add the first product.</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">No manufacturing products found. Import a CSV or add the first product.</td></tr>
               ) : products.map((product) => (
                 <tr key={product.id} className={!product.isActive ? "opacity-60" : ""}>
-                  <td className="px-4 py-3 font-mono text-xs">{product.sku || "-"}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-border"
+                      checked={selectedIdSet.has(product.id)}
+                      onChange={() => toggleSelection(product.id)}
+                      aria-label={`Select ${product.description}`}
+                    />
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs">{product.sku || "-"}</td>
+                  <td className="px-3 py-2">
                     <div className="font-medium">{product.description}</div>
                   </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                  <td className="px-3 py-2 text-xs text-muted-foreground">
                     {[product.subGroup, product.uom].filter(Boolean).join(" · ") || "-"}
                   </td>
-                  <td className="px-4 py-3 text-xs"><ColourSwatch colour={product.colour} /></td>
-                  <td className="px-4 py-3">{product.category ? <Badge variant="secondary">{product.category}</Badge> : "-"}</td>
-                  <td className="px-4 py-3 text-right">${Number(product.unitCost || 0).toLocaleString("en-AU", { minimumFractionDigits: 2 })}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-2 text-xs"><ColourSwatch colour={product.colour} /></td>
+                  <td className="px-3 py-2">{product.category ? <Badge variant="secondary">{product.category}</Badge> : "-"}</td>
+                  <td className="px-3 py-2 text-right">${Number(product.unitCost || 0).toLocaleString("en-AU", { minimumFractionDigits: 2 })}</td>
+                  <td className="px-3 py-2">
                     <Badge variant={product.isActive ? "default" : "secondary"}>{product.isActive ? "Active" : "Archived"}</Badge>
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-3 py-2 text-right">
                     <Button variant="ghost" size="icon" onClick={() => setEditItem(product)}><Pencil className="h-4 w-4" /></Button>
                     <Button
                       variant="ghost"
@@ -337,6 +433,20 @@ export default function ManufacturingDataAdmin() {
                       title={product.isActive ? "Archive product" : "Restore product"}
                     >
                       {product.isActive ? <Archive className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-destructive"
+                      disabled={deleteMutation.isPending}
+                      onClick={() => {
+                        if (confirm(`Permanently delete "${product.description}"?`)) {
+                          deleteMutation.mutate({ id: product.id });
+                        }
+                      }}
+                      title="Delete product"
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </td>
                 </tr>

@@ -6,6 +6,7 @@ import { getDb } from "./db";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import {
   crmLeads,
+  masterData,
   ssColours,
   ssCostAdditions,
   ssGlassInfill,
@@ -475,7 +476,7 @@ export const securityScreensRouter = router({
     }),
 
   calculatePrice: tenantProcedure
-    .input(z.object({ brand: z.string(), productType: z.string(), widthMm: z.number(), heightMm: z.number() }))
+    .input(z.object({ brand: z.string(), productType: z.string(), widthMm: z.number(), heightMm: z.number(), quoteId: z.number().optional() }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const tenantId = tenantIdForContext(ctx);
@@ -485,16 +486,25 @@ export const securityScreensRouter = router({
           basePrice: null,
           adjustedPrice: null,
           factor: 1,
+          markupPercent: 0,
           warnings: ["No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix."],
           outOfRange: false,
         };
       }
       const factor = await getCumulativeAdjustmentFactor(db, tenantId);
+      const quote = input.quoteId ? await requireQuote(db, tenantId, input.quoteId) : null;
+      const markupPercent = quote?.markupPercent != null
+        ? Number(quote.markupPercent)
+        : await getDefaultMarkupPercent(db, tenantId);
+      const matrixPriceExGst = price.basePrice / 1.1;
+      const adjustedPriceExGst = matrixPriceExGst * factor * (1 + markupPercent / 100);
       return {
         ...price,
-        basePrice: Math.round(price.basePrice * 100) / 100,
-        adjustedPrice: Math.round(price.basePrice * factor * 100) / 100,
+        matrixPriceIncGst: Math.round(price.basePrice * 100) / 100,
+        basePrice: Math.round(matrixPriceExGst * 100) / 100,
+        adjustedPrice: Math.round(adjustedPriceExGst * 100) / 100,
         factor,
+        markupPercent,
       };
     }),
 
@@ -630,6 +640,19 @@ export const securityScreensRouter = router({
     list: tenantProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
       const tenantId = tenantIdForContext(ctx);
+      const sharedColours = await db
+        .select({
+          id: masterData.id,
+          name: masterData.key,
+          colorbondName: masterData.value,
+          hexCode: sql<string>`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${masterData.metadata}, '$.hexCode')), JSON_UNQUOTE(JSON_EXTRACT(${masterData.metadata}, '$.hex')), '#f8fafc')`,
+          surchargePercent: sql<string>`'0.00'`,
+          sortOrder: masterData.sortOrder,
+        })
+        .from(masterData)
+        .where(and(eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
+        .orderBy(asc(masterData.sortOrder), asc(masterData.key));
+      if (sharedColours.length > 0) return sharedColours;
       return db.select().from(ssColours).where(and(scope(ssColours.tenantId, tenantId), eq(ssColours.isActive, true))).orderBy(asc(ssColours.sortOrder), asc(ssColours.name));
     }),
     create: tenantAdminProcedure
@@ -835,15 +858,22 @@ export const securityScreensRouter = router({
           });
         }
         const factor = await getCumulativeAdjustmentFactor(db, tenantId);
-        const basePrice = price.basePrice;
-        const adjustedPrice = basePrice * factor;
+        const matrixPriceIncGst = price.basePrice;
+        const matrixPriceExGst = matrixPriceIncGst / 1.1;
+        const adjustedPriceExGst = matrixPriceExGst * factor;
 
-        let colourSurcharge = 0;
+        let colourSurchargeExGst = 0;
+        let validColourId: number | null = null;
+        let colourName = input.colourName || null;
         if (input.colourId) {
           const [colour] = await db.select().from(ssColours).where(and(eq(ssColours.id, input.colourId), scope(ssColours.tenantId, tenantId))).limit(1);
-          colourSurcharge = adjustedPrice * (Number(colour?.surchargePercent || 0) / 100);
+          if (colour) {
+            validColourId = colour.id;
+            colourName = colourName || colour.name;
+            colourSurchargeExGst = adjustedPriceExGst * (Number(colour.surchargePercent || 0) / 100);
+          }
         }
-        const priceWithColour = adjustedPrice + colourSurcharge;
+        const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
         const selectedOptions = input.selectedOptions || [];
@@ -852,9 +882,11 @@ export const securityScreensRouter = router({
           if (productOption) optionsTotal += Number(productOption.sellPrice || 0) * selected.quantity;
         }
 
-        const markupPercent = Number(quote.markupPercent || 30);
-        const unitPriceExGst = priceWithColour / 1.1;
-        const lineTotalExGst = (unitPriceExGst * (1 + markupPercent / 100) + optionsTotal) * input.quantity;
+        const markupPercent = quote.markupPercent != null
+          ? Number(quote.markupPercent)
+          : await getDefaultMarkupPercent(db, tenantId);
+        const basePriceExGst = adjustedPriceWithColourExGst * (1 + markupPercent / 100);
+        const lineTotalExGst = (basePriceExGst + optionsTotal) * input.quantity;
 
         const [result] = await db.insert(ssQuoteItems).values({
           tenantId,
@@ -865,8 +897,8 @@ export const securityScreensRouter = router({
           widthMm: input.widthMm,
           heightMm: input.heightMm,
           quantity: input.quantity,
-          colourId: input.colourId || null,
-          colourName: input.colourName || null,
+          colourId: validColourId,
+          colourName,
           handleSide: input.handleSide || null,
           hingeSide: input.hingeSide || null,
           openingDirection: input.openingDirection || null,
@@ -874,8 +906,8 @@ export const securityScreensRouter = router({
           glassInfillId: input.glassInfillId || null,
           photoUrl: input.photoUrl || null,
           notes: input.notes || null,
-          basePriceIncGst: basePrice.toFixed(2),
-          adjustedPrice: priceWithColour.toFixed(2),
+          basePriceIncGst: matrixPriceIncGst.toFixed(2),
+          adjustedPrice: basePriceExGst.toFixed(2),
           optionsTotal: optionsTotal.toFixed(2),
           lineTotalExGst: lineTotalExGst.toFixed(2),
         });
@@ -944,15 +976,22 @@ export const securityScreensRouter = router({
           });
         }
         const factor = await getCumulativeAdjustmentFactor(db, tenantId);
-        const basePrice = price.basePrice;
-        const adjustedPrice = basePrice * factor;
+        const matrixPriceIncGst = price.basePrice;
+        const matrixPriceExGst = matrixPriceIncGst / 1.1;
+        const adjustedPriceExGst = matrixPriceExGst * factor;
 
-        let colourSurcharge = 0;
+        let colourSurchargeExGst = 0;
+        let validColourId: number | null = null;
+        let colourName = input.colourName || null;
         if (input.colourId) {
           const [colour] = await db.select().from(ssColours).where(and(eq(ssColours.id, input.colourId), scope(ssColours.tenantId, tenantId))).limit(1);
-          colourSurcharge = adjustedPrice * (Number(colour?.surchargePercent || 0) / 100);
+          if (colour) {
+            validColourId = colour.id;
+            colourName = colourName || colour.name;
+            colourSurchargeExGst = adjustedPriceExGst * (Number(colour.surchargePercent || 0) / 100);
+          }
         }
-        const priceWithColour = adjustedPrice + colourSurcharge;
+        const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
         const selectedOptions = input.selectedOptions || [];
@@ -961,9 +1000,11 @@ export const securityScreensRouter = router({
           if (productOption) optionsTotal += Number(productOption.sellPrice || 0) * selected.quantity;
         }
 
-        const markupPercent = Number(quote.markupPercent || 30);
-        const unitPriceExGst = priceWithColour / 1.1;
-        const lineTotalExGst = (unitPriceExGst * (1 + markupPercent / 100) + optionsTotal) * input.quantity;
+        const markupPercent = quote.markupPercent != null
+          ? Number(quote.markupPercent)
+          : await getDefaultMarkupPercent(db, tenantId);
+        const basePriceExGst = adjustedPriceWithColourExGst * (1 + markupPercent / 100);
+        const lineTotalExGst = (basePriceExGst + optionsTotal) * input.quantity;
 
         await db.update(ssQuoteItems).set({
           brand: input.brand,
@@ -971,16 +1012,16 @@ export const securityScreensRouter = router({
           widthMm: input.widthMm,
           heightMm: input.heightMm,
           quantity: input.quantity,
-          colourId: input.colourId || null,
-          colourName: input.colourName || null,
+          colourId: validColourId,
+          colourName,
           handleSide: input.handleSide || null,
           hingeSide: input.hingeSide || null,
           openingDirection: input.openingDirection || null,
           hingePosition: input.hingePosition || null,
           glassInfillId: input.glassInfillId || null,
           notes: input.notes || null,
-          basePriceIncGst: basePrice.toFixed(2),
-          adjustedPrice: priceWithColour.toFixed(2),
+          basePriceIncGst: matrixPriceIncGst.toFixed(2),
+          adjustedPrice: basePriceExGst.toFixed(2),
           optionsTotal: optionsTotal.toFixed(2),
           lineTotalExGst: lineTotalExGst.toFixed(2),
         }).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));

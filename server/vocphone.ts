@@ -61,6 +61,60 @@ async function vocRequest(method: "GET" | "POST", path: string, params?: Record<
   return res.json();
 }
 
+function resolveVocphoneUrl(url: string): string {
+  return new URL(url, BASE_URL).toString();
+}
+
+/** Fetch a call recording as a raw audio response. */
+export async function fetchCallRecording(params: {
+  tenantId?: number | null;
+  callId?: string | null;
+  recordingUrl?: string | null;
+  range?: string | null;
+}): Promise<Response> {
+  const config = await resolveConfig(params.tenantId);
+  const token = await getToken(config);
+  let recordingUrl = params.recordingUrl?.trim() || "";
+
+  if (!recordingUrl && params.callId) {
+    const details = await getCallDetails(params.callId, params.tenantId);
+    recordingUrl = details.download_url || "";
+  }
+  if (!recordingUrl) {
+    throw new Error("No recording URL is available for this call");
+  }
+
+  const fetchRecording = async (url: string) => {
+    const resolvedUrl = resolveVocphoneUrl(url);
+    const headers: Record<string, string> = {
+      Accept: "audio/*,*/*",
+      Authorization: `Bearer ${token}`,
+    };
+    if (params.range) headers.Range = params.range;
+    return fetch(resolvedUrl, {
+      headers,
+      redirect: "follow",
+    });
+  };
+
+  let response = await fetchRecording(recordingUrl);
+
+  // Stored URLs can expire. If they do, refresh the call details and retry once.
+  if (!response.ok && params.callId) {
+    const details = await getCallDetails(params.callId, params.tenantId);
+    if (details.download_url && details.download_url !== recordingUrl) {
+      response = await fetchRecording(details.download_url);
+    }
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Vocphone recording download failed (${response.status}): ${text || response.statusText}`);
+  }
+
+  return response;
+}
+
 // ─── SMS Methods ────────────────────────────────────────────────────────────
 
 /** Get available SMS sending numbers */

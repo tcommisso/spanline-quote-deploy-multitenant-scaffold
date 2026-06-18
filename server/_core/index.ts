@@ -35,6 +35,7 @@ import { registerScheduledVocphoneSync } from "../scheduled-vocphone-sync";
 import { registerScheduledMissedCallsDigest } from "../scheduled-missed-calls-digest";
 import { registerStorageProxy } from "./storageProxy";
 import { registerNylasCallbackRoutes } from "../nylas-callback-routes";
+import { registerVocphoneRecordingRoutes } from "../vocphone-recordings";
 import { validateRequiredEnv } from "./env";
 import { registerHealthRoutes } from "./health";
 import { bootstrapO365MailboxesFromEnv } from "../o365-bootstrap";
@@ -78,6 +79,8 @@ async function startServer() {
   registerNylasCallbackRoutes(app);
   // Vocphone webhooks for inbound SMS and call events
   registerVocphoneWebhooks(app);
+  // Authenticated same-origin proxy for VOCPhone call recordings
+  registerVocphoneRecordingRoutes(app);
   // SignWell webhooks for digital signature status updates
   registerSignwellWebhooks(app);
   // Signature expiry reminder endpoint for scheduled tasks

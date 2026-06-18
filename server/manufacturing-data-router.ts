@@ -238,6 +238,40 @@ export const manufacturingDataRouter = router({
       return { success: true };
     }),
 
+  bulkArchive: tenantAdminProcedure
+    .input(z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(1000),
+      isActive: z.boolean(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await ensureManufacturingCatalogueTable(db);
+      const tenantId = tenantIdForContext(ctx);
+      const ids = Array.from(new Set(input.ids));
+      await db.execute(sql`
+        UPDATE manufacturing_catalogue_products
+        SET isActive = ${input.isActive}
+        WHERE ${tenantSql(tenantId)}
+          AND id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+      `);
+      return { success: true, updated: ids.length };
+    }),
+
+  bulkDelete: tenantAdminProcedure
+    .input(z.object({ ids: z.array(z.number().int().positive()).min(1).max(1000) }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await ensureManufacturingCatalogueTable(db);
+      const tenantId = tenantIdForContext(ctx);
+      const ids = Array.from(new Set(input.ids));
+      await db.execute(sql`
+        DELETE FROM manufacturing_catalogue_products
+        WHERE ${tenantSql(tenantId)}
+          AND id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+      `);
+      return { success: true, deleted: ids.length };
+    }),
+
   importCsvRows: tenantAdminProcedure
     .input(z.object({ rows: z.array(productInput).max(10000) }))
     .mutation(async ({ ctx, input }) => {

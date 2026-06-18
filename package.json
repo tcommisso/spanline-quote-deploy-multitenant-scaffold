@@ -12,6 +12,7 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "db:migrate:sql": "node scripts/apply-sql-migration.mjs drizzle/migrations/0001_multi_tenant_scaffold.sql",
+    "scheduled:dispatch": "node scripts/scheduled-dispatcher.mjs",
     "tenant:repair:dry-run": "node scripts/run-tenant-repair.mjs --dry-run",
     "tenant:repair:apply": "node scripts/run-tenant-repair.mjs --apply"
   },

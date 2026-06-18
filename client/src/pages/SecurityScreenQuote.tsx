@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileText, Search, UserPlus, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { Link, useParams, useLocation } from "wouter";
+import { loadCompanyDetails, loadCustomLogo } from "@/lib/proposalStore";
 
 const DEFAULT_SECURITY_SCREEN_QUOTE_FORM = {
   clientName: "",
@@ -19,6 +20,184 @@ const DEFAULT_SECURITY_SCREEN_QUOTE_FORM = {
   clientPhone: "",
   siteAddress: "",
 };
+
+const SCREEN_QUOTE_STATUSES = ["draft", "sent", "accepted", "declined", "expired"] as const;
+const SCREEN_QUOTE_STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  sent: "Sent",
+  accepted: "Accepted",
+  declined: "Declined",
+  expired: "Expired",
+};
+
+function money(value: unknown) {
+  return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function screenColourValue(colour: any) {
+  return String(colour?.name || colour?.key || colour?.value || colour?.id || "");
+}
+
+function colourSwatchStyle(colour: any) {
+  if (colour?.hexCode && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(colour.hexCode))) {
+    return colour.hexCode;
+  }
+  const label = screenColourValue(colour).toLowerCase();
+  const known: Record<string, string> = {
+    surfmist: "#f5f2e8",
+    monument: "#4b5563",
+    woodlandgrey: "#4b5a4d",
+    "woodland grey": "#4b5a4d",
+    paperbark: "#cdbb93",
+    merino: "#d9c7a1",
+    "ebony/black matt": "#111827",
+    ebony: "#111827",
+    black: "#111827",
+    white: "#ffffff",
+  };
+  if (known[label]) return known[label];
+  let hash = 0;
+  for (let i = 0; i < label.length; i += 1) hash = (hash * 31 + label.charCodeAt(i)) % 360;
+  return `hsl(${hash} 55% 55%)`;
+}
+
+function securityScreenQuotePrintHtml(quote: any) {
+  const company = loadCompanyDetails();
+  const logo = loadCustomLogo();
+  const items = quote.items || [];
+  const costs = quote.costAdditions || [];
+  const companyLines = [
+    company.companyName,
+    company.address,
+    company.phone ? `Phone: ${company.phone}` : "",
+    company.email ? `Email: ${company.email}` : "",
+    company.website ? `Web: ${company.website}` : "",
+    company.abn ? `ABN: ${company.abn}` : "",
+    company.licenceACT || company.licenceNSW ? `Lic ACT: ${company.licenceACT || "-"} | Lic NSW: ${company.licenceNSW || "-"}` : "",
+  ].filter(Boolean);
+  const itemRows = items.map((item: any) => `
+    <tr>
+      <td>${escapeHtml(item.itemNumber)}</td>
+      <td>
+        <strong>${escapeHtml(item.brand)} ${escapeHtml(item.productType)}</strong>
+        ${item.handleSide ? `<div class="muted">Handle ${escapeHtml(item.handleSide)} | Hinge ${escapeHtml(item.hingeSide)} | Opens ${escapeHtml(item.openingDirection)}</div>` : ""}
+        ${item.notes ? `<div class="muted">${escapeHtml(item.notes)}</div>` : ""}
+      </td>
+      <td>${escapeHtml(item.widthMm)} x ${escapeHtml(item.heightMm)}</td>
+      <td>${escapeHtml(item.colourName || "-")}</td>
+      <td>${escapeHtml(item.quantity)}</td>
+      <td class="money">${money(item.adjustedPrice)}</td>
+      <td class="money">${money(item.optionsTotal)}</td>
+      <td class="money"><strong>${money(item.lineTotalExGst)}</strong></td>
+    </tr>
+  `).join("");
+  const costRows = costs.map((cost: any) => `
+    <tr>
+      <td colspan="4">${escapeHtml(cost.name || `Cost #${cost.costAdditionId}`)}</td>
+      <td>${escapeHtml(cost.quantity)}</td>
+      <td class="money">${money(cost.unitCost)}</td>
+      <td></td>
+      <td class="money">${money(cost.lineTotal)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(quote.quoteNumber)} - Security Screen Quote</title>
+      <style>
+        @page { size: A4; margin: 16mm; }
+        * { box-sizing: border-box; }
+        body { font-family: Arial, Helvetica, sans-serif; color: #12242b; margin: 0; font-size: 12px; line-height: 1.45; }
+        .header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; border-bottom: 2px solid #0b4f79; padding-bottom: 14px; margin-bottom: 18px; }
+        .logo { max-width: 190px; max-height: 80px; object-fit: contain; }
+        .company { text-align: right; color: #4f5f66; }
+        h1 { margin: 0 0 4px; font-size: 24px; color: #0b4f79; }
+        h2 { margin: 20px 0 8px; font-size: 15px; color: #12242b; }
+        .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+        .box { border: 1px solid #d8e0e4; border-radius: 8px; padding: 12px; }
+        .label { color: #68777d; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th { background: #eef4f7; color: #12242b; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+        th, td { padding: 8px; border-bottom: 1px solid #dfe6ea; vertical-align: top; }
+        .money { text-align: right; white-space: nowrap; }
+        .muted { color: #68777d; font-size: 10px; margin-top: 3px; }
+        .totals { margin-left: auto; width: 300px; margin-top: 16px; }
+        .totals div { display: flex; justify-content: space-between; padding: 6px 0; }
+        .totals .total { border-top: 2px solid #0b4f79; font-size: 15px; font-weight: 700; color: #0b4f79; }
+        .footer { margin-top: 24px; color: #68777d; font-size: 10px; border-top: 1px solid #dfe6ea; padding-top: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div>
+          ${logo ? `<img class="logo" src="${logo.dataUrl}" alt="${escapeHtml(company.companyName)}" />` : `<h1>${escapeHtml(company.companyName)}</h1>`}
+          <h1>Security Screen Quote</h1>
+          <div class="muted">Quote ${escapeHtml(quote.quoteNumber)} | Status ${escapeHtml(SCREEN_QUOTE_STATUS_LABELS[quote.status] || quote.status)}</div>
+        </div>
+        <div class="company">${companyLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>
+      </div>
+
+      <div class="meta">
+        <div class="box">
+          <div class="label">Client</div>
+          <strong>${escapeHtml(quote.clientName)}</strong>
+          ${quote.clientEmail ? `<div>${escapeHtml(quote.clientEmail)}</div>` : ""}
+          ${quote.clientPhone ? `<div>${escapeHtml(quote.clientPhone)}</div>` : ""}
+        </div>
+        <div class="box">
+          <div class="label">Site Address</div>
+          <strong>${escapeHtml(quote.siteAddress || "Not supplied")}</strong>
+          <div class="muted">Created ${escapeHtml(quote.createdAt ? new Date(quote.createdAt).toLocaleDateString("en-AU") : "")}</div>
+        </div>
+      </div>
+
+      <h2>Items</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Product</th><th>Size</th><th>Colour</th><th>Qty</th><th class="money">Base ex GST</th><th class="money">Options</th><th class="money">Line ex GST</th></tr>
+        </thead>
+        <tbody>${itemRows || `<tr><td colspan="8" class="muted">No items added.</td></tr>`}</tbody>
+      </table>
+
+      ${costRows ? `<h2>Additional Costs</h2><table><tbody>${costRows}</tbody></table>` : ""}
+
+      <div class="totals">
+        <div><span>Subtotal ex GST</span><strong>${money(quote.subtotalExGst)}</strong></div>
+        <div><span>GST</span><strong>${money(quote.gstAmount)}</strong></div>
+        <div class="total"><span>Total inc GST</span><span>${money(quote.totalIncGst)}</span></div>
+      </div>
+
+      ${quote.notes ? `<div class="footer"><strong>Notes:</strong><br />${escapeHtml(quote.notes)}</div>` : ""}
+      <div class="footer">This quote is issued by ${escapeHtml(company.companyName)} and is subject to final site measure and written acceptance.</div>
+    </body>
+  </html>`;
+}
+
+function exportSecurityScreenQuotePdf(quote: any) {
+  const printWindow = window.open("", "_blank", "width=900,height=1100");
+  if (!printWindow) {
+    toast.error("Allow pop-ups to export the PDF");
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(securityScreenQuotePrintHtml(quote));
+  printWindow.document.close();
+  setTimeout(() => {
+    printWindow.focus();
+    printWindow.print();
+  }, 250);
+}
 
 // ─── Door/Window Configuration Diagram ──────────────────────────────────────
 
@@ -101,6 +280,7 @@ function ConfigDiagram({ productType, handleSide, hingeSide, openingDirection }:
 // ─── Add Item Dialog ────────────────────────────────────────────────────────
 
 function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quoteId: number; open: boolean; onOpenChange: (v: boolean) => void; onSuccess: () => void; item?: any | null }) {
+  const utils = trpc.useUtils();
   const { data: colours = [] } = trpc.securityScreens.colours.list.useQuery();
   const { data: productOptions = [] } = trpc.securityScreens.productOptions.list.useQuery();
   const { data: glassOptions = [] } = trpc.securityScreens.glassInfill.list.useQuery();
@@ -112,6 +292,15 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   });
   const updateItemMutation = trpc.securityScreens.quotes.updateItem.useMutation({
     onSuccess: () => { onOpenChange(false); onSuccess(); toast.success("Item updated"); },
+    onError: (e) => toast.error(e.message),
+  });
+  const uploadPhotoMutation = trpc.securityScreens.quotes.uploadPhoto.useMutation({
+    onSuccess: (data) => {
+      setPhotoPreviewUrl(data.url);
+      utils.securityScreens.quotes.getById.invalidate({ id: quoteId });
+      onSuccess();
+      toast.success("Photo uploaded");
+    },
     onError: (e) => toast.error(e.message),
   });
 
@@ -130,6 +319,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     notes: "",
     selectedOptions: [] as { productOptionId: number; quantity: number }[],
   });
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   const resetForm = () => setForm({ brand: "alugard", productType: "window", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", notes: "", selectedOptions: [] });
 
@@ -137,15 +328,17 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     if (!open) return;
     if (!item) {
       resetForm();
+      setPhotoPreviewUrl(null);
       return;
     }
+    setPhotoPreviewUrl(item.photoUrl || null);
     setForm({
       brand: item.brand || "alugard",
       productType: item.productType || "window",
       widthMm: item.widthMm ? String(item.widthMm) : "",
       heightMm: item.heightMm ? String(item.heightMm) : "",
       quantity: item.quantity ? String(item.quantity) : "1",
-      colourId: item.colourId ? String(item.colourId) : "",
+      colourId: item.colourName || (item.colourId ? String(item.colourId) : ""),
       handleSide: item.handleSide || "",
       hingeSide: item.hingeSide || "",
       openingDirection: item.openingDirection || "",
@@ -163,11 +356,38 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
 
   // Live price calculation
   const priceQuery = trpc.securityScreens.calculatePrice.useQuery(
-    { brand: form.brand, productType: form.productType, widthMm: parseInt(form.widthMm) || 0, heightMm: parseInt(form.heightMm) || 0 },
+    { brand: form.brand, productType: form.productType, widthMm: parseInt(form.widthMm) || 0, heightMm: parseInt(form.heightMm) || 0, quoteId },
     { enabled: !!form.widthMm && !!form.heightMm && parseInt(form.widthMm) > 0 && parseInt(form.heightMm) > 0 }
   );
 
-  const selectedColour = colours.find((c: any) => c.id === parseInt(form.colourId));
+  const selectedColour = colours.find((c: any) => screenColourValue(c) === form.colourId || String(c.id) === form.colourId);
+
+  const handleDialogPhotoUpload = (file: File | undefined) => {
+    if (!file) return;
+    if (!isEditing || !item?.id) {
+      toast.error("Save the item before adding a photo");
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be under 5MB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = String(reader.result || "").split(",")[1];
+      if (!base64) {
+        toast.error("Could not read the image");
+        return;
+      }
+      uploadPhotoMutation.mutate({ quoteItemId: Number(item.id), quoteId, base64, filename: file.name });
+    };
+    reader.onerror = () => toast.error("Could not read the image");
+    reader.readAsDataURL(file);
+  };
 
   const toggleOption = (optId: number) => {
     const existing = form.selectedOptions.find((o) => o.productOptionId === optId);
@@ -180,7 +400,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="w-[96vw] max-w-6xl md:min-w-[720px] max-h-[92vh] overflow-auto resize">
         <DialogHeader><DialogTitle>{isEditing ? "Edit Security Screen Item" : "Add Security Screen Item"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left column - Product & Size */}
@@ -201,10 +421,12 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
               <Card className="bg-green-50 border-green-200">
                 <CardContent className="p-3">
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-green-800">Unit Price (inc GST):</span>
+                    <span className="text-sm text-green-800">Base price (ex GST):</span>
                     <span className="text-lg font-bold text-green-900">${priceQuery.data.adjustedPrice.toFixed(2)}</span>
                   </div>
-                  {priceQuery.data.factor > 1 && <p className="text-xs text-green-700 mt-1">Base: ${priceQuery.data.basePrice?.toFixed(2)} × {priceQuery.data.factor.toFixed(4)} adjustment</p>}
+                  <p className="text-xs text-green-700 mt-1">
+                    Matrix ex GST ${priceQuery.data.basePrice?.toFixed(2)} × {priceQuery.data.factor.toFixed(4)} adjustment × {((priceQuery.data.markupPercent || 0) / 100 + 1).toFixed(4)} markup
+                  </p>
                 </CardContent>
               </Card>
             )}
@@ -228,17 +450,20 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
             <div>
               <Label>Colour</Label>
               <div className="grid grid-cols-4 gap-2 mt-2 max-h-[120px] overflow-y-auto">
-                {colours.map((c: any) => (
+                {colours.map((c: any) => {
+                  const colourValue = screenColourValue(c);
+                  return (
                   <button
-                    key={c.id}
+                    key={`${c.id}-${colourValue}`}
                     type="button"
-                    className={`flex flex-col items-center gap-1 p-2 rounded border transition-all ${form.colourId === String(c.id) ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "border-border hover:border-primary/50"}`}
-                    onClick={() => setForm({ ...form, colourId: String(c.id) })}
+                    className={`flex flex-col items-center gap-1 p-2 rounded border transition-all ${form.colourId === colourValue ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "border-border hover:border-primary/50"}`}
+                    onClick={() => setForm({ ...form, colourId: colourValue })}
                   >
-                    <div className="w-6 h-6 rounded-full border shadow-sm" style={{ backgroundColor: c.hexCode }} />
-                    <span className="text-[10px] text-center leading-tight">{c.name}</span>
+                    <div className="w-6 h-6 rounded-full border shadow-sm" style={{ backgroundColor: colourSwatchStyle(c) }} />
+                    <span className="text-[10px] text-center leading-tight">{colourValue}</span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
               {selectedColour && parseFloat(selectedColour.surchargePercent || "0") > 0 && (
                 <p className="text-xs text-amber-600 mt-1">+{selectedColour.surchargePercent}% colour surcharge applies</p>
@@ -307,9 +532,45 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">Photo</CardTitle></CardHeader>
               <CardContent>
-                <div className="border-2 border-dashed rounded-lg p-4 text-center text-muted-foreground">
-                  <Camera className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p className="text-xs">Photo upload coming soon</p>
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => {
+                    handleDialogPhotoUpload(event.target.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <div className="space-y-3">
+                  {photoPreviewUrl ? (
+                    <div className="overflow-hidden rounded-lg border bg-muted">
+                      <img src={photoPreviewUrl} alt="Security screen quote item" className="h-40 w-full object-cover" />
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="w-full rounded-lg border-2 border-dashed p-4 text-center text-muted-foreground transition-colors hover:border-primary hover:text-primary disabled:hover:border-border disabled:hover:text-muted-foreground"
+                      disabled={!isEditing}
+                      onClick={() => photoInputRef.current?.click()}
+                    >
+                      <Camera className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                      <span className="text-xs">{isEditing ? "Upload item photo" : "Save item before adding a photo"}</span>
+                    </button>
+                  )}
+                  {isEditing ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      disabled={uploadPhotoMutation.isPending}
+                      onClick={() => photoInputRef.current?.click()}
+                    >
+                      <Camera className="h-4 w-4 mr-2" />
+                      {uploadPhotoMutation.isPending ? "Uploading..." : photoPreviewUrl ? "Change Photo" : "Upload Photo"}
+                    </Button>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
@@ -328,8 +589,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
               widthMm: parseInt(form.widthMm),
               heightMm: parseInt(form.heightMm),
               quantity: parseInt(form.quantity) || 1,
-              colourId: form.colourId && form.colourId !== "none" ? parseInt(form.colourId) : undefined,
-              colourName: selectedColour?.name,
+              colourId: undefined,
+              colourName: selectedColour ? screenColourValue(selectedColour) : form.colourId || undefined,
               handleSide: form.handleSide || undefined,
               hingeSide: form.hingeSide || undefined,
               openingDirection: form.openingDirection || undefined,
@@ -367,6 +628,13 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
   });
   const removeCostMutation = trpc.securityScreens.quotes.removeCostAddition.useMutation({
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Cost removed"); },
+  });
+  const updateStatusMutation = trpc.securityScreens.quotes.updateStatus.useMutation({
+    onSuccess: () => {
+      utils.securityScreens.quotes.getById.invalidate({ id: quoteId });
+      toast.success("Quote status updated");
+    },
+    onError: (e) => toast.error(e.message),
   });
   const updateCostMutation = trpc.securityScreens.quotes.updateCostAddition.useMutation({
     onSuccess: () => {
@@ -424,10 +692,23 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
           <p className="text-muted-foreground">{quote.clientName} — {quote.siteAddress || "No address"}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => window.print()}>
+          <Button variant="outline" onClick={() => exportSecurityScreenQuotePdf(quote)}>
             <Download className="h-4 w-4 mr-1" /> Export PDF
           </Button>
-          <Badge variant={quote.status === "draft" ? "outline" : quote.status === "sent" ? "secondary" : "default"}>{quote.status}</Badge>
+          <Select
+            value={quote.status}
+            onValueChange={(status) => updateStatusMutation.mutate({ id: quoteId, status: status as any })}
+            disabled={updateStatusMutation.isPending}
+          >
+            <SelectTrigger className="w-[150px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SCREEN_QUOTE_STATUSES.map((status) => (
+                <SelectItem key={status} value={status}>{SCREEN_QUOTE_STATUS_LABELS[status]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
@@ -446,7 +727,7 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
                 <TableHead>Size (W×H)</TableHead>
                 <TableHead>Colour</TableHead>
                 <TableHead>Qty</TableHead>
-                <TableHead>Base Price</TableHead>
+                <TableHead>Base Price (ex GST)</TableHead>
                 <TableHead>Options</TableHead>
                 <TableHead>Line Total (ex GST)</TableHead>
                 <TableHead className="w-12"></TableHead>

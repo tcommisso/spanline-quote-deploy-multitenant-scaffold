@@ -54,6 +54,7 @@ import {
   MoreHorizontal,
   AlarmClock,
   AlarmClockOff,
+  ExternalLink,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -107,6 +108,47 @@ function formatRelativeTime(date: Date): string {
   return `${diffDays}d ago`;
 }
 
+function settingToString(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value && typeof value === "object" && "template" in value) {
+    return String((value as { template?: unknown }).template || "").trim();
+  }
+  return "";
+}
+
+function buildVocphoneAppUrl(template: string, call: {
+  id: number;
+  vocphoneCallId: string | null;
+  recordingUrl: string | null;
+  fromNumber: string | null;
+  toNumber: string | null;
+}) {
+  if (!template) return "";
+  const recordingUrl = `${window.location.origin}/api/vocphone/recordings/${call.id}`;
+  const values: Record<string, string> = {
+    callId: String(call.id),
+    vocphoneCallId: call.vocphoneCallId || "",
+    recordingUrl,
+    rawRecordingUrl: call.recordingUrl || "",
+    fromNumber: call.fromNumber || "",
+    toNumber: call.toNumber || "",
+  };
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => encodeURIComponent(values[key] ?? ""));
+}
+
+function openVocphoneApp(url: string) {
+  if (!url) {
+    toast.error("VOC app link is not configured");
+    return;
+  }
+  window.location.href = url;
+  window.setTimeout(() => {
+    if (!document.hidden) {
+      toast.message("If VOC did not open, check the configured VOC app link format.");
+    }
+  }, 1200);
+}
+
 // ─── Enhanced Audio Player with progress bar and seek ───────────────────────
 function InlineAudioPlayer({ url }: { url: string }) {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -145,10 +187,13 @@ function InlineAudioPlayer({ url }: { url: string }) {
       audio.pause();
       setIsPlaying(false);
     } else {
-      audio.play().catch(() => {
-        toast.error("Unable to play recording");
-      });
-      setIsPlaying(true);
+      audio
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch(() => {
+          setIsPlaying(false);
+          toast.error("Unable to play recording");
+        });
     }
   };
 
@@ -347,6 +392,10 @@ export default function CallLogs() {
   }), [debouncedSearch, direction, extensionFilter, dateFrom, dateTo, missedOnly, reviewedFilter, page, pageSize]);
 
   const { data, isLoading } = trpc.vocphone.getAllCalls.useQuery(queryInput);
+  const { data: recordingAppTemplateSetting } = trpc.globalSettings.get.useQuery({
+    key: "vocphoneRecordingAppUrlTemplate",
+  });
+  const recordingAppTemplate = settingToString(recordingAppTemplateSetting);
 
   // Get extensions for filter dropdown
   const { data: extensions } = trpc.vocphone.getExtensions.useQuery();
@@ -816,7 +865,12 @@ export default function CallLogs() {
                 </TableCell>
               </TableRow>
             ) : (
-              data?.calls.map((call) => (
+              data?.calls.map((call) => {
+                const recordingAppUrl = call.recordingUrl
+                  ? buildVocphoneAppUrl(recordingAppTemplate, call)
+                  : "";
+
+                return (
                 <TableRow key={call.id} className={call.direction === "inbound" && call.duration === 0 && !call.reviewed ? "bg-red-50/50 dark:bg-red-950/10" : ""}>
                   <TableCell className="px-3">
                     <Checkbox
@@ -942,7 +996,25 @@ export default function CallLogs() {
                   </TableCell>
                   <TableCell>
                     {call.recordingUrl ? (
-                      <InlineAudioPlayer url={call.recordingUrl} />
+                      <div className="flex items-center gap-1.5">
+                        <InlineAudioPlayer url={`/api/vocphone/recordings/${call.id}`} />
+                        {recordingAppUrl && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => openVocphoneApp(recordingAppUrl)}
+                                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted hover:bg-primary/10 transition-colors"
+                                >
+                                  <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>Open in VOC app</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                      </div>
                     ) : (
                       <span className="text-muted-foreground text-xs">{"\u2014"}</span>
                     )}
@@ -1014,7 +1086,8 @@ export default function CallLogs() {
                     )}
                   </TableCell>
                 </TableRow>
-              ))
+                );
+              })
             )}
           </TableBody>
         </Table>

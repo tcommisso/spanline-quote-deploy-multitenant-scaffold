@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Plus, Pencil, Trash2, Phone, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Phone, Loader2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 
@@ -32,13 +32,28 @@ interface ExtensionForm {
 }
 
 const emptyForm: ExtensionForm = { extension: "", firstName: "", lastName: "", email: "" };
+const RECORDING_APP_TEMPLATE_KEY = "vocphoneRecordingAppUrlTemplate";
+
+function settingToString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "template" in value) {
+    return String((value as { template?: unknown }).template || "");
+  }
+  return "";
+}
 
 export default function AdminExtensions() {
   const utils = trpc.useUtils();
   const { data: extensions, isLoading } = trpc.vocphone.getLocalExtensions.useQuery();
+  const recordingAppTemplateQuery = trpc.globalSettings.get.useQuery({ key: RECORDING_APP_TEMPLATE_KEY });
   const [editOpen, setEditOpen] = useState(false);
   const [form, setForm] = useState<ExtensionForm>(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [recordingAppTemplate, setRecordingAppTemplate] = useState("");
+
+  useEffect(() => {
+    setRecordingAppTemplate(settingToString(recordingAppTemplateQuery.data));
+  }, [recordingAppTemplateQuery.data]);
 
   const upsert = trpc.vocphone.upsertExtension.useMutation({
     onSuccess: () => {
@@ -57,6 +72,14 @@ export default function AdminExtensions() {
       utils.vocphone.getLocalExtensions.invalidate();
       utils.vocphone.getExtensions.invalidate();
       setDeleteTarget(null);
+    },
+    onError: (err) => toast.error(`Failed: ${err.message}`),
+  });
+
+  const saveRecordingAppTemplate = trpc.globalSettings.set.useMutation({
+    onSuccess: () => {
+      toast.success("VOC app link saved");
+      utils.globalSettings.get.invalidate({ key: RECORDING_APP_TEMPLATE_KEY });
     },
     onError: (err) => toast.error(`Failed: ${err.message}`),
   });
@@ -93,6 +116,52 @@ export default function AdminExtensions() {
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">VOCPhone Recordings</h1>
+        <p className="text-muted-foreground">
+          Configure recording playback links and extension mappings for synced call logs.
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ExternalLink className="h-5 w-5" />
+            Recording App Link
+          </CardTitle>
+          <CardDescription>
+            Optional deep link used by Call Logs to open a recording in the VOC desktop or mobile app.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="voc-recording-app-template">VOC app URL template</Label>
+            <Input
+              id="voc-recording-app-template"
+              placeholder="e.g. vocphone://calls/{vocphoneCallId}"
+              value={recordingAppTemplate}
+              onChange={(e) => setRecordingAppTemplate(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Supported placeholders: {"{callId}"}, {"{vocphoneCallId}"}, {"{recordingUrl}"}, {"{rawRecordingUrl}"}, {"{fromNumber}"}, {"{toNumber}"}.
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={() => saveRecordingAppTemplate.mutate({
+                key: RECORDING_APP_TEMPLATE_KEY,
+                value: recordingAppTemplate.trim(),
+              })}
+              disabled={saveRecordingAppTemplate.isPending || recordingAppTemplateQuery.isLoading}
+            >
+              {saveRecordingAppTemplate.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              Save App Link
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
