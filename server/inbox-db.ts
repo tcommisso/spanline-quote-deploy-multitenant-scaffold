@@ -183,7 +183,15 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
 async function syncTicketsForThreads(threadIds: string[], tenantId?: number | null) {
   const uniqueThreadIds = Array.from(new Set(threadIds.filter(Boolean)));
   for (const threadId of uniqueThreadIds) {
+    await syncTicketForThreadBestEffort(threadId, tenantId, "bulk thread refresh");
+  }
+}
+
+async function syncTicketForThreadBestEffort(threadId: string, tenantId?: number | null, source = "message update") {
+  try {
     await syncTicketForThread(threadId, tenantId);
+  } catch (err: any) {
+    console.error(`[Inbox Tickets] ${source} failed for thread ${threadId}:`, err?.message || err);
   }
 }
 
@@ -216,15 +224,20 @@ export async function ensureTicketsForTenant(tenantId?: number | null) {
 }
 
 export async function getTicketByThread(threadId: string, tenantId?: number | null) {
-  await syncTicketForThread(threadId, tenantId);
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const [ticket] = await db
-    .select()
-    .from(inboxTickets)
-    .where(and(...ticketConditions(threadId, tenantId)))
-    .limit(1);
-  return ticket || null;
+  await syncTicketForThreadBestEffort(threadId, tenantId, "ticket lookup");
+  try {
+    const [ticket] = await db
+      .select()
+      .from(inboxTickets)
+      .where(and(...ticketConditions(threadId, tenantId)))
+      .limit(1);
+    return ticket || null;
+  } catch (err: any) {
+    console.error(`[Inbox Tickets] ticket lookup failed for thread ${threadId}:`, err?.message || err);
+    return null;
+  }
 }
 
 export async function getTicketTags(ticketId: number, tenantId?: number | null) {
@@ -290,7 +303,7 @@ export async function createInboxMessage(data: Omit<InsertInboxMessage, "id">) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const [result] = await db.insert(inboxMessages).values(data);
-  await syncTicketForThread(data.threadId, data.tenantId ?? null);
+  await syncTicketForThreadBestEffort(data.threadId, data.tenantId ?? null, "message create");
   return { id: (result as any).insertId };
 }
 
@@ -322,52 +335,212 @@ export async function listInboxMessages(filters: {
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await ensureTicketsForTenant(filters.tenantId);
+  try {
+    await ensureTicketsForTenant(filters.tenantId);
+
+    const conditions: any[] = [];
+    appendTenantScope(conditions, inboxTickets.tenantId, filters.tenantId);
+    if (filters.direction) conditions.push(eq(inboxTickets.latestDirection, filters.direction));
+    if (filters.priority) conditions.push(eq(inboxTickets.priority, filters.priority));
+    if (filters.channel) conditions.push(eq(inboxTickets.channel, filters.channel));
+    if (filters.slaState === "breached") {
+      conditions.push(isNotNull(inboxTickets.slaBreachedAt));
+    } else if (filters.slaState === "warning") {
+      conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaWarningAt), lte(inboxTickets.slaWarningAt, new Date()));
+    } else if (filters.slaState === "due") {
+      conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaDueAt));
+    } else if (filters.slaState === "none") {
+      conditions.push(isNull(inboxTickets.slaDueAt));
+    }
+    if (filters.assignedToId !== undefined) conditions.push(eq(inboxTickets.assignedToId, filters.assignedToId));
+    if (filters.assignedState === "unassigned") conditions.push(isNull(inboxTickets.assignedToId));
+    if (filters.isRead === true) conditions.push(eq(inboxTickets.unreadCount, 0));
+    if (filters.isRead === false) conditions.push(sql`${inboxTickets.unreadCount} > 0`);
+    if (filters.isStarred !== undefined) conditions.push(eq(inboxTickets.isStarred, filters.isStarred));
+    if (filters.receivedByAddress) conditions.push(eq(inboxTickets.receivedByAddress, filters.receivedByAddress));
+    if (filters.status) {
+      const status = filters.status === "replied" ? "waiting_customer" : filters.status;
+      conditions.push(eq(inboxTickets.status, normalizeTicketStatus(status)));
+    }
+    if (filters.search) {
+      conditions.push(
+        or(
+          like(inboxTickets.subject, `%${filters.search}%`),
+          like(inboxTickets.requesterEmail, `%${filters.search}%`),
+          like(inboxTickets.requesterName, `%${filters.search}%`),
+          like(inboxTickets.matchedClientEmail, `%${filters.search}%`),
+        )
+      );
+    }
+
+    // If filtering by tags, get matching ticket IDs first.
+    if (filters.tagIds && filters.tagIds.length > 0) {
+      const taggedTickets = await db
+        .select({ ticketId: inboxTicketTags.ticketId })
+        .from(inboxTicketTags)
+        .where(inArray(inboxTicketTags.tagId, filters.tagIds));
+      const taggedTicketIds = Array.from(new Set(taggedTickets.map(t => t.ticketId)));
+      if (taggedTicketIds.length === 0) return { messages: [], total: 0 };
+      conditions.push(inArray(inboxTickets.id, taggedTicketIds));
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    const limit = filters.limit || 50;
+    const offset = filters.offset || 0;
+
+    const [totalRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(inboxTickets)
+      .where(where);
+
+    const tickets = await db
+      .select()
+      .from(inboxTickets)
+      .where(where)
+      .orderBy(desc(inboxTickets.lastMessageAt), desc(inboxTickets.updatedAt))
+      .limit(limit)
+      .offset(offset);
+
+    if (tickets.length === 0) return { messages: [], total: Number(totalRow?.count || 0) };
+
+    const latestMessageIds = tickets
+      .map((ticket) => ticket.latestMessageId)
+      .filter((id): id is number => typeof id === "number");
+    const latestMessages = latestMessageIds.length > 0 ? await db
+      .select()
+      .from(inboxMessages)
+      .where(inArray(inboxMessages.id, latestMessageIds)) : [];
+    const messagesById = new Map(latestMessages.map((message) => [message.id, message]));
+
+    const tagRows = await db
+      .select({
+        ticketId: inboxTicketTags.ticketId,
+        id: inboxTags.id,
+        tenantId: inboxTags.tenantId,
+        name: inboxTags.name,
+        color: inboxTags.color,
+        description: inboxTags.description,
+        active: inboxTags.active,
+        sortOrder: inboxTags.sortOrder,
+        createdAt: inboxTags.createdAt,
+        updatedAt: inboxTags.updatedAt,
+      })
+      .from(inboxTicketTags)
+      .innerJoin(inboxTags, eq(inboxTicketTags.tagId, inboxTags.id))
+      .where(inArray(inboxTicketTags.ticketId, tickets.map((ticket) => ticket.id)))
+      .orderBy(asc(inboxTags.sortOrder), asc(inboxTags.name));
+    const tagsByTicket = new Map<number, InboxTag[]>();
+    for (const row of tagRows) {
+      const tag = {
+        id: row.id,
+        tenantId: row.tenantId,
+        name: row.name,
+        color: row.color,
+        description: row.description,
+        active: row.active,
+        sortOrder: row.sortOrder,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
+      const bucket = tagsByTicket.get(row.ticketId) || [];
+      bucket.push(tag);
+      tagsByTicket.set(row.ticketId, bucket);
+    }
+
+    return {
+      messages: tickets
+        .map((ticket) => {
+          const latest = ticket.latestMessageId ? messagesById.get(ticket.latestMessageId) : null;
+          if (!latest) return null;
+          const status = normalizeTicketStatus(ticket.status);
+          return {
+            ...latest,
+            threadId: ticket.threadId,
+            subject: ticket.subject || latest.subject,
+            fromAddress: ticket.requesterEmail || latest.fromAddress,
+            fromName: ticket.requesterName || latest.fromName,
+            receivedByAddress: ticket.receivedByAddress || latest.receivedByAddress,
+            matchedJobId: ticket.matchedJobId ?? latest.matchedJobId,
+            matchedLeadId: ticket.matchedLeadId ?? latest.matchedLeadId,
+            matchedClientEmail: ticket.matchedClientEmail ?? latest.matchedClientEmail,
+            assignedToId: ticket.assignedToId,
+            assignedToName: ticket.assignedToName,
+            assignedAt: ticket.assignedAt,
+            isRead: ticket.unreadCount === 0,
+            isStarred: ticket.isStarred,
+            createdAt: ticket.lastMessageAt || latest.createdAt,
+            ticketId: ticket.id,
+            ticketStatus: status,
+            ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
+            ticketPriority: ticket.priority,
+            ticketChannel: ticket.channel,
+            ticketSlaWarningAt: ticket.slaWarningAt,
+            ticketSlaDueAt: ticket.slaDueAt,
+            ticketSlaBreachedAt: ticket.slaBreachedAt,
+            ticketResolvedAt: ticket.resolvedAt,
+            ticketResolutionNotes: ticket.resolutionNotes,
+            threadMessageCount: ticket.messageCount,
+            threadUnreadCount: ticket.unreadCount,
+            tags: tagsByTicket.get(ticket.id) || [],
+          };
+        })
+        .filter(Boolean),
+      total: Number(totalRow?.count || 0),
+    };
+  } catch (err: any) {
+    console.error("[Inbox Tickets] list failed; falling back to legacy inbox messages:", err?.message || err);
+    return listInboxMessagesFromLegacy(filters);
+  }
+}
+
+async function listInboxMessagesFromLegacy(filters: {
+  direction?: "inbound" | "outbound";
+  status?: string;
+  priority?: InboxTicketPriority;
+  channel?: InboxTicketChannel;
+  slaState?: "breached" | "warning" | "due" | "none";
+  assignedToId?: number;
+  assignedState?: "unassigned";
+  isRead?: boolean;
+  isStarred?: boolean;
+  search?: string;
+  tagIds?: number[];
+  receivedByAddress?: string;
+  tenantId?: number | null;
+  limit?: number;
+  offset?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
 
   const conditions: any[] = [];
-  appendTenantScope(conditions, inboxTickets.tenantId, filters.tenantId);
-  if (filters.direction) conditions.push(eq(inboxTickets.latestDirection, filters.direction));
-  if (filters.priority) conditions.push(eq(inboxTickets.priority, filters.priority));
-  if (filters.channel) conditions.push(eq(inboxTickets.channel, filters.channel));
-  if (filters.slaState === "breached") {
-    conditions.push(isNotNull(inboxTickets.slaBreachedAt));
-  } else if (filters.slaState === "warning") {
-    conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaWarningAt), lte(inboxTickets.slaWarningAt, new Date()));
-  } else if (filters.slaState === "due") {
-    conditions.push(isNull(inboxTickets.slaBreachedAt), isNotNull(inboxTickets.slaDueAt));
-  } else if (filters.slaState === "none") {
-    conditions.push(isNull(inboxTickets.slaDueAt));
-  }
-  if (filters.assignedToId !== undefined) conditions.push(eq(inboxTickets.assignedToId, filters.assignedToId));
-  if (filters.assignedState === "unassigned") conditions.push(isNull(inboxTickets.assignedToId));
-  if (filters.isRead === true) conditions.push(eq(inboxTickets.unreadCount, 0));
-  if (filters.isRead === false) conditions.push(sql`${inboxTickets.unreadCount} > 0`);
-  if (filters.isStarred !== undefined) conditions.push(eq(inboxTickets.isStarred, filters.isStarred));
-  if (filters.receivedByAddress) conditions.push(eq(inboxTickets.receivedByAddress, filters.receivedByAddress));
-  if (filters.status) {
-    const status = filters.status === "replied" ? "waiting_customer" : filters.status;
-    conditions.push(eq(inboxTickets.status, normalizeTicketStatus(status)));
-  }
+  appendTenantScope(conditions, inboxMessages.tenantId, filters.tenantId);
+  if (filters.direction) conditions.push(eq(inboxMessages.direction, filters.direction));
+  if (filters.status) conditions.push(eq(inboxMessages.status, ticketStatusToStoredStatus(normalizeTicketStatus(filters.status))));
+  if (filters.assignedToId !== undefined) conditions.push(eq(inboxMessages.assignedToId, filters.assignedToId));
+  if (filters.assignedState === "unassigned") conditions.push(isNull(inboxMessages.assignedToId));
+  if (filters.isRead !== undefined) conditions.push(eq(inboxMessages.isRead, filters.isRead));
+  if (filters.isStarred !== undefined) conditions.push(eq(inboxMessages.isStarred, filters.isStarred));
+  if (filters.receivedByAddress) conditions.push(eq(inboxMessages.receivedByAddress, filters.receivedByAddress));
   if (filters.search) {
     conditions.push(
       or(
-        like(inboxTickets.subject, `%${filters.search}%`),
-        like(inboxTickets.requesterEmail, `%${filters.search}%`),
-        like(inboxTickets.requesterName, `%${filters.search}%`),
-        like(inboxTickets.matchedClientEmail, `%${filters.search}%`),
+        like(inboxMessages.subject, `%${filters.search}%`),
+        like(inboxMessages.fromAddress, `%${filters.search}%`),
+        like(inboxMessages.fromName, `%${filters.search}%`),
+        like(inboxMessages.toAddresses, `%${filters.search}%`),
+        like(inboxMessages.matchedClientEmail, `%${filters.search}%`),
       )
     );
   }
-
-  // If filtering by tags, get matching ticket IDs first.
   if (filters.tagIds && filters.tagIds.length > 0) {
-    const taggedTickets = await db
-      .select({ ticketId: inboxTicketTags.ticketId })
-      .from(inboxTicketTags)
-      .where(inArray(inboxTicketTags.tagId, filters.tagIds));
-    const taggedTicketIds = Array.from(new Set(taggedTickets.map(t => t.ticketId)));
-    if (taggedTicketIds.length === 0) return { messages: [], total: 0 };
-    conditions.push(inArray(inboxTickets.id, taggedTicketIds));
+    const taggedMessages = await db
+      .select({ messageId: inboxMessageTags.messageId })
+      .from(inboxMessageTags)
+      .where(inArray(inboxMessageTags.tagId, filters.tagIds));
+    const taggedMessageIds = Array.from(new Set(taggedMessages.map(t => t.messageId)));
+    if (taggedMessageIds.length === 0) return { messages: [], total: 0 };
+    conditions.push(inArray(inboxMessages.id, taggedMessageIds));
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -376,31 +549,20 @@ export async function listInboxMessages(filters: {
 
   const [totalRow] = await db
     .select({ count: sql<number>`count(*)` })
-    .from(inboxTickets)
+    .from(inboxMessages)
     .where(where);
-
-  const tickets = await db
+  const messages = await db
     .select()
-    .from(inboxTickets)
+    .from(inboxMessages)
     .where(where)
-    .orderBy(desc(inboxTickets.lastMessageAt), desc(inboxTickets.updatedAt))
+    .orderBy(desc(inboxMessages.createdAt))
     .limit(limit)
     .offset(offset);
 
-  if (tickets.length === 0) return { messages: [], total: Number(totalRow?.count || 0) };
-
-  const latestMessageIds = tickets
-    .map((ticket) => ticket.latestMessageId)
-    .filter((id): id is number => typeof id === "number");
-  const latestMessages = latestMessageIds.length > 0 ? await db
-    .select()
-    .from(inboxMessages)
-    .where(inArray(inboxMessages.id, latestMessageIds)) : [];
-  const messagesById = new Map(latestMessages.map((message) => [message.id, message]));
-
-  const tagRows = await db
+  const messageIds = messages.map((message) => message.id);
+  const tagRows = messageIds.length > 0 ? await db
     .select({
-      ticketId: inboxTicketTags.ticketId,
+      messageId: inboxMessageTags.messageId,
       id: inboxTags.id,
       tenantId: inboxTags.tenantId,
       name: inboxTags.name,
@@ -411,11 +573,11 @@ export async function listInboxMessages(filters: {
       createdAt: inboxTags.createdAt,
       updatedAt: inboxTags.updatedAt,
     })
-    .from(inboxTicketTags)
-    .innerJoin(inboxTags, eq(inboxTicketTags.tagId, inboxTags.id))
-    .where(inArray(inboxTicketTags.ticketId, tickets.map((ticket) => ticket.id)))
-    .orderBy(asc(inboxTags.sortOrder), asc(inboxTags.name));
-  const tagsByTicket = new Map<number, InboxTag[]>();
+    .from(inboxMessageTags)
+    .innerJoin(inboxTags, eq(inboxMessageTags.tagId, inboxTags.id))
+    .where(inArray(inboxMessageTags.messageId, messageIds))
+    .orderBy(asc(inboxTags.sortOrder), asc(inboxTags.name)) : [];
+  const tagsByMessage = new Map<number, InboxTag[]>();
   for (const row of tagRows) {
     const tag = {
       id: row.id,
@@ -428,49 +590,31 @@ export async function listInboxMessages(filters: {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
-    const bucket = tagsByTicket.get(row.ticketId) || [];
+    const bucket = tagsByMessage.get(row.messageId) || [];
     bucket.push(tag);
-    tagsByTicket.set(row.ticketId, bucket);
+    tagsByMessage.set(row.messageId, bucket);
   }
 
   return {
-    messages: tickets
-      .map((ticket) => {
-        const latest = ticket.latestMessageId ? messagesById.get(ticket.latestMessageId) : null;
-        if (!latest) return null;
-        const status = normalizeTicketStatus(ticket.status);
-        return {
-          ...latest,
-          threadId: ticket.threadId,
-          subject: ticket.subject || latest.subject,
-          fromAddress: ticket.requesterEmail || latest.fromAddress,
-          fromName: ticket.requesterName || latest.fromName,
-          receivedByAddress: ticket.receivedByAddress || latest.receivedByAddress,
-          matchedJobId: ticket.matchedJobId ?? latest.matchedJobId,
-          matchedLeadId: ticket.matchedLeadId ?? latest.matchedLeadId,
-          matchedClientEmail: ticket.matchedClientEmail ?? latest.matchedClientEmail,
-          assignedToId: ticket.assignedToId,
-          assignedToName: ticket.assignedToName,
-          assignedAt: ticket.assignedAt,
-          isRead: ticket.unreadCount === 0,
-          isStarred: ticket.isStarred,
-          createdAt: ticket.lastMessageAt || latest.createdAt,
-          ticketId: ticket.id,
-          ticketStatus: status,
-          ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
-          ticketPriority: ticket.priority,
-          ticketChannel: ticket.channel,
-          ticketSlaWarningAt: ticket.slaWarningAt,
-          ticketSlaDueAt: ticket.slaDueAt,
-          ticketSlaBreachedAt: ticket.slaBreachedAt,
-          ticketResolvedAt: ticket.resolvedAt,
-          ticketResolutionNotes: ticket.resolutionNotes,
-          threadMessageCount: ticket.messageCount,
-          threadUnreadCount: ticket.unreadCount,
-          tags: tagsByTicket.get(ticket.id) || [],
-        };
-      })
-      .filter(Boolean),
+    messages: messages.map((message) => {
+      const status = normalizeTicketStatus(message.status);
+      return {
+        ...message,
+        ticketId: null,
+        ticketStatus: status,
+        ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
+        ticketPriority: "normal",
+        ticketChannel: "email",
+        ticketSlaWarningAt: null,
+        ticketSlaDueAt: null,
+        ticketSlaBreachedAt: null,
+        ticketResolvedAt: null,
+        ticketResolutionNotes: null,
+        threadMessageCount: 1,
+        threadUnreadCount: message.isRead ? 0 : 1,
+        tags: tagsByMessage.get(message.id) || [],
+      };
+    }),
     total: Number(totalRow?.count || 0),
   };
 }
@@ -478,7 +622,7 @@ export async function listInboxMessages(filters: {
 export async function getThreadMessages(threadId: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await syncTicketForThread(threadId, tenantId);
+  await syncTicketForThreadBestEffort(threadId, tenantId, "thread read");
   const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
   appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   return db
@@ -499,7 +643,7 @@ export async function updateInboxMessage(id: number, data: Partial<InsertInboxMe
     .where(and(...conditions))
     .limit(1);
   await db.update(inboxMessages).set(data).where(and(...conditions));
-  if (msg) await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
+  if (msg) await syncTicketForThreadBestEffort(msg.threadId, msg.tenantId ?? tenantId ?? null, "message update");
 }
 
 export async function updateThreadStatus(
@@ -516,7 +660,7 @@ export async function updateThreadStatus(
     .update(inboxMessages)
     .set({ status: ticketStatusToStoredStatus(ticketStatus) })
     .where(and(...messageThreadConditions(threadId, tenantId)));
-  await syncTicketForThread(threadId, tenantId);
+  await syncTicketForThreadBestEffort(threadId, tenantId, "thread status");
 
   const patch: any = { status: ticketStatus };
   if (ticketStatus === "closed" || ticketStatus === "spam") {
@@ -530,7 +674,11 @@ export async function updateThreadStatus(
     patch.resolvedByName = null;
     patch.closedReason = null;
   }
-  await db.update(inboxTickets).set(patch).where(and(...ticketConditions(threadId, tenantId)));
+  try {
+    await db.update(inboxTickets).set(patch).where(and(...ticketConditions(threadId, tenantId)));
+  } catch (err: any) {
+    console.error(`[Inbox Tickets] thread status ticket patch failed for ${threadId}:`, err?.message || err);
+  }
 }
 
 export async function markAsRead(ids: number[], tenantId?: number | null) {
@@ -606,7 +754,7 @@ export async function toggleStar(id: number, tenantId?: number | null) {
   }).from(inboxMessages).where(and(...conditions)).limit(1);
   if (!msg) throw new Error("Message not found");
   await db.update(inboxMessages).set({ isStarred: !msg.isStarred }).where(and(...conditions));
-  await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
+  await syncTicketForThreadBestEffort(msg.threadId, msg.tenantId ?? tenantId ?? null, "star toggle");
   return !msg.isStarred;
 }
 
@@ -621,7 +769,7 @@ export async function assignMessage(id: number, assignedToId: number | null, ass
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
-  if (msg) await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
+  if (msg) await syncTicketForThreadBestEffort(msg.threadId, msg.tenantId ?? tenantId ?? null, "message assignment");
 }
 
 export async function assignThread(threadId: string, assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
@@ -634,21 +782,33 @@ export async function assignThread(threadId: string, assignedToId: number | null
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
-  await syncTicketForThread(threadId, tenantId);
+  await syncTicketForThreadBestEffort(threadId, tenantId, "thread assignment");
 }
 
 export async function getUnreadCount(userId?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await ensureTicketsForTenant(tenantId);
-  const conditions: any[] = [sql`${inboxTickets.unreadCount} > 0`];
-  appendTenantScope(conditions, inboxTickets.tenantId, tenantId);
-  if (userId) conditions.push(eq(inboxTickets.assignedToId, userId));
-  const [result] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(inboxTickets)
-    .where(and(...conditions));
-  return result?.count || 0;
+  try {
+    await ensureTicketsForTenant(tenantId);
+    const conditions: any[] = [sql`${inboxTickets.unreadCount} > 0`];
+    appendTenantScope(conditions, inboxTickets.tenantId, tenantId);
+    if (userId) conditions.push(eq(inboxTickets.assignedToId, userId));
+    const [result] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(inboxTickets)
+      .where(and(...conditions));
+    return result?.count || 0;
+  } catch (err: any) {
+    console.error("[Inbox Tickets] unread count failed; falling back to unread messages:", err?.message || err);
+    const conditions: any[] = [eq(inboxMessages.isRead, false)];
+    appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+    if (userId) conditions.push(eq(inboxMessages.assignedToId, userId));
+    const [result] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(inboxMessages)
+      .where(and(...conditions));
+    return result?.count || 0;
+  }
 }
 
 // ─── Auto-routing: match email to client/job ────────────────────────────────
@@ -800,7 +960,7 @@ export async function addTagToMessage(messageId: number, tagId: number, tenantId
     .limit(1);
   if (existing) return;
   await db.insert(inboxMessageTags).values({ messageId, tagId });
-  await syncTicketForThread(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null);
+  await syncTicketForThreadBestEffort(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null, "message tag add");
 }
 
 export async function removeTagFromMessage(messageId: number, tagId: number, tenantId?: number | null) {
@@ -823,7 +983,7 @@ export async function removeTagFromMessage(messageId: number, tagId: number, ten
   await db.delete(inboxMessageTags).where(
     and(eq(inboxMessageTags.messageId, messageId), eq(inboxMessageTags.tagId, tagId))
   );
-  await syncTicketForThread(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null);
+  await syncTicketForThreadBestEffort(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null, "message tag remove");
 }
 
 // ─── Email Signatures ───────────────────────────────────────────────────────
