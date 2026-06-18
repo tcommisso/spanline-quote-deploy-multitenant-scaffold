@@ -676,13 +676,22 @@ export const securityScreensRouter = router({
         const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
         const itemOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
         const costAdditions = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, input.id), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+        const costDefinitions = await db.select().from(ssCostAdditions).where(scope(ssCostAdditions.tenantId, tenantId));
         return {
           ...quote,
           items: items.map((item: any) => ({
             ...item,
             options: itemOptions.filter((option: any) => option.quoteItemId === item.id),
           })),
-          costAdditions,
+          costAdditions: costAdditions.map((cost: any) => {
+            const definition = costDefinitions.find((item: any) => item.id === cost.costAdditionId);
+            return {
+              ...cost,
+              name: definition?.name || "Additional cost",
+              category: definition?.category || null,
+              uom: definition?.uom || null,
+            };
+          }),
         };
       }),
 
@@ -897,6 +906,104 @@ export const securityScreensRouter = router({
         return { id: quoteItemId, itemNumber, warnings: price?.warnings || [] };
       }),
 
+    updateItem: tenantProcedure
+      .input(z.object({
+        itemId: z.number(),
+        quoteId: z.number(),
+        brand: z.string(),
+        productType: z.string(),
+        widthMm: z.number(),
+        heightMm: z.number(),
+        quantity: z.number().default(1),
+        colourId: z.number().optional(),
+        colourName: z.string().optional(),
+        handleSide: z.string().optional(),
+        hingeSide: z.string().optional(),
+        openingDirection: z.string().optional(),
+        hingePosition: z.string().optional(),
+        glassInfillId: z.number().optional(),
+        notes: z.string().optional(),
+        selectedOptions: z.array(z.object({ productOptionId: z.number(), quantity: z.number().default(1) })).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const quote = await requireQuote(db, tenantId, input.quoteId);
+        const [item] = await db
+          .select()
+          .from(ssQuoteItems)
+          .where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)))
+          .limit(1);
+        if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
+
+        const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
+        if (!price) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix before updating this item.",
+          });
+        }
+        const factor = await getCumulativeAdjustmentFactor(db, tenantId);
+        const basePrice = price.basePrice;
+        const adjustedPrice = basePrice * factor;
+
+        let colourSurcharge = 0;
+        if (input.colourId) {
+          const [colour] = await db.select().from(ssColours).where(and(eq(ssColours.id, input.colourId), scope(ssColours.tenantId, tenantId))).limit(1);
+          colourSurcharge = adjustedPrice * (Number(colour?.surchargePercent || 0) / 100);
+        }
+        const priceWithColour = adjustedPrice + colourSurcharge;
+
+        let optionsTotal = 0;
+        const selectedOptions = input.selectedOptions || [];
+        for (const selected of selectedOptions) {
+          const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
+          if (productOption) optionsTotal += Number(productOption.sellPrice || 0) * selected.quantity;
+        }
+
+        const markupPercent = Number(quote.markupPercent || 30);
+        const unitPriceExGst = priceWithColour / 1.1;
+        const lineTotalExGst = (unitPriceExGst * (1 + markupPercent / 100) + optionsTotal) * input.quantity;
+
+        await db.update(ssQuoteItems).set({
+          brand: input.brand,
+          productType: input.productType,
+          widthMm: input.widthMm,
+          heightMm: input.heightMm,
+          quantity: input.quantity,
+          colourId: input.colourId || null,
+          colourName: input.colourName || null,
+          handleSide: input.handleSide || null,
+          hingeSide: input.hingeSide || null,
+          openingDirection: input.openingDirection || null,
+          hingePosition: input.hingePosition || null,
+          glassInfillId: input.glassInfillId || null,
+          notes: input.notes || null,
+          basePriceIncGst: basePrice.toFixed(2),
+          adjustedPrice: priceWithColour.toFixed(2),
+          optionsTotal: optionsTotal.toFixed(2),
+          lineTotalExGst: lineTotalExGst.toFixed(2),
+        }).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
+
+        await db.delete(ssQuoteItemOptions).where(and(eq(ssQuoteItemOptions.quoteItemId, input.itemId), scope(ssQuoteItemOptions.tenantId, tenantId)));
+        for (const selected of selectedOptions) {
+          const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
+          if (!productOption) continue;
+          const lineTotal = Number(productOption.sellPrice || 0) * selected.quantity;
+          await db.insert(ssQuoteItemOptions).values({
+            tenantId,
+            quoteItemId: input.itemId,
+            productOptionId: selected.productOptionId,
+            quantity: selected.quantity,
+            unitPrice: productOption.sellPrice,
+            lineTotal: lineTotal.toFixed(2),
+          });
+        }
+
+        await recalculateQuoteTotals(db, tenantId, input.quoteId);
+        return { success: true, warnings: price?.warnings || [] };
+      }),
+
     removeItem: tenantProcedure
       .input(z.object({ itemId: z.number(), quoteId: z.number() }))
       .mutation(async ({ ctx, input }) => {
@@ -926,6 +1033,22 @@ export const securityScreensRouter = router({
           unitCost: costDef.cost,
           lineTotal: lineTotal.toFixed(2),
         });
+        await recalculateQuoteTotals(db, tenantId, input.quoteId);
+        return { success: true };
+      }),
+
+    updateCostAddition: tenantProcedure
+      .input(z.object({ id: z.number(), quoteId: z.number(), quantity: z.number().min(0.01), unitCost: z.number().min(0) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        await requireQuote(db, tenantId, input.quoteId);
+        const lineTotal = input.quantity * input.unitCost;
+        await db.update(ssQuoteCostAdditions).set({
+          quantity: input.quantity.toFixed(2),
+          unitCost: input.unitCost.toFixed(2),
+          lineTotal: lineTotal.toFixed(2),
+        }).where(and(eq(ssQuoteCostAdditions.id, input.id), eq(ssQuoteCostAdditions.quoteId, input.quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),

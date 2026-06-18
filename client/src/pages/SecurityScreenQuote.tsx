@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileText, Search, UserPlus } from "lucide-react";
+import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileText, Search, UserPlus, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { Link, useParams, useLocation } from "wouter";
 
@@ -100,13 +100,18 @@ function ConfigDiagram({ productType, handleSide, hingeSide, openingDirection }:
 
 // ─── Add Item Dialog ────────────────────────────────────────────────────────
 
-function AddItemDialog({ quoteId, open, onOpenChange, onSuccess }: { quoteId: number; open: boolean; onOpenChange: (v: boolean) => void; onSuccess: () => void }) {
+function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quoteId: number; open: boolean; onOpenChange: (v: boolean) => void; onSuccess: () => void; item?: any | null }) {
   const { data: colours = [] } = trpc.securityScreens.colours.list.useQuery();
   const { data: productOptions = [] } = trpc.securityScreens.productOptions.list.useQuery();
   const { data: glassOptions = [] } = trpc.securityScreens.glassInfill.list.useQuery();
+  const isEditing = Boolean(item?.id);
 
   const addItemMutation = trpc.securityScreens.quotes.addItem.useMutation({
     onSuccess: () => { onOpenChange(false); onSuccess(); toast.success("Item added to quote"); resetForm(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const updateItemMutation = trpc.securityScreens.quotes.updateItem.useMutation({
+    onSuccess: () => { onOpenChange(false); onSuccess(); toast.success("Item updated"); },
     onError: (e) => toast.error(e.message),
   });
 
@@ -128,6 +133,34 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess }: { quoteId: nu
 
   const resetForm = () => setForm({ brand: "alugard", productType: "window", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", notes: "", selectedOptions: [] });
 
+  useEffect(() => {
+    if (!open) return;
+    if (!item) {
+      resetForm();
+      return;
+    }
+    setForm({
+      brand: item.brand || "alugard",
+      productType: item.productType || "window",
+      widthMm: item.widthMm ? String(item.widthMm) : "",
+      heightMm: item.heightMm ? String(item.heightMm) : "",
+      quantity: item.quantity ? String(item.quantity) : "1",
+      colourId: item.colourId ? String(item.colourId) : "",
+      handleSide: item.handleSide || "",
+      hingeSide: item.hingeSide || "",
+      openingDirection: item.openingDirection || "",
+      hingePosition: item.hingePosition || "",
+      glassInfillId: item.glassInfillId ? String(item.glassInfillId) : "",
+      notes: item.notes || "",
+      selectedOptions: (item.options || [])
+        .filter((option: any) => option.productOptionId)
+        .map((option: any) => ({
+          productOptionId: Number(option.productOptionId),
+          quantity: Number(option.quantity || 1),
+        })),
+    });
+  }, [open, item]);
+
   // Live price calculation
   const priceQuery = trpc.securityScreens.calculatePrice.useQuery(
     { brand: form.brand, productType: form.productType, widthMm: parseInt(form.widthMm) || 0, heightMm: parseInt(form.heightMm) || 0 },
@@ -148,7 +181,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess }: { quoteId: nu
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Add Security Screen Item</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{isEditing ? "Edit Security Screen Item" : "Add Security Screen Item"}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left column - Product & Size */}
           <div className="space-y-4">
@@ -286,8 +319,9 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess }: { quoteId: nu
         <div className="flex justify-end gap-2 pt-4 border-t">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button
-            disabled={!form.widthMm || !form.heightMm || addItemMutation.isPending}
-            onClick={() => addItemMutation.mutate({
+            disabled={!form.widthMm || !form.heightMm || addItemMutation.isPending || updateItemMutation.isPending}
+            onClick={() => {
+              const payload = {
               quoteId,
               brand: form.brand,
               productType: form.productType,
@@ -303,9 +337,15 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess }: { quoteId: nu
               glassInfillId: form.glassInfillId && form.glassInfillId !== "none" ? parseInt(form.glassInfillId) : undefined,
               notes: form.notes || undefined,
               selectedOptions: form.selectedOptions.length > 0 ? form.selectedOptions : undefined,
-            })}
+              };
+              if (isEditing) {
+                updateItemMutation.mutate({ ...payload, itemId: Number(item.id) });
+              } else {
+                addItemMutation.mutate(payload);
+              }
+            }}
           >
-            {addItemMutation.isPending ? "Adding..." : "Add Item"}
+            {addItemMutation.isPending || updateItemMutation.isPending ? "Saving..." : isEditing ? "Save Changes" : "Add Item"}
           </Button>
         </div>
       </DialogContent>
@@ -327,6 +367,14 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
   });
   const removeCostMutation = trpc.securityScreens.quotes.removeCostAddition.useMutation({
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Cost removed"); },
+  });
+  const updateCostMutation = trpc.securityScreens.quotes.updateCostAddition.useMutation({
+    onSuccess: () => {
+      utils.securityScreens.quotes.getById.invalidate({ id: quoteId });
+      setEditingCost(null);
+      toast.success("Cost updated");
+    },
+    onError: (e) => toast.error(e.message),
   });
   const uploadPhotoMutation = trpc.securityScreens.quotes.uploadPhoto.useMutation({
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Photo uploaded"); },
@@ -352,6 +400,17 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
 
   const [addItemOpen, setAddItemOpen] = useState(false);
   const [addCostOpen, setAddCostOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<any | null>(null);
+  const [editingCost, setEditingCost] = useState<any | null>(null);
+  const [costEditForm, setCostEditForm] = useState({ quantity: "1", unitCost: "0" });
+
+  useEffect(() => {
+    if (!editingCost) return;
+    setCostEditForm({
+      quantity: String(Number(editingCost.quantity || 1)),
+      unitCost: String(Number(editingCost.unitCost || 0)),
+    });
+  }, [editingCost]);
 
   if (isLoading) return <div className="text-center py-8 text-muted-foreground">Loading quote...</div>;
   if (!quote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
@@ -416,6 +475,9 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
                   <TableCell className="font-mono">${parseFloat(item.optionsTotal || "0").toFixed(2)}</TableCell>
                   <TableCell className="font-mono font-medium">${parseFloat(item.lineTotalExGst || "0").toFixed(2)}</TableCell>
                   <TableCell className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" onClick={() => setEditingItem(item)} title="Edit item">
+                      <Pencil className="h-4 w-4 text-muted-foreground" />
+                    </Button>
                     <Button variant="ghost" size="icon" onClick={() => handlePhotoUpload(item.id)} title="Upload photo">
                       {item.photoUrl ? <img src={item.photoUrl} className="h-6 w-6 rounded object-cover" /> : <Camera className="h-4 w-4 text-muted-foreground" />}
                     </Button>
@@ -453,15 +515,23 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
             <p className="text-center text-muted-foreground py-4">No additional costs</p>
           ) : (
             <Table>
-              <TableHeader><TableRow><TableHead>Cost</TableHead><TableHead>Qty</TableHead><TableHead>Unit Cost</TableHead><TableHead>Line Total</TableHead><TableHead className="w-12"></TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>Cost</TableHead><TableHead>Qty</TableHead><TableHead>Unit Cost</TableHead><TableHead>Line Total</TableHead><TableHead className="w-20"></TableHead></TableRow></TableHeader>
               <TableBody>
                 {quote.costAdditions.map((ca: any) => (
                   <TableRow key={ca.id}>
-                    <TableCell className="font-medium">{ca.costAdditionId}</TableCell>
+                    <TableCell>
+                      <div className="font-medium">{ca.name || `Cost #${ca.costAdditionId}`}</div>
+                      {ca.category ? <p className="text-xs text-muted-foreground">{ca.category.replace("_", " ")}</p> : null}
+                    </TableCell>
                     <TableCell>{ca.quantity}</TableCell>
                     <TableCell className="font-mono">${parseFloat(ca.unitCost || "0").toFixed(2)}</TableCell>
                     <TableCell className="font-mono">${parseFloat(ca.lineTotal || "0").toFixed(2)}</TableCell>
-                    <TableCell><Button variant="ghost" size="icon" onClick={() => removeCostMutation.mutate({ id: ca.id, quoteId })}><Trash2 className="h-4 w-4 text-destructive" /></Button></TableCell>
+                    <TableCell className="flex items-center gap-1">
+                      <Button variant="ghost" size="icon" onClick={() => setEditingCost(ca)} title="Edit cost">
+                        <Pencil className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => removeCostMutation.mutate({ id: ca.id, quoteId })}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -482,6 +552,59 @@ function QuoteDetail({ quoteId }: { quoteId: number }) {
       </Card>
 
       <AddItemDialog quoteId={quoteId} open={addItemOpen} onOpenChange={setAddItemOpen} onSuccess={() => utils.securityScreens.quotes.getById.invalidate({ id: quoteId })} />
+      <AddItemDialog
+        quoteId={quoteId}
+        open={Boolean(editingItem)}
+        item={editingItem}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setEditingItem(null);
+        }}
+        onSuccess={() => utils.securityScreens.quotes.getById.invalidate({ id: quoteId })}
+      />
+      <Dialog open={Boolean(editingCost)} onOpenChange={(nextOpen) => { if (!nextOpen) setEditingCost(null); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit Additional Cost</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <p className="font-medium">{editingCost?.name || "Additional cost"}</p>
+              {editingCost?.category ? <p className="text-sm text-muted-foreground">{editingCost.category.replace("_", " ")}</p> : null}
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Quantity</Label>
+                <Input type="number" min="0.01" step="0.01" value={costEditForm.quantity} onChange={(event) => setCostEditForm({ ...costEditForm, quantity: event.target.value })} />
+              </div>
+              <div>
+                <Label>Unit Cost</Label>
+                <Input type="number" min="0" step="0.01" value={costEditForm.unitCost} onChange={(event) => setCostEditForm({ ...costEditForm, unitCost: event.target.value })} />
+              </div>
+            </div>
+            <div className="rounded border bg-muted/30 p-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Line total</span>
+                <span className="font-mono font-medium">${((parseFloat(costEditForm.quantity) || 0) * (parseFloat(costEditForm.unitCost) || 0)).toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditingCost(null)}>Cancel</Button>
+              <Button
+                disabled={!editingCost || updateCostMutation.isPending}
+                onClick={() => {
+                  if (!editingCost) return;
+                  updateCostMutation.mutate({
+                    id: editingCost.id,
+                    quoteId,
+                    quantity: parseFloat(costEditForm.quantity) || 1,
+                    unitCost: parseFloat(costEditForm.unitCost) || 0,
+                  });
+                }}
+              >
+                {updateCostMutation.isPending ? "Saving..." : "Save Changes"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
