@@ -25,7 +25,15 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-import { deriveInboxTicketState } from "@shared/inbox-ticket";
+import {
+  deriveInboxTicketState,
+  INBOX_TICKET_CHANNEL_LABELS,
+  INBOX_TICKET_PRIORITY_LABELS,
+  INBOX_TICKET_STATUS_LABELS,
+  type InboxTicketChannel,
+  type InboxTicketPriority,
+  type InboxTicketStatus,
+} from "@shared/inbox-ticket";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
@@ -48,6 +56,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const [includeRateUs, setIncludeRateUs] = useState(false);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [resolutionNotes, setResolutionNotes] = useState("");
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
   const { data: thread, isLoading, refetch } = trpc.inbox.getThread.useQuery({ threadId });
@@ -77,6 +86,11 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
 
   const updateStatusMut = trpc.inbox.updateThreadStatus.useMutation({
     onSuccess: () => { toast.success("Status updated"); refetch(); },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateTicketMut = trpc.inbox.updateTicket.useMutation({
+    onSuccess: () => { toast.success("Ticket updated"); refetch(); },
     onError: (err) => toast.error(err.message),
   });
 
@@ -110,8 +124,20 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const firstMsg = thread?.[0];
   const lastInbound = thread?.filter((m: any) => m.direction === "inbound").slice(-1)[0];
   const latestMsg = thread?.[thread.length - 1];
+  const ticket = (firstMsg as any)?.ticket || null;
+  const ticketTags = (firstMsg as any)?.tags || [];
   const threadState = useMemo(() => {
     const messages = thread || [];
+    if (ticket?.status) {
+      const key = ticket.status as InboxTicketStatus;
+      const latest = messages[messages.length - 1] as any;
+      const hasOutbound = messages.some((m: any) => m.direction === "outbound");
+      return {
+        key,
+        label: INBOX_TICKET_STATUS_LABELS[key] || key,
+        replyFrom: latest?.direction === "inbound" && hasOutbound ? (latest.fromName || latest.fromAddress || null) : null,
+      };
+    }
     const state = deriveInboxTicketState(messages);
     const latest = messages[messages.length - 1] as any;
     if (!latest) return { ...state, replyFrom: null as string | null };
@@ -120,7 +146,11 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
       ...state,
       replyFrom: latest.direction === "inbound" && hasOutbound ? (latest.fromName || latest.fromAddress || null) : null,
     };
-  }, [thread]);
+  }, [thread, ticket?.status]);
+
+  useEffect(() => {
+    setResolutionNotes(ticket?.resolutionNotes || "");
+  }, [ticket?.id, ticket?.resolutionNotes]);
 
   function formatDate(date: string | Date) {
     const d = new Date(date);
@@ -203,6 +233,16 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
                 <User className="h-3 w-3" /> {firstMsg.assignedToName}
               </span>
             )}
+            {ticket?.priority && ticket.priority !== "normal" && (
+              <Badge variant="outline" className="text-xs">
+                {INBOX_TICKET_PRIORITY_LABELS[ticket.priority as InboxTicketPriority] || ticket.priority}
+              </Badge>
+            )}
+            {ticket?.channel && ticket.channel !== "email" && (
+              <Badge variant="outline" className="text-xs">
+                {INBOX_TICKET_CHANNEL_LABELS[ticket.channel as InboxTicketChannel] || ticket.channel}
+              </Badge>
+            )}
             <span className="text-xs text-muted-foreground">
               {thread.length} message{thread.length !== 1 ? "s" : ""}
             </span>
@@ -247,6 +287,130 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
       </div>
 
       <Separator className="mb-4" />
+
+      {/* Ticket Metadata */}
+      {ticket && (
+        <Card className="mb-4">
+          <CardContent className="p-4 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Priority</Label>
+                <Select
+                  value={(ticket.priority || "normal") as InboxTicketPriority}
+                  onValueChange={(value) => updateTicketMut.mutate({ threadId, priority: value as InboxTicketPriority })}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="urgent">Urgent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Channel</Label>
+                <Select
+                  value={(ticket.channel || "email") as InboxTicketChannel}
+                  onValueChange={(value) => updateTicketMut.mutate({ threadId, channel: value as InboxTicketChannel })}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="phone">Phone</SelectItem>
+                    <SelectItem value="web">Web</SelectItem>
+                    <SelectItem value="portal">Portal</SelectItem>
+                    <SelectItem value="manual">Manual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Status</Label>
+                <Select
+                  value={(ticket.status || threadState.key) as InboxTicketStatus}
+                  onValueChange={(value) => updateTicketMut.mutate({ threadId, status: value as InboxTicketStatus })}
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new">New</SelectItem>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="waiting_customer">Waiting on customer</SelectItem>
+                    <SelectItem value="customer_replied">Customer replied</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
+                    <SelectItem value="spam">Spam</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Owner</Label>
+                <div className="h-9 rounded-md border px-3 flex items-center text-sm">
+                  {ticket.assignedToName || "Unassigned"}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <div>
+                <p className="text-xs text-muted-foreground">SLA due</p>
+                <p className={ticket.slaBreachedAt ? "text-red-600 font-medium" : ""}>
+                  {ticket.slaDueAt ? formatDate(ticket.slaDueAt) : "No SLA active"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Requester</p>
+                <p>{ticket.requesterName || ticket.requesterEmail || "Unknown"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Resolved</p>
+                <p>{ticket.resolvedAt ? `${formatDate(ticket.resolvedAt)}${ticket.resolvedByName ? ` by ${ticket.resolvedByName}` : ""}` : "Not resolved"}</p>
+              </div>
+            </div>
+
+            {ticketTags.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {ticketTags.map((tag: any) => (
+                  <Badge
+                    key={tag.id}
+                    variant="outline"
+                    style={{ borderColor: tag.color || undefined, color: tag.color || undefined }}
+                  >
+                    {tag.name}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Resolution notes</Label>
+              <Textarea
+                value={resolutionNotes}
+                onChange={(event) => setResolutionNotes(event.target.value)}
+                placeholder="Capture outcome, next step, or resolution summary..."
+                className="min-h-[72px]"
+              />
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={updateTicketMut.isPending}
+                  onClick={() => updateTicketMut.mutate({ threadId, resolutionNotes })}
+                >
+                  Save Notes
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Messages */}
       <div className="space-y-4">
@@ -443,7 +607,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
                   <p className="text-sm font-medium">{su.name}</p>
                   <p className="text-xs text-muted-foreground">{su.email}</p>
                 </div>
-                {firstMsg?.assignedToId === su.id && (
+                {(ticket?.assignedToId || firstMsg?.assignedToId) === su.id && (
                   <Check className="h-4 w-4 text-primary ml-auto" />
                 )}
               </button>
@@ -468,16 +632,23 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
           </DialogHeader>
           <div className="space-y-2 py-2">
             {tags?.map((tag: any) => {
-              // Check if this tag is already on the first message
-              // We'd need to fetch tags for the message — for now show all tags as toggleable
+              const isSelected = ticketTags.some((currentTag: any) => currentTag.id === tag.id);
               return (
                 <button
                   key={tag.id}
                   className="flex items-center gap-3 w-full p-2 rounded-lg hover:bg-accent transition-colors text-left"
-                  onClick={() => firstMsg && addTagMut.mutate({ messageId: firstMsg.id, tagId: tag.id })}
+                  onClick={() => {
+                    if (!firstMsg) return;
+                    if (isSelected) {
+                      removeTagMut.mutate({ messageId: firstMsg.id, tagId: tag.id });
+                    } else {
+                      addTagMut.mutate({ messageId: firstMsg.id, tagId: tag.id });
+                    }
+                  }}
                 >
                   <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
                   <span className="text-sm">{tag.name}</span>
+                  {isSelected && <Check className="h-4 w-4 text-primary ml-auto" />}
                   {tag.description && (
                     <span className="text-xs text-muted-foreground ml-auto">{tag.description}</span>
                   )}

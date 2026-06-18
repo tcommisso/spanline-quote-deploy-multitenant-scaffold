@@ -26,7 +26,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-import { INBOX_TICKET_STATUS_LABELS, type InboxTicketStatus } from "@shared/inbox-ticket";
+import {
+  INBOX_TICKET_CHANNEL_LABELS,
+  INBOX_TICKET_PRIORITY_LABELS,
+  INBOX_TICKET_STATUS_LABELS,
+  type InboxTicketChannel,
+  type InboxTicketPriority,
+  type InboxTicketStatus,
+} from "@shared/inbox-ticket";
 
 type StatusFilter = "all" | InboxTicketStatus;
 type DirectionFilter = "all" | "inbound" | "outbound";
@@ -200,6 +207,11 @@ export default function InboxPage() {
 
   // SLA status calculation
   function getSlaStatus(msg: any): "ok" | "warning" | "escalation" | null {
+    const status = msg.ticketStatus || msg.status;
+    if (status === "waiting_customer" || status === "closed" || status === "spam") return null;
+    if (msg.ticketSlaBreachedAt) return "escalation";
+    if (msg.ticketSlaWarningAt && new Date(msg.ticketSlaWarningAt).getTime() <= Date.now()) return "warning";
+    if (msg.ticketSlaDueAt) return "ok";
     if (!slaRule || msg.direction !== "inbound") return null;
     if (msg.status === "replied" || msg.status === "closed" || msg.status === "spam") return null;
     const ageMs = Date.now() - new Date(msg.createdAt).getTime();
@@ -542,6 +554,16 @@ export default function InboxPage() {
                         {displayStatus.label}
                       </Badge>
                     )}
+                    {msg.ticketPriority && msg.ticketPriority !== "normal" && (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 shrink-0">
+                        {INBOX_TICKET_PRIORITY_LABELS[msg.ticketPriority as InboxTicketPriority] || msg.ticketPriority}
+                      </Badge>
+                    )}
+                    {msg.ticketChannel && msg.ticketChannel !== "email" && (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 shrink-0">
+                        {INBOX_TICKET_CHANNEL_LABELS[msg.ticketChannel as InboxTicketChannel] || msg.ticketChannel}
+                      </Badge>
+                    )}
                     {slaStatus === "warning" && (
                       <TooltipProvider>
                         <Tooltip>
@@ -586,6 +608,19 @@ export default function InboxPage() {
                       <span className="text-primary font-medium">
                         {msg.threadUnreadCount} unread
                       </span>
+                    )}
+                    {Array.isArray(msg.tags) && msg.tags.slice(0, 3).map((tag: any) => (
+                      <Badge
+                        key={tag.id}
+                        variant="outline"
+                        className="h-4 px-1.5 py-0 text-[10px] font-normal"
+                        style={{ borderColor: tag.color || undefined, color: tag.color || undefined }}
+                      >
+                        {tag.name}
+                      </Badge>
+                    ))}
+                    {Array.isArray(msg.tags) && msg.tags.length > 3 && (
+                      <span>+{msg.tags.length - 3} tags</span>
                     )}
                     {msg.attachments && JSON.parse(typeof msg.attachments === "string" ? msg.attachments : JSON.stringify(msg.attachments)).length > 0 && (
                       <Paperclip className="h-3 w-3" />

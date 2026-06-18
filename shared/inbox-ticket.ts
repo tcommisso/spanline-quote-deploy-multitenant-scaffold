@@ -10,6 +10,12 @@ export type InboxTicketStatus =
   | "closed"
   | "spam";
 
+export const INBOX_TICKET_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
+export type InboxTicketPriority = (typeof INBOX_TICKET_PRIORITIES)[number];
+
+export const INBOX_TICKET_CHANNELS = ["email", "phone", "web", "portal", "manual"] as const;
+export type InboxTicketChannel = (typeof INBOX_TICKET_CHANNELS)[number];
+
 export type InboxTicketState = {
   key: InboxTicketStatus;
   label: string;
@@ -29,6 +35,21 @@ export const INBOX_TICKET_STATUS_LABELS: Record<InboxTicketStatus, string> = {
   customer_replied: "Customer replied",
   closed: "Closed",
   spam: "Spam",
+};
+
+export const INBOX_TICKET_PRIORITY_LABELS: Record<InboxTicketPriority, string> = {
+  low: "Low",
+  normal: "Normal",
+  high: "High",
+  urgent: "Urgent",
+};
+
+export const INBOX_TICKET_CHANNEL_LABELS: Record<InboxTicketChannel, string> = {
+  email: "Email",
+  phone: "Phone",
+  web: "Web",
+  portal: "Portal",
+  manual: "Manual",
 };
 
 export function isStoredInboxStatus(value: string | null | undefined): value is StoredInboxStatus {

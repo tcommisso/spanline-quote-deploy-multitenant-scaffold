@@ -5,9 +5,10 @@
 import { eq, and, desc, like, sql, or, gte, lte, inArray, isNull, isNotNull, asc } from "drizzle-orm";
 import { getDb } from "./db";
 import {
-  inboxMessages, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
+  inboxMessages, inboxTickets, inboxTicketTags, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
   crmLeads, portalAccess, constructionJobs, clientActivities, users, tenantMemberships,
   type InboxMessage, type InsertInboxMessage,
+  type InboxTicket,
   type InboxTag, type InsertInboxTag,
   type EmailSignature, type InsertEmailSignature,
   type InboxSetting, type InsertInboxSetting,
@@ -15,14 +16,281 @@ import {
   type InboxAddress, type InsertInboxAddress,
 } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
-import { deriveInboxTicketState, type StoredInboxStatus } from "../shared/inbox-ticket";
+import {
+  INBOX_TICKET_STATUS_LABELS,
+  deriveInboxTicketState,
+  type InboxTicketChannel,
+  type InboxTicketPriority,
+  type InboxTicketStatus,
+  type StoredInboxStatus,
+} from "../shared/inbox-ticket";
+
+function addHours(base: Date | string | null | undefined, hours?: number | null): Date | null {
+  if (!base || hours == null) return null;
+  const date = new Date(base);
+  if (!Number.isFinite(date.getTime())) return null;
+  return new Date(date.getTime() + hours * 60 * 60 * 1000);
+}
+
+function normalizeTicketStatus(status: string | null | undefined): InboxTicketStatus {
+  if (
+    status === "new" ||
+    status === "open" ||
+    status === "waiting_customer" ||
+    status === "customer_replied" ||
+    status === "closed" ||
+    status === "spam"
+  ) {
+    return status;
+  }
+  if (status === "replied") return "waiting_customer";
+  return "open";
+}
+
+function ticketStatusToStoredStatus(status: InboxTicketStatus): StoredInboxStatus {
+  if (status === "waiting_customer" || status === "customer_replied") return "replied";
+  return status;
+}
+
+function ticketConditions(threadId: string, tenantId?: number | null) {
+  const conditions: any[] = [eq(inboxTickets.threadId, threadId)];
+  appendTenantScope(conditions, inboxTickets.tenantId, tenantId);
+  return conditions;
+}
+
+function messageThreadConditions(threadId: string, tenantId?: number | null) {
+  const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  return conditions;
+}
 
 // ─── Inbox Messages ─────────────────────────────────────────────────────────
+
+export async function syncTicketForThread(threadId: string, tenantId?: number | null): Promise<InboxTicket | null> {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+
+  const messages = await db
+    .select()
+    .from(inboxMessages)
+    .where(and(...messageThreadConditions(threadId, tenantId)))
+    .orderBy(asc(inboxMessages.createdAt), asc(inboxMessages.id));
+
+  const existingConditions = ticketConditions(threadId, tenantId);
+  const [existing] = await db
+    .select()
+    .from(inboxTickets)
+    .where(and(...existingConditions))
+    .limit(1);
+
+  if (messages.length === 0) {
+    if (existing) {
+      await db.delete(inboxTicketTags).where(eq(inboxTicketTags.ticketId, existing.id));
+      await db.delete(inboxTickets).where(eq(inboxTickets.id, existing.id));
+    }
+    return null;
+  }
+
+  const first = messages[0] as InboxMessage;
+  const latest = messages[messages.length - 1] as InboxMessage;
+  const firstInbound = messages.find((message) => message.direction === "inbound") || first;
+  const inboundMessages = messages.filter((message) => message.direction === "inbound");
+  const outboundMessages = messages.filter((message) => message.direction === "outbound");
+  const lastInbound = inboundMessages[inboundMessages.length - 1] || null;
+  const lastOutbound = outboundMessages[outboundMessages.length - 1] || null;
+  const unreadCount = inboundMessages.filter((message) => !message.isRead).length;
+  const derived = deriveInboxTicketState(messages);
+
+  let status = derived.key;
+  const existingStatus = normalizeTicketStatus(existing?.status);
+  if (existingStatus === "closed" || existingStatus === "spam") {
+    const resolvedAt = existing?.resolvedAt ? new Date(existing.resolvedAt).getTime() : 0;
+    const lastInboundAt = lastInbound?.createdAt ? new Date(lastInbound.createdAt).getTime() : 0;
+    status = existingStatus === "closed" && lastInboundAt > resolvedAt ? "customer_replied" : existingStatus;
+  }
+
+  const activeSla = await getActiveSlaRule(tenantId);
+  const shouldTrackSla = status !== "closed" && status !== "spam" && status !== "waiting_customer";
+  const slaBase = shouldTrackSla ? (lastInbound?.createdAt || latest.createdAt) : null;
+  const slaWarningAt = shouldTrackSla ? addHours(slaBase, activeSla?.warningHours) : null;
+  const slaDueAt = shouldTrackSla ? addHours(slaBase, activeSla?.escalationHours) : null;
+  const now = new Date();
+  const slaBreachedAt = slaDueAt && slaDueAt.getTime() <= now.getTime() ? slaDueAt : null;
+
+  const ticketData: any = {
+    tenantId: tenantId ?? latest.tenantId ?? null,
+    threadId,
+    subject: latest.subject || first.subject || null,
+    requesterEmail: firstInbound.fromAddress || latest.fromAddress || null,
+    requesterName: firstInbound.fromName || latest.fromName || null,
+    receivedByAddress: latest.receivedByAddress || firstInbound.receivedByAddress || null,
+    channel: existing?.channel || "email",
+    priority: existing?.priority || "normal",
+    status,
+    assignedToId: latest.assignedToId ?? existing?.assignedToId ?? null,
+    assignedToName: latest.assignedToName ?? existing?.assignedToName ?? null,
+    assignedAt: latest.assignedAt ?? existing?.assignedAt ?? null,
+    matchedJobId: latest.matchedJobId ?? first.matchedJobId ?? existing?.matchedJobId ?? null,
+    matchedLeadId: latest.matchedLeadId ?? first.matchedLeadId ?? existing?.matchedLeadId ?? null,
+    matchedClientEmail: latest.matchedClientEmail ?? first.matchedClientEmail ?? existing?.matchedClientEmail ?? null,
+    firstMessageId: first.id,
+    latestMessageId: latest.id,
+    latestDirection: latest.direction,
+    messageCount: messages.length,
+    unreadCount,
+    isStarred: messages.some((message) => Boolean(message.isStarred)),
+    lastInboundAt: lastInbound?.createdAt ?? null,
+    lastOutboundAt: lastOutbound?.createdAt ?? null,
+    lastMessageAt: latest.createdAt,
+    slaWarningAt,
+    slaDueAt,
+    slaBreachedAt,
+    resolvedAt: status === "closed" ? (existing?.resolvedAt || now) : null,
+    resolvedBy: status === "closed" ? existing?.resolvedBy ?? null : null,
+    resolvedByName: status === "closed" ? existing?.resolvedByName ?? null : null,
+    resolutionNotes: existing?.resolutionNotes ?? null,
+    closedReason: status === "closed" || status === "spam" ? existing?.closedReason ?? null : null,
+    createdBy: existing?.createdBy ?? latest.createdBy ?? null,
+    createdByName: existing?.createdByName ?? latest.createdByName ?? null,
+  };
+
+  if (existing) {
+    await db.update(inboxTickets).set(ticketData).where(eq(inboxTickets.id, existing.id));
+  } else {
+    await db.insert(inboxTickets).values(ticketData);
+  }
+
+  const [ticket] = await db
+    .select()
+    .from(inboxTickets)
+    .where(and(...ticketConditions(threadId, tenantId)))
+    .limit(1);
+  if (ticket) {
+    const messageIds = messages.map((message) => message.id);
+    const messageTagRows = messageIds.length > 0 ? await db
+      .select({ tagId: inboxMessageTags.tagId })
+      .from(inboxMessageTags)
+      .where(inArray(inboxMessageTags.messageId, messageIds)) : [];
+    const tagIds = Array.from(new Set(messageTagRows.map((row) => row.tagId)));
+    await db.delete(inboxTicketTags).where(eq(inboxTicketTags.ticketId, ticket.id));
+    if (tagIds.length > 0) {
+      await db.insert(inboxTicketTags).values(tagIds.map((tagId) => ({ ticketId: ticket.id, tagId })));
+    }
+  }
+  return ticket || null;
+}
+
+async function syncTicketsForThreads(threadIds: string[], tenantId?: number | null) {
+  const uniqueThreadIds = Array.from(new Set(threadIds.filter(Boolean)));
+  for (const threadId of uniqueThreadIds) {
+    await syncTicketForThread(threadId, tenantId);
+  }
+}
+
+export async function ensureTicketsForTenant(tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ticketCountConditions: any[] = [];
+  appendTenantScope(ticketCountConditions, inboxTickets.tenantId, tenantId);
+  const messageConditions: any[] = [];
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
+
+  const [ticketCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(inboxTickets)
+    .where(ticketCountConditions.length ? and(...ticketCountConditions) : undefined);
+  const [messageCount] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(inboxMessages)
+    .where(messageConditions.length ? and(...messageConditions) : undefined);
+
+  if (Number(ticketCount?.count || 0) > 0 || Number(messageCount?.count || 0) === 0) return;
+
+  const threads = await db
+    .select({ threadId: inboxMessages.threadId })
+    .from(inboxMessages)
+    .where(messageConditions.length ? and(...messageConditions) : undefined)
+    .groupBy(inboxMessages.threadId);
+
+  await syncTicketsForThreads(threads.map((thread) => thread.threadId), tenantId);
+}
+
+export async function getTicketByThread(threadId: string, tenantId?: number | null) {
+  await syncTicketForThread(threadId, tenantId);
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const [ticket] = await db
+    .select()
+    .from(inboxTickets)
+    .where(and(...ticketConditions(threadId, tenantId)))
+    .limit(1);
+  return ticket || null;
+}
+
+export async function getTicketTags(ticketId: number, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [eq(inboxTicketTags.ticketId, ticketId)];
+  appendTenantScope(conditions, inboxTags.tenantId, tenantId);
+  const rows = await db
+    .select({ tag: inboxTags })
+    .from(inboxTicketTags)
+    .innerJoin(inboxTags, eq(inboxTicketTags.tagId, inboxTags.id))
+    .where(and(...conditions))
+    .orderBy(asc(inboxTags.sortOrder), asc(inboxTags.name));
+  return rows.map((row) => row.tag);
+}
+
+export async function updateTicketMetadata(threadId: string, data: {
+  priority?: InboxTicketPriority;
+  channel?: InboxTicketChannel;
+  status?: InboxTicketStatus;
+  resolutionNotes?: string | null;
+  closedReason?: string | null;
+}, tenantId?: number | null, userId?: number | null, userName?: string | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ticket = await getTicketByThread(threadId, tenantId);
+  if (!ticket) throw new Error("Ticket not found");
+
+  const patch: any = {};
+  if (data.priority) patch.priority = data.priority;
+  if (data.channel) patch.channel = data.channel;
+  if (data.resolutionNotes !== undefined) patch.resolutionNotes = data.resolutionNotes || null;
+  if (data.closedReason !== undefined) patch.closedReason = data.closedReason || null;
+
+  if (data.status) {
+    const status = normalizeTicketStatus(data.status);
+    patch.status = status;
+    await db
+      .update(inboxMessages)
+      .set({ status: ticketStatusToStoredStatus(status) })
+      .where(and(...messageThreadConditions(threadId, tenantId)));
+
+    if (status === "closed" || status === "spam") {
+      patch.resolvedAt = new Date();
+      patch.resolvedBy = userId ?? null;
+      patch.resolvedByName = userName ?? null;
+      patch.closedReason = data.closedReason || (status === "spam" ? "spam" : "resolved");
+    } else {
+      patch.resolvedAt = null;
+      patch.resolvedBy = null;
+      patch.resolvedByName = null;
+      patch.closedReason = null;
+    }
+  }
+
+  if (Object.keys(patch).length > 0) {
+    await db.update(inboxTickets).set(patch).where(eq(inboxTickets.id, ticket.id));
+  }
+  return getTicketByThread(threadId, tenantId);
+}
 
 export async function createInboxMessage(data: Omit<InsertInboxMessage, "id">) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const [result] = await db.insert(inboxMessages).values(data);
+  await syncTicketForThread(data.threadId, data.tenantId ?? null);
   return { id: (result as any).insertId };
 }
 
@@ -51,104 +319,154 @@ export async function listInboxMessages(filters: {
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  await ensureTicketsForTenant(filters.tenantId);
 
   const conditions: any[] = [];
-  if (filters.tenantId) conditions.push(eq(inboxMessages.tenantId, filters.tenantId));
-  if (filters.assignedToId !== undefined) conditions.push(eq(inboxMessages.assignedToId, filters.assignedToId));
-  if (filters.assignedState === "unassigned") conditions.push(isNull(inboxMessages.assignedToId));
-  if (filters.isRead !== undefined) conditions.push(eq(inboxMessages.isRead, filters.isRead));
-  if (filters.isStarred !== undefined) conditions.push(eq(inboxMessages.isStarred, filters.isStarred));
-  if (filters.receivedByAddress) conditions.push(eq(inboxMessages.receivedByAddress, filters.receivedByAddress));
+  appendTenantScope(conditions, inboxTickets.tenantId, filters.tenantId);
+  if (filters.direction) conditions.push(eq(inboxTickets.latestDirection, filters.direction));
+  if (filters.assignedToId !== undefined) conditions.push(eq(inboxTickets.assignedToId, filters.assignedToId));
+  if (filters.assignedState === "unassigned") conditions.push(isNull(inboxTickets.assignedToId));
+  if (filters.isRead === true) conditions.push(eq(inboxTickets.unreadCount, 0));
+  if (filters.isRead === false) conditions.push(sql`${inboxTickets.unreadCount} > 0`);
+  if (filters.isStarred !== undefined) conditions.push(eq(inboxTickets.isStarred, filters.isStarred));
+  if (filters.receivedByAddress) conditions.push(eq(inboxTickets.receivedByAddress, filters.receivedByAddress));
+  if (filters.status) {
+    const status = filters.status === "replied" ? "waiting_customer" : filters.status;
+    conditions.push(eq(inboxTickets.status, normalizeTicketStatus(status)));
+  }
   if (filters.search) {
     conditions.push(
       or(
-        like(inboxMessages.subject, `%${filters.search}%`),
-        like(inboxMessages.fromAddress, `%${filters.search}%`),
-        like(inboxMessages.fromName, `%${filters.search}%`),
-        like(inboxMessages.textBody, `%${filters.search}%`),
+        like(inboxTickets.subject, `%${filters.search}%`),
+        like(inboxTickets.requesterEmail, `%${filters.search}%`),
+        like(inboxTickets.requesterName, `%${filters.search}%`),
+        like(inboxTickets.matchedClientEmail, `%${filters.search}%`),
       )
     );
   }
 
-  // If filtering by tags, get message IDs first
-  let tagFilteredIds: number[] | null = null;
+  // If filtering by tags, get matching ticket IDs first.
   if (filters.tagIds && filters.tagIds.length > 0) {
-    const taggedMessages = await db
-      .select({ messageId: inboxMessageTags.messageId })
-      .from(inboxMessageTags)
-      .where(inArray(inboxMessageTags.tagId, filters.tagIds));
-    tagFilteredIds = taggedMessages.map(t => t.messageId);
-    if (tagFilteredIds.length === 0) return { messages: [], total: 0 };
-    conditions.push(inArray(inboxMessages.id, tagFilteredIds));
+    const taggedTickets = await db
+      .select({ ticketId: inboxTicketTags.ticketId })
+      .from(inboxTicketTags)
+      .where(inArray(inboxTicketTags.tagId, filters.tagIds));
+    const taggedTicketIds = Array.from(new Set(taggedTickets.map(t => t.ticketId)));
+    if (taggedTicketIds.length === 0) return { messages: [], total: 0 };
+    conditions.push(inArray(inboxTickets.id, taggedTicketIds));
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
   const limit = filters.limit || 50;
   const offset = filters.offset || 0;
 
-  const matchingMessages = await db
+  const [totalRow] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(inboxTickets)
+    .where(where);
+
+  const tickets = await db
     .select()
-    .from(inboxMessages)
+    .from(inboxTickets)
     .where(where)
-    .orderBy(desc(inboxMessages.createdAt));
+    .orderBy(desc(inboxTickets.lastMessageAt), desc(inboxTickets.updatedAt))
+    .limit(limit)
+    .offset(offset);
 
-  if (matchingMessages.length === 0) return { messages: [], total: 0 };
+  if (tickets.length === 0) return { messages: [], total: Number(totalRow?.count || 0) };
 
-  const threadIds = Array.from(new Set(matchingMessages.map((message) => message.threadId)));
-  const threadConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (filters.tenantId) threadConditions.push(eq(inboxMessages.tenantId, filters.tenantId));
-
-  const threadMessages = await db
+  const latestMessageIds = tickets
+    .map((ticket) => ticket.latestMessageId)
+    .filter((id): id is number => typeof id === "number");
+  const latestMessages = latestMessageIds.length > 0 ? await db
     .select()
     .from(inboxMessages)
-    .where(and(...threadConditions))
-    .orderBy(desc(inboxMessages.createdAt));
+    .where(inArray(inboxMessages.id, latestMessageIds)) : [];
+  const messagesById = new Map(latestMessages.map((message) => [message.id, message]));
 
-  const messagesByThread = new Map<string, InboxMessage[]>();
-  for (const message of threadMessages) {
-    const bucket = messagesByThread.get(message.threadId) || [];
-    bucket.push(message);
-    messagesByThread.set(message.threadId, bucket);
+  const tagRows = await db
+    .select({
+      ticketId: inboxTicketTags.ticketId,
+      id: inboxTags.id,
+      tenantId: inboxTags.tenantId,
+      name: inboxTags.name,
+      color: inboxTags.color,
+      description: inboxTags.description,
+      active: inboxTags.active,
+      sortOrder: inboxTags.sortOrder,
+      createdAt: inboxTags.createdAt,
+      updatedAt: inboxTags.updatedAt,
+    })
+    .from(inboxTicketTags)
+    .innerJoin(inboxTags, eq(inboxTicketTags.tagId, inboxTags.id))
+    .where(inArray(inboxTicketTags.ticketId, tickets.map((ticket) => ticket.id)))
+    .orderBy(asc(inboxTags.sortOrder), asc(inboxTags.name));
+  const tagsByTicket = new Map<number, InboxTag[]>();
+  for (const row of tagRows) {
+    const tag = {
+      id: row.id,
+      tenantId: row.tenantId,
+      name: row.name,
+      color: row.color,
+      description: row.description,
+      active: row.active,
+      sortOrder: row.sortOrder,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+    const bucket = tagsByTicket.get(row.ticketId) || [];
+    bucket.push(tag);
+    tagsByTicket.set(row.ticketId, bucket);
   }
 
-  const tickets = Array.from(messagesByThread.values()).map((messages) => {
-    const newestFirst = [...messages].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    const latest = newestFirst[0];
-    const state = deriveInboxTicketState(messages);
-    return {
-      ...latest,
-      ticketStatus: state.key,
-      ticketStatusLabel: state.label,
-      threadMessageCount: messages.length,
-      threadUnreadCount: messages.filter((message) => message.direction === "inbound" && !message.isRead).length,
-    };
-  });
-
-  const filteredTickets = tickets
-    .filter((ticket) => {
-      if (!filters.direction) return true;
-      return ticket.direction === filters.direction;
-    })
-    .filter((ticket) => {
-      if (!filters.status) return true;
-      if (filters.status === "replied") return ticket.ticketStatus === "waiting_customer";
-      return ticket.ticketStatus === filters.status;
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
   return {
-    messages: filteredTickets.slice(offset, offset + limit),
-    total: filteredTickets.length,
+    messages: tickets
+      .map((ticket) => {
+        const latest = ticket.latestMessageId ? messagesById.get(ticket.latestMessageId) : null;
+        if (!latest) return null;
+        const status = normalizeTicketStatus(ticket.status);
+        return {
+          ...latest,
+          threadId: ticket.threadId,
+          subject: ticket.subject || latest.subject,
+          fromAddress: ticket.requesterEmail || latest.fromAddress,
+          fromName: ticket.requesterName || latest.fromName,
+          receivedByAddress: ticket.receivedByAddress || latest.receivedByAddress,
+          matchedJobId: ticket.matchedJobId ?? latest.matchedJobId,
+          matchedLeadId: ticket.matchedLeadId ?? latest.matchedLeadId,
+          matchedClientEmail: ticket.matchedClientEmail ?? latest.matchedClientEmail,
+          assignedToId: ticket.assignedToId,
+          assignedToName: ticket.assignedToName,
+          assignedAt: ticket.assignedAt,
+          isRead: ticket.unreadCount === 0,
+          isStarred: ticket.isStarred,
+          createdAt: ticket.lastMessageAt || latest.createdAt,
+          ticketId: ticket.id,
+          ticketStatus: status,
+          ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
+          ticketPriority: ticket.priority,
+          ticketChannel: ticket.channel,
+          ticketSlaWarningAt: ticket.slaWarningAt,
+          ticketSlaDueAt: ticket.slaDueAt,
+          ticketSlaBreachedAt: ticket.slaBreachedAt,
+          ticketResolvedAt: ticket.resolvedAt,
+          ticketResolutionNotes: ticket.resolutionNotes,
+          threadMessageCount: ticket.messageCount,
+          threadUnreadCount: ticket.unreadCount,
+          tags: tagsByTicket.get(ticket.id) || [],
+        };
+      })
+      .filter(Boolean),
+    total: Number(totalRow?.count || 0),
   };
 }
 
 export async function getThreadMessages(threadId: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
+  await syncTicketForThread(threadId, tenantId);
   const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   return db
     .select()
     .from(inboxMessages)
@@ -160,68 +478,121 @@ export async function updateInboxMessage(id: number, data: Partial<InsertInboxMe
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.id, id)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const [msg] = await db
+    .select({ threadId: inboxMessages.threadId, tenantId: inboxMessages.tenantId })
+    .from(inboxMessages)
+    .where(and(...conditions))
+    .limit(1);
   await db.update(inboxMessages).set(data).where(and(...conditions));
+  if (msg) await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
 }
 
-export async function updateThreadStatus(threadId: string, status: StoredInboxStatus, tenantId?: number | null) {
+export async function updateThreadStatus(
+  threadId: string,
+  status: StoredInboxStatus | InboxTicketStatus,
+  tenantId?: number | null,
+  userId?: number | null,
+  userName?: string | null,
+) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
-  await db.update(inboxMessages).set({ status }).where(and(...conditions));
+  const ticketStatus = normalizeTicketStatus(status);
+  await db
+    .update(inboxMessages)
+    .set({ status: ticketStatusToStoredStatus(ticketStatus) })
+    .where(and(...messageThreadConditions(threadId, tenantId)));
+  await syncTicketForThread(threadId, tenantId);
+
+  const patch: any = { status: ticketStatus };
+  if (ticketStatus === "closed" || ticketStatus === "spam") {
+    patch.resolvedAt = new Date();
+    patch.resolvedBy = userId ?? null;
+    patch.resolvedByName = userName ?? null;
+    patch.closedReason = ticketStatus === "spam" ? "spam" : "resolved";
+  } else {
+    patch.resolvedAt = null;
+    patch.resolvedBy = null;
+    patch.resolvedByName = null;
+    patch.closedReason = null;
+  }
+  await db.update(inboxTickets).set(patch).where(and(...ticketConditions(threadId, tenantId)));
 }
 
 export async function markAsRead(ids: number[], tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [inArray(inboxMessages.id, ids)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const messages = await db
+    .select({ threadId: inboxMessages.threadId, tenantId: inboxMessages.tenantId })
+    .from(inboxMessages)
+    .where(and(...conditions));
   await db.update(inboxMessages).set({ isRead: true }).where(and(...conditions));
+  await syncTicketsForThreads(messages.map((msg) => msg.threadId), tenantId);
 }
 
 export async function markAllAsRead(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.isRead, false)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const messages = await db
+    .select({ threadId: inboxMessages.threadId })
+    .from(inboxMessages)
+    .where(and(...conditions));
   await db.update(inboxMessages).set({ isRead: true }).where(and(...conditions));
+  await syncTicketsForThreads(messages.map((msg) => msg.threadId), tenantId);
 }
 
 export async function markAsUnread(ids: number[], tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [inArray(inboxMessages.id, ids)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const messages = await db
+    .select({ threadId: inboxMessages.threadId })
+    .from(inboxMessages)
+    .where(and(...conditions));
   await db.update(inboxMessages).set({ isRead: false }).where(and(...conditions));
+  await syncTicketsForThreads(messages.map((msg) => msg.threadId), tenantId);
 }
 
 export async function markThreadsAsRead(threadIds: string[], tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return;
-  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
-  await db.update(inboxMessages).set({ isRead: true }).where(and(...conditions));
+  await db.update(inboxMessages).set({ isRead: true }).where(and(...[
+    inArray(inboxMessages.threadId, threadIds),
+    ...(tenantId ? [eq(inboxMessages.tenantId, tenantId)] : []),
+  ]));
+  await syncTicketsForThreads(threadIds, tenantId);
 }
 
 export async function markThreadsAsUnread(threadIds: string[], tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return;
-  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
-  await db.update(inboxMessages).set({ isRead: false }).where(and(...conditions));
+  await db.update(inboxMessages).set({ isRead: false }).where(and(...[
+    inArray(inboxMessages.threadId, threadIds),
+    ...(tenantId ? [eq(inboxMessages.tenantId, tenantId)] : []),
+  ]));
+  await syncTicketsForThreads(threadIds, tenantId);
 }
 
 export async function toggleStar(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.id, id)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
-  const [msg] = await db.select({ isStarred: inboxMessages.isStarred }).from(inboxMessages).where(and(...conditions)).limit(1);
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const [msg] = await db.select({
+    isStarred: inboxMessages.isStarred,
+    threadId: inboxMessages.threadId,
+    tenantId: inboxMessages.tenantId,
+  }).from(inboxMessages).where(and(...conditions)).limit(1);
   if (!msg) throw new Error("Message not found");
   await db.update(inboxMessages).set({ isStarred: !msg.isStarred }).where(and(...conditions));
+  await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
   return !msg.isStarred;
 }
 
@@ -229,38 +600,39 @@ export async function assignMessage(id: number, assignedToId: number | null, ass
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.id, id)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  const [msg] = await db.select({ threadId: inboxMessages.threadId, tenantId: inboxMessages.tenantId }).from(inboxMessages).where(and(...conditions)).limit(1);
   await db.update(inboxMessages).set({
     assignedToId,
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
+  if (msg) await syncTicketForThread(msg.threadId, msg.tenantId ?? tenantId ?? null);
 }
 
 export async function assignThread(threadId: string, assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   await db.update(inboxMessages).set({
     assignedToId,
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
+  await syncTicketForThread(threadId, tenantId);
 }
 
 export async function getUnreadCount(userId?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const conditions: any[] = [
-    eq(inboxMessages.isRead, false),
-    eq(inboxMessages.direction, "inbound"),
-  ];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
-  if (userId) conditions.push(eq(inboxMessages.assignedToId, userId));
+  await ensureTicketsForTenant(tenantId);
+  const conditions: any[] = [sql`${inboxTickets.unreadCount} > 0`];
+  appendTenantScope(conditions, inboxTickets.tenantId, tenantId);
+  if (userId) conditions.push(eq(inboxTickets.assignedToId, userId));
   const [result] = await db
     .select({ count: sql<number>`count(*)` })
-    .from(inboxMessages)
+    .from(inboxTickets)
     .where(and(...conditions));
   return result?.count || 0;
 }
@@ -399,7 +771,11 @@ export async function addTagToMessage(messageId: number, tagId: number, tenantId
 
   const messageConditions: any[] = [eq(inboxMessages.id, messageId)];
   appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
-  const [visibleMessage] = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions)).limit(1);
+  const [visibleMessage] = await db.select({
+    id: inboxMessages.id,
+    threadId: inboxMessages.threadId,
+    tenantId: inboxMessages.tenantId,
+  }).from(inboxMessages).where(and(...messageConditions)).limit(1);
   if (!visibleMessage) throw new Error("Message not found");
 
   // Check if already exists
@@ -410,6 +786,7 @@ export async function addTagToMessage(messageId: number, tagId: number, tenantId
     .limit(1);
   if (existing) return;
   await db.insert(inboxMessageTags).values({ messageId, tagId });
+  await syncTicketForThread(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null);
 }
 
 export async function removeTagFromMessage(messageId: number, tagId: number, tenantId?: number | null) {
@@ -422,12 +799,17 @@ export async function removeTagFromMessage(messageId: number, tagId: number, ten
 
   const messageConditions: any[] = [eq(inboxMessages.id, messageId)];
   appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
-  const [visibleMessage] = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions)).limit(1);
+  const [visibleMessage] = await db.select({
+    id: inboxMessages.id,
+    threadId: inboxMessages.threadId,
+    tenantId: inboxMessages.tenantId,
+  }).from(inboxMessages).where(and(...messageConditions)).limit(1);
   if (!visibleMessage) return;
 
   await db.delete(inboxMessageTags).where(
     and(eq(inboxMessageTags.messageId, messageId), eq(inboxMessageTags.tagId, tagId))
   );
+  await syncTicketForThread(visibleMessage.threadId, visibleMessage.tenantId ?? tenantId ?? null);
 }
 
 // ─── Email Signatures ───────────────────────────────────────────────────────
@@ -882,13 +1264,14 @@ export async function bulkDeleteMessages(ids: number[], tenantId?: number | null
   if (!db) throw new Error("Database unavailable");
   const messageConditions: any[] = [inArray(inboxMessages.id, ids)];
   if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
-  const ownedMessages = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions));
+  const ownedMessages = await db.select({ id: inboxMessages.id, threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...messageConditions));
   const ownedIds = ownedMessages.map(row => row.id);
   if (ownedIds.length === 0) return;
   // Delete associated tags first
   await db.delete(inboxMessageTags).where(inArray(inboxMessageTags.messageId, ownedIds));
   // Delete messages
   await db.delete(inboxMessages).where(inArray(inboxMessages.id, ownedIds));
+  await syncTicketsForThreads(ownedMessages.map((row) => row.threadId), tenantId);
 }
 
 export async function bulkDeleteThreads(threadIds: string[], tenantId?: number | null) {
@@ -903,9 +1286,21 @@ export async function bulkDeleteThreads(threadIds: string[], tenantId?: number |
     .where(and(...messageConditions));
   const ownedIds = ownedMessages.map(row => row.id);
   if (ownedIds.length === 0) return 0;
+  const ownedThreadIds = Array.from(new Set(ownedMessages.map(row => row.threadId)));
+  const ticketConditionsForDelete: any[] = [inArray(inboxTickets.threadId, ownedThreadIds)];
+  appendTenantScope(ticketConditionsForDelete, inboxTickets.tenantId, tenantId);
+  const ownedTickets = await db
+    .select({ id: inboxTickets.id })
+    .from(inboxTickets)
+    .where(and(...ticketConditionsForDelete));
+  const ownedTicketIds = ownedTickets.map((row) => row.id);
+  if (ownedTicketIds.length > 0) {
+    await db.delete(inboxTicketTags).where(inArray(inboxTicketTags.ticketId, ownedTicketIds));
+    await db.delete(inboxTickets).where(inArray(inboxTickets.id, ownedTicketIds));
+  }
   await db.delete(inboxMessageTags).where(inArray(inboxMessageTags.messageId, ownedIds));
   await db.delete(inboxMessages).where(inArray(inboxMessages.id, ownedIds));
-  return new Set(ownedMessages.map(row => row.threadId)).size;
+  return ownedThreadIds.length;
 }
 
 export async function bulkAssignMessages(ids: number[], assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
@@ -913,11 +1308,13 @@ export async function bulkAssignMessages(ids: number[], assignedToId: number | n
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [inArray(inboxMessages.id, ids)];
   if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  const messages = await db.select({ threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...conditions));
   await db.update(inboxMessages).set({
     assignedToId,
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
+  await syncTicketsForThreads(messages.map((msg) => msg.threadId), tenantId);
 }
 
 export async function bulkAssignThreads(threadIds: string[], assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
@@ -931,6 +1328,7 @@ export async function bulkAssignThreads(threadIds: string[], assignedToId: numbe
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
+  await syncTicketsForThreads(threadIds, tenantId);
   return threadIds.length;
 }
 
@@ -944,7 +1342,7 @@ export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number
 
   const messageConditions: any[] = [inArray(inboxMessages.id, ids)];
   if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
-  const ownedMessages = await db.select({ id: inboxMessages.id }).from(inboxMessages).where(and(...messageConditions));
+  const ownedMessages = await db.select({ id: inboxMessages.id, threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...messageConditions));
   for (const { id: messageId } of ownedMessages) {
     const [existing] = await db
       .select()
@@ -955,6 +1353,7 @@ export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number
       await db.insert(inboxMessageTags).values({ messageId, tagId });
     }
   }
+  await syncTicketsForThreads(ownedMessages.map((row) => row.threadId), tenantId);
 }
 
 export async function bulkAddTagToThreads(threadIds: string[], tagId: number, tenantId?: number | null) {
@@ -985,5 +1384,6 @@ export async function bulkAddTagToThreads(threadIds: string[], tagId: number, te
     }
   }
 
+  await syncTicketsForThreads(threadIds, tenantId);
   return new Set(ownedMessages.map(row => row.threadId)).size;
 }

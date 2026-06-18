@@ -2192,6 +2192,68 @@ export const inboxMessages = mysqlTable("inbox_messages", {
 export type InboxMessage = typeof inboxMessages.$inferSelect;
 export type InsertInboxMessage = typeof inboxMessages.$inferInsert;
 
+// Inbox tickets — one durable helpdesk case per email thread
+export const inboxTickets = mysqlTable("inbox_tickets", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  threadId: varchar("threadId", { length: 128 }).notNull(),
+  subject: varchar("subject", { length: 1000 }),
+  requesterEmail: varchar("requesterEmail", { length: 320 }),
+  requesterName: varchar("requesterName", { length: 255 }),
+  receivedByAddress: varchar("receivedByAddress", { length: 320 }),
+  channel: mysqlEnum("inboxTicketChannel", ["email", "phone", "web", "portal", "manual"]).default("email").notNull(),
+  priority: mysqlEnum("inboxTicketPriority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
+  status: mysqlEnum("inboxTicketStatus", ["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]).default("new").notNull(),
+  assignedToId: int("assignedToId"),
+  assignedToName: varchar("assignedToName", { length: 100 }),
+  assignedAt: timestamp("assignedAt"),
+  matchedJobId: int("matchedJobId"),
+  matchedLeadId: int("matchedLeadId"),
+  matchedClientEmail: varchar("matchedClientEmail", { length: 320 }),
+  firstMessageId: int("firstMessageId"),
+  latestMessageId: int("latestMessageId"),
+  latestDirection: mysqlEnum("inboxTicketLatestDirection", ["inbound", "outbound"]),
+  messageCount: int("messageCount").default(0).notNull(),
+  unreadCount: int("unreadCount").default(0).notNull(),
+  isStarred: boolean("isStarred").default(false).notNull(),
+  lastInboundAt: timestamp("lastInboundAt"),
+  lastOutboundAt: timestamp("lastOutboundAt"),
+  lastMessageAt: timestamp("lastMessageAt"),
+  slaWarningAt: timestamp("slaWarningAt"),
+  slaDueAt: timestamp("slaDueAt"),
+  slaBreachedAt: timestamp("slaBreachedAt"),
+  resolvedAt: timestamp("resolvedAt"),
+  resolvedBy: int("resolvedBy"),
+  resolvedByName: varchar("resolvedByName", { length: 100 }),
+  resolutionNotes: text("resolutionNotes"),
+  closedReason: varchar("closedReason", { length: 100 }),
+  createdBy: int("createdBy"),
+  createdByName: varchar("createdByName", { length: 100 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_inbox_tickets_tenant_thread").on(table.tenantId, table.threadId),
+  index("idx_inbox_tickets_tenant").on(table.tenantId),
+  index("idx_inbox_tickets_tenant_status").on(table.tenantId, table.status),
+  index("idx_inbox_tickets_tenant_assignee").on(table.tenantId, table.assignedToId),
+  index("idx_inbox_tickets_tenant_last_message").on(table.tenantId, table.lastMessageAt),
+]);
+export type InboxTicket = typeof inboxTickets.$inferSelect;
+export type InsertInboxTicket = typeof inboxTickets.$inferInsert;
+
+// Junction table: inbox tickets ↔ tags
+export const inboxTicketTags = mysqlTable("inbox_ticket_tags", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketId: int("ticketId").notNull(),
+  tagId: int("tagId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_inbox_ticket_tags_ticket_tag").on(table.ticketId, table.tagId),
+  index("idx_inbox_ticket_tags_ticket").on(table.ticketId),
+  index("idx_inbox_ticket_tags_tag").on(table.tagId),
+]);
+export type InboxTicketTag = typeof inboxTicketTags.$inferSelect;
+
 // Junction table: inbox messages ↔ tags
 export const inboxMessageTags = mysqlTable("inbox_message_tags", {
   id: int("id").autoincrement().primaryKey(),

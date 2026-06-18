@@ -16,6 +16,9 @@ import { and, eq, like, or, sql } from "drizzle-orm";
 import { getTenantEmailConfig } from "./tenant-integrations";
 
 const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
+const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]);
+const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
+const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 
 export const inboxRouter = router({
   // ─── Messages ─────────────────────────────────────────────────────────────
@@ -50,7 +53,13 @@ export const inboxRouter = router({
           tags: await inboxDb.getMessageTags(msg.id, ctx.tenant!.id),
         }))
       );
-      return messagesWithTags;
+      const ticket = await inboxDb.getTicketByThread(input.threadId, ctx.tenant!.id);
+      const ticketTags = ticket ? await inboxDb.getTicketTags(ticket.id, ctx.tenant!.id) : [];
+      return messagesWithTags.map((msg) => ({
+        ...msg,
+        ticket,
+        tags: ticketTags.length > 0 ? ticketTags : msg.tags,
+      }));
     }),
 
   getMessage: protectedProcedure
@@ -169,10 +178,42 @@ export const inboxRouter = router({
     }),
 
   updateThreadStatus: protectedProcedure
-    .input(z.object({ threadId: z.string(), status: inboxStatusSchema }))
+    .input(z.object({ threadId: z.string(), status: inboxTicketStatusSchema }))
     .mutation(async ({ ctx, input }) => {
-      await inboxDb.updateThreadStatus(input.threadId, input.status, ctx.tenant!.id);
+      await inboxDb.updateThreadStatus(
+        input.threadId,
+        input.status,
+        ctx.tenant!.id,
+        ctx.user!.id,
+        ctx.user!.name || ctx.user!.email || null,
+      );
       return { success: true };
+    }),
+
+  updateTicket: protectedProcedure
+    .input(z.object({
+      threadId: z.string(),
+      priority: inboxTicketPrioritySchema.optional(),
+      channel: inboxTicketChannelSchema.optional(),
+      status: inboxTicketStatusSchema.optional(),
+      resolutionNotes: z.string().nullable().optional(),
+      closedReason: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const ticket = await inboxDb.updateTicketMetadata(
+        input.threadId,
+        {
+          priority: input.priority,
+          channel: input.channel,
+          status: input.status,
+          resolutionNotes: input.resolutionNotes,
+          closedReason: input.closedReason,
+        },
+        ctx.tenant!.id,
+        ctx.user!.id,
+        ctx.user!.name || ctx.user!.email || null,
+      );
+      return { success: true, ticket };
     }),
 
   togglePortalVisible: protectedProcedure
