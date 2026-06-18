@@ -319,7 +319,7 @@ export async function fetchNewMessages(mailbox: string, since: Date, folderId: s
  * Get the delta link for change tracking (initial sync)
  */
 export async function getDeltaLink(mailbox: string, folderId: string = "inbox", tenantId?: number | null): Promise<{ messages: GraphEmailMessage[]; deltaLink: string }> {
-  let url = `/users/${encodeURIComponent(mailbox)}/mailFolders/${folderId}/messages/delta?$select=subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,bodyPreview,internetMessageId,conversationId,importance,body`;
+  let url = `/users/${encodeURIComponent(mailbox)}/mailFolders/${folderId}/messages/delta?$select=subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,bodyPreview,internetMessageId,internetMessageHeaders,conversationId,parentFolderId,importance,body`;
 
   const allMessages: GraphEmailMessage[] = [];
   let deltaLink = "";

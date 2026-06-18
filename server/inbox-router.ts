@@ -352,6 +352,7 @@ export const inboxRouter = router({
         fromAddress: fromAddress,
         fromName: userName,
         toAddresses: JSON.stringify([toAddress]),
+        receivedByAddress: replyFromEmail,
         subject,
         htmlBody: fullHtml,
         textBody: input.textBody || null,
@@ -432,12 +433,13 @@ export const inboxRouter = router({
         fromAddress,
         fromName: userName,
         toAddresses: JSON.stringify([input.toAddress, ...(input.ccAddresses || [])]),
+        receivedByAddress: composeFromEmail,
         subject: input.subject,
         htmlBody: fullHtml,
         textBody: input.textBody || null,
         matchedJobId: input.matchedJobId || null,
         matchedLeadId: input.matchedLeadId || null,
-        status: "replied",
+        status: "open",
         isRead: true,
         isStarred: false,
         portalVisible: false,
@@ -478,6 +480,15 @@ export const inboxRouter = router({
       }, ctx.tenant!.id);
 
       return { success: true, messageId: msgId, provider: sendResult.provider, emailId: sendResult.emailId };
+    }),
+
+  syncNow: protectedProcedure
+    .mutation(async ({ ctx }) => {
+      const { syncTenantMailboxes } = await import("./email/msgraph-sync");
+      const results = await syncTenantMailboxes(ctx.tenant!.id);
+      const newMessages = results.reduce((sum, item) => sum + item.newMessages, 0);
+      const errors = results.flatMap((item) => item.errors.map((error) => `${item.mailbox}: ${error}`));
+      return { success: errors.length === 0, newMessages, errors, results };
     }),
 
   // ─── Tags ─────────────────────────────────────────────────────────────────

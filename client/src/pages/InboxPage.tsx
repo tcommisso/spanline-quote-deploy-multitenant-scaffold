@@ -34,9 +34,35 @@ const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   open: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  sent: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   closed: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
   spam: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
 };
+
+function parseFirstRecipient(toAddresses: unknown): string {
+  if (!toAddresses) return "";
+  if (Array.isArray(toAddresses)) return String(toAddresses[0] || "");
+  if (typeof toAddresses !== "string") return "";
+  try {
+    const parsed = JSON.parse(toAddresses);
+    if (Array.isArray(parsed)) return String(parsed[0] || "");
+  } catch {
+    // Legacy rows may contain a plain address string.
+  }
+  return toAddresses.split(/[;,]/)[0]?.trim() || toAddresses;
+}
+
+function displayStatusForMessage(msg: any): { key: string; label: string } | null {
+  if (msg.direction === "outbound" && msg.status !== "closed" && msg.status !== "spam") return null;
+  return { key: msg.status || "open", label: msg.status || "open" };
+}
+
+function participantLabelForMessage(msg: any): string {
+  if (msg.direction === "inbound") return msg.fromName || msg.fromAddress;
+  const sender = msg.createdByName || msg.fromName || msg.fromAddress || "Sent";
+  const recipient = parseFirstRecipient(msg.toAddresses);
+  return recipient ? `${sender} -> ${recipient}` : sender;
+}
 
 export default function InboxPage() {
   const { user } = useAuth();
@@ -192,8 +218,18 @@ export default function InboxPage() {
   }
 
   const handleRefresh = useCallback(async () => {
+    try {
+      const result = await utils.client.inbox.syncNow.mutate();
+      if (result.errors?.length) {
+        toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`);
+      } else if (result.newMessages > 0) {
+        toast.success(`Inbox synced: ${result.newMessages} new message${result.newMessages === 1 ? "" : "s"}`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Inbox sync failed");
+    }
     await refetch();
-  }, [refetch]);
+  }, [refetch, utils.client.inbox.syncNow]);
 
   return (
     <PullToRefresh onRefresh={handleRefresh}>
@@ -429,6 +465,8 @@ export default function InboxPage() {
 
           {messages.map((msg: any) => {
             const slaStatus = getSlaStatus(msg);
+            const displayStatus = displayStatusForMessage(msg);
+            const participantLabel = participantLabelForMessage(msg);
             const slaBg =
               slaStatus === "escalation" ? "border-l-4 border-l-red-500 bg-red-50/50 dark:bg-red-950/20" :
               slaStatus === "warning" ? "border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/20" :
@@ -479,7 +517,7 @@ export default function InboxPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className={`text-sm truncate ${isUnread ? "font-semibold" : "font-medium"}`}>
-                      {msg.direction === "inbound" ? (msg.fromName || msg.fromAddress) : `To: ${(() => { try { return JSON.parse(msg.toAddresses)?.[0]; } catch { return msg.toAddresses; } })()}`}
+                      {participantLabel}
                     </span>
                     {msg.direction === "outbound" && (
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 shrink-0">Sent</Badge>
@@ -492,9 +530,11 @@ export default function InboxPage() {
                         })()}
                       </Badge>
                     )}
-                    <Badge className={`text-[10px] px-1.5 py-0 h-4 shrink-0 ${STATUS_COLORS[msg.status] || ""}`}>
-                      {msg.status}
-                    </Badge>
+                    {displayStatus && (
+                      <Badge className={`text-[10px] px-1.5 py-0 h-4 shrink-0 ${STATUS_COLORS[displayStatus.key] || ""}`}>
+                        {displayStatus.label}
+                      </Badge>
+                    )}
                     {slaStatus === "warning" && (
                       <TooltipProvider>
                         <Tooltip>

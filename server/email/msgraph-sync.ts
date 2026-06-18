@@ -7,7 +7,7 @@ import * as msgraph from "./msgraph";
 import * as inboxDb from "../inbox-db";
 import { getDb } from "../db";
 import { inboxAddresses, inboxMessages } from "../../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { storagePut } from "../storage";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -16,6 +16,109 @@ interface SyncResult {
   mailbox: string;
   newMessages: number;
   errors: string[];
+}
+
+function normalizeEmail(value?: string | null): string {
+  const raw = (value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const bracketMatch = raw.match(/<([^>]+)>/);
+  return (bracketMatch?.[1] || raw).replace(/^mailto:/, "").trim();
+}
+
+function parseAddressList(value: unknown): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map((item) => normalizeEmail(String(item))).filter(Boolean);
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map((item) => normalizeEmail(String(item))).filter(Boolean);
+  } catch {
+    // Some legacy rows store a plain comma/semicolon separated string.
+  }
+  return value.split(/[;,]/).map((item) => normalizeEmail(item)).filter(Boolean);
+}
+
+function normalizeSubject(subject?: string | null): string {
+  return (subject || "")
+    .replace(/^\s*((re|fw|fwd):\s*)+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function collectReferencedMessageIds(inReplyTo?: string | null, references?: string | null): string[] {
+  const ids = new Set<string>();
+  for (const value of [inReplyTo, references]) {
+    if (!value) continue;
+    const bracketMatches = value.match(/<[^>]+>/g);
+    if (bracketMatches) {
+      bracketMatches.forEach((id) => ids.add(id.trim()));
+      continue;
+    }
+    value.split(/\s+/).map((part) => part.trim()).filter(Boolean).forEach((id) => ids.add(id));
+  }
+  return Array.from(ids);
+}
+
+async function resolveThreadIdForGraphMessage(args: {
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>;
+  tenantId: number | null;
+  fallbackThreadId: string;
+  direction: "inbound" | "outbound";
+  subject?: string | null;
+  fromAddress: string;
+  toAddresses: string[];
+  ccAddresses: string[];
+  mailboxAddress: string;
+  inReplyToHeader?: string | null;
+  referencesHeader?: string | null;
+}): Promise<string> {
+  const referencedIds = collectReferencedMessageIds(args.inReplyToHeader, args.referencesHeader);
+  if (referencedIds.length > 0) {
+    const directConditions: any[] = [inArray(inboxMessages.messageId, referencedIds)];
+    if (args.tenantId) directConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+    const [directMatch] = await args.db
+      .select({ threadId: inboxMessages.threadId })
+      .from(inboxMessages)
+      .where(and(...directConditions))
+      .orderBy(desc(inboxMessages.createdAt))
+      .limit(1);
+    if (directMatch?.threadId) return directMatch.threadId;
+  }
+
+  if (args.direction !== "inbound") return args.fallbackThreadId;
+
+  const subject = normalizeSubject(args.subject);
+  const inboundFrom = normalizeEmail(args.fromAddress);
+  if (!subject || !inboundFrom) return args.fallbackThreadId;
+
+  const mailbox = normalizeEmail(args.mailboxAddress);
+  const inboundRecipients = [...args.toAddresses, ...args.ccAddresses].map(normalizeEmail).filter(Boolean);
+  const candidateConditions: any[] = [eq(inboxMessages.direction, "outbound")];
+  if (args.tenantId) candidateConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+
+  const candidates = await args.db
+    .select({
+      threadId: inboxMessages.threadId,
+      subject: inboxMessages.subject,
+      fromAddress: inboxMessages.fromAddress,
+      toAddresses: inboxMessages.toAddresses,
+      receivedByAddress: inboxMessages.receivedByAddress,
+    })
+    .from(inboxMessages)
+    .where(and(...candidateConditions))
+    .orderBy(desc(inboxMessages.createdAt))
+    .limit(250);
+
+  const match = candidates.find((candidate) => {
+    if (normalizeSubject(candidate.subject) !== subject) return false;
+    const outboundRecipients = parseAddressList(candidate.toAddresses);
+    if (!outboundRecipients.includes(inboundFrom)) return false;
+    const outboundSender = normalizeEmail(candidate.receivedByAddress || candidate.fromAddress);
+    return inboundRecipients.includes(outboundSender) || inboundRecipients.includes(mailbox) || outboundSender === mailbox;
+  });
+
+  return match?.threadId || args.fallbackThreadId;
 }
 
 // ─── Sync Logic ────────────────────────────────────────────────────────────────
@@ -126,8 +229,27 @@ async function processGraphMessage(
   const toAddresses = msg.toRecipients?.map(r => r.emailAddress.address) || [];
   const ccAddresses = msg.ccRecipients?.map(r => r.emailAddress.address) || [];
 
-  // Use conversationId as threadId for grouping
-  const threadId = msg.conversationId || msg.internetMessageId || `graph-${msg.id}`;
+  // Extract threading headers if available
+  const inReplyToHeader = msg.internetMessageHeaders?.find(h => h.name.toLowerCase() === "in-reply-to")?.value || null;
+  const referencesHeader = msg.internetMessageHeaders?.find(h => h.name.toLowerCase() === "references")?.value || null;
+  const bodyContentType = msg.body?.contentType?.toLowerCase();
+
+  // Use Graph conversationId for native grouping, then fall back to app-owned subject/recipient matching
+  // so replies to app-sent messages attach to the original local thread.
+  const graphThreadId = msg.conversationId || msg.internetMessageId || `graph-${msg.id}`;
+  const threadId = await resolveThreadIdForGraphMessage({
+    db,
+    tenantId: address.tenantId,
+    fallbackThreadId: graphThreadId,
+    direction,
+    subject: msg.subject,
+    fromAddress: fromAddr,
+    toAddresses,
+    ccAddresses,
+    mailboxAddress: address.address,
+    inReplyToHeader,
+    referencesHeader,
+  });
 
   // Process attachments if any
   let attachments: any[] | null = null;
@@ -161,10 +283,6 @@ async function processGraphMessage(
     ? await inboxDb.matchEmailToClient(fromAddr, address.tenantId)
     : null;
 
-  // Extract threading headers if available
-  const inReplyToHeader = msg.internetMessageHeaders?.find(h => h.name.toLowerCase() === "in-reply-to")?.value || null;
-  const referencesHeader = msg.internetMessageHeaders?.find(h => h.name.toLowerCase() === "references")?.value || null;
-
   // Create inbox message
   const { id: inboxMsgId } = await inboxDb.createInboxMessage({
     tenantId: address.tenantId,
@@ -181,8 +299,8 @@ async function processGraphMessage(
     ccAddresses: ccAddresses.length > 0 ? JSON.stringify(ccAddresses) : null,
     receivedByAddress: address.address,
     subject: msg.subject || null,
-    htmlBody: msg.body?.contentType === "html" ? msg.body.content : null,
-    textBody: msg.body?.contentType === "text" ? msg.body.content : (msg.bodyPreview || null),
+    htmlBody: bodyContentType === "html" ? msg.body.content : null,
+    textBody: bodyContentType === "text" ? msg.body.content : (msg.bodyPreview || null),
     attachments,
     matchedJobId: match?.matchedJobId || null,
     matchedLeadId: match?.matchedLeadId || null,
@@ -190,7 +308,7 @@ async function processGraphMessage(
     assignedToId: address.defaultAssigneeId || null,
     assignedToName: address.defaultAssigneeName || null,
     assignedAt: address.defaultAssigneeId ? new Date() : null,
-    status: direction === "outbound" ? "replied" : "new",
+    status: direction === "outbound" ? "open" : "new",
     isRead: msg.isRead || direction === "outbound",
     isStarred: false,
     portalVisible: false,
@@ -253,6 +371,32 @@ export async function syncAllMailboxes(): Promise<SyncResult[]> {
     if (result.errors.length > 0) {
       console.error(`[MSGraph Sync] ${addr.address}: ${result.errors.length} errors`);
     }
+  }
+
+  return results;
+}
+
+/**
+ * Sync active Microsoft Graph mailboxes for the current tenant only.
+ * Used by the Inbox refresh action so new external replies can be pulled on demand.
+ */
+export async function syncTenantMailboxes(tenantId: number | null): Promise<SyncResult[]> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const conditions: any[] = [
+    eq(inboxAddresses.active, true),
+    eq(inboxAddresses.provider as any, "msgraph"),
+  ];
+  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+
+  const addresses = await db.select()
+    .from(inboxAddresses)
+    .where(and(...conditions));
+
+  const results: SyncResult[] = [];
+  for (const addr of addresses) {
+    results.push(await syncMailbox(addr as any));
   }
 
   return results;
