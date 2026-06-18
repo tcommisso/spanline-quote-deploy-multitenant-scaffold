@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { tenantAdminProcedure, router } from "./_core/trpc";
 import { ENV } from "./_core/env";
 import { getDb } from "./db";
-import { daTrackerPollLog, nswDaPollLog, xeroWebhookEvents } from "../drizzle/schema";
+import { daTrackerPollLog, inboxAddresses, nswDaPollLog, xeroWebhookEvents } from "../drizzle/schema";
 
 type ApiKey =
   | "hbcf_onegov"
@@ -133,12 +133,22 @@ async function testApi(key: ApiKey): Promise<{ ok: boolean; detail: string }> {
   }
 }
 
+function toIsoTimestamp(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+}
+
 export const apiHealthRouter = router({
   list: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     let lastActPoll = null as any;
     let lastNswPoll = null as any;
     let lastXeroWebhook = null as any;
+    let lastO365MailboxSync = null as { lastSyncAt: Date | string | null } | null;
     if (db) {
       [lastActPoll] = await db.select().from(daTrackerPollLog)
         .where(eq(daTrackerPollLog.tenantId, ctx.tenant!.id))
@@ -153,6 +163,16 @@ export const apiHealthRouter = router({
         .where(eq(xeroWebhookEvents.appTenantId, ctx.tenant!.id))
         .orderBy(desc(xeroWebhookEvents.receivedAt))
         .limit(1);
+      [lastO365MailboxSync] = await db.select({ lastSyncAt: inboxAddresses.lastSyncAt })
+        .from(inboxAddresses)
+        .where(and(
+          eq(inboxAddresses.tenantId, ctx.tenant!.id),
+          eq(inboxAddresses.active, true),
+          eq(inboxAddresses.provider, "msgraph"),
+          isNotNull(inboxAddresses.lastSyncAt),
+        ))
+        .orderBy(desc(inboxAddresses.lastSyncAt))
+        .limit(1);
     }
 
     return API_CHECKS.map((check) => {
@@ -164,6 +184,13 @@ export const apiHealthRouter = router({
             ? lastXeroWebhook.receivedAt
             : null,
           lastError: lastXeroWebhook?.status === "failed" ? lastXeroWebhook.errorMessage || "Last webhook failed" : null,
+        };
+      }
+      if (check.key === "o365_graph") {
+        return {
+          ...check,
+          lastSuccessAt: toIsoTimestamp(lastO365MailboxSync?.lastSyncAt),
+          lastError: null,
         };
       }
       return {
