@@ -19,21 +19,23 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 import {
-  Inbox, Mail, MailOpen, Star, StarOff, Search, Filter, RefreshCw,
+  Inbox, Mail, Star, StarOff, Search, Filter, RefreshCw,
   User, Tag, Clock, AlertTriangle, AlertCircle, ChevronRight,
-  ArrowUpDown, Eye, EyeOff, Paperclip, MailPlus, X, CheckCheck,
+  Paperclip, MailPlus, X, CheckCheck,
   Trash2, UserPlus, TagIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { INBOX_TICKET_STATUS_LABELS, type InboxTicketStatus } from "@shared/inbox-ticket";
 
-type StatusFilter = "all" | "new" | "open" | "replied" | "closed" | "spam";
+type StatusFilter = "all" | InboxTicketStatus;
 type DirectionFilter = "all" | "inbound" | "outbound";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   open: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-  replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  waiting_customer: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  customer_replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   sent: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   closed: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
   spam: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
@@ -53,8 +55,11 @@ function parseFirstRecipient(toAddresses: unknown): string {
 }
 
 function displayStatusForMessage(msg: any): { key: string; label: string } | null {
-  if (msg.direction === "outbound" && msg.status !== "closed" && msg.status !== "spam") return null;
-  return { key: msg.status || "open", label: msg.status || "open" };
+  const key = msg.ticketStatus || msg.status || "open";
+  return {
+    key,
+    label: msg.ticketStatusLabel || INBOX_TICKET_STATUS_LABELS[key as InboxTicketStatus] || key,
+  };
 }
 
 function participantLabelForMessage(msg: any): string {
@@ -87,7 +92,8 @@ export default function InboxPage() {
     search: search || undefined,
     status: statusFilter !== "all" ? statusFilter : undefined,
     direction: directionFilter !== "all" ? (directionFilter as "inbound" | "outbound") : undefined,
-    assignedToId: assignedFilter === "mine" ? user?.id : assignedFilter === "unassigned" ? undefined : undefined,
+    assignedToId: assignedFilter === "mine" ? user?.id : undefined,
+    assignedState: assignedFilter === "unassigned" ? "unassigned" as const : undefined,
     isRead: undefined as boolean | undefined,
     receivedByAddress: addressFilter !== "all" ? addressFilter : undefined,
     tagIds: tagFilter ? [tagFilter] : undefined,
@@ -107,50 +113,44 @@ export default function InboxPage() {
   const { data: staffUsers } = trpc.inbox.staffUsers.useQuery();
   const { data: slaRule } = trpc.inbox.sla.getActive.useQuery();
 
-  const markReadMut = trpc.inbox.markRead.useMutation({
-    onSuccess: () => { refetch(); },
-  });
-  const markUnreadMut = trpc.inbox.markUnread.useMutation({
-    onSuccess: () => { refetch(); },
-  });
   const toggleStarMut = trpc.inbox.toggleStar.useMutation({
     onSuccess: () => { refetch(); },
   });
   const markAllReadMut = trpc.inbox.markAllRead.useMutation({
-    onSuccess: () => { refetch(); toast.success("All messages marked as read"); },
+    onSuccess: () => { refetch(); toast.success("All tickets marked as read"); },
   });
 
   // Bulk mutations
-  const bulkDeleteMut = trpc.inbox.bulkDelete.useMutation({
+  const bulkDeleteMut = trpc.inbox.bulkDeleteThreads.useMutation({
     onSuccess: (res) => {
-      toast.success(`${res.count} message${res.count > 1 ? "s" : ""} deleted`);
+      toast.success(`${res.count} ticket${res.count > 1 ? "s" : ""} deleted`);
       setSelectedIds(new Set());
       refetch();
       utils.inbox.unreadCount.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
-  const bulkAssignMut = trpc.inbox.bulkAssign.useMutation({
+  const bulkAssignMut = trpc.inbox.bulkAssignThreads.useMutation({
     onSuccess: (res) => {
-      toast.success(`${res.count} message${res.count > 1 ? "s" : ""} assigned`);
+      toast.success(`${res.count} ticket${res.count > 1 ? "s" : ""} assigned`);
       setSelectedIds(new Set());
       setShowAssignPicker(false);
       refetch();
     },
     onError: (err) => toast.error(err.message),
   });
-  const bulkTagMut = trpc.inbox.bulkTag.useMutation({
+  const bulkTagMut = trpc.inbox.bulkTagThreads.useMutation({
     onSuccess: (res) => {
-      toast.success(`Tag applied to ${res.count} message${res.count > 1 ? "s" : ""}`);
+      toast.success(`Tag applied to ${res.count} ticket${res.count > 1 ? "s" : ""}`);
       setSelectedIds(new Set());
       setShowTagPicker(false);
       refetch();
     },
     onError: (err) => toast.error(err.message),
   });
-  const bulkMarkReadMut = trpc.inbox.markRead.useMutation({
-    onSuccess: () => {
-      toast.success(`${selectedIds.size} message${selectedIds.size > 1 ? "s" : ""} marked as read`);
+  const bulkMarkReadMut = trpc.inbox.markThreadsRead.useMutation({
+    onSuccess: (res) => {
+      toast.success(`${res.count} ticket${res.count > 1 ? "s" : ""} marked as read`);
       setSelectedIds(new Set());
       refetch();
       utils.inbox.unreadCount.invalidate();
@@ -164,8 +164,14 @@ export default function InboxPage() {
 
   const isAdmin = isAdminRole(user?.role || "");
   const allPageIds = useMemo(() => messages.map((m: any) => m.id), [messages]);
+  const selectedThreadIds = useMemo(() => {
+    const selected = messages
+      .filter((m: any) => selectedIds.has(m.id) && m.threadId)
+      .map((m: any) => m.threadId as string);
+    return Array.from(new Set(selected));
+  }, [messages, selectedIds]);
   const allSelected = allPageIds.length > 0 && allPageIds.every((id: number) => selectedIds.has(id));
-  const someSelected = selectedIds.size > 0;
+  const someSelected = selectedThreadIds.length > 0;
 
   function toggleSelect(id: number) {
     setSelectedIds(prev => {
@@ -243,7 +249,7 @@ export default function InboxPage() {
           <div>
             <div className="flex items-center gap-2"><h1 className="text-2xl font-bold tracking-tight">Inbox</h1><HelpLink section="inbox" tooltip="Help: Inbox" /></div>
             <p className="text-sm text-muted-foreground">
-              {total} message{total !== 1 ? "s" : ""}
+              {total} ticket{total !== 1 ? "s" : ""}
               {typeof unreadCount === "number" && unreadCount > 0 && (
                 <span className="ml-2 text-primary font-medium">{unreadCount} unread</span>
               )}
@@ -272,16 +278,16 @@ export default function InboxPage() {
 
       {/* Bulk Action Bar */}
       {someSelected && (
-        <div className="flex items-center gap-2 mb-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
+      <div className="flex items-center gap-2 mb-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
           <span className="text-sm font-medium text-primary mr-2">
-            {selectedIds.size} selected
+            {selectedThreadIds.length} ticket{selectedThreadIds.length !== 1 ? "s" : ""} selected
           </span>
           <Separator orientation="vertical" className="h-5" />
           <Button
             variant="outline"
             size="sm"
-            onClick={() => bulkMarkReadMut.mutate({ ids: Array.from(selectedIds) })}
-            disabled={bulkMarkReadMut.isPending}
+            onClick={() => bulkMarkReadMut.mutate({ threadIds: selectedThreadIds })}
+            disabled={bulkMarkReadMut.isPending || selectedThreadIds.length === 0}
           >
             <CheckCheck className="h-4 w-4 mr-1" /> Mark Read
           </Button>
@@ -289,7 +295,7 @@ export default function InboxPage() {
             variant="outline"
             size="sm"
             onClick={() => setShowAssignPicker(true)}
-            disabled={bulkAssignMut.isPending}
+            disabled={bulkAssignMut.isPending || selectedThreadIds.length === 0}
           >
             <UserPlus className="h-4 w-4 mr-1" /> Assign
           </Button>
@@ -297,7 +303,7 @@ export default function InboxPage() {
             variant="outline"
             size="sm"
             onClick={() => setShowTagPicker(true)}
-            disabled={bulkTagMut.isPending}
+            disabled={bulkTagMut.isPending || selectedThreadIds.length === 0}
           >
             <TagIcon className="h-4 w-4 mr-1" /> Tag
           </Button>
@@ -307,7 +313,7 @@ export default function InboxPage() {
               size="sm"
               className="text-destructive border-destructive/30 hover:bg-destructive/10"
               onClick={() => setShowDeleteConfirm(true)}
-              disabled={bulkDeleteMut.isPending}
+              disabled={bulkDeleteMut.isPending || selectedThreadIds.length === 0}
             >
               <Trash2 className="h-4 w-4 mr-1" /> Delete
             </Button>
@@ -326,7 +332,7 @@ export default function InboxPage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search emails..."
+              placeholder="Search tickets..."
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(0); }}
               className="pl-9"
@@ -356,7 +362,8 @@ export default function InboxPage() {
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="new">New</SelectItem>
                 <SelectItem value="open">Open</SelectItem>
-                <SelectItem value="replied">Replied</SelectItem>
+                <SelectItem value="waiting_customer">Waiting on customer</SelectItem>
+                <SelectItem value="customer_replied">Customer replied</SelectItem>
                 <SelectItem value="closed">Closed</SelectItem>
                 <SelectItem value="spam">Spam</SelectItem>
               </SelectContent>
@@ -434,7 +441,7 @@ export default function InboxPage() {
         )}
       </div>
 
-      {/* Message List */}
+      {/* Ticket List */}
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -444,9 +451,9 @@ export default function InboxPage() {
       ) : messages.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
           <Mail className="h-12 w-12 mb-4 opacity-30" />
-          <p className="text-lg font-medium">No messages found</p>
+          <p className="text-lg font-medium">No tickets found</p>
           <p className="text-sm">
-            {search || statusFilter !== "all" ? "Try adjusting your filters" : "Your inbox is empty"}
+            {search || statusFilter !== "all" ? "Try adjusting your filters" : "Your inbox queue is empty"}
           </p>
         </div>
       ) : (
@@ -456,10 +463,10 @@ export default function InboxPage() {
             <Checkbox
               checked={allSelected}
               onCheckedChange={toggleSelectAll}
-              aria-label="Select all messages on this page"
+              aria-label="Select all tickets on this page"
             />
             <span className="text-xs text-muted-foreground">
-              {allSelected ? "Deselect all" : "Select all"}
+              {allSelected ? "Deselect all tickets" : "Select all tickets"}
             </span>
           </div>
 
@@ -485,7 +492,7 @@ export default function InboxPage() {
                   <Checkbox
                     checked={isSelected}
                     onCheckedChange={() => toggleSelect(msg.id)}
-                    aria-label={`Select message from ${msg.fromName || msg.fromAddress}`}
+                    aria-label={`Select ticket from ${msg.fromName || msg.fromAddress}`}
                   />
                 </div>
 
@@ -570,6 +577,16 @@ export default function InboxPage() {
                         {msg.assignedToName}
                       </span>
                     )}
+                    {msg.threadMessageCount > 1 && (
+                      <span>
+                        {msg.threadMessageCount} messages
+                      </span>
+                    )}
+                    {msg.threadUnreadCount > 0 && (
+                      <span className="text-primary font-medium">
+                        {msg.threadUnreadCount} unread
+                      </span>
+                    )}
                     {msg.attachments && JSON.parse(typeof msg.attachments === "string" ? msg.attachments : JSON.stringify(msg.attachments)).length > 0 && (
                       <Paperclip className="h-3 w-3" />
                     )}
@@ -613,12 +630,12 @@ export default function InboxPage() {
         open={showDeleteConfirm}
         onOpenChange={setShowDeleteConfirm}
         onConfirm={() => {
-          bulkDeleteMut.mutate({ ids: Array.from(selectedIds) });
+          bulkDeleteMut.mutate({ threadIds: selectedThreadIds });
           setShowDeleteConfirm(false);
         }}
         isPending={bulkDeleteMut.isPending}
-        title="Delete Messages"
-        description={`Are you sure you want to permanently delete ${selectedIds.size} message${selectedIds.size > 1 ? "s" : ""}? This cannot be undone.`}
+        title="Delete Tickets"
+        description={`Are you sure you want to permanently delete ${selectedThreadIds.length} ticket${selectedThreadIds.length > 1 ? "s" : ""}? This cannot be undone.`}
         confirmLabel="Delete"
       />
 
@@ -626,11 +643,11 @@ export default function InboxPage() {
       {showAssignPicker && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowAssignPicker(false)}>
           <div className="bg-background rounded-lg shadow-lg p-4 w-[320px] max-h-[400px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold mb-3">Assign {selectedIds.size} message{selectedIds.size > 1 ? "s" : ""} to:</h3>
+            <h3 className="text-sm font-semibold mb-3">Assign {selectedThreadIds.length} ticket{selectedThreadIds.length > 1 ? "s" : ""} to:</h3>
             <div className="space-y-1">
               <button
                 className="w-full text-left px-3 py-2 rounded hover:bg-accent text-sm"
-                onClick={() => bulkAssignMut.mutate({ ids: Array.from(selectedIds), assignedToId: null, assignedToName: null })}
+                onClick={() => bulkAssignMut.mutate({ threadIds: selectedThreadIds, assignedToId: null, assignedToName: null })}
               >
                 <span className="text-muted-foreground">Unassign</span>
               </button>
@@ -638,7 +655,7 @@ export default function InboxPage() {
                 <button
                   key={staff.id}
                   className="w-full text-left px-3 py-2 rounded hover:bg-accent text-sm flex items-center gap-2"
-                  onClick={() => bulkAssignMut.mutate({ ids: Array.from(selectedIds), assignedToId: staff.id, assignedToName: staff.name })}
+                  onClick={() => bulkAssignMut.mutate({ threadIds: selectedThreadIds, assignedToId: staff.id, assignedToName: staff.name })}
                 >
                   <User className="h-4 w-4 text-muted-foreground" />
                   {staff.name}
@@ -658,13 +675,13 @@ export default function InboxPage() {
       {showTagPicker && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowTagPicker(false)}>
           <div className="bg-background rounded-lg shadow-lg p-4 w-[320px] max-h-[400px] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold mb-3">Apply tag to {selectedIds.size} message{selectedIds.size > 1 ? "s" : ""}:</h3>
+            <h3 className="text-sm font-semibold mb-3">Apply tag to {selectedThreadIds.length} ticket{selectedThreadIds.length > 1 ? "s" : ""}:</h3>
             <div className="space-y-1">
               {tags && tags.length > 0 ? tags.map((tag: any) => (
                 <button
                   key={tag.id}
                   className="w-full text-left px-3 py-2 rounded hover:bg-accent text-sm flex items-center gap-2"
-                  onClick={() => bulkTagMut.mutate({ ids: Array.from(selectedIds), tagId: tag.id })}
+                  onClick={() => bulkTagMut.mutate({ threadIds: selectedThreadIds, tagId: tag.id })}
                 >
                   <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
                   {tag.name}

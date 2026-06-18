@@ -15,6 +15,8 @@ import { crmLeads, constructionInstallers, suppliers } from "../drizzle/schema";
 import { and, eq, like, or, sql } from "drizzle-orm";
 import { getTenantEmailConfig } from "./tenant-integrations";
 
+const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
+
 export const inboxRouter = router({
   // ─── Messages ─────────────────────────────────────────────────────────────
 
@@ -23,6 +25,7 @@ export const inboxRouter = router({
       direction: z.enum(["inbound", "outbound"]).optional(),
       status: z.string().optional(),
       assignedToId: z.number().optional(),
+      assignedState: z.enum(["unassigned"]).optional(),
       isRead: z.boolean().optional(),
       isStarred: z.boolean().optional(),
       search: z.string().optional(),
@@ -79,6 +82,20 @@ export const inboxRouter = router({
       return { success: true };
     }),
 
+  markThreadsRead: protectedProcedure
+    .input(z.object({ threadIds: z.array(z.string()).min(1).max(100) }))
+    .mutation(async ({ ctx, input }) => {
+      await inboxDb.markThreadsAsRead(input.threadIds, ctx.tenant!.id);
+      return { success: true, count: input.threadIds.length };
+    }),
+
+  markThreadsUnread: protectedProcedure
+    .input(z.object({ threadIds: z.array(z.string()).min(1).max(100) }))
+    .mutation(async ({ ctx, input }) => {
+      await inboxDb.markThreadsAsUnread(input.threadIds, ctx.tenant!.id);
+      return { success: true, count: input.threadIds.length };
+    }),
+
   // ─── Bulk Operations ──────────────────────────────────────────────────────
 
   bulkDelete: adminProcedure
@@ -86,6 +103,13 @@ export const inboxRouter = router({
     .mutation(async ({ ctx, input }) => {
       await inboxDb.bulkDeleteMessages(input.ids, ctx.tenant!.id);
       return { success: true, count: input.ids.length };
+    }),
+
+  bulkDeleteThreads: adminProcedure
+    .input(z.object({ threadIds: z.array(z.string()).min(1).max(100) }))
+    .mutation(async ({ ctx, input }) => {
+      const count = await inboxDb.bulkDeleteThreads(input.threadIds, ctx.tenant!.id);
+      return { success: true, count };
     }),
 
   bulkAssign: protectedProcedure
@@ -99,6 +123,17 @@ export const inboxRouter = router({
       return { success: true, count: input.ids.length };
     }),
 
+  bulkAssignThreads: protectedProcedure
+    .input(z.object({
+      threadIds: z.array(z.string()).min(1).max(100),
+      assignedToId: z.number().nullable(),
+      assignedToName: z.string().nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const count = await inboxDb.bulkAssignThreads(input.threadIds, input.assignedToId, input.assignedToName, ctx.tenant!.id);
+      return { success: true, count };
+    }),
+
   bulkTag: protectedProcedure
     .input(z.object({
       ids: z.array(z.number()).min(1).max(100),
@@ -109,6 +144,16 @@ export const inboxRouter = router({
       return { success: true, count: input.ids.length };
     }),
 
+  bulkTagThreads: protectedProcedure
+    .input(z.object({
+      threadIds: z.array(z.string()).min(1).max(100),
+      tagId: z.number(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const count = await inboxDb.bulkAddTagToThreads(input.threadIds, input.tagId, ctx.tenant!.id);
+      return { success: true, count };
+    }),
+
   toggleStar: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
@@ -117,9 +162,16 @@ export const inboxRouter = router({
     }),
 
   updateStatus: protectedProcedure
-    .input(z.object({ id: z.number(), status: z.enum(["new", "open", "replied", "closed", "spam"]) }))
+    .input(z.object({ id: z.number(), status: inboxStatusSchema }))
     .mutation(async ({ ctx, input }) => {
       await inboxDb.updateInboxMessage(input.id, { status: input.status }, ctx.tenant!.id);
+      return { success: true };
+    }),
+
+  updateThreadStatus: protectedProcedure
+    .input(z.object({ threadId: z.string(), status: inboxStatusSchema }))
+    .mutation(async ({ ctx, input }) => {
+      await inboxDb.updateThreadStatus(input.threadId, input.status, ctx.tenant!.id);
       return { success: true };
     }),
 
@@ -182,6 +234,56 @@ export const inboxRouter = router({
           sendTaskAssignmentNotification({
             section: "Inbox",
             taskTitle: msg.subject || "(no subject)",
+            assignedToUserId: input.assignedToId,
+            assignedByName: ctx.user!.name || "A team member",
+          }).catch(err => console.error("[Inbox] Push notification failed:", err?.message));
+        }
+      }
+
+      return { success: true };
+    }),
+
+  assignThread: protectedProcedure
+    .input(z.object({
+      threadId: z.string(),
+      assignedToId: z.number().nullable(),
+      assignedToName: z.string().nullable(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await inboxDb.assignThread(input.threadId, input.assignedToId, input.assignedToName, ctx.tenant!.id);
+
+      if (input.assignedToId && input.assignedToId !== ctx.user!.id) {
+        const messages = await inboxDb.getThreadMessages(input.threadId, ctx.tenant!.id);
+        const latest = messages[messages.length - 1];
+        if (latest) {
+          const staff = await inboxDb.listStaffUsers(ctx.tenant!.id);
+          const assignee = staff.find(u => u.id === input.assignedToId);
+          if (assignee?.email) {
+            try {
+              await sendNotificationEmail({
+                to: assignee.email,
+                subject: `Inbox: You've been assigned a ticket — ${latest.subject || "(no subject)"}`,
+                htmlBody: `
+                  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h2 style="color: #1e293b;">New Inbox Ticket Assignment</h2>
+                    <p>${ctx.user!.name || "A team member"} has assigned you an inbox ticket.</p>
+                    <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
+                      <tr><td style="padding: 8px; font-weight: bold; border-bottom: 1px solid #e2e8f0;">From:</td><td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${latest.fromName || latest.fromAddress}</td></tr>
+                      <tr><td style="padding: 8px; font-weight: bold; border-bottom: 1px solid #e2e8f0;">Subject:</td><td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${latest.subject || "(no subject)"}</td></tr>
+                    </table>
+                    <p>Please log in to review and respond.</p>
+                  </div>
+                `,
+                fromName: "Altaspan Inbox",
+                settingKey: "task_assignment_email",
+              });
+            } catch (err: any) {
+              console.error("[Inbox] Ticket assignment notification failed:", err?.message);
+            }
+          }
+          sendTaskAssignmentNotification({
+            section: "Inbox",
+            taskTitle: latest.subject || "(no subject)",
             assignedToUserId: input.assignedToId,
             assignedByName: ctx.user!.name || "A team member",
           }).catch(err => console.error("[Inbox] Push notification failed:", err?.message));

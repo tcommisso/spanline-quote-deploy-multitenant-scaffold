@@ -15,6 +15,7 @@ import {
   type InboxAddress, type InsertInboxAddress,
 } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
+import { deriveInboxTicketState, type StoredInboxStatus } from "../shared/inbox-ticket";
 
 // ─── Inbox Messages ─────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ export async function listInboxMessages(filters: {
   direction?: "inbound" | "outbound";
   status?: string;
   assignedToId?: number;
+  assignedState?: "unassigned";
   isRead?: boolean;
   isStarred?: boolean;
   search?: string;
@@ -52,9 +54,8 @@ export async function listInboxMessages(filters: {
 
   const conditions: any[] = [];
   if (filters.tenantId) conditions.push(eq(inboxMessages.tenantId, filters.tenantId));
-  if (filters.direction) conditions.push(eq(inboxMessages.direction, filters.direction));
-  if (filters.status) conditions.push(eq(inboxMessages.status, filters.status as any));
   if (filters.assignedToId !== undefined) conditions.push(eq(inboxMessages.assignedToId, filters.assignedToId));
+  if (filters.assignedState === "unassigned") conditions.push(isNull(inboxMessages.assignedToId));
   if (filters.isRead !== undefined) conditions.push(eq(inboxMessages.isRead, filters.isRead));
   if (filters.isStarred !== undefined) conditions.push(eq(inboxMessages.isStarred, filters.isStarred));
   if (filters.receivedByAddress) conditions.push(eq(inboxMessages.receivedByAddress, filters.receivedByAddress));
@@ -82,26 +83,65 @@ export async function listInboxMessages(filters: {
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
-
-  // Get latest message per thread for the list view
   const limit = filters.limit || 50;
   const offset = filters.offset || 0;
 
-  const messages = await db
+  const matchingMessages = await db
     .select()
     .from(inboxMessages)
     .where(where)
-    .orderBy(desc(inboxMessages.createdAt))
-    .limit(limit)
-    .offset(offset);
+    .orderBy(desc(inboxMessages.createdAt));
 
-  // Count total
-  const [countResult] = await db
-    .select({ count: sql<number>`count(*)` })
+  if (matchingMessages.length === 0) return { messages: [], total: 0 };
+
+  const threadIds = Array.from(new Set(matchingMessages.map((message) => message.threadId)));
+  const threadConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (filters.tenantId) threadConditions.push(eq(inboxMessages.tenantId, filters.tenantId));
+
+  const threadMessages = await db
+    .select()
     .from(inboxMessages)
-    .where(where);
+    .where(and(...threadConditions))
+    .orderBy(desc(inboxMessages.createdAt));
 
-  return { messages, total: countResult?.count || 0 };
+  const messagesByThread = new Map<string, InboxMessage[]>();
+  for (const message of threadMessages) {
+    const bucket = messagesByThread.get(message.threadId) || [];
+    bucket.push(message);
+    messagesByThread.set(message.threadId, bucket);
+  }
+
+  const tickets = Array.from(messagesByThread.values()).map((messages) => {
+    const newestFirst = [...messages].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    const latest = newestFirst[0];
+    const state = deriveInboxTicketState(messages);
+    return {
+      ...latest,
+      ticketStatus: state.key,
+      ticketStatusLabel: state.label,
+      threadMessageCount: messages.length,
+      threadUnreadCount: messages.filter((message) => message.direction === "inbound" && !message.isRead).length,
+    };
+  });
+
+  const filteredTickets = tickets
+    .filter((ticket) => {
+      if (!filters.direction) return true;
+      return ticket.direction === filters.direction;
+    })
+    .filter((ticket) => {
+      if (!filters.status) return true;
+      if (filters.status === "replied") return ticket.ticketStatus === "waiting_customer";
+      return ticket.ticketStatus === filters.status;
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  return {
+    messages: filteredTickets.slice(offset, offset + limit),
+    total: filteredTickets.length,
+  };
 }
 
 export async function getThreadMessages(threadId: string, tenantId?: number | null) {
@@ -122,6 +162,14 @@ export async function updateInboxMessage(id: number, data: Partial<InsertInboxMe
   const conditions: any[] = [eq(inboxMessages.id, id)];
   if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
   await db.update(inboxMessages).set(data).where(and(...conditions));
+}
+
+export async function updateThreadStatus(threadId: string, status: StoredInboxStatus, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
+  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  await db.update(inboxMessages).set({ status }).where(and(...conditions));
 }
 
 export async function markAsRead(ids: number[], tenantId?: number | null) {
@@ -148,6 +196,24 @@ export async function markAsUnread(ids: number[], tenantId?: number | null) {
   await db.update(inboxMessages).set({ isRead: false }).where(and(...conditions));
 }
 
+export async function markThreadsAsRead(threadIds: string[], tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (threadIds.length === 0) return;
+  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  await db.update(inboxMessages).set({ isRead: true }).where(and(...conditions));
+}
+
+export async function markThreadsAsUnread(threadIds: string[], tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (threadIds.length === 0) return;
+  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  await db.update(inboxMessages).set({ isRead: false }).where(and(...conditions));
+}
+
 export async function toggleStar(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -163,6 +229,18 @@ export async function assignMessage(id: number, assignedToId: number | null, ass
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.id, id)];
+  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  await db.update(inboxMessages).set({
+    assignedToId,
+    assignedToName,
+    assignedAt: assignedToId ? new Date() : null,
+  }).where(and(...conditions));
+}
+
+export async function assignThread(threadId: string, assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
   if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
   await db.update(inboxMessages).set({
     assignedToId,
@@ -813,6 +891,23 @@ export async function bulkDeleteMessages(ids: number[], tenantId?: number | null
   await db.delete(inboxMessages).where(inArray(inboxMessages.id, ownedIds));
 }
 
+export async function bulkDeleteThreads(threadIds: string[], tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (threadIds.length === 0) return 0;
+  const messageConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  const ownedMessages = await db
+    .select({ id: inboxMessages.id, threadId: inboxMessages.threadId })
+    .from(inboxMessages)
+    .where(and(...messageConditions));
+  const ownedIds = ownedMessages.map(row => row.id);
+  if (ownedIds.length === 0) return 0;
+  await db.delete(inboxMessageTags).where(inArray(inboxMessageTags.messageId, ownedIds));
+  await db.delete(inboxMessages).where(inArray(inboxMessages.id, ownedIds));
+  return new Set(ownedMessages.map(row => row.threadId)).size;
+}
+
 export async function bulkAssignMessages(ids: number[], assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -823,6 +918,20 @@ export async function bulkAssignMessages(ids: number[], assignedToId: number | n
     assignedToName,
     assignedAt: assignedToId ? new Date() : null,
   }).where(and(...conditions));
+}
+
+export async function bulkAssignThreads(threadIds: string[], assignedToId: number | null, assignedToName: string | null, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (threadIds.length === 0) return 0;
+  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  await db.update(inboxMessages).set({
+    assignedToId,
+    assignedToName,
+    assignedAt: assignedToId ? new Date() : null,
+  }).where(and(...conditions));
+  return threadIds.length;
 }
 
 export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number | null) {
@@ -846,4 +955,35 @@ export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number
       await db.insert(inboxMessageTags).values({ messageId, tagId });
     }
   }
+}
+
+export async function bulkAddTagToThreads(threadIds: string[], tagId: number, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (threadIds.length === 0) return 0;
+
+  const tagConditions: any[] = [eq(inboxTags.id, tagId), eq(inboxTags.active, true)];
+  appendTenantScope(tagConditions, inboxTags.tenantId, tenantId);
+  const [visibleTag] = await db.select({ id: inboxTags.id }).from(inboxTags).where(and(...tagConditions)).limit(1);
+  if (!visibleTag) throw new Error("Tag not found");
+
+  const messageConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  const ownedMessages = await db
+    .select({ id: inboxMessages.id, threadId: inboxMessages.threadId })
+    .from(inboxMessages)
+    .where(and(...messageConditions));
+
+  for (const { id: messageId } of ownedMessages) {
+    const [existing] = await db
+      .select()
+      .from(inboxMessageTags)
+      .where(and(eq(inboxMessageTags.messageId, messageId), eq(inboxMessageTags.tagId, tagId)))
+      .limit(1);
+    if (!existing) {
+      await db.insert(inboxMessageTags).values({ messageId, tagId });
+    }
+  }
+
+  return new Set(ownedMessages.map(row => row.threadId)).size;
 }

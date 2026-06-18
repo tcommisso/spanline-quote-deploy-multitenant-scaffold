@@ -25,11 +25,14 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { deriveInboxTicketState } from "@shared/inbox-ticket";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   open: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  waiting_customer: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  customer_replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   sent: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   closed: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
   spam: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
@@ -63,7 +66,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
     onError: (err) => toast.error(err.message),
   });
 
-  const assignMut = trpc.inbox.assign.useMutation({
+  const assignMut = trpc.inbox.assignThread.useMutation({
     onSuccess: () => {
       toast.success("Assigned");
       setAssignDialogOpen(false);
@@ -72,7 +75,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
     onError: (err) => toast.error(err.message),
   });
 
-  const updateStatusMut = trpc.inbox.updateStatus.useMutation({
+  const updateStatusMut = trpc.inbox.updateThreadStatus.useMutation({
     onSuccess: () => { toast.success("Status updated"); refetch(); },
     onError: (err) => toast.error(err.message),
   });
@@ -109,19 +112,13 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const latestMsg = thread?.[thread.length - 1];
   const threadState = useMemo(() => {
     const messages = thread || [];
-    const latest = messages[messages.length - 1];
-    if (!latest) return { key: "open", label: "open", replyFrom: null as string | null };
-    const hasInbound = messages.some((m: any) => m.direction === "inbound");
+    const state = deriveInboxTicketState(messages);
+    const latest = messages[messages.length - 1] as any;
+    if (!latest) return { ...state, replyFrom: null as string | null };
     const hasOutbound = messages.some((m: any) => m.direction === "outbound");
-    if (latest.direction === "outbound") {
-      return hasInbound
-        ? { key: "replied", label: "replied", replyFrom: null }
-        : { key: "sent", label: "sent", replyFrom: null };
-    }
     return {
-      key: latest.status || "new",
-      label: latest.status || "new",
-      replyFrom: hasOutbound ? (latest.fromName || latest.fromAddress || null) : null,
+      ...state,
+      replyFrom: latest.direction === "inbound" && hasOutbound ? (latest.fromName || latest.fromAddress || null) : null,
     };
   }, [thread]);
 
@@ -235,13 +232,13 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
                 <Tag className="h-4 w-4 mr-2" /> Manage Tags
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => firstMsg && updateStatusMut.mutate({ id: firstMsg.id, status: "open" })}>
-                Mark as Open
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "open" })}>
+                Reopen Ticket
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => firstMsg && updateStatusMut.mutate({ id: firstMsg.id, status: "closed" })}>
-                Mark as Closed
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "closed" })}>
+                Resolve Ticket
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => firstMsg && updateStatusMut.mutate({ id: firstMsg.id, status: "spam" })} className="text-red-600">
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "spam" })} className="text-red-600">
                 Mark as Spam
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -430,14 +427,14 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
       <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Assign Conversation</DialogTitle>
+            <DialogTitle>Assign Ticket</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-2">
             {staffUsers?.map((su: any) => (
               <button
                 key={su.id}
                 className="flex items-center gap-3 w-full p-2 rounded-lg hover:bg-accent transition-colors text-left"
-                onClick={() => firstMsg && assignMut.mutate({ messageId: firstMsg.id, assignedToId: su.id, assignedToName: su.name })}
+                onClick={() => assignMut.mutate({ threadId, assignedToId: su.id, assignedToName: su.name })}
               >
                 <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-medium text-primary">
                   {su.name?.[0] || "?"}
@@ -454,7 +451,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
             <Separator />
             <button
               className="flex items-center gap-3 w-full p-2 rounded-lg hover:bg-accent transition-colors text-left text-muted-foreground"
-              onClick={() => firstMsg && assignMut.mutate({ messageId: firstMsg.id, assignedToId: null, assignedToName: null })}
+              onClick={() => assignMut.mutate({ threadId, assignedToId: null, assignedToName: null })}
             >
               <X className="h-4 w-4" />
               <span className="text-sm">Unassign</span>
