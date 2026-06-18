@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { tenantIdFromContext } from "./_core/tenant-scope";
+import { isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
 
 let tableEnsured = false;
 
@@ -38,12 +38,18 @@ async function ensureManufacturingCatalogueTable(db: any) {
   tableEnsured = true;
 }
 
-function tenantSql(tenantId: number) {
-  return sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
+function tenantSql(tenantId: number | null | undefined) {
+  if (!tenantId) return isMultiTenancyMode() ? sql`1 = 0` : sql`1 = 1`;
+  return isMultiTenancyMode() ? sql`tenantId = ${tenantId}` : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
 }
 
 function tenantIdForContext(ctx: any) {
-  return tenantIdFromContext(ctx) ?? 1;
+  const tenantId = tenantIdFromContext(ctx);
+  if (tenantId) return tenantId;
+  if (isMultiTenancyMode()) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Tenant context is required" });
+  }
+  return 1;
 }
 
 function rowsFromExecute(result: unknown): any[] {

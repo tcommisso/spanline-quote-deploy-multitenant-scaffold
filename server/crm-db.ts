@@ -8,7 +8,7 @@ import {
   smsMessages, callLogs, clientActivities, googleReviews,
   type InsertCrmLead, type InsertLeadNote
 } from "../drizzle/schema";
-import { appendTenantScope } from "./_core/tenant-scope";
+import { appendTenantScope, isMultiTenancyMode } from "./_core/tenant-scope";
 import { getTenantAppSetting } from "./tenant-settings-store";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
@@ -19,9 +19,14 @@ type TenantScopedFilter = {
 };
 
 function tenantClause(alias: string, tenantId?: number | null) {
-  return tenantId
-    ? { sql: ` AND (${alias}.tenantId = ? OR ${alias}.tenantId IS NULL)`, params: [tenantId] }
-    : { sql: "", params: [] };
+  if (!tenantId) {
+    return isMultiTenancyMode()
+      ? { sql: " AND 1 = 0", params: [] }
+      : { sql: "", params: [] };
+  }
+  return isMultiTenancyMode()
+    ? { sql: ` AND ${alias}.tenantId = ?`, params: [tenantId] }
+    : { sql: ` AND (${alias}.tenantId = ? OR ${alias}.tenantId IS NULL)`, params: [tenantId] };
 }
 
 function latestContractPerLead(alias: string) {
@@ -41,18 +46,38 @@ function logicalLeadKey(alias: string) {
   return `COALESCE(NULLIF(${alias}.leadNumber, ''), CONCAT('id:', ${alias}.id))`;
 }
 
+function canonicalLeadOrder(alias: string) {
+  return `CASE ${alias}.status
+    WHEN 'completed' THEN 1
+    WHEN 'won' THEN 2
+    WHEN 'construction' THEN 3
+    WHEN 'building_authority' THEN 4
+    WHEN 'contract' THEN 5
+    WHEN 'lost' THEN 6
+    WHEN 'cancelled' THEN 7
+    WHEN 'quoted' THEN 8
+    WHEN 'appointment_set' THEN 9
+    WHEN 'assigned' THEN 10
+    WHEN 'new' THEN 11
+    ELSE 12
+  END`;
+}
+
+function canonicalLeadRank() {
+  return `ROW_NUMBER() OVER (
+    PARTITION BY ${logicalLeadKey("l")}
+    ORDER BY ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+  )`;
+}
+
 // ─── Lead Number Generation ─────────────────────────────────────────────────
 export async function getNextLeadNumber(tenantId?: number | null): Promise<string> {
+  const scope = tenantClause("crm_leads", tenantId);
   const [rows] = await pool.execute(
-    tenantId
-      ? `SELECT MAX(CAST(SUBSTRING(leadNumber, 3) AS UNSIGNED)) AS maxNumber
-         FROM crm_leads
-         WHERE (tenantId = ? OR tenantId IS NULL)
-           AND leadNumber REGEXP '^L-[0-9]+$'`
-      : `SELECT MAX(CAST(SUBSTRING(leadNumber, 3) AS UNSIGNED)) AS maxNumber
-         FROM crm_leads
-         WHERE leadNumber REGEXP '^L-[0-9]+$'`,
-    tenantId ? [tenantId] : []
+    `SELECT MAX(CAST(SUBSTRING(leadNumber, 3) AS UNSIGNED)) AS maxNumber
+     FROM crm_leads
+     WHERE leadNumber REGEXP '^L-[0-9]+$'${scope.sql}`,
+    scope.params
   );
   const num = Number((rows as any[])[0]?.maxNumber || 0) + 1;
   return `L-${String(num).padStart(4, "0")}`;
@@ -93,7 +118,9 @@ export async function listLeads(filters?: {
         ? sql`EXISTS (
             SELECT 1 FROM construction_jobs cj
             WHERE cj.leadId = ${crmLeads.id}
-              AND (cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)
+              AND ${isMultiTenancyMode()
+                ? sql`cj.tenantId = ${filters.tenantId}`
+                : sql`(cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)`}
           )`
         : sql`EXISTS (
             SELECT 1 FROM construction_jobs cj
@@ -222,7 +249,9 @@ export async function listLeadIds(filters?: {
         ? sql`EXISTS (
             SELECT 1 FROM construction_jobs cj
             WHERE cj.leadId = ${crmLeads.id}
-              AND (cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)
+              AND ${isMultiTenancyMode()
+                ? sql`cj.tenantId = ${filters.tenantId}`
+                : sql`(cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)`}
           )`
         : sql`EXISTS (
             SELECT 1 FROM construction_jobs cj
@@ -349,8 +378,7 @@ export async function findExistingLeadByContact(
   email: string | null | undefined,
   tenantId?: number | null,
 ): Promise<{ id: number; leadNumber: string } | null> {
-  const tenantClause = tenantId ? " AND (tenantId = ? OR tenantId IS NULL)" : "";
-  const tenantParams = tenantId ? [tenantId] : [];
+  const scope = tenantClause("crm_leads", tenantId);
   // Try phone match first (normalise to last 8 digits)
   if (phone) {
     const digits = phone.replace(/\D/g, "");
@@ -359,11 +387,11 @@ export async function findExistingLeadByContact(
       const [rows] = await pool.execute(
         `SELECT id, leadNumber FROM crm_leads
 	         WHERE archived = 0
-           ${tenantClause}
+           ${scope.sql}
 	           AND contactPhone IS NOT NULL
 	           AND RIGHT(REGEXP_REPLACE(contactPhone, '[^0-9]', ''), 8) = ?
 	         ORDER BY createdAt DESC LIMIT 1`,
-        [...tenantParams, last8]
+        [...scope.params, last8]
       );
       const arr = rows as any[];
       if (arr.length > 0) return { id: arr[0].id, leadNumber: arr[0].leadNumber };
@@ -374,10 +402,10 @@ export async function findExistingLeadByContact(
     const [rows] = await pool.execute(
       `SELECT id, leadNumber FROM crm_leads
        WHERE archived = 0
-         ${tenantClause}
+         ${scope.sql}
          AND LOWER(contactEmail) = LOWER(?)
        ORDER BY createdAt DESC LIMIT 1`,
-      [...tenantParams, email]
+      [...scope.params, email]
     );
     const arr = rows as any[];
     if (arr.length > 0) return { id: arr[0].id, leadNumber: arr[0].leadNumber };
@@ -391,16 +419,15 @@ export async function getExistingContacts(
   tenantId?: number | null,
 ): Promise<{ emails: string[]; phones: string[] }> {
   const result: { emails: string[]; phones: string[] } = { emails: [], phones: [] };
-  const tenantClause = tenantId ? " AND (tenantId = ? OR tenantId IS NULL)" : "";
-  const tenantParams = tenantId ? [tenantId] : [];
+  const scope = tenantClause("crm_leads", tenantId);
   if (emails.length > 0) {
     // Query in batches of 100 to avoid query size limits
     for (let i = 0; i < emails.length; i += 100) {
       const batch = emails.slice(i, i + 100);
       const placeholders = batch.map(() => "?").join(",");
       const [rows] = await pool.execute(
-        `SELECT LOWER(contactEmail) as email FROM crm_leads WHERE LOWER(contactEmail) IN (${placeholders})${tenantClause}`,
-        [...batch, ...tenantParams]
+        `SELECT LOWER(contactEmail) as email FROM crm_leads WHERE LOWER(contactEmail) IN (${placeholders})${scope.sql}`,
+        [...batch, ...scope.params]
       );
       result.emails.push(...(rows as any[]).map(r => r.email));
     }
@@ -410,8 +437,8 @@ export async function getExistingContacts(
       const batch = phones.slice(i, i + 100);
       const placeholders = batch.map(() => "?").join(",");
       const [rows] = await pool.execute(
-        `SELECT contactPhone as phone FROM crm_leads WHERE contactPhone IN (${placeholders})${tenantClause}`,
-        [...batch, ...tenantParams]
+        `SELECT contactPhone as phone FROM crm_leads WHERE contactPhone IN (${placeholders})${scope.sql}`,
+        [...batch, ...scope.params]
       );
       result.phones.push(...(rows as any[]).map(r => r.phone));
     }
@@ -602,8 +629,10 @@ export async function findDuplicateLeads(leadId: number, tenantId?: number | nul
 export async function getDuplicateLeadIds(tenantId?: number | null): Promise<number[]> {
   // Use raw SQL for efficiency — self-join on normalised phone or email
   const tenantClause = tenantId
-    ? " AND (a.tenantId = ? OR a.tenantId IS NULL) AND (b.tenantId = ? OR b.tenantId IS NULL)"
-    : "";
+    ? isMultiTenancyMode()
+      ? " AND a.tenantId = ? AND b.tenantId = ?"
+      : " AND (a.tenantId = ? OR a.tenantId IS NULL) AND (b.tenantId = ? OR b.tenantId IS NULL)"
+    : isMultiTenancyMode() ? " AND 1 = 0" : "";
   const [rows] = await pool.execute(`
     SELECT DISTINCT a.id
     FROM crm_leads a
@@ -844,8 +873,16 @@ export async function getPostConstructionStatuses(
   if (scopedIds.length === 0) return [];
 
   const placeholders = scopedIds.map(() => "?").join(",");
-  const tenantJobClause = tenantId ? " AND (cj.tenantId = ? OR cj.tenantId IS NULL)" : "";
-  const tenantPortalClause = tenantId ? " AND (pa.tenantId = ? OR pa.tenantId IS NULL)" : "";
+  const tenantJobClause = tenantId
+    ? isMultiTenancyMode()
+      ? " AND cj.tenantId = ?"
+      : " AND (cj.tenantId = ? OR cj.tenantId IS NULL)"
+    : isMultiTenancyMode() ? " AND 1 = 0" : "";
+  const tenantPortalClause = tenantId
+    ? isMultiTenancyMode()
+      ? " AND pa.tenantId = ?"
+      : " AND (pa.tenantId = ? OR pa.tenantId IS NULL)"
+    : isMultiTenancyMode() ? " AND 1 = 0" : "";
   const params: any[] = [];
   if (tenantId) params.push(tenantId);
   if (tenantId) params.push(tenantId);
@@ -1095,23 +1132,18 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
   const fyStartDate = fyStart ? fyStart.slice(0, 10) : null;
   const fyEndDate = fyEnd ? fyEnd.slice(0, 10) : null;
 
-  let daClause = '';
-  let branchClauseStr = '';
   const leadTenant = tenantClause("l", tenantId);
 
-  if (designAdvisor) {
-    daClause = ' AND l.designAdvisor = ?';
-  }
-  if (branchId) {
-    branchClauseStr = ' AND l.branchId = ?';
-  }
+  const canonicalLeadSql = `
+    SELECT l.*, ${canonicalLeadRank()} as rn
+    FROM crm_leads l
+    WHERE 1=1${leadTenant.sql}
+  `;
 
-  // Helper to build common params for lead queries
-  const buildLeadParams = (dateParams: any[]) => {
-    const p = [...dateParams];
+  const buildCanonicalParams = (dateParams: any[] = []) => {
+    const p = [...leadTenant.params, ...dateParams];
     if (designAdvisor) p.push(designAdvisor);
     if (branchId) p.push(branchId);
-    p.push(...leadTenant.params);
     return p;
   };
 
@@ -1119,11 +1151,19 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
   let activeLeadDateClause = '';
   const activeBaseParams: any[] = [];
   if (fyStartDate && fyEndDate) {
-    activeLeadDateClause = ' AND l.leadDate >= ? AND l.leadDate <= ?';
+    activeLeadDateClause = ' AND cl.leadDate >= ? AND cl.leadDate <= ?';
     activeBaseParams.push(fyStartDate, fyEndDate);
   }
-  const activeSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l WHERE l.status NOT IN ('completed', 'won', 'cancelled')${activeLeadDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
-  const [activeRows] = await pool.execute(activeSql, buildLeadParams(activeBaseParams));
+  const activeDaClause = designAdvisor ? ' AND cl.designAdvisor = ?' : '';
+  const activeBranchClause = branchId ? ' AND cl.branchId = ?' : '';
+  const activeSql = `
+    SELECT COUNT(*) as count
+    FROM (${canonicalLeadSql}) cl
+    WHERE cl.rn = 1
+      AND cl.status NOT IN ('completed', 'won', 'lost', 'cancelled')
+      ${activeLeadDateClause}${activeDaClause}${activeBranchClause}
+  `;
+  const [activeRows] = await pool.execute(activeSql, buildCanonicalParams(activeBaseParams));
   const activeLeads = (activeRows as any[])[0]?.count || 0;
 
   // --- Completed leads: status = completed/won, filtered by contractDate in FY ---
@@ -1133,8 +1173,17 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     completedDateClause = ' AND c.contractDate >= ? AND c.contractDate <= ?';
     completedBaseParams.push(fyStartDate, fyEndDate);
   }
-  const completedSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id WHERE l.status IN ('completed', 'won')${completedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
-  const [completedRows] = await pool.execute(completedSql, buildLeadParams(completedBaseParams));
+  const completedDaClause = designAdvisor ? ' AND cl.designAdvisor = ?' : '';
+  const completedBranchClause = branchId ? ' AND cl.branchId = ?' : '';
+  const completedSql = `
+    SELECT COUNT(*) as count
+    FROM (${canonicalLeadSql}) cl
+    INNER JOIN ${latestContractPerLead("c")} ON c.leadId = cl.id
+    WHERE cl.rn = 1
+      AND cl.status IN ('completed', 'won')
+      ${completedDateClause}${completedDaClause}${completedBranchClause}
+  `;
+  const [completedRows] = await pool.execute(completedSql, buildCanonicalParams(completedBaseParams));
   const completedLeads = (completedRows as any[])[0]?.count || 0;
 
   // --- Total leads: active (by leadDate) + completed (by contractDate) ---
@@ -1190,18 +1239,19 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
   let uncontractedDateClause = '';
   const uncontractedParams: any[] = [];
   if (fyStartDate && fyEndDate) {
-    uncontractedDateClause = ' AND l.leadDate >= ? AND l.leadDate <= ?';
+    uncontractedDateClause = ' AND cl.leadDate >= ? AND cl.leadDate <= ?';
     uncontractedParams.push(fyStartDate, fyEndDate);
   }
-  if (designAdvisor) {
-    uncontractedParams.push(designAdvisor);
-  }
-  if (branchId) {
-    uncontractedParams.push(branchId);
-  }
-  uncontractedParams.push(...leadTenant.params);
-  const uncontractedSql = `SELECT COUNT(DISTINCT ${logicalLeadKey("l")}) as count FROM crm_leads l WHERE l.id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)${uncontractedDateClause}${daClause}${branchClauseStr}${leadTenant.sql}`;
-  const [uncontractedRows] = await pool.execute(uncontractedSql, uncontractedParams);
+  const uncontractedDaClause = designAdvisor ? ' AND cl.designAdvisor = ?' : '';
+  const uncontractedBranchClause = branchId ? ' AND cl.branchId = ?' : '';
+  const uncontractedSql = `
+    SELECT COUNT(*) as count
+    FROM (${canonicalLeadSql}) cl
+    WHERE cl.rn = 1
+      AND cl.id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)
+      ${uncontractedDateClause}${uncontractedDaClause}${uncontractedBranchClause}
+  `;
+  const [uncontractedRows] = await pool.execute(uncontractedSql, buildCanonicalParams(uncontractedParams));
   const uncontractedLeads = (uncontractedRows as any[])[0]?.count || 0;
 
   return {
@@ -1512,10 +1562,15 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
   }
   activeParams.push(...tenant.params);
   const [activeRows] = await pool.execute(
-    `SELECT l.branchId, COUNT(*) as activeLeads
-    FROM crm_leads l
-    WHERE l.branchId IS NOT NULL AND l.status NOT IN ('completed', 'won', 'cancelled')${activeDateClause}${activeDaClause}${activeBranchClause}${tenant.sql}
-    GROUP BY l.branchId`,
+    `SELECT branchId, COUNT(*) as activeLeads
+    FROM (
+      SELECT l.branchId, l.status, l.leadDate, l.designAdvisor,
+        ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE l.branchId IS NOT NULL${activeDateClause}${activeDaClause}${activeBranchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
+    GROUP BY branchId`,
     activeParams
   );
   const activeByBranch = activeRows as any[];
@@ -1539,10 +1594,15 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
   }
   wonParams.push(...tenant.params);
   const [wonRows] = await pool.execute(
-    `SELECT l.branchId, COUNT(*) as wonLeads
-    FROM crm_leads l
-    WHERE l.branchId IS NOT NULL AND l.status IN ('completed', 'won')${wonDateClause}${wonDaClause}${wonBranchClause}${tenant.sql}
-    GROUP BY l.branchId`,
+    `SELECT branchId, COUNT(*) as wonLeads
+    FROM (
+      SELECT l.branchId, l.status, l.leadDate, l.designAdvisor,
+        ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE l.branchId IS NOT NULL${wonDateClause}${wonDaClause}${wonBranchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status IN ('completed', 'won')
+    GROUP BY branchId`,
     wonParams
   );
   const wonByBranch = wonRows as any[];
@@ -1556,7 +1616,13 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
   }
   unassignedParams.push(...tenant.params);
   const [unassignedRows] = await pool.execute(
-    `SELECT COUNT(*) as count FROM crm_leads l WHERE l.branchId IS NULL AND l.status IN ('completed', 'won')${unassignedDateClause}${tenant.sql}`,
+    `SELECT COUNT(*) as count
+    FROM (
+      SELECT l.branchId, l.status, l.leadDate, ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE l.branchId IS NULL${unassignedDateClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status IN ('completed', 'won')`,
     unassignedParams
   );
   const unassignedCount = (unassignedRows as any[])[0]?.count || 0;
@@ -1606,10 +1672,15 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
   }
   activeParams.push(...tenant.params);
   const [activeRows] = await pool.execute(
-    `SELECT l.designAdvisor, COUNT(*) as activeLeads
-    FROM crm_leads l
-    WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != '' AND l.status NOT IN ('completed', 'won', 'cancelled')${activeDateClause}${activeBranchClause}${tenant.sql}
-    GROUP BY l.designAdvisor`,
+    `SELECT designAdvisor, COUNT(*) as activeLeads
+    FROM (
+      SELECT l.designAdvisor, l.status, l.leadDate, l.branchId,
+        ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${activeDateClause}${activeBranchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
+    GROUP BY designAdvisor`,
     activeParams
   );
   const activeByAdviser = activeRows as any[];
@@ -1628,10 +1699,15 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
   }
   wonParams.push(...tenant.params);
   const [wonRows] = await pool.execute(
-    `SELECT l.designAdvisor, COUNT(*) as wonLeads
-    FROM crm_leads l
-    WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != '' AND l.status IN ('completed', 'won')${wonDateClause}${wonBranchClause}${tenant.sql}
-    GROUP BY l.designAdvisor`,
+    `SELECT designAdvisor, COUNT(*) as wonLeads
+    FROM (
+      SELECT l.designAdvisor, l.status, l.leadDate, l.branchId,
+        ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${wonDateClause}${wonBranchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status IN ('completed', 'won')
+    GROUP BY designAdvisor`,
     wonParams
   );
   const wonByAdviser = wonRows as any[];
@@ -1650,10 +1726,18 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
   }
   revParams.push(...tenant.params);
   const [revRows] = await pool.execute(
-    `SELECT l.designAdvisor, COALESCE(SUM(c.contractValue), 0) as totalRevenue
-    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
-    WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${revDateClause}${revBranchClause}${tenant.sql}
-    GROUP BY l.designAdvisor`,
+    `SELECT designAdvisor, COALESCE(SUM(contractValue), 0) as totalRevenue
+    FROM (
+      SELECT l.designAdvisor, l.branchId, c.contractValue, c.contractDate,
+        ROW_NUMBER() OVER (
+          PARTITION BY ${logicalLeadKey("l")}
+          ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+      WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${revDateClause}${revBranchClause}${tenant.sql}
+    ) ranked_revenue
+    WHERE rn = 1
+    GROUP BY designAdvisor`,
     revParams
   );
   const revenueByAdviser = revRows as any[];
@@ -1731,11 +1815,19 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
 
   // Active leads by month (leadDate)
   const [activeRows] = await pool.execute(
-    `SELECT DATE_FORMAT(l.leadDate, '%Y-%m') as ym, COUNT(*) as cnt
-    FROM crm_leads l
-    WHERE l.status NOT IN ('completed', 'won', 'cancelled')
-      AND l.leadDate >= ? AND l.leadDate <= ?${daClause}${branchClause}
-      ${tenant.sql}
+    `SELECT ym, COUNT(*) as cnt
+    FROM (
+      SELECT DATE_FORMAT(l.leadDate, '%Y-%m') as ym,
+        l.status,
+        ROW_NUMBER() OVER (
+          PARTITION BY DATE_FORMAT(l.leadDate, '%Y-%m'), ${logicalLeadKey("l")}
+          ORDER BY ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l
+      WHERE l.leadDate >= ? AND l.leadDate <= ?${daClause}${branchClause}
+        ${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
     GROUP BY ym`,
     [months[0].start, months[11].end, ...baseParams]
   );
@@ -1755,10 +1847,19 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
   }
   wonBaseParams.push(...tenant.params);
   const [wonRows] = await pool.execute(
-    `SELECT DATE_FORMAT(c.contractDate, '%Y-%m') as ym, COUNT(DISTINCT l.id) as cnt, COALESCE(SUM(c.contractValue), 0) as revenue
-    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
-    WHERE l.status IN ('completed', 'won')
-      AND c.contractDate >= ? AND c.contractDate <= ?${wonDaClause}${wonBranchClause}${tenant.sql}
+    `SELECT ym, COUNT(*) as cnt, COALESCE(SUM(contractValue), 0) as revenue
+    FROM (
+      SELECT DATE_FORMAT(c.contractDate, '%Y-%m') as ym,
+        c.contractValue,
+        l.status,
+        ROW_NUMBER() OVER (
+          PARTITION BY DATE_FORMAT(c.contractDate, '%Y-%m'), ${logicalLeadKey("l")}
+          ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+      WHERE c.contractDate >= ? AND c.contractDate <= ?${wonDaClause}${wonBranchClause}${tenant.sql}
+    ) ranked_contracts
+    WHERE rn = 1 AND status IN ('completed', 'won')
     GROUP BY ym`,
     [months[0].start, months[11].end, ...wonBaseParams]
   );
@@ -1766,10 +1867,18 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
 
   // Supply jobs by month (leadDate, no contract)
   const [supplyRows] = await pool.execute(
-    `SELECT DATE_FORMAT(l.leadDate, '%Y-%m') as ym, COUNT(*) as cnt
-    FROM crm_leads l
-    WHERE l.id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)
-      AND l.leadDate >= ? AND l.leadDate <= ?${daClause}${branchClause}${tenant.sql}
+    `SELECT ym, COUNT(*) as cnt
+    FROM (
+      SELECT DATE_FORMAT(l.leadDate, '%Y-%m') as ym,
+        l.id,
+        ROW_NUMBER() OVER (
+          PARTITION BY DATE_FORMAT(l.leadDate, '%Y-%m'), ${logicalLeadKey("l")}
+          ORDER BY ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l
+      WHERE l.leadDate >= ? AND l.leadDate <= ?${daClause}${branchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1 AND id NOT IN (SELECT leadId FROM crm_contracts WHERE leadId IS NOT NULL)
     GROUP BY ym`,
     [months[0].start, months[11].end, ...baseParams]
   );
@@ -1817,15 +1926,24 @@ export async function getAdviserTimeToClose(fyStart?: string, fyEnd?: string, br
   params.push(...tenant.params);
 
   const [rows] = await pool.execute(
-    `SELECT l.designAdvisor,
-      ROUND(AVG(DATEDIFF(c.contractDate, l.leadDate))) as avgDays,
-      MIN(DATEDIFF(c.contractDate, l.leadDate)) as minDays,
-      MAX(DATEDIFF(c.contractDate, l.leadDate)) as maxDays,
-      COUNT(DISTINCT l.id) as sampleSize
-    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
-    WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''
-      AND l.leadDate IS NOT NULL AND c.contractDate IS NOT NULL${dateClause}${branchClause}${tenant.sql}
-    GROUP BY l.designAdvisor`,
+    `SELECT designAdvisor,
+      ROUND(AVG(daysToClose)) as avgDays,
+      MIN(daysToClose) as minDays,
+      MAX(daysToClose) as maxDays,
+      COUNT(*) as sampleSize
+    FROM (
+      SELECT l.designAdvisor,
+        DATEDIFF(c.contractDate, l.leadDate) as daysToClose,
+        ROW_NUMBER() OVER (
+          PARTITION BY ${logicalLeadKey("l")}
+          ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+      WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''
+        AND l.leadDate IS NOT NULL AND c.contractDate IS NOT NULL${dateClause}${branchClause}${tenant.sql}
+    ) ranked_closes
+    WHERE rn = 1
+    GROUP BY designAdvisor`,
     params
   );
   const byAdviser: Record<string, { avgDays: number; minDays: number; maxDays: number; sampleSize: number }> = {};
@@ -1866,14 +1984,20 @@ export async function getLeadSourceBreakdown(fyStart?: string, fyEnd?: string, d
 
   const [rows] = await pool.execute(
     `SELECT 
-      COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
+      source,
       COUNT(*) as totalLeads,
-      SUM(CASE WHEN l.status IN ('completed', 'won') THEN 1 ELSE 0 END) as wonLeads,
-      SUM(CASE WHEN l.status IN ('quoted', 'contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as quotedLeads,
-      SUM(CASE WHEN l.status IN ('contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as contractedLeads,
-      SUM(CASE WHEN l.status NOT IN ('completed', 'won', 'cancelled') THEN 1 ELSE 0 END) as activeLeads
-    FROM crm_leads l
-    WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
+      SUM(CASE WHEN status IN ('completed', 'won') THEN 1 ELSE 0 END) as wonLeads,
+      SUM(CASE WHEN status IN ('quoted', 'contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as quotedLeads,
+      SUM(CASE WHEN status IN ('contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as contractedLeads,
+      SUM(CASE WHEN status NOT IN ('completed', 'won', 'lost', 'cancelled') THEN 1 ELSE 0 END) as activeLeads
+    FROM (
+      SELECT COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
+        l.status,
+        ${canonicalLeadRank()} as rn
+      FROM crm_leads l
+      WHERE 1=1${dateClause}${daClause}${branchClause}${tenant.sql}
+    ) ranked_leads
+    WHERE rn = 1
     GROUP BY source
     ORDER BY totalLeads DESC`,
     params
@@ -1899,10 +2023,19 @@ export async function getLeadSourceBreakdown(fyStart?: string, fyEnd?: string, d
   revParams.push(...tenant.params);
   const [revRows] = await pool.execute(
     `SELECT 
-      COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
-      COALESCE(SUM(c.contractValue), 0) as revenue
-    FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
-    WHERE 1=1${revDateClause}${revDaClause}${revBranchClause}${tenant.sql}
+      source,
+      COALESCE(SUM(contractValue), 0) as revenue
+    FROM (
+      SELECT COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
+        c.contractValue,
+        ROW_NUMBER() OVER (
+          PARTITION BY ${logicalLeadKey("l")}
+          ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+      WHERE 1=1${revDateClause}${revDaClause}${revBranchClause}${tenant.sql}
+    ) ranked_revenue
+    WHERE rn = 1
     GROUP BY source`,
     revParams
   );
@@ -1992,7 +2125,7 @@ export async function getStaleLeadIds(tenantId?: number | null): Promise<{ id: n
     .map(([status, days]) => `WHEN '${status}' THEN ${days}`)
     .join(' ');
 
-  const tenantClause = tenantId ? " AND (l.tenantId = ? OR l.tenantId IS NULL)" : "";
+  const staleTenant = tenantClause("l", tenantId);
   const [rows] = await pool.execute(`
     SELECT 
       l.id,
@@ -2004,10 +2137,10 @@ export async function getStaleLeadIds(tenantId?: number | null): Promise<{ id: n
     FROM crm_leads l
     WHERE l.archived = 0
       AND l.status NOT IN ('completed', 'won', 'cancelled')
-      ${tenantClause}
+      ${staleTenant.sql}
     HAVING daysSinceActivity > threshold
     ORDER BY daysSinceActivity DESC
-  `, tenantId ? [tenantId] : []);
+  `, staleTenant.params);
   return (rows as any[]).map(r => ({ id: Number(r.id), daysSinceActivity: Number(r.daysSinceActivity) }));
 }
 
@@ -2027,8 +2160,7 @@ export async function getOutcomeBreakdown(fyStart?: string, fyEnd?: string, tena
   const deckDates = dateWhere("dq");
   const eclipseDates = dateWhere("eq");
   const quoteTenant = tenantClause("q", tenantId);
-  const linkedLeadTenant = tenantId ? " AND (l.tenantId = ? OR l.tenantId IS NULL)" : "";
-  const linkedLeadParams = tenantId ? [tenantId] : [];
+  const linkedLeadScope = tenantClause("l", tenantId);
   const linkedLeadJoin = tenantId ? "INNER JOIN crm_leads l ON l.id = {alias}.clientId" : "";
 
   // Combine all 3 quote tables
@@ -2037,9 +2169,9 @@ export async function getOutcomeBreakdown(fyStart?: string, fyEnd?: string, tena
     FROM (
       SELECT q.outcomeReason, q.status, q.createdAt FROM quotes q WHERE q.outcomeReason IS NOT NULL AND q.outcomeReason != '' ${quoteDates.sql}${quoteTenant.sql}
       UNION ALL
-      SELECT dq.outcomeReason, dq.status, dq.createdAt FROM deck_quotes dq ${linkedLeadJoin.replace("{alias}", "dq")} WHERE dq.outcomeReason IS NOT NULL AND dq.outcomeReason != '' ${deckDates.sql}${linkedLeadTenant}
+      SELECT dq.outcomeReason, dq.status, dq.createdAt FROM deck_quotes dq ${linkedLeadJoin.replace("{alias}", "dq")} WHERE dq.outcomeReason IS NOT NULL AND dq.outcomeReason != '' ${deckDates.sql}${linkedLeadScope.sql}
       UNION ALL
-      SELECT eq.outcomeReason, eq.status, eq.createdAt FROM eclipse_quotes eq ${linkedLeadJoin.replace("{alias}", "eq")} WHERE eq.outcomeReason IS NOT NULL AND eq.outcomeReason != '' ${eclipseDates.sql}${linkedLeadTenant}
+      SELECT eq.outcomeReason, eq.status, eq.createdAt FROM eclipse_quotes eq ${linkedLeadJoin.replace("{alias}", "eq")} WHERE eq.outcomeReason IS NOT NULL AND eq.outcomeReason != '' ${eclipseDates.sql}${linkedLeadScope.sql}
     ) combined
     GROUP BY outcomeReason, status
     ORDER BY count DESC
@@ -2049,9 +2181,9 @@ export async function getOutcomeBreakdown(fyStart?: string, fyEnd?: string, tena
     ...quoteDates.params,
     ...quoteTenant.params,
     ...deckDates.params,
-    ...linkedLeadParams,
+    ...linkedLeadScope.params,
     ...eclipseDates.params,
-    ...linkedLeadParams,
+    ...linkedLeadScope.params,
   ];
   const [rows] = await pool.execute(sql, allParams);
   return rows as { outcomeReason: string; count: number; status: string }[];

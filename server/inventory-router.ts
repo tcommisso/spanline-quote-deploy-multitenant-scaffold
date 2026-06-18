@@ -3,7 +3,7 @@ import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts, branches } from "../drizzle/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -305,7 +305,11 @@ export const inventoryRouter = router({
       includeArchived: z.boolean().optional().default(false),
     }).optional()).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
-      const tenantId = tenantIdFromContext(ctx) ?? 1;
+      const contextTenantId = tenantIdFromContext(ctx);
+      if (!contextTenantId && isMultiTenancyMode()) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Tenant context is required" });
+      }
+      const tenantId = contextTenantId ?? 1;
 
       const branchRows = await db.select({ id: branches.id, name: branches.name })
         .from(branches)
@@ -323,7 +327,11 @@ export const inventoryRouter = router({
         });
       }
 
-      const productConditions = [sql`(tenantId = ${tenantId} OR tenantId IS NULL)`];
+      const productConditions = [
+        isMultiTenancyMode()
+          ? sql`tenantId = ${tenantId}`
+          : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`
+      ];
       if (!input?.includeArchived) productConditions.push(sql`isActive = 1`);
       const [rowsResult] = await db.execute(sql`
         SELECT id, sku, description, category, subGroup, uom, unitCost, supplier, colour, isActive
