@@ -32,6 +32,12 @@ export default function ApiHealthAdmin() {
   const repairTables = tenantRepairPreview.data?.tables || [];
   const missingTenantColumns = repairTables.filter((item) => item.exists && !item.hasColumn).length;
   const tenantRepairTables = repairTables.filter((item) => item.exists).length;
+  const rowsNeedingTenantRepair = repairTables.reduce((sum, item) => {
+    const orphanRows = Number(item.nullRows || 0);
+    const singleTenantCorrections =
+      tenantRepairPreview.data?.tenancyMode === "single" ? Number(item.otherTenantRows || 0) : 0;
+    return sum + orphanRows + singleTenantCorrections;
+  }, 0);
 
   return (
     <div className="space-y-6">
@@ -174,7 +180,7 @@ export default function ApiHealthAdmin() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-4">
             <div>
               <div className="text-xs text-muted-foreground">Current tenant</div>
               <div className="font-semibold">{tenantRepairPreview.data?.tenantId || "-"}</div>
@@ -187,6 +193,12 @@ export default function ApiHealthAdmin() {
               <div className="text-xs text-muted-foreground">Missing columns</div>
               <div className={missingTenantColumns > 0 ? "font-semibold text-amber-700" : "font-semibold text-green-700"}>
                 {missingTenantColumns}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Rows needing repair</div>
+              <div className={rowsNeedingTenantRepair > 0 ? "font-semibold text-amber-700" : "font-semibold text-green-700"}>
+                {rowsNeedingTenantRepair}
               </div>
             </div>
           </div>

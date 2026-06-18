@@ -21,6 +21,10 @@ const TENANT_ID_TABLES = [
   "spec_mapping_history",
   "spec_section_templates",
   "master_data",
+  "colour_groups",
+  "colour_group_members",
+  "products",
+  "skylux_matrix",
   "crm_leads",
   "design_advisors",
   "crm_appointments",
@@ -42,11 +46,16 @@ const TENANT_ID_TABLES = [
   "portal_access",
   "portal_news",
   "portal_products",
+  "cpc_plans",
+  "cpc_subscriptions",
+  "cpc_service_history",
   "trade_portal_access",
   "permission_audit_log",
   "user_dashboard_config",
   "user_schedule_blocks",
+  "user_notification_preferences",
   "patio_planner",
+  "render_cost_logs",
   "user_time_off",
   "calendar_view_members",
   "user_calendar_selections",
@@ -93,6 +102,8 @@ const TENANT_ID_TABLES = [
   "email_templates",
   "email_images",
   "product_images",
+  "climbo_accounts",
+  "google_reviews",
   "ss_pricing_settings",
   "ss_pricing_matrix",
   "ss_price_adjustments",
@@ -113,6 +124,9 @@ const TENANT_ID_TABLES = [
   "approval_projects",
   "approval_integration_credentials",
   "approval_sync_logs",
+  "da_commissions",
+  "da_invoices",
+  "da_personal_details",
   "hbcf_builder_profiles",
   "hbcf_certificates",
   "hbcf_policy_matches",
@@ -125,6 +139,7 @@ const TENANT_ID_TABLES = [
   "client_das",
   "nsw_da_applications",
   "nsw_da_poll_log",
+  "text_blocks",
 ] as const;
 
 const APP_TENANT_ID_TABLES = [
@@ -213,6 +228,36 @@ async function repairTableTenant(db: any, tableName: string, columnName: "tenant
   const result = await db.execute(sql.raw(`UPDATE ${table} SET ${column} = ${tenantId} WHERE ${where}`));
   const updated = affectedRowsFromExecuteResult(result);
   return { table: tableName, column: columnName, status: ensureStatus, updated, nullRows, otherTenantRows };
+}
+
+async function previewTableTenant(db: any, tableName: string, columnName: "tenantId" | "appTenantId", tenantId: number) {
+  const exists = await tableExists(db, tableName);
+  if (!exists) {
+    return { table: tableName, column: columnName, exists: false, hasColumn: false, nullRows: 0, otherTenantRows: 0 };
+  }
+
+  const hasColumn = await columnExists(db, tableName, columnName);
+  if (!hasColumn) {
+    return { table: tableName, column: columnName, exists, hasColumn, nullRows: 0, otherTenantRows: 0 };
+  }
+
+  const table = quoteIdent(tableName);
+  const column = quoteIdent(columnName);
+  const result = await db.execute(sql.raw(`
+    SELECT
+      SUM(CASE WHEN ${column} IS NULL THEN 1 ELSE 0 END) AS nullRows,
+      SUM(CASE WHEN ${column} IS NOT NULL AND ${column} <> ${tenantId} THEN 1 ELSE 0 END) AS otherTenantRows
+    FROM ${table}
+  `));
+  const rows = rowsFromExecuteResult(result);
+  return {
+    table: tableName,
+    column: columnName,
+    exists,
+    hasColumn,
+    nullRows: Number(rows?.[0]?.nullRows || 0),
+    otherTenantRows: Number(rows?.[0]?.otherTenantRows || 0),
+  };
 }
 
 async function safeRepairTableTenant(
@@ -363,12 +408,10 @@ export const systemRouter = router({
     if (!db) return { tables: [], tenancyMode: ENV.tenancyMode };
     const tables = [];
     for (const table of TENANT_ID_TABLES) {
-      const exists = await tableExists(db, table);
-      tables.push({ table, column: "tenantId", exists, hasColumn: exists ? await columnExists(db, table, "tenantId") : false });
+      tables.push(await previewTableTenant(db, table, "tenantId", ctx.tenant!.id));
     }
     for (const table of APP_TENANT_ID_TABLES) {
-      const exists = await tableExists(db, table);
-      tables.push({ table, column: "appTenantId", exists, hasColumn: exists ? await columnExists(db, table, "appTenantId") : false });
+      tables.push(await previewTableTenant(db, table, "appTenantId", ctx.tenant!.id));
     }
     const memberships = await tenantMembershipRepairPreview(db, ctx.tenant!.id);
     return { tenantId: ctx.tenant!.id, tenancyMode: ENV.tenancyMode, tables, memberships };

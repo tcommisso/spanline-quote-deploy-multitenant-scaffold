@@ -41,6 +41,7 @@ Last updated: 2026-06-18
 - Inbox support configuration is now tenant-scoped: inbox tags, email signatures, inbox settings, and SLA rules carry tenant ownership, signature/tag/settings/SLA admin operations are tenant-filtered, Graph/legacy inbound auto-tags and auto-replies use the mailbox tenant, and the scheduled SLA checker iterates active tenants. Existing inbox support rows are backfilled by migration.
 - Patio planner projects now carry tenant ownership. Planner CRUD, admin cleanup, quote-prefill, AI render generation/history/favourites/batch generation, portal render gallery reads, and render-cost project joins are scoped to the active tenant, and newly uploaded patio photos/renders use tenant-prefixed object keys. Existing patio projects are backfilled by migration.
 - Security screen quote creation now uses the real `status` database column for quote status, fixing the failed `ss_quotes.ssQuoteStatus` insert generated when creating a quote from a lead or from the new quote form.
+- The system tenant repair list now has schema-coverage parity for all current `tenantId` and `appTenantId` tables, including CPC, DA portal, review, render-log, screen-pricing, and legacy pricing/catalogue tables. The API Health repair preview now reports row counts requiring repair, and `pnpm tenant:repair:dry-run` / `pnpm tenant:repair:apply` provide a Railway-friendly repair command for production schema drift.
 
 ## Remaining high-priority tenant gaps
 
@@ -52,6 +53,7 @@ Last updated: 2026-06-18
 ## Production checks before enabling multi-tenant mode
 
 - Re-run migrations on a staging clone and verify all legacy rows are backfilled to the default tenant.
+- Production audit on 2026-06-18 found one active tenant and older production schema drift where several tenant-owned tables were still missing tenant columns. `pnpm tenant:repair:apply` was run against Railway production, creating 48 missing tenant columns and assigning 1,549 rows to tenant 1. Follow-up dry-run reported zero missing tenant columns and zero rows needing tenant repair.
 - Connect Xero separately per tenant and confirm OAuth callback stores the correct `appTenantId`.
 - Trigger Xero webhook intent validation with `XERO_WEBHOOK_KEY` set and confirm invalid signatures return 401.
 - Run tenant A / tenant B smoke tests for App Central, Xero settings, supplier sync, import history, job financials, and unmatched transaction reporting.
