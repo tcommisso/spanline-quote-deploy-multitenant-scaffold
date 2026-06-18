@@ -2036,6 +2036,7 @@ export type InsertProjectPlanTemplate = typeof projectPlanTemplates.$inferInsert
 // Each template has ordered stages (e.g. "Site Prep", "Footings", "Frame", etc.)
 export const projectPlanTemplateStages = mysqlTable("project_plan_template_stages", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   templateId: int("templateId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
@@ -2048,6 +2049,8 @@ export const projectPlanTemplateStages = mysqlTable("project_plan_template_stage
     columns: [table.templateId],
     foreignColumns: [projectPlanTemplates.id],
   }).onDelete("cascade"),
+  index("idx_project_plan_template_stages_tenant").on(table.tenantId),
+  index("idx_project_plan_template_stages_tenant_template").on(table.tenantId, table.templateId),
 ]);
 export type ProjectPlanTemplateStage = typeof projectPlanTemplateStages.$inferSelect;
 export type InsertProjectPlanTemplateStage = typeof projectPlanTemplateStages.$inferInsert;
@@ -2055,6 +2058,7 @@ export type InsertProjectPlanTemplateStage = typeof projectPlanTemplateStages.$i
 // Each stage can have default tasks that get created as kanban tasks when seeded
 export const projectPlanTemplateTasks = mysqlTable("project_plan_template_tasks", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   stageId: int("stageId").notNull(),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
@@ -2068,6 +2072,8 @@ export const projectPlanTemplateTasks = mysqlTable("project_plan_template_tasks"
     columns: [table.stageId],
     foreignColumns: [projectPlanTemplateStages.id],
   }).onDelete("cascade"),
+  index("idx_project_plan_template_tasks_tenant").on(table.tenantId),
+  index("idx_project_plan_template_tasks_tenant_stage").on(table.tenantId, table.stageId),
 ]);
 export type ProjectPlanTemplateTask = typeof projectPlanTemplateTasks.$inferSelect;
 export type InsertProjectPlanTemplateTask = typeof projectPlanTemplateTasks.$inferInsert;
@@ -2360,6 +2366,7 @@ export type InsertEquipment = typeof equipment.$inferInsert;
 // ─── Equipment Bookings ─────────────────────────────────────────────────────
 export const equipmentBookings = mysqlTable("equipment_bookings", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   equipmentId: int("equipmentId").notNull().references(() => equipment.id, { onDelete: "cascade" }),
   scheduleEventId: int("scheduleEventId"),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
@@ -2375,6 +2382,9 @@ export const equipmentBookings = mysqlTable("equipment_bookings", {
     columns: [table.scheduleEventId],
     foreignColumns: [constructionScheduleEvents.id],
   }).onDelete("cascade"),
+  index("idx_equipment_bookings_tenant").on(table.tenantId),
+  index("idx_equipment_bookings_tenant_equipment").on(table.tenantId, table.equipmentId),
+  index("idx_equipment_bookings_tenant_job").on(table.tenantId, table.jobId),
 ]);
 export type EquipmentBooking = typeof equipmentBookings.$inferSelect;
 export type InsertEquipmentBooking = typeof equipmentBookings.$inferInsert;

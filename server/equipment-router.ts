@@ -25,8 +25,96 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function bookingTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, equipmentBookings.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 function normalizeKey(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function rowsFromExecuteResult(result: any): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  if (Array.isArray(result)) return result;
+  if (result?.rows) return result.rows;
+  return [];
+}
+
+async function hasDbColumn(db: any, tableName: string, columnName: string) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `);
+  return Number(rowsFromExecuteResult(result)?.[0]?.count || 0) > 0;
+}
+
+async function hasDbIndex(db: any, tableName: string, indexName: string) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = ${tableName}
+      AND index_name = ${indexName}
+  `);
+  return Number(rowsFromExecuteResult(result)?.[0]?.count || 0) > 0;
+}
+
+async function addIndexIfMissing(db: any, tableName: string, indexName: string, createSql: string) {
+  if (!(await hasDbIndex(db, tableName, indexName))) {
+    await db.execute(sql.raw(createSql));
+  }
+}
+
+async function ensureEquipmentBookingTenantColumn(db: any, tenantId?: number | null) {
+  if (!(await hasDbColumn(db, "equipment_bookings", "tenantId"))) {
+    await db.execute(sql.raw("ALTER TABLE `equipment_bookings` ADD COLUMN `tenantId` int NULL"));
+  }
+
+  await addIndexIfMissing(
+    db,
+    "equipment_bookings",
+    "idx_equipment_bookings_tenant",
+    "CREATE INDEX `idx_equipment_bookings_tenant` ON `equipment_bookings` (`tenantId`)",
+  );
+  await addIndexIfMissing(
+    db,
+    "equipment_bookings",
+    "idx_equipment_bookings_tenant_equipment",
+    "CREATE INDEX `idx_equipment_bookings_tenant_equipment` ON `equipment_bookings` (`tenantId`, `equipmentId`)",
+  );
+  await addIndexIfMissing(
+    db,
+    "equipment_bookings",
+    "idx_equipment_bookings_tenant_job",
+    "CREATE INDEX `idx_equipment_bookings_tenant_job` ON `equipment_bookings` (`tenantId`, `jobId`)",
+  );
+
+  await db.execute(sql`
+    UPDATE equipment_bookings bookings
+    INNER JOIN equipment eqp ON eqp.id = bookings.equipmentId
+    SET bookings.tenantId = eqp.tenantId
+    WHERE bookings.tenantId IS NULL
+      AND eqp.tenantId IS NOT NULL
+  `);
+  await db.execute(sql`
+    UPDATE equipment_bookings bookings
+    INNER JOIN construction_jobs jobs ON jobs.id = bookings.jobId
+    SET bookings.tenantId = jobs.tenantId
+    WHERE bookings.tenantId IS NULL
+      AND jobs.tenantId IS NOT NULL
+  `);
+  if (ENV.tenancyMode === "single" && tenantId) {
+    await db.execute(sql`
+      UPDATE equipment_bookings
+      SET tenantId = ${tenantId}
+      WHERE tenantId IS NULL
+    `);
+  }
 }
 
 const importEquipmentRow = z.object({
@@ -56,10 +144,14 @@ async function requireJobAccess(db: any, ctx: any, jobId: number) {
 }
 
 async function requireBookingAccess(db: any, ctx: any, bookingId: number) {
+  await ensureEquipmentBookingTenantColumn(db, tenantIdFromContext(ctx));
   const [row] = await db.select({ booking: equipmentBookings })
     .from(equipmentBookings)
     .innerJoin(equipment, eq(equipmentBookings.equipmentId, equipment.id))
-    .where(and(...equipmentTenantConditions(ctx, eq(equipmentBookings.id, bookingId))))
+    .where(and(
+      ...equipmentTenantConditions(ctx, eq(equipmentBookings.id, bookingId)),
+      ...bookingTenantConditions(ctx),
+    ))
     .limit(1);
   if (!row?.booking) throw new TRPCError({ code: "NOT_FOUND", message: "Equipment booking not found" });
   return row.booking;
@@ -249,6 +341,7 @@ export const equipmentRouter = router({
       }).optional())
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
+        await ensureEquipmentBookingTenantColumn(db, tenantIdFromContext(ctx));
         const conditions: any[] = [];
         if (input?.equipmentId) {
           await requireEquipmentAccess(db, ctx, input.equipmentId);
@@ -264,7 +357,10 @@ export const equipmentRouter = router({
 
         const rows = await db.select({ booking: equipmentBookings }).from(equipmentBookings)
           .innerJoin(equipment, eq(equipmentBookings.equipmentId, equipment.id))
-          .where(and(...equipmentTenantConditions(ctx, ...conditions)))
+          .where(and(
+            ...equipmentTenantConditions(ctx, ...conditions),
+            ...bookingTenantConditions(ctx),
+          ))
           .orderBy(equipmentBookings.startDate);
         const bookings = rows.map((row: any) => row.booking);
 
@@ -307,22 +403,25 @@ export const equipmentRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const db = await requireDb();
+        await ensureEquipmentBookingTenantColumn(db, tenantIdFromContext(ctx));
         await requireEquipmentAccess(db, ctx, input.equipmentId);
         if (input.jobId) await requireJobAccess(db, ctx, input.jobId);
 
         // Check for conflicts
         const conflicts = await db.select().from(equipmentBookings)
-          .where(and(
+          .where(and(...bookingTenantConditions(
+            ctx,
             eq(equipmentBookings.equipmentId, input.equipmentId),
             lte(equipmentBookings.startDate, new Date(input.endDate)),
             gte(equipmentBookings.endDate, new Date(input.startDate)),
-          ));
+          )));
 
         if (conflicts.length > 0) {
           throw new Error("Equipment is already booked for this date range");
         }
 
         const [result] = await db.insert(equipmentBookings).values({
+          tenantId: tenantIdFromContext(ctx),
           equipmentId: input.equipmentId,
           scheduleEventId: input.scheduleEventId,
           jobId: input.jobId,
@@ -355,7 +454,7 @@ export const equipmentRouter = router({
         if (updates.notes !== undefined) vals.notes = updates.notes;
         if (updates.equipmentId !== undefined) vals.equipmentId = updates.equipmentId;
         if (updates.jobId !== undefined) vals.jobId = updates.jobId;
-        await db.update(equipmentBookings).set(vals).where(eq(equipmentBookings.id, id));
+        await db.update(equipmentBookings).set(vals).where(and(...bookingTenantConditions(ctx, eq(equipmentBookings.id, id))));
         return { success: true };
       }),
 
@@ -364,7 +463,7 @@ export const equipmentRouter = router({
       .mutation(async ({ input, ctx }) => {
         const db = await requireDb();
         await requireBookingAccess(db, ctx, input.id);
-        await db.delete(equipmentBookings).where(eq(equipmentBookings.id, input.id));
+        await db.delete(equipmentBookings).where(and(...bookingTenantConditions(ctx, eq(equipmentBookings.id, input.id))));
         return { success: true };
       }),
   }),

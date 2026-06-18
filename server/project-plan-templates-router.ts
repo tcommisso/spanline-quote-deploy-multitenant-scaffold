@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { tenantAdminProcedure as adminProcedure, tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, desc, and, asc, sql } from "drizzle-orm";
+import { eq, desc, and, asc, sql, inArray } from "drizzle-orm";
 import {
   projectPlanTemplates,
   projectPlanTemplateStages,
@@ -15,6 +15,18 @@ import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 function templateConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, projectPlanTemplates.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function stageConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, projectPlanTemplateStages.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function taskConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, projectPlanTemplateTasks.tenantId, tenantIdFromContext(ctx));
   return conditions;
 }
 
@@ -37,23 +49,65 @@ async function getSingleActiveTenantId(db: any) {
 }
 
 async function ensureProjectPlanTemplateTenantColumn(db: any, tenantId?: number | null) {
-  const result = await db.execute(sql`
+  async function hasTenantColumn(tableName: string) {
+    const result = await db.execute(sql`
     SELECT COUNT(*) AS count
     FROM information_schema.columns
     WHERE table_schema = DATABASE()
-      AND table_name = 'project_plan_templates'
+        AND table_name = ${tableName}
       AND column_name = 'tenantId'
   `);
-  const rows = rowsFromExecuteResult(result);
-  if (Number(rows?.[0]?.count || 0) === 0) {
+    const rows = rowsFromExecuteResult(result);
+    return Number(rows?.[0]?.count || 0) > 0;
+  }
+
+  if (!(await hasTenantColumn("project_plan_templates"))) {
     await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD COLUMN `tenantId` int NULL"));
     await db.execute(sql.raw("ALTER TABLE `project_plan_templates` ADD KEY `idx_project_plan_templates_tenant` (`tenantId`)"));
   }
+  if (!(await hasTenantColumn("project_plan_template_stages"))) {
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_stages` ADD COLUMN `tenantId` int NULL"));
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_stages` ADD KEY `idx_project_plan_template_stages_tenant` (`tenantId`)"));
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_stages` ADD KEY `idx_project_plan_template_stages_tenant_template` (`tenantId`, `templateId`)"));
+  }
+  if (!(await hasTenantColumn("project_plan_template_tasks"))) {
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_tasks` ADD COLUMN `tenantId` int NULL"));
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_tasks` ADD KEY `idx_project_plan_template_tasks_tenant` (`tenantId`)"));
+    await db.execute(sql.raw("ALTER TABLE `project_plan_template_tasks` ADD KEY `idx_project_plan_template_tasks_tenant_stage` (`tenantId`, `stageId`)"));
+  }
+
   const singleTenantId = await getSingleActiveTenantId(db);
   const backfillTenantId = singleTenantId && (!tenantId || singleTenantId === tenantId) ? singleTenantId : null;
   if (backfillTenantId) {
     await db.execute(sql`
       UPDATE project_plan_templates
+      SET tenantId = ${backfillTenantId}
+      WHERE tenantId IS NULL
+    `);
+  }
+
+  await db.execute(sql`
+    UPDATE project_plan_template_stages stages
+    INNER JOIN project_plan_templates templates ON templates.id = stages.templateId
+    SET stages.tenantId = templates.tenantId
+    WHERE stages.tenantId IS NULL
+      AND templates.tenantId IS NOT NULL
+  `);
+  await db.execute(sql`
+    UPDATE project_plan_template_tasks tasks
+    INNER JOIN project_plan_template_stages stages ON stages.id = tasks.stageId
+    SET tasks.tenantId = stages.tenantId
+    WHERE tasks.tenantId IS NULL
+      AND stages.tenantId IS NOT NULL
+  `);
+  if (backfillTenantId) {
+    await db.execute(sql`
+      UPDATE project_plan_template_stages
+      SET tenantId = ${backfillTenantId}
+      WHERE tenantId IS NULL
+    `);
+    await db.execute(sql`
+      UPDATE project_plan_template_tasks
       SET tenantId = ${backfillTenantId}
       WHERE tenantId IS NULL
     `);
@@ -120,7 +174,7 @@ export const projectPlanTemplatesRouter = router({
       const stages = await db
         .select()
         .from(projectPlanTemplateStages)
-        .where(eq(projectPlanTemplateStages.templateId, input.id))
+        .where(and(...stageConditions(ctx, eq(projectPlanTemplateStages.templateId, input.id))))
         .orderBy(asc(projectPlanTemplateStages.sortOrder));
 
       const stageIds = stages.map((s) => s.id);
@@ -129,26 +183,8 @@ export const projectPlanTemplatesRouter = router({
         tasks = await db
           .select()
           .from(projectPlanTemplateTasks)
-          .where(
-            // Get tasks for all stages of this template
-            stageIds.length === 1
-              ? eq(projectPlanTemplateTasks.stageId, stageIds[0])
-              : eq(projectPlanTemplateTasks.stageId, stageIds[0]) // will be overridden below
-          )
+          .where(and(...taskConditions(ctx, inArray(projectPlanTemplateTasks.stageId, stageIds))))
           .orderBy(asc(projectPlanTemplateTasks.sortOrder));
-
-        // For multiple stages, fetch all tasks
-        if (stageIds.length > 1) {
-          tasks = [];
-          for (const stageId of stageIds) {
-            const stageTasks = await db
-              .select()
-              .from(projectPlanTemplateTasks)
-              .where(eq(projectPlanTemplateTasks.stageId, stageId))
-              .orderBy(asc(projectPlanTemplateTasks.sortOrder));
-            tasks.push(...stageTasks);
-          }
-        }
       }
 
       return {
@@ -187,8 +223,10 @@ export const projectPlanTemplatesRouter = router({
       const templateId = result.insertId;
 
       // Create stages and their tasks
+      const tenantId = tenantIdFromContext(ctx);
       for (const stage of input.stages) {
         const [stageResult] = await db.insert(projectPlanTemplateStages).values({
+          tenantId,
           templateId,
           name: stage.name,
           description: stage.description || null,
@@ -199,6 +237,7 @@ export const projectPlanTemplatesRouter = router({
 
         for (const task of stage.tasks) {
           await db.insert(projectPlanTemplateTasks).values({
+            tenantId,
             stageId,
             title: task.title,
             description: task.description || null,
@@ -249,11 +288,13 @@ export const projectPlanTemplatesRouter = router({
       // Delete existing stages (cascades to tasks)
       await db
         .delete(projectPlanTemplateStages)
-        .where(eq(projectPlanTemplateStages.templateId, input.id));
+        .where(and(...stageConditions(ctx, eq(projectPlanTemplateStages.templateId, input.id))));
 
       // Re-create stages and tasks
+      const tenantId = tenantIdFromContext(ctx);
       for (const stage of input.stages) {
         const [stageResult] = await db.insert(projectPlanTemplateStages).values({
+          tenantId,
           templateId: input.id,
           name: stage.name,
           description: stage.description || null,
@@ -264,6 +305,7 @@ export const projectPlanTemplatesRouter = router({
 
         for (const task of stage.tasks) {
           await db.insert(projectPlanTemplateTasks).values({
+            tenantId,
             stageId,
             title: task.title,
             description: task.description || null,
@@ -296,7 +338,7 @@ export const projectPlanTemplatesRouter = router({
       const stages = await db
         .select()
         .from(projectPlanTemplateStages)
-        .where(eq(projectPlanTemplateStages.templateId, input.id))
+        .where(and(...stageConditions(ctx, eq(projectPlanTemplateStages.templateId, input.id))))
         .orderBy(asc(projectPlanTemplateStages.sortOrder));
 
       // Create new template with "(Copy)" suffix
@@ -309,10 +351,12 @@ export const projectPlanTemplatesRouter = router({
         tenantId: tenantIdFromContext(ctx),
       });
       const newTemplateId = newTemplate.insertId;
+      const tenantId = tenantIdFromContext(ctx);
 
       // Clone stages and their tasks
       for (const stage of stages) {
         const [newStage] = await db.insert(projectPlanTemplateStages).values({
+          tenantId,
           templateId: newTemplateId,
           name: stage.name,
           description: stage.description,
@@ -325,11 +369,12 @@ export const projectPlanTemplatesRouter = router({
         const tasks = await db
           .select()
           .from(projectPlanTemplateTasks)
-          .where(eq(projectPlanTemplateTasks.stageId, stage.id))
+          .where(and(...taskConditions(ctx, eq(projectPlanTemplateTasks.stageId, stage.id))))
           .orderBy(asc(projectPlanTemplateTasks.sortOrder));
 
         for (const task of tasks) {
           await db.insert(projectPlanTemplateTasks).values({
+            tenantId,
             stageId: newStageId,
             title: task.title,
             description: task.description,
@@ -381,17 +426,15 @@ export const projectPlanTemplatesRouter = router({
         const stages = await db
           .select({ id: projectPlanTemplateStages.id })
           .from(projectPlanTemplateStages)
-          .where(eq(projectPlanTemplateStages.templateId, tpl.id));
+          .where(and(...stageConditions(ctx, eq(projectPlanTemplateStages.templateId, tpl.id))));
         const stageIds = stages.map((s) => s.id);
         let taskCount = 0;
         if (stageIds.length > 0) {
-          for (const sid of stageIds) {
-            const tasks = await db
-              .select({ id: projectPlanTemplateTasks.id })
-              .from(projectPlanTemplateTasks)
-              .where(eq(projectPlanTemplateTasks.stageId, sid));
-            taskCount += tasks.length;
-          }
+          const tasks = await db
+            .select({ id: projectPlanTemplateTasks.id })
+            .from(projectPlanTemplateTasks)
+            .where(and(...taskConditions(ctx, inArray(projectPlanTemplateTasks.stageId, stageIds))));
+          taskCount = tasks.length;
         }
         return { ...tpl, stageCount: stages.length, taskCount };
       })
@@ -422,7 +465,7 @@ export const projectPlanTemplatesRouter = router({
       const stages = await db
         .select()
         .from(projectPlanTemplateStages)
-        .where(eq(projectPlanTemplateStages.templateId, input.templateId))
+        .where(and(...stageConditions(ctx, eq(projectPlanTemplateStages.templateId, input.templateId))))
         .orderBy(asc(projectPlanTemplateStages.sortOrder));
 
       let stagesCreated = 0;
@@ -445,7 +488,7 @@ export const projectPlanTemplatesRouter = router({
         const tasks = await db
           .select()
           .from(projectPlanTemplateTasks)
-          .where(eq(projectPlanTemplateTasks.stageId, stage.id))
+          .where(and(...taskConditions(ctx, eq(projectPlanTemplateTasks.stageId, stage.id))))
           .orderBy(asc(projectPlanTemplateTasks.sortOrder));
 
         for (const task of tasks) {
