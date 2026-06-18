@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Package } from "lucide-react";
+import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Package, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 function unitTypeFromUom(uom?: string) {
@@ -25,6 +25,35 @@ function stockDescriptionFromProduct(product: any) {
 function textOrNull(value: string) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function numericValue(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function moneyText(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : "";
+}
+
+function inferFullLengthMetres(...values: Array<string | null | undefined>) {
+  const text = values.filter(Boolean).join(" ");
+  const candidates: number[] = [];
+
+  const metrePattern = /(\d+(?:\.\d+)?)\s*(?:m|metre|meter|metres|meters)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = metrePattern.exec(text)) !== null) {
+    const value = Number.parseFloat(match[1]);
+    if (Number.isFinite(value) && value > 0.2 && value <= 30) candidates.push(value);
+  }
+
+  const mmPattern = /(\d{3,5})\s*mm\b/gi;
+  while ((match = mmPattern.exec(text)) !== null) {
+    const value = Number.parseFloat(match[1]) / 1000;
+    if (Number.isFinite(value) && value > 0.2 && value <= 30) candidates.push(value);
+  }
+
+  return candidates.length ? Math.max(...candidates) : null;
 }
 
 export default function InventoryStockItems() {
@@ -48,6 +77,18 @@ export default function InventoryStockItems() {
   const { data: onHandReport } = trpc.inventory.reports.onHandByCategory.useQuery({
     branchId: branchFilter !== "all" ? Number(branchFilter) : undefined,
   });
+  const utils = trpc.useUtils();
+  const seedStockItems = trpc.inventory.stockItems.seedFromManufacturingData.useMutation({
+    onSuccess: async (result) => {
+      await Promise.all([
+        utils.inventory.stockItems.list.invalidate(),
+        utils.inventory.stockItems.categories.invalidate(),
+        utils.inventory.reports.onHandByCategory.invalidate(),
+      ]);
+      toast.success(`Seeded ACT/Riverina stock items: ${result.created} created, ${result.updated} refreshed, ${result.skipped} skipped.`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   // Build on-hand map from report
   const onHandMap = new Map<number, { onHand: number; belowReorder: boolean }>();
@@ -62,9 +103,19 @@ export default function InventoryStockItems() {
           </h1>
           <p className="text-muted-foreground text-sm mt-1">Stock items linked to Manufacturing Data (source of truth)</p>
         </div>
-        <Button variant="brand" onClick={() => { setEditingItem(null); setShowDialog(true); }}>
-          <Plus className="h-4 w-4 mr-1" /> Add Stock Item
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            variant="outline"
+            onClick={() => seedStockItems.mutate({})}
+            disabled={seedStockItems.isPending}
+          >
+            <RefreshCw className={`h-4 w-4 mr-1 ${seedStockItems.isPending ? "animate-spin" : ""}`} />
+            Seed Manufacturing Data
+          </Button>
+          <Button variant="brand" onClick={() => { setEditingItem(null); setShowDialog(true); }}>
+            <Plus className="h-4 w-4 mr-1" /> Add Stock Item
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -112,12 +163,15 @@ export default function InventoryStockItems() {
             <thead className="bg-muted/50">
               <tr>
                 <th className="text-left p-2 font-medium">Code</th>
+                <th className="text-left p-2 font-medium">Serial #</th>
                 <th className="text-left p-2 font-medium">Name</th>
                 <th className="text-left p-2 font-medium">Category</th>
+                <th className="text-left p-2 font-medium">Supplier</th>
                 <th className="text-left p-2 font-medium">Unit</th>
                 <th className="text-right p-2 font-medium">On Hand</th>
                 <th className="text-right p-2 font-medium">Reorder Qty</th>
                 <th className="text-left p-2 font-medium">Condition</th>
+                <th className="text-left p-2 font-medium">Actual Size</th>
                 <th className="text-left p-2 font-medium">Branch</th>
                 <th className="p-2"></th>
               </tr>
@@ -129,8 +183,10 @@ export default function InventoryStockItems() {
                 return (
                   <tr key={item.id} className={`border-t ${belowReorder ? "bg-amber-50 dark:bg-amber-950/20" : ""}`}>
                     <td className="p-2 font-mono text-xs">{item.code}</td>
+                    <td className="p-2 font-mono text-xs text-muted-foreground">{item.serialNumber || "-"}</td>
                     <td className="p-2 font-medium">{item.name}</td>
                     <td className="p-2">{item.category}</td>
+                    <td className="p-2 text-muted-foreground text-xs">{item.supplier || "-"}</td>
                     <td className="p-2">{item.unitType === "lm" ? "LM" : item.unit}</td>
                     <td className="p-2 text-right font-semibold">
                       {stock?.onHand ?? 0}
@@ -141,6 +197,11 @@ export default function InventoryStockItems() {
                       <Badge variant={item.conditionIndicator === "new" ? "default" : item.conditionIndicator === "damaged" ? "destructive" : "secondary"}>
                         {item.conditionIndicator === "off_cut" ? "Off Cut" : item.conditionIndicator}
                       </Badge>
+                    </td>
+                    <td className="p-2 text-muted-foreground text-xs">
+                      {item.conditionIndicator === "off_cut" && item.actualSize
+                        ? `${Number(item.actualSize).toFixed(2)}m${item.sourceFullLength ? ` / ${Number(item.sourceFullLength).toFixed(2)}m` : ""}`
+                        : "-"}
                     </td>
                     <td className="p-2 text-muted-foreground text-xs">
                       {branches?.find(b => b.id === item.branchId)?.name || "-"}
@@ -180,6 +241,7 @@ export default function InventoryStockItems() {
 function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean; onOpenChange: (v: boolean) => void; item: any; branches: any[] }) {
   const [code, setCode] = useState(item?.code || "");
   const [name, setName] = useState(item?.name || "");
+  const [serialNumber, setSerialNumber] = useState(item?.serialNumber || "");
   const [category, setCategory] = useState(item?.category || "general");
   const [unit, setUnit] = useState(item?.unit || "EA");
   const [unitType, setUnitType] = useState(item?.unitType || "unit");
@@ -190,6 +252,10 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
   const [description, setDescription] = useState(item?.description || "");
   const [supplier, setSupplier] = useState(item?.supplier || "");
   const [costPrice, setCostPrice] = useState(item?.costPrice || "");
+  const [fullCostPrice, setFullCostPrice] = useState(item?.costPrice || "");
+  const [actualSize, setActualSize] = useState(item?.actualSize || "");
+  const [sourceFullLength, setSourceFullLength] = useState(item?.sourceFullLength || "");
+  const [manufacturingCatalogueProductId, setManufacturingCatalogueProductId] = useState<number | null>(item?.manufacturingCatalogueProductId || null);
   const [productSearch, setProductSearch] = useState("");
   const utils = trpc.useUtils();
 
@@ -202,6 +268,7 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
   const resetForm = (sourceItem?: any) => {
     setCode(sourceItem?.code || "");
     setName(sourceItem?.name || "");
+    setSerialNumber(sourceItem?.serialNumber || "");
     setCategory(sourceItem?.category || "general");
     setUnit(sourceItem?.unit || "EA");
     setUnitType(sourceItem?.unitType || "unit");
@@ -212,12 +279,35 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
     setDescription(sourceItem?.description || "");
     setSupplier(sourceItem?.supplier || "");
     setCostPrice(sourceItem?.costPrice || "");
+    const existingActual = sourceItem?.actualSize ? Number(sourceItem.actualSize) : null;
+    const existingFullLength = sourceItem?.sourceFullLength ? Number(sourceItem.sourceFullLength) : null;
+    const existingCost = sourceItem?.costPrice ? Number(sourceItem.costPrice) : null;
+    const inferredFullCost = sourceItem?.conditionIndicator === "off_cut"
+      && existingActual
+      && existingFullLength
+      && existingCost
+      && existingActual > 0
+        ? existingCost * (existingFullLength / existingActual)
+        : existingCost;
+    setFullCostPrice(inferredFullCost ? moneyText(inferredFullCost) : "");
+    setActualSize(sourceItem?.actualSize || "");
+    setSourceFullLength(sourceItem?.sourceFullLength || "");
+    setManufacturingCatalogueProductId(sourceItem?.manufacturingCatalogueProductId || null);
     setProductSearch("");
   };
 
   useEffect(() => {
     if (open) resetForm(item);
   }, [open, item?.id]);
+
+  useEffect(() => {
+    if (conditionIndicator !== "off_cut") return;
+    const baseCost = numericValue(fullCostPrice || costPrice);
+    const actual = numericValue(actualSize);
+    const fullLength = numericValue(sourceFullLength);
+    if (baseCost == null || actual == null || fullLength == null || fullLength <= 0) return;
+    setCostPrice(moneyText(baseCost * Math.min(actual / fullLength, 1)));
+  }, [conditionIndicator, fullCostPrice, actualSize, sourceFullLength]);
 
   const create = trpc.inventory.stockItems.create.useMutation({
     onSuccess: async () => {
@@ -257,6 +347,7 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
     const payload = {
       code: code.trim(),
       name: name.trim(),
+      serialNumber: textOrNull(serialNumber),
       category: category.trim() || "general",
       unit: unit.trim() || "EA",
       unitType: unitType as "unit" | "lm",
@@ -264,9 +355,12 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
       minStockLevel: textOrNull(minStockLevel),
       branchId: branchId ? Number(branchId) : null,
       conditionIndicator: conditionIndicator as "new" | "damaged" | "off_cut",
+      actualSize: conditionIndicator === "off_cut" ? textOrNull(actualSize) : null,
+      sourceFullLength: conditionIndicator === "off_cut" ? textOrNull(sourceFullLength) : null,
       description: textOrNull(description),
       supplier: textOrNull(supplier),
       costPrice: textOrNull(costPrice),
+      manufacturingCatalogueProductId,
     };
     if (item) {
       update.mutate({ id: item.id, ...payload });
@@ -281,9 +375,13 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
     setCategory(product.category || product.subGroup || "general");
     setUnit(product.uom || "EA");
     setUnitType(unitTypeFromUom(product.uom));
-    setCostPrice(product.unitCost ? String(product.unitCost) : "");
+    const productCost = product.unitCost ? String(product.unitCost) : "";
+    setCostPrice(productCost);
+    setFullCostPrice(productCost);
     setSupplier(product.supplier || "");
     setDescription(stockDescriptionFromProduct(product));
+    setSourceFullLength(inferFullLengthMetres(product.sku, product.description, product.category, product.subGroup)?.toString() || "");
+    setManufacturingCatalogueProductId(product.id || null);
     setProductSearch("");
     toast.success("Stock item details filled from Manufacturing Data");
   };
@@ -343,6 +441,20 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
             <div><Label>Code *</Label><Input value={code} onChange={e => setCode(e.target.value)} placeholder="e.g. BEAM-001" /></div>
             <div><Label>Name *</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder="Item name" /></div>
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label>Serial Number</Label>
+              <Input value={serialNumber} onChange={e => setSerialNumber(e.target.value)} placeholder="Optional serial/batch number" />
+            </div>
+            <div>
+              <Label>Manufacturing Data Link</Label>
+              <Input
+                value={manufacturingCatalogueProductId ? `Product #${manufacturingCatalogueProductId}` : "Custom / unlinked item"}
+                readOnly
+                className="bg-muted/40 text-muted-foreground"
+              />
+            </div>
+          </div>
           <div className="grid grid-cols-3 gap-2">
             <div><Label>Category</Label><Input value={category} onChange={e => setCategory(e.target.value)} placeholder="general" /></div>
             <div><Label>Unit</Label><Input value={unit} onChange={e => setUnit(e.target.value)} placeholder="EA" /></div>
@@ -384,6 +496,30 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
               </Select>
             </div>
           </div>
+          {conditionIndicator === "off_cut" && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 space-y-2 dark:border-amber-900 dark:bg-amber-950/20">
+              <div>
+                <Label>Off Cut Sizing</Label>
+                <p className="text-xs text-muted-foreground">
+                  Cost is calculated pro-rata from the full-length product cost and the actual usable size.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label>Actual Size (m)</Label>
+                  <Input type="number" step="0.01" value={actualSize} onChange={e => setActualSize(e.target.value)} placeholder="e.g. 2.4" />
+                </div>
+                <div>
+                  <Label>Full Length (m)</Label>
+                  <Input type="number" step="0.01" value={sourceFullLength} onChange={e => setSourceFullLength(e.target.value)} placeholder="e.g. 6.5" />
+                </div>
+                <div>
+                  <Label>Full Length Cost ($)</Label>
+                  <Input type="number" step="0.01" value={fullCostPrice} onChange={e => setFullCostPrice(e.target.value)} placeholder="e.g. 149.37" />
+                </div>
+              </div>
+            </div>
+          )}
           <div><Label>Supplier</Label><Input value={supplier} onChange={e => setSupplier(e.target.value)} /></div>
           <div><Label>Description</Label><Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} /></div>
         </div>
@@ -442,6 +578,8 @@ function ManufacturingProductLinkDialog({ open, onOpenChange, stockItem }: { ope
       supplier: product.supplier || null,
       costPrice: Number.isFinite(unitCost) ? unitCost.toFixed(2) : null,
       description: stockDescriptionFromProduct(product) || null,
+      sourceFullLength: inferFullLengthMetres(product.sku, product.description, product.category, product.subGroup)?.toString() || null,
+      manufacturingCatalogueProductId: product.id || null,
     });
   };
 

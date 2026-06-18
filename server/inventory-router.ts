@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts } from "../drizzle/schema";
+import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts, branches } from "../drizzle/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
@@ -26,6 +26,86 @@ function optionalText(value?: string | null) {
 function optionalDecimal(value?: string | null) {
   const trimmed = String(value || "").trim();
   return trimmed ? trimmed : null;
+}
+
+function decimalFromNumber(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return null;
+  return value.toFixed(2);
+}
+
+function unitTypeFromUom(uom?: string | null): "unit" | "lm" {
+  return /\b(lm|linear|lineal|metre|meter|m)\b/i.test(uom || "") ? "lm" : "unit";
+}
+
+function numericFromDecimal(value?: string | null) {
+  const parsed = Number.parseFloat(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function inferFullLengthMetres(...values: Array<string | null | undefined>) {
+  const text = values.filter(Boolean).join(" ");
+  const candidates: number[] = [];
+
+  const metrePattern = /(\d+(?:\.\d+)?)\s*(?:m|metre|meter|metres|meters)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = metrePattern.exec(text)) !== null) {
+    const value = Number.parseFloat(match[1]);
+    if (Number.isFinite(value) && value > 0.2 && value <= 30) candidates.push(value);
+  }
+
+  const mmPattern = /(\d{3,5})\s*mm\b/gi;
+  while ((match = mmPattern.exec(text)) !== null) {
+    const value = Number.parseFloat(match[1]) / 1000;
+    if (Number.isFinite(value) && value > 0.2 && value <= 30) candidates.push(value);
+  }
+
+  return candidates.length ? Math.max(...candidates) : null;
+}
+
+function proRataOffCutCost(input: {
+  conditionIndicator?: string | null;
+  costPrice?: string | null;
+  actualSize?: string | null;
+  sourceFullLength?: string | null;
+  name?: string | null;
+  description?: string | null;
+}) {
+  if (input.conditionIndicator !== "off_cut") return optionalDecimal(input.costPrice);
+  const baseCost = numericFromDecimal(input.costPrice);
+  const actualSize = numericFromDecimal(input.actualSize);
+  const sourceFullLength = numericFromDecimal(input.sourceFullLength)
+    ?? inferFullLengthMetres(input.name, input.description);
+
+  if (baseCost == null || actualSize == null || sourceFullLength == null || sourceFullLength <= 0) {
+    return optionalDecimal(input.costPrice);
+  }
+
+  return decimalFromNumber(baseCost * Math.min(actualSize / sourceFullLength, 1));
+}
+
+function stockDescriptionFromManufacturingProduct(product: any) {
+  return [
+    product.description,
+    product.colour ? `Colour: ${product.colour}` : "",
+    product.subGroup ? `Sub-group: ${product.subGroup}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function rowsFromExecuteResult(result: unknown): any[] {
+  return Array.isArray(result) ? result : [];
+}
+
+function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function isInventorySeedBranch(branch: { name?: string | null }) {
+  const name = String(branch.name || "").trim().toLowerCase();
+  return /(^|[^a-z])act([^a-z]|$)/i.test(name)
+    || name.includes("riverina")
+    || /(^|[^a-z])riv([^a-z]|$)/i.test(name);
 }
 
 async function stockItemIdFromInsertResult(db: any, ctx: any, result: any, code: string) {
@@ -101,6 +181,7 @@ export const inventoryRouter = router({
         conditions.push(sql`(
           ${inventoryStockItems.name} LIKE ${term}
           OR ${inventoryStockItems.code} LIKE ${term}
+          OR ${inventoryStockItems.serialNumber} LIKE ${term}
           OR ${inventoryStockItems.category} LIKE ${term}
           OR ${inventoryStockItems.supplier} LIKE ${term}
           OR ${inventoryStockItems.description} LIKE ${term}
@@ -122,6 +203,7 @@ export const inventoryRouter = router({
     create: protectedProcedure.input(z.object({
       code: z.string().min(1),
       name: z.string().min(1),
+      serialNumber: z.string().nullable().optional(),
       category: z.string().default("general"),
       unit: z.string().default("EA"),
       unitType: z.enum(["unit", "lm"]).default("unit"),
@@ -129,16 +211,20 @@ export const inventoryRouter = router({
       minStockLevel: z.string().nullable().optional(),
       branchId: z.number().nullable().optional(),
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).default("new"),
+      actualSize: z.string().nullable().optional(),
+      sourceFullLength: z.string().nullable().optional(),
       description: z.string().nullable().optional(),
       supplier: z.string().nullable().optional(),
       costPrice: z.string().nullable().optional(),
       catalogueItemId: z.number().nullable().optional(),
+      manufacturingCatalogueProductId: z.number().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       const [result] = await db.insert(inventoryStockItems).values({
         tenantId: tenantIdFromContext(ctx),
         code: input.code.trim(),
         name: input.name.trim(),
+        serialNumber: optionalText(input.serialNumber),
         category: input.category.trim() || "general",
         unit: input.unit.trim() || "EA",
         unitType: input.unitType,
@@ -146,10 +232,13 @@ export const inventoryRouter = router({
         minStockLevel: optionalDecimal(input.minStockLevel),
         branchId: input.branchId || null,
         conditionIndicator: input.conditionIndicator,
+        actualSize: optionalDecimal(input.actualSize),
+        sourceFullLength: optionalDecimal(input.sourceFullLength),
         description: optionalText(input.description),
         supplier: optionalText(input.supplier),
-        costPrice: optionalDecimal(input.costPrice),
+        costPrice: proRataOffCutCost(input),
         catalogueItemId: input.catalogueItemId || null,
+        manufacturingCatalogueProductId: input.manufacturingCatalogueProductId || null,
       });
       const id = await stockItemIdFromInsertResult(db, ctx, result, input.code);
       return { id };
@@ -159,6 +248,7 @@ export const inventoryRouter = router({
       id: z.number(),
       code: z.string().optional(),
       name: z.string().optional(),
+      serialNumber: z.string().nullable().optional(),
       category: z.string().optional(),
       unit: z.string().optional(),
       unitType: z.enum(["unit", "lm"]).optional(),
@@ -166,18 +256,22 @@ export const inventoryRouter = router({
       minStockLevel: z.string().nullable().optional(),
       branchId: z.number().nullable().optional(),
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
+      actualSize: z.string().nullable().optional(),
+      sourceFullLength: z.string().nullable().optional(),
       description: z.string().nullable().optional(),
       supplier: z.string().nullable().optional(),
       costPrice: z.string().nullable().optional(),
       catalogueItemId: z.number().nullable().optional(),
+      manufacturingCatalogueProductId: z.number().nullable().optional(),
       isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       const { id, ...updates } = input;
-      await requireStockItemAccess(db, ctx, id);
+      const item = await requireStockItemAccess(db, ctx, id);
       const cleanedUpdates: Record<string, unknown> = {};
       if (updates.code !== undefined) cleanedUpdates.code = updates.code.trim();
       if (updates.name !== undefined) cleanedUpdates.name = updates.name.trim();
+      if (updates.serialNumber !== undefined) cleanedUpdates.serialNumber = optionalText(updates.serialNumber);
       if (updates.category !== undefined) cleanedUpdates.category = updates.category.trim() || "general";
       if (updates.unit !== undefined) cleanedUpdates.unit = updates.unit.trim() || "EA";
       if (updates.unitType !== undefined) cleanedUpdates.unitType = updates.unitType;
@@ -185,13 +279,132 @@ export const inventoryRouter = router({
       if (updates.minStockLevel !== undefined) cleanedUpdates.minStockLevel = optionalDecimal(updates.minStockLevel);
       if (updates.branchId !== undefined) cleanedUpdates.branchId = updates.branchId || null;
       if (updates.conditionIndicator !== undefined) cleanedUpdates.conditionIndicator = updates.conditionIndicator;
+      if (updates.actualSize !== undefined) cleanedUpdates.actualSize = optionalDecimal(updates.actualSize);
+      if (updates.sourceFullLength !== undefined) cleanedUpdates.sourceFullLength = optionalDecimal(updates.sourceFullLength);
       if (updates.description !== undefined) cleanedUpdates.description = optionalText(updates.description);
       if (updates.supplier !== undefined) cleanedUpdates.supplier = optionalText(updates.supplier);
-      if (updates.costPrice !== undefined) cleanedUpdates.costPrice = optionalDecimal(updates.costPrice);
+      if (updates.costPrice !== undefined) {
+        cleanedUpdates.costPrice = proRataOffCutCost({
+          conditionIndicator: updates.conditionIndicator ?? item.conditionIndicator,
+          costPrice: updates.costPrice,
+          actualSize: updates.actualSize ?? item.actualSize,
+          sourceFullLength: updates.sourceFullLength ?? item.sourceFullLength,
+          name: updates.name ?? item.name,
+          description: updates.description ?? item.description,
+        });
+      }
       if (updates.catalogueItemId !== undefined) cleanedUpdates.catalogueItemId = updates.catalogueItemId || null;
+      if (updates.manufacturingCatalogueProductId !== undefined) cleanedUpdates.manufacturingCatalogueProductId = updates.manufacturingCatalogueProductId || null;
       if (updates.isActive !== undefined) cleanedUpdates.isActive = updates.isActive;
       await db.update(inventoryStockItems).set(cleanedUpdates).where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, id))));
       return { success: true };
+    }),
+
+    seedFromManufacturingData: protectedProcedure.input(z.object({
+      branchIds: z.array(z.number()).optional(),
+      includeArchived: z.boolean().optional().default(false),
+    }).optional()).mutation(async ({ input, ctx }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdFromContext(ctx) ?? 1;
+
+      const branchRows = await db.select({ id: branches.id, name: branches.name })
+        .from(branches)
+        .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))));
+
+      const requestedBranchIds = new Set(input?.branchIds || []);
+      const targetBranches = requestedBranchIds.size
+        ? branchRows.filter((branch) => requestedBranchIds.has(branch.id))
+        : branchRows.filter(isInventorySeedBranch);
+
+      if (!targetBranches.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "No ACT or Riverina branches were found for this tenant.",
+        });
+      }
+
+      const productConditions = [sql`(tenantId = ${tenantId} OR tenantId IS NULL)`];
+      if (!input?.includeArchived) productConditions.push(sql`isActive = 1`);
+      const [rowsResult] = await db.execute(sql`
+        SELECT id, sku, description, category, subGroup, uom, unitCost, supplier, colour, isActive
+        FROM manufacturing_catalogue_products
+        WHERE ${sql.join(productConditions, sql` AND `)}
+        ORDER BY category IS NULL, category, sku IS NULL, sku, description
+      `);
+      const products = rowsFromExecuteResult(rowsResult);
+
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+
+      for (const product of products) {
+        const code = String(product.sku || "").trim();
+        const name = String(product.description || "").trim();
+        if (!code || !name) {
+          skipped += targetBranches.length;
+          continue;
+        }
+
+        const unitCost = Number(product.unitCost || 0);
+        const fullLength = inferFullLengthMetres(product.sku, product.description, product.category, product.subGroup);
+        const productValues = {
+          tenantId,
+          code,
+          name,
+          category: String(product.category || product.subGroup || "general").trim() || "general",
+          unit: String(product.uom || "EA").trim() || "EA",
+          unitType: unitTypeFromUom(product.uom),
+          conditionIndicator: "new" as const,
+          description: stockDescriptionFromManufacturingProduct(product) || null,
+          supplier: optionalText(product.supplier),
+          costPrice: Number.isFinite(unitCost) ? unitCost.toFixed(2) : "0.00",
+          manufacturingCatalogueProductId: Number(product.id) || null,
+          sourceFullLength: decimalFromNumber(fullLength),
+          isActive: true,
+        };
+
+        for (const branch of targetBranches) {
+          const [existing] = await db.select({ id: inventoryStockItems.id })
+            .from(inventoryStockItems)
+            .where(and(...stockItemTenantConditions(ctx,
+              eq(inventoryStockItems.branchId, branch.id),
+              eq(inventoryStockItems.code, code)
+            )))
+            .limit(1);
+
+          if (existing?.id) {
+            await db.update(inventoryStockItems)
+              .set({
+                name: productValues.name,
+                category: productValues.category,
+                unit: productValues.unit,
+                unitType: productValues.unitType,
+                description: productValues.description,
+                supplier: productValues.supplier,
+                costPrice: productValues.costPrice,
+                manufacturingCatalogueProductId: productValues.manufacturingCatalogueProductId,
+                sourceFullLength: productValues.sourceFullLength,
+                isActive: true,
+              })
+              .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, existing.id))));
+            updated += 1;
+          } else {
+            await db.insert(inventoryStockItems).values({
+              ...productValues,
+              branchId: branch.id,
+            });
+            created += 1;
+          }
+        }
+      }
+
+      return {
+        created,
+        updated,
+        skipped,
+        products: products.length,
+        branches: targetBranches.map((branch) => branch.name),
+      };
     }),
 
     delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
