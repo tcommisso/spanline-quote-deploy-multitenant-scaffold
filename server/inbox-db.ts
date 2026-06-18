@@ -263,8 +263,15 @@ export async function updateTicketMetadata(threadId: string, data: {
 }, tenantId?: number | null, userId?: number | null, userName?: string | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const ticket = await getTicketByThread(threadId, tenantId);
-  if (!ticket) throw new Error("Ticket not found");
+
+  const [messageExists] = await db
+    .select({ id: inboxMessages.id })
+    .from(inboxMessages)
+    .where(and(...messageThreadConditions(threadId, tenantId)))
+    .limit(1);
+  if (!messageExists) return null;
+
+  let ticket = await getTicketByThread(threadId, tenantId);
 
   const patch: any = {};
   if (data.priority) patch.priority = data.priority;
@@ -294,9 +301,19 @@ export async function updateTicketMetadata(threadId: string, data: {
   }
 
   if (Object.keys(patch).length > 0) {
-    await db.update(inboxTickets).set(patch).where(eq(inboxTickets.id, ticket.id));
+    if (!ticket) {
+      await syncTicketForThreadBestEffort(threadId, tenantId, "ticket metadata repair");
+      ticket = await getTicketByThread(threadId, tenantId);
+    }
+    if (ticket) {
+      try {
+        await db.update(inboxTickets).set(patch).where(eq(inboxTickets.id, ticket.id));
+      } catch (err: any) {
+        console.error(`[Inbox Tickets] metadata update failed for thread ${threadId}:`, err?.message || err);
+      }
+    }
   }
-  return getTicketByThread(threadId, tenantId);
+  return (await getTicketByThread(threadId, tenantId)) || ticket || ({ threadId, tenantId: tenantId ?? null } as InboxTicket);
 }
 
 export async function createInboxMessage(data: Omit<InsertInboxMessage, "id">) {
@@ -1461,17 +1478,23 @@ export async function bulkDeleteThreads(threadIds: string[], tenantId?: number |
   const ownedIds = ownedMessages.map(row => row.id);
   if (ownedIds.length === 0) return 0;
   const ownedThreadIds = Array.from(new Set(ownedMessages.map(row => row.threadId)));
-  const ticketConditionsForDelete: any[] = [inArray(inboxTickets.threadId, ownedThreadIds)];
-  appendTenantScope(ticketConditionsForDelete, inboxTickets.tenantId, tenantId);
-  const ownedTickets = await db
-    .select({ id: inboxTickets.id })
-    .from(inboxTickets)
-    .where(and(...ticketConditionsForDelete));
-  const ownedTicketIds = ownedTickets.map((row) => row.id);
-  if (ownedTicketIds.length > 0) {
-    await db.delete(inboxTicketTags).where(inArray(inboxTicketTags.ticketId, ownedTicketIds));
-    await db.delete(inboxTickets).where(inArray(inboxTickets.id, ownedTicketIds));
+
+  try {
+    const ticketConditionsForDelete: any[] = [inArray(inboxTickets.threadId, ownedThreadIds)];
+    appendTenantScope(ticketConditionsForDelete, inboxTickets.tenantId, tenantId);
+    const ownedTickets = await db
+      .select({ id: inboxTickets.id })
+      .from(inboxTickets)
+      .where(and(...ticketConditionsForDelete));
+    const ownedTicketIds = ownedTickets.map((row) => row.id);
+    if (ownedTicketIds.length > 0) {
+      await db.delete(inboxTicketTags).where(inArray(inboxTicketTags.ticketId, ownedTicketIds));
+      await db.delete(inboxTickets).where(inArray(inboxTickets.id, ownedTicketIds));
+    }
+  } catch (err: any) {
+    console.error("[Inbox Tickets] bulk thread ticket cleanup failed:", err?.message || err);
   }
+
   await db.delete(inboxMessageTags).where(inArray(inboxMessageTags.messageId, ownedIds));
   await db.delete(inboxMessages).where(inArray(inboxMessages.id, ownedIds));
   return ownedThreadIds.length;

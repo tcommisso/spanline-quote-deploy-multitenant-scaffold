@@ -21,6 +21,47 @@ const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
 
+const EMAIL_ADDRESS_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+function extractEmailAddresses(value: unknown): string[] {
+  if (!value) return [];
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractEmailAddresses(item));
+  }
+
+  if (typeof value === "object") {
+    const maybeRecord = value as Record<string, unknown>;
+    return extractEmailAddresses(maybeRecord.email || maybeRecord.address || maybeRecord.mail || "");
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return [];
+
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    try {
+      return extractEmailAddresses(JSON.parse(raw));
+    } catch {
+      // Fall through to regex extraction for malformed or legacy strings.
+    }
+  }
+
+  const matches = raw.match(EMAIL_ADDRESS_RE) || [];
+  return Array.from(new Set(matches.map((email) => email.toLowerCase())));
+}
+
+function resolveReplyRecipient(originalMsg: {
+  direction?: string | null;
+  fromAddress?: string | null;
+  toAddresses?: string | null;
+}): string | null {
+  if (originalMsg.direction === "outbound") {
+    const outboundRecipients = extractEmailAddresses(originalMsg.toAddresses);
+    if (outboundRecipients.length > 0) return outboundRecipients[0];
+  }
+  return extractEmailAddresses(originalMsg.fromAddress)[0] || null;
+}
+
 export const inboxRouter = router({
   // ─── Messages ─────────────────────────────────────────────────────────────
 
@@ -504,8 +545,18 @@ export const inboxRouter = router({
           replyFromEmail = originalMsg.receivedByAddress;
         }
       }
-      const toAddress = originalMsg.fromAddress;
+      const toAddress = resolveReplyRecipient(originalMsg);
+      if (!toAddress) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Could not determine a valid reply recipient for this ticket.",
+        });
+      }
       const subject = originalMsg.subject?.startsWith("Re:") ? originalMsg.subject : `Re: ${originalMsg.subject || "(no subject)"}`;
+      const existingTicket = await inboxDb.getTicketByThread(originalMsg.threadId, ctx.tenant!.id);
+      const replyAssigneeId = existingTicket?.assignedToId ?? originalMsg.assignedToId ?? ctx.user!.id;
+      const replyAssigneeName = existingTicket?.assignedToName ?? originalMsg.assignedToName ?? userName;
+      const replyAssignedAt = existingTicket?.assignedAt ?? originalMsg.assignedAt ?? new Date();
 
       // Send via unified O365 email service.
       const sendResult = await sendUnifiedEmail({
@@ -548,6 +599,9 @@ export const inboxRouter = router({
         isStarred: false,
         portalVisible: false,
         autoReplySent: false,
+        assignedToId: replyAssigneeId,
+        assignedToName: replyAssigneeName,
+        assignedAt: replyAssignedAt,
         createdBy: ctx.user!.id,
         createdByName: userName,
       });
@@ -628,6 +682,9 @@ export const inboxRouter = router({
         isStarred: false,
         portalVisible: false,
         autoReplySent: false,
+        assignedToId: ctx.user!.id,
+        assignedToName: userName,
+        assignedAt: new Date(),
         createdBy: ctx.user!.id,
         createdByName: userName,
       });
