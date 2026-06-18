@@ -9,6 +9,7 @@ Last updated: 2026-06-18
 - Xero connections are linked to the app tenant through `xero_connections.appTenantId`.
 - Xero Accounting API transaction rows, webhook events, cost-import batches/items, and budget-import batches/items carry app tenant ownership.
 - Xero settings now exposes tenant-scoped sync operations health: transaction rows, unmatched lines, webhook events, sync logs, and latest import status.
+- Xero Projects sync now requires tenant context and scopes project import/push, contact sync, full batch background sync, sync cancellation/status polling, failure detail reads, transaction drilldowns, and failure notifications through the active tenant's Xero connection.
 - Tenant integration settings now cover `domain`, `email`, `msgraph`, `nylas`, `vocphone`, `signwell`, `zapier`, and `planning`.
 - Tenant app settings now avoid legacy global-setting fallback when true multi-tenant mode is enabled and a tenant is known. Authenticated company/settings reads and writes require tenant context.
 - Outbound email uses Microsoft Graph/O365. Resend is no longer an active sender and is retained only for optional legacy inbound/tracking compatibility.
