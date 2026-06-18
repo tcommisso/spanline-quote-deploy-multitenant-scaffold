@@ -371,6 +371,26 @@ export const stocktakeRouter = router({
     return { success: true };
   }),
 
+  // Permanently delete a stocktake and its count lines. Finalised stocktakes are retained for audit integrity.
+  deleteStocktake: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    if (ctx.user.role !== "super_admin") {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Super Admin access required to delete stocktakes." });
+    }
+
+    const db = await requireDb();
+    const stocktake = await requireStocktakeAccess(db, ctx, input.id);
+    if (stocktake.status === "finalised") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Finalised stocktakes cannot be deleted because they may have posted inventory movements.",
+      });
+    }
+
+    await db.delete(stocktakeLines).where(eq(stocktakeLines.stocktakeId, input.id));
+    await db.delete(stocktakes).where(and(...stocktakeTenantConditions(ctx, eq(stocktakes.id, input.id))));
+    return { success: true };
+  }),
+
   // ─── Low Stock Alerts ─────────────────────────────────────────────────────
   lowStockCheck: protectedProcedure.input(z.object({
     sendEmail: z.boolean().optional().default(false),

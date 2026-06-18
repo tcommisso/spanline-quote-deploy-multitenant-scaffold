@@ -8,7 +8,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { Plus, ClipboardCheck, Eye, XCircle } from "lucide-react";
+import { Plus, ClipboardCheck, XCircle, Trash2 } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 
 const statusColors: Record<string, string> = {
   in_progress: "bg-blue-100 text-blue-800",
@@ -19,11 +21,14 @@ const statusColors: Record<string, string> = {
 
 export default function StocktakeList() {
   const [, navigate] = useLocation();
+  const { user } = useAuth();
   const [filterBranch, setFilterBranch] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [newBranchId, setNewBranchId] = useState<string>("");
   const [newNotes, setNewNotes] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; stocktakeNumber: string } | null>(null);
+  const isSuperAdmin = user?.role === "super_admin";
 
   const branches = trpc.manufacturing.branches.useQuery();
   const stocktakes = trpc.stocktake.list.useQuery({
@@ -48,6 +53,15 @@ export default function StocktakeList() {
       toast.success("Stocktake cancelled");
       stocktakes.refetch();
     },
+  });
+
+  const deleteMutation = trpc.stocktake.deleteStocktake.useMutation({
+    onSuccess: () => {
+      toast.success("Stocktake deleted");
+      setDeleteTarget(null);
+      stocktakes.refetch();
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   return (
@@ -123,6 +137,21 @@ export default function StocktakeList() {
                         cancelMutation.mutate({ id: st.id });
                       }}><XCircle className="w-4 h-4" /></Button>
                     )}
+                    {isSuperAdmin && st.status !== "finalised" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        title="Delete stocktake"
+                        aria-label={`Delete stocktake ${st.stocktakeNumber}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget({ id: st.id, stocktakeNumber: st.stocktakeNumber });
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -162,6 +191,20 @@ export default function StocktakeList() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        onConfirm={() => {
+          if (deleteTarget) deleteMutation.mutate({ id: deleteTarget.id });
+        }}
+        title="Delete Stocktake"
+        description={`Delete ${deleteTarget?.stocktakeNumber || "this stocktake"} and all its count lines? This cannot be undone.`}
+        confirmLabel="Delete Stocktake"
+        isPending={deleteMutation.isPending}
+      />
     </div>
   );
 }
