@@ -7,15 +7,31 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 type CountFilter = "all" | "uncounted" | "variance";
 type SaveState = "saving" | "saved" | "error";
+type CountCondition = "new" | "damaged" | "off_cut";
+
+type LineAttributeDraft = {
+  conditionIndicator: CountCondition;
+  colour: string;
+  actualSize: string;
+  sourceFullLength: string;
+  notes: string;
+};
 
 type StocktakeLineView = {
   id: number;
   systemQty: number | string | null;
   countedQty: number | string | null;
   variance?: number | string | null;
+  conditionIndicator?: CountCondition | null;
+  colour?: string | null;
+  actualSize?: number | string | null;
+  sourceFullLength?: number | string | null;
+  notes?: string | null;
   countedAt?: string | Date | null;
   stockItem?: {
     code?: string | null;
@@ -23,6 +39,10 @@ type StocktakeLineView = {
     category?: string | null;
     unit?: string | null;
     unitType?: string | null;
+    conditionIndicator?: CountCondition | null;
+    actualSize?: number | string | null;
+    sourceFullLength?: number | string | null;
+    catalogueColour?: string | null;
   } | null;
 };
 
@@ -60,6 +80,18 @@ function isNumericDraft(value: string) {
   return /^\d*\.?\d*$/.test(value);
 }
 
+function numberText(value: unknown) {
+  if (value == null || value === "") return "";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? String(numeric) : "";
+}
+
+const conditionOptions: Array<{ value: CountCondition; label: string }> = [
+  { value: "new", label: "Full / new" },
+  { value: "off_cut", label: "Off cut" },
+  { value: "damaged", label: "Damaged" },
+];
+
 export default function StocktakeMobileCount() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
@@ -71,10 +103,12 @@ export default function StocktakeMobileCount() {
     { enabled: Number.isFinite(stocktakeId) }
   );
   const updateCounts = trpc.stocktake.updateCounts.useMutation();
+  const addCountLine = trpc.stocktake.addCountLine.useMutation();
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<CountFilter>("uncounted");
   const [draftCounts, setDraftCounts] = useState<Record<number, string>>({});
+  const [attributeDrafts, setAttributeDrafts] = useState<Record<number, LineAttributeDraft>>({});
   const [saveStates, setSaveStates] = useState<Record<number, SaveState>>({});
   const [selectedLineId, setSelectedLineId] = useState<number | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -90,6 +124,41 @@ export default function StocktakeMobileCount() {
 
   const lines = useMemo<StocktakeLineView[]>(() => (data?.lines || []) as StocktakeLineView[], [data?.lines]);
 
+  const lineCondition = useCallback((line: StocktakeLineView): CountCondition => {
+    return (line.conditionIndicator || line.stockItem?.conditionIndicator || "new") as CountCondition;
+  }, []);
+
+  const defaultAttributeDraft = useCallback((line: StocktakeLineView): LineAttributeDraft => ({
+    conditionIndicator: lineCondition(line),
+    colour: line.colour || line.stockItem?.catalogueColour || "",
+    actualSize: numberText(line.actualSize ?? line.stockItem?.actualSize),
+    sourceFullLength: numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength),
+    notes: line.notes || "",
+  }), [lineCondition]);
+
+  const getAttributeDraft = useCallback((line: StocktakeLineView) => {
+    return attributeDrafts[line.id] || defaultAttributeDraft(line);
+  }, [attributeDrafts, defaultAttributeDraft]);
+
+  const setAttributeDraft = (line: StocktakeLineView, patch: Partial<LineAttributeDraft>) => {
+    setSelectedLineId(line.id);
+    setAttributeDrafts((prev) => ({
+      ...prev,
+      [line.id]: {
+        ...(prev[line.id] || defaultAttributeDraft(line)),
+        ...patch,
+      },
+    }));
+  };
+
+  const lineHasAttributes = useCallback((line: StocktakeLineView) => {
+    return lineCondition(line) !== "new"
+      || Boolean(line.colour)
+      || Boolean(line.actualSize)
+      || Boolean(line.sourceFullLength)
+      || Boolean(line.notes);
+  }, [lineCondition]);
+
   const getDraftOrCount = useCallback((line: StocktakeLineView) => {
     if (draftCounts[line.id] !== undefined) return draftCounts[line.id];
     if (line.countedQty !== null && line.countedQty !== undefined) return formatQuantity(quantityToNumber(line.countedQty));
@@ -99,6 +168,10 @@ export default function StocktakeMobileCount() {
   const lineHasCount = useCallback((line: StocktakeLineView) => {
     return draftCounts[line.id] !== undefined || line.countedQty !== null;
   }, [draftCounts]);
+
+  const lineHasPersistedCount = useCallback((line: StocktakeLineView) => {
+    return line.countedQty !== null && line.countedQty !== undefined;
+  }, []);
 
   const predictedVariance = useCallback((line: StocktakeLineView) => {
     if (!lineHasCount(line)) return null;
@@ -125,14 +198,17 @@ export default function StocktakeMobileCount() {
         || name.toLowerCase().includes(query)
         || category.toLowerCase().includes(query);
       if (!matchesSearch) return false;
-      if (filter === "uncounted") return !lineHasCount(line);
+      if (filter === "uncounted") {
+        // Keep locally edited rows visible until autosave succeeds so mobile controls do not appear to move rows.
+        return !lineHasPersistedCount(line) || draftCounts[line.id] !== undefined;
+      }
       if (filter === "variance") {
         const value = predictedVariance(line);
         return value !== null && Math.abs(value) > 0.0001;
       }
       return true;
     });
-  }, [filter, lineHasCount, lines, predictedVariance, search]);
+  }, [draftCounts, filter, lineHasPersistedCount, lines, predictedVariance, search]);
 
   const stopScanner = useCallback(() => {
     if (animationFrameRef.current !== null) {
@@ -276,6 +352,12 @@ export default function StocktakeMobileCount() {
         {
           onSuccess: () => {
             setSaveStates((prev) => ({ ...prev, [lineId]: "saved" }));
+            setDraftCounts((prev) => {
+              if (prev[lineId] !== countedQty) return prev;
+              const next = { ...prev };
+              delete next[lineId];
+              return next;
+            });
             utils.stocktake.getById.invalidate({ id: stocktakeId });
           },
           onError: (err) => {
@@ -298,6 +380,62 @@ export default function StocktakeMobileCount() {
     const current = quantityToNumber(getDraftOrCount(line));
     const next = formatQuantity(Math.max(0, current + delta));
     setLineQuantity(line, next);
+  };
+
+  const saveLineDetails = (line: StocktakeLineView) => {
+    const draft = getAttributeDraft(line);
+    updateCounts.mutate(
+      {
+        stocktakeId,
+        counts: [{
+          lineId: line.id,
+          conditionIndicator: draft.conditionIndicator,
+          colour: draft.colour || null,
+          actualSize: draft.actualSize || null,
+          sourceFullLength: draft.sourceFullLength || null,
+          notes: draft.notes,
+        }],
+      },
+      {
+        onSuccess: () => {
+          toast.success("Line details saved");
+          setAttributeDrafts((prev) => {
+            const next = { ...prev };
+            delete next[line.id];
+            return next;
+          });
+          utils.stocktake.getById.invalidate({ id: stocktakeId });
+        },
+        onError: (err) => toast.error(err.message),
+      }
+    );
+  };
+
+  const handleAddCountLine = (line: StocktakeLineView, conditionIndicator?: CountCondition) => {
+    const draft = getAttributeDraft(line);
+    const nextCondition = conditionIndicator || draft.conditionIndicator;
+    const isOffcut = nextCondition === "off_cut";
+
+    addCountLine.mutate(
+      {
+        stocktakeId,
+        sourceLineId: line.id,
+        conditionIndicator: nextCondition,
+        colour: draft.colour || undefined,
+        actualSize: isOffcut ? undefined : draft.actualSize || undefined,
+        sourceFullLength: draft.sourceFullLength || undefined,
+        notes: isOffcut ? "Off cut count line" : "Additional count line",
+      },
+      {
+        onSuccess: (result) => {
+          toast.success(isOffcut ? "Offcut line added" : "Additional count line added");
+          setFilter("all");
+          if (result.id) setSelectedLineId(result.id);
+          utils.stocktake.getById.invalidate({ id: stocktakeId });
+        },
+        onError: (err) => toast.error(err.message),
+      }
+    );
   };
 
   const handleSearchSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -441,6 +579,9 @@ export default function StocktakeMobileCount() {
           const itemCode = line.stockItem?.code || "-";
           const itemName = line.stockItem?.name || "Unknown item";
           const unit = line.stockItem?.unit || line.stockItem?.unitType || "unit";
+          const attributes = getAttributeDraft(line);
+          const conditionLabel = conditionOptions.find((option) => option.value === attributes.conditionIndicator)?.label || "Full / new";
+          const showDetails = selected || lineHasAttributes(line);
 
           return (
             <Card
@@ -454,6 +595,11 @@ export default function StocktakeMobileCount() {
                     <div className="font-mono text-xs text-muted-foreground">{itemCode}</div>
                     <div className="mt-0.5 line-clamp-2 font-medium leading-snug">{itemName}</div>
                     <div className="mt-1 text-xs text-muted-foreground">{line.stockItem?.category || "Uncategorised"}</div>
+                    {lineHasAttributes(line) && (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {[conditionLabel, line.colour, line.actualSize ? `${line.actualSize}m actual` : "", line.sourceFullLength ? `${line.sourceFullLength}m source` : ""].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1">
                     {lineHasCount(line) ? (
@@ -462,7 +608,7 @@ export default function StocktakeMobileCount() {
                         Counted
                       </Badge>
                     ) : (
-                      <Badge variant="outline">Open</Badge>
+                      <Badge variant="secondary">Uncounted</Badge>
                     )}
                     {saveState === "saving" && <Badge variant="outline">Saving</Badge>}
                     {saveState === "saved" && <Badge className="bg-blue-100 text-blue-800">Saved</Badge>}
@@ -494,7 +640,11 @@ export default function StocktakeMobileCount() {
                     size="icon"
                     className="h-12 w-12 shrink-0"
                     disabled={!isEditable}
-                    onClick={() => adjustLineQuantity(line, -1)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      adjustLineQuantity(line, -1);
+                    }}
                   >
                     <Minus className="h-5 w-5" />
                   </Button>
@@ -505,8 +655,13 @@ export default function StocktakeMobileCount() {
                     step="0.1"
                     value={qty}
                     disabled={!isEditable}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
                     onChange={(event) => setLineQuantity(line, event.target.value)}
-                    onFocus={() => setSelectedLineId(line.id)}
+                    onFocus={(event) => {
+                      event.stopPropagation();
+                      setSelectedLineId(line.id);
+                    }}
                     className="h-12 min-w-0 text-center text-lg font-semibold"
                     aria-label={`${itemName} counted quantity`}
                   />
@@ -516,7 +671,11 @@ export default function StocktakeMobileCount() {
                     size="icon"
                     className="h-12 w-12 shrink-0"
                     disabled={!isEditable}
-                    onClick={() => adjustLineQuantity(line, 1)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      adjustLineQuantity(line, 1);
+                    }}
                   >
                     <Plus className="h-5 w-5" />
                   </Button>
@@ -535,6 +694,123 @@ export default function StocktakeMobileCount() {
                     </button>
                   )}
                 </div>
+
+                {isEditable && (
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <Button
+                      type="button"
+                      variant={selected ? "default" : "outline"}
+                      size="sm"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedLineId(selected ? null : line.id);
+                      }}
+                    >
+                      Details
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={addCountLine.isPending}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleAddCountLine(line);
+                      }}
+                    >
+                      Add Line
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={addCountLine.isPending}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleAddCountLine(line, "off_cut");
+                      }}
+                    >
+                      Offcut
+                    </Button>
+                  </div>
+                )}
+
+                {isEditable && showDetails && (
+                  <div className="mt-3 space-y-3 rounded-md border bg-muted/20 p-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Count type</label>
+                        <Select
+                          value={attributes.conditionIndicator}
+                          onValueChange={(value) => setAttributeDraft(line, { conditionIndicator: value as CountCondition })}
+                        >
+                          <SelectTrigger className="h-10">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {conditionOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Colour</label>
+                        <Input
+                          value={attributes.colour}
+                          placeholder="e.g. Monument"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { colour: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Actual size (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.actualSize}
+                          placeholder="e.g. 2.2"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { actualSize: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Full length (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.sourceFullLength}
+                          placeholder="e.g. 6.5"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { sourceFullLength: event.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Notes</label>
+                      <Textarea
+                        value={attributes.notes}
+                        placeholder="Location, offcut notes, count context..."
+                        className="min-h-[72px]"
+                        onChange={(event) => setAttributeDraft(line, { notes: event.target.value })}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="w-full"
+                      disabled={updateCounts.isPending}
+                      onClick={() => saveLineDetails(line)}
+                    >
+                      Save Details
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           );

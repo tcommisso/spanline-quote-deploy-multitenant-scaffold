@@ -151,6 +151,15 @@ async function requireStockItemAccess(db: any, ctx: any, stockItemId: number) {
   return item;
 }
 
+async function requireBranchAccess(db: any, ctx: any, branchId: number) {
+  const [branch] = await db.select({ id: branches.id, name: branches.name })
+    .from(branches)
+    .where(and(...branchTenantConditions(ctx, eq(branches.id, branchId))))
+    .limit(1);
+  if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "Branch not found" });
+  return branch;
+}
+
 async function requireTransferAccess(db: any, ctx: any, transferId: number) {
   const [transfer] = await db.select()
     .from(inventoryTransfers)
@@ -173,7 +182,10 @@ export const inventoryRouter = router({
       const db = await requireDb();
       const conditions: any[] = [];
       if (input.activeOnly) conditions.push(eq(inventoryStockItems.isActive, true));
-      if (input.branchId) conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      }
       if (input.category) conditions.push(eq(inventoryStockItems.category, input.category));
       if (input.condition) conditions.push(eq(inventoryStockItems.conditionIndicator, input.condition));
       if (input.search?.trim()) {
@@ -220,6 +232,7 @@ export const inventoryRouter = router({
       manufacturingCatalogueProductId: z.number().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
+      if (input.branchId) await requireBranchAccess(db, ctx, input.branchId);
       const [result] = await db.insert(inventoryStockItems).values({
         tenantId: tenantIdFromContext(ctx),
         code: input.code.trim(),
@@ -268,6 +281,7 @@ export const inventoryRouter = router({
       const db = await requireDb();
       const { id, ...updates } = input;
       const item = await requireStockItemAccess(db, ctx, id);
+      if (updates.branchId) await requireBranchAccess(db, ctx, updates.branchId);
       const cleanedUpdates: Record<string, unknown> = {};
       if (updates.code !== undefined) cleanedUpdates.code = updates.code.trim();
       if (updates.name !== undefined) cleanedUpdates.name = updates.name.trim();
@@ -439,6 +453,7 @@ export const inventoryRouter = router({
     })).query(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      if (input.branchId) await requireBranchAccess(db, ctx, input.branchId);
       const conditions: any[] = [eq(inventoryMovements.stockItemId, input.stockItemId)];
       if (input.branchId) conditions.push(eq(inventoryMovements.branchId, input.branchId));
 
@@ -466,7 +481,10 @@ export const inventoryRouter = router({
         await requireStockItemAccess(db, ctx, input.stockItemId);
         conditions.push(eq(inventoryMovements.stockItemId, input.stockItemId));
       }
-      if (input.branchId) conditions.push(eq(inventoryMovements.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryMovements.branchId, input.branchId));
+      }
       if (input.movementType) conditions.push(eq(inventoryMovements.movementType, input.movementType));
 
       const movements = await db.select().from(inventoryMovements)
@@ -487,6 +505,7 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       const item = await requireStockItemAccess(db, ctx, input.stockItemId);
+      await requireBranchAccess(db, ctx, input.branchId);
       const [result] = await db.insert(inventoryMovements).values({
         tenantId: tenantIdFromContext(ctx),
         stockItemId: input.stockItemId,
@@ -538,6 +557,7 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      await requireBranchAccess(db, ctx, input.branchId);
       const [result] = await db.insert(inventoryMovements).values({
         tenantId: tenantIdFromContext(ctx),
         stockItemId: input.stockItemId,
@@ -565,6 +585,7 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      await requireBranchAccess(db, ctx, input.branchId);
       const [result] = await db.insert(inventoryMovements).values({
         tenantId: tenantIdFromContext(ctx),
         stockItemId: input.stockItemId,
@@ -590,6 +611,7 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      await requireBranchAccess(db, ctx, input.branchId);
       const [result] = await db.insert(inventoryMovements).values({
         tenantId: tenantIdFromContext(ctx),
         stockItemId: input.stockItemId,
@@ -614,6 +636,7 @@ export const inventoryRouter = router({
       const conditions: any[] = [];
       if (input.status) conditions.push(eq(inventoryTransfers.status, input.status));
       if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
         conditions.push(
           sql`(${inventoryTransfers.fromBranchId} = ${input.branchId} OR ${inventoryTransfers.toBranchId} = ${input.branchId})`
         );
@@ -634,6 +657,11 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      await requireBranchAccess(db, ctx, input.fromBranchId);
+      await requireBranchAccess(db, ctx, input.toBranchId);
+      if (input.fromBranchId === input.toBranchId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Transfer branches must be different." });
+      }
       const transferNumber = `TRF-${Date.now().toString(36).toUpperCase()}`;
       const [result] = await db.insert(inventoryTransfers).values({
         tenantId: tenantIdFromContext(ctx),
@@ -721,7 +749,10 @@ export const inventoryRouter = router({
       const db = await requireDb();
       // Get all active stock items
       const conditions: any[] = [eq(inventoryStockItems.isActive, true)];
-      if (input.branchId) conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      }
 
       const items = await db.select().from(inventoryStockItems).where(and(...stockItemTenantConditions(ctx, ...conditions)));
 
@@ -777,7 +808,10 @@ export const inventoryRouter = router({
     })).query(async ({ input, ctx }) => {
       const db = await requireDb();
       const conditions: any[] = [eq(inventoryStockItems.isActive, true)];
-      if (input.branchId) conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      }
 
       const items = await db.select().from(inventoryStockItems)
         .where(and(...stockItemTenantConditions(ctx, ...conditions, sql`${inventoryStockItems.reorderQty} IS NOT NULL`)));
@@ -831,7 +865,10 @@ export const inventoryRouter = router({
     })).query(async ({ input, ctx }) => {
       const db = await requireDb();
       const conditions: any[] = [eq(inventoryStockItems.isActive, true)];
-      if (input.branchId) conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryStockItems.branchId, input.branchId));
+      }
 
       const items = await db.select().from(inventoryStockItems).where(and(...stockItemTenantConditions(ctx, ...conditions)));
       const itemIds = items.map(i => i.id);
@@ -901,7 +938,10 @@ export const inventoryRouter = router({
     })).query(async ({ input, ctx }) => {
       const db = await requireDb();
       const conditions: any[] = [eq(inventoryMovements.movementType, "adjustment_waste")];
-      if (input.branchId) conditions.push(eq(inventoryMovements.branchId, input.branchId));
+      if (input.branchId) {
+        await requireBranchAccess(db, ctx, input.branchId);
+        conditions.push(eq(inventoryMovements.branchId, input.branchId));
+      }
       if (input.startDate) conditions.push(sql`${inventoryMovements.createdAt} >= ${input.startDate}`);
       if (input.endDate) conditions.push(sql`${inventoryMovements.createdAt} <= ${input.endDate}`);
 

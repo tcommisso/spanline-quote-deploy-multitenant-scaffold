@@ -1,13 +1,31 @@
 import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useParams, useLocation } from "wouter";
 import { toast } from "sonner";
-import { ArrowLeft, Save, CheckCircle, AlertTriangle, Smartphone } from "lucide-react";
+import { ArrowLeft, Save, CheckCircle, AlertTriangle, Smartphone, Plus } from "lucide-react";
+
+type CountCondition = "new" | "damaged" | "off_cut";
+
+type LineDraft = {
+  qty: string;
+  notes: string;
+  conditionIndicator: CountCondition;
+  colour: string;
+  actualSize: string;
+  sourceFullLength: string;
+};
+
+const conditionOptions: Array<{ value: CountCondition; label: string }> = [
+  { value: "new", label: "Full / new" },
+  { value: "off_cut", label: "Off cut" },
+  { value: "damaged", label: "Damaged" },
+];
 
 export default function StocktakeDetail() {
   const { id } = useParams<{ id: string }>();
@@ -15,12 +33,16 @@ export default function StocktakeDetail() {
   const stocktakeId = Number(id);
 
   const { data, refetch, isLoading } = trpc.stocktake.getById.useQuery({ id: stocktakeId });
-  const [counts, setCounts] = useState<Record<number, { qty: string; notes: string }>>({});
+  const [counts, setCounts] = useState<Record<number, LineDraft>>({});
   const [filter, setFilter] = useState<"all" | "uncounted" | "variance">("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [subGroupFilter, setSubGroupFilter] = useState("all");
+  const [itemNameFilter, setItemNameFilter] = useState("all");
 
   const updateCountsMutation = trpc.stocktake.updateCounts.useMutation({
     onSuccess: (res) => {
-      toast.success(`Saved ${Object.keys(counts).length} counts (${res.itemsCounted} total counted)`);
+      toast.success(`Saved ${Object.keys(counts).length} stocktake lines (${res.itemsCounted} counted)`);
       setCounts({});
       refetch();
     },
@@ -65,14 +87,96 @@ export default function StocktakeDetail() {
     onError: (err) => toast.error(err.message),
   });
 
+  const addCountLineMutation = trpc.stocktake.addCountLine.useMutation({
+    onSuccess: () => {
+      toast.success("Additional count line added");
+      refetch();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const numberText = (value: unknown) => {
+    if (value == null || value === "") return "";
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? String(numeric) : "";
+  };
+
+  const itemCategory = (line: any) => line.stockItem?.catalogueCategory || line.stockItem?.category || "Uncategorised";
+  const itemSubGroup = (line: any) => line.stockItem?.catalogueSubGroup || "Unassigned";
+  const itemName = (line: any) => line.stockItem?.name || "Unknown";
+  const lineCondition = (line: any): CountCondition => line.conditionIndicator || line.stockItem?.conditionIndicator || "new";
+  const lineColour = (line: any) => line.colour || line.stockItem?.catalogueColour || "";
+  const lineActualSize = (line: any) => numberText(line.actualSize ?? line.stockItem?.actualSize);
+  const lineSourceFullLength = (line: any) => numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength);
+  const defaultLineDraft = (line: any): LineDraft => ({
+    qty: line.countedQty !== null ? String(line.countedQty) : "",
+    notes: line.notes || "",
+    conditionIndicator: lineCondition(line),
+    colour: lineColour(line),
+    actualSize: lineActualSize(line),
+    sourceFullLength: lineSourceFullLength(line),
+  });
+  const lineDraft = (line: any) => counts[line.id] || defaultLineDraft(line);
+  const setLineDraft = (line: any, patch: Partial<LineDraft>) => {
+    setCounts(prev => ({
+      ...prev,
+      [line.id]: {
+        ...(prev[line.id] || defaultLineDraft(line)),
+        ...patch,
+      },
+    }));
+  };
+  const itemDetails = (line: any) => [
+    lineColour(line),
+    lineCondition(line).replace(/_/g, " "),
+    lineActualSize(line) ? `${lineActualSize(line)}m actual` : null,
+    lineSourceFullLength(line) ? `${lineSourceFullLength(line)}m source` : null,
+    line.notes,
+  ].filter(Boolean).join(" · ");
+  const itemSearchText = (line: any) => [
+    line.stockItem?.code,
+    line.stockItem?.serialNumber,
+    line.stockItem?.name,
+    line.stockItem?.description,
+    itemCategory(line),
+    itemSubGroup(line),
+    lineColour(line),
+    lineCondition(line),
+    lineActualSize(line),
+    lineSourceFullLength(line),
+    line.notes,
+  ].filter(Boolean).join(" ").toLowerCase();
+
   const filteredLines = useMemo(() => {
     if (!data?.lines) return [];
-    switch (filter) {
-      case "uncounted": return data.lines.filter((l: any) => l.countedQty === null);
-      case "variance": return data.lines.filter((l: any) => l.countedQty !== null && Number(l.variance) !== 0);
-      default: return data.lines;
-    }
-  }, [data?.lines, filter]);
+    const search = searchTerm.trim().toLowerCase();
+    return data.lines.filter((line: any) => {
+      if (filter === "uncounted" && line.countedQty !== null) return false;
+      if (filter === "variance" && (line.countedQty === null || Number(line.variance) === 0)) return false;
+      if (categoryFilter !== "all" && itemCategory(line) !== categoryFilter) return false;
+      if (subGroupFilter !== "all" && itemSubGroup(line) !== subGroupFilter) return false;
+      if (itemNameFilter !== "all" && itemName(line) !== itemNameFilter) return false;
+      if (search && !itemSearchText(line).includes(search)) return false;
+      return true;
+    });
+  }, [data?.lines, filter, searchTerm, categoryFilter, subGroupFilter, itemNameFilter]);
+
+  const filterOptions = useMemo(() => {
+    const lines = data?.lines || [];
+    const unique = (values: string[]) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    return {
+      categories: unique(lines.map((line: any) => itemCategory(line))),
+      subGroups: unique(lines.map((line: any) => itemSubGroup(line))),
+      itemNames: unique(lines.map((line: any) => itemName(line))),
+    };
+  }, [data?.lines]);
+
+  const clearLineFilters = () => {
+    setSearchTerm("");
+    setCategoryFilter("all");
+    setSubGroupFilter("all");
+    setItemNameFilter("all");
+  };
 
   const stats = useMemo(() => {
     if (!data?.lines) return { total: 0, counted: 0, withVariance: 0, totalVarianceValue: 0 };
@@ -93,15 +197,40 @@ export default function StocktakeDetail() {
   const isPendingApproval = data.status === "pending_approval";
 
   const handleSaveCounts = () => {
-    const entries = Object.entries(counts).filter(([, v]) => v.qty !== "");
+    const entries = Object.entries(counts).filter(([, v]) =>
+      v.qty !== "" ||
+      v.notes !== "" ||
+      v.conditionIndicator !== "new" ||
+      v.colour !== "" ||
+      v.actualSize !== "" ||
+      v.sourceFullLength !== ""
+    );
     if (!entries.length) return;
     updateCountsMutation.mutate({
       stocktakeId,
       counts: entries.map(([lineId, v]) => ({
         lineId: Number(lineId),
-        countedQty: v.qty,
+        countedQty: v.qty || undefined,
         notes: v.notes || undefined,
+        conditionIndicator: v.conditionIndicator,
+        colour: v.colour || undefined,
+        actualSize: v.actualSize || undefined,
+        sourceFullLength: v.sourceFullLength || undefined,
       })),
+    });
+  };
+
+  const handleAddCountLine = (line: any, conditionIndicator?: CountCondition) => {
+    const draft = lineDraft(line);
+    const isOffcut = conditionIndicator === "off_cut";
+    addCountLineMutation.mutate({
+      stocktakeId,
+      sourceLineId: line.id,
+      conditionIndicator: conditionIndicator || draft.conditionIndicator,
+      colour: draft.colour || undefined,
+      actualSize: isOffcut ? undefined : draft.actualSize || undefined,
+      sourceFullLength: draft.sourceFullLength || undefined,
+      notes: isOffcut ? "Off cut count line" : "Additional count line",
     });
   };
 
@@ -203,6 +332,59 @@ export default function StocktakeDetail() {
         ))}
       </div>
 
+      {/* Line Filters */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(220px,1.2fr)_auto]">
+            <Input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search code, item, colour, notes..."
+              className="min-w-0"
+            />
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Categories</SelectItem>
+                {filterOptions.categories.map((category) => (
+                  <SelectItem key={category} value={category}>{category}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={subGroupFilter} onValueChange={setSubGroupFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Sub-Groups" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Sub-Groups</SelectItem>
+                {filterOptions.subGroups.map((subGroup) => (
+                  <SelectItem key={subGroup} value={subGroup}>{subGroup}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={itemNameFilter} onValueChange={setItemNameFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Item Names" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Item Names</SelectItem>
+                {filterOptions.itemNames.map((name) => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button type="button" variant="outline" onClick={clearLineFilters}>
+              Clear
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Use Add Line to split one product into separate count rows for full lengths, offcuts, colours, or locations.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* Lines Table */}
       <Card>
         <CardContent className="p-0">
@@ -213,32 +395,101 @@ export default function StocktakeDetail() {
                   <th className="px-4 py-3 text-left font-medium">Code</th>
                   <th className="px-4 py-3 text-left font-medium">Item</th>
                   <th className="px-4 py-3 text-left font-medium">Category</th>
+                  <th className="px-4 py-3 text-left font-medium">Sub-Group</th>
+                  <th className="px-4 py-3 text-left font-medium">Count Type</th>
+                  <th className="px-4 py-3 text-left font-medium">Colour</th>
+                  <th className="px-4 py-3 text-left font-medium">Actual Size</th>
                   <th className="px-4 py-3 text-right font-medium">System Qty</th>
                   <th className="px-4 py-3 text-right font-medium">Counted Qty</th>
                   <th className="px-4 py-3 text-right font-medium">Variance</th>
                   <th className="px-4 py-3 text-right font-medium">Value</th>
                   <th className="px-4 py-3 text-left font-medium">Notes</th>
+                  {isEditable && <th className="px-4 py-3 text-right font-medium">Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {filteredLines.map((line: any) => {
-                  const localCount = counts[line.id];
-                  const displayedQty = localCount?.qty ?? (line.countedQty !== null ? String(line.countedQty) : "");
+                  const draft = lineDraft(line);
+                  const displayedQty = draft.qty;
                   const variance = line.countedQty !== null ? Number(line.variance) : null;
                   return (
                     <tr key={line.id} className="border-t hover:bg-muted/30">
                       <td className="px-4 py-2 font-mono text-xs">{line.stockItem?.code || "-"}</td>
-                      <td className="px-4 py-2">{line.stockItem?.name || "Unknown"}</td>
-                      <td className="px-4 py-2 text-muted-foreground">{line.stockItem?.category || "-"}</td>
+                      <td className="px-4 py-2">
+                        <div className="font-medium">{itemName(line)}</div>
+                        {itemDetails(line) && (
+                          <div className="mt-1 text-xs text-muted-foreground">{itemDetails(line)}</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground">{itemCategory(line)}</td>
+                      <td className="px-4 py-2 text-muted-foreground">{itemSubGroup(line)}</td>
+                      <td className="px-4 py-2 min-w-[150px]">
+                        {isEditable ? (
+                          <Select
+                            value={draft.conditionIndicator}
+                            onValueChange={(value) => setLineDraft(line, { conditionIndicator: value as CountCondition })}
+                          >
+                            <SelectTrigger className="h-8">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {conditionOptions.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant="outline">
+                            {conditionOptions.find(option => option.value === lineCondition(line))?.label || "Full / new"}
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 min-w-[150px]">
+                        {isEditable ? (
+                          <Input
+                            className="h-8"
+                            placeholder="e.g. Monument"
+                            value={draft.colour}
+                            onChange={(event) => setLineDraft(line, { colour: event.target.value })}
+                          />
+                        ) : (
+                          <span>{lineColour(line) || "-"}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 min-w-[230px]">
+                        {isEditable ? (
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              className="h-8 w-24"
+                              placeholder="Actual m"
+                              value={draft.actualSize}
+                              onChange={(event) => setLineDraft(line, { actualSize: event.target.value })}
+                            />
+                            <span className="text-xs text-muted-foreground">of</span>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              className="h-8 w-24"
+                              placeholder="Full m"
+                              value={draft.sourceFullLength}
+                              onChange={(event) => setLineDraft(line, { sourceFullLength: event.target.value })}
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            {lineActualSize(line) ? `${lineActualSize(line)}m` : "-"}
+                            {lineSourceFullLength(line) ? ` of ${lineSourceFullLength(line)}m` : ""}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-2 text-right font-medium">{Number(line.systemQty).toFixed(1)}</td>
                       <td className="px-4 py-2 text-right">
                         {isEditable ? (
                           <Input type="number" step="0.1" className="w-24 ml-auto text-right h-8"
                             value={displayedQty}
-                            onChange={(e) => setCounts(prev => ({
-                              ...prev,
-                              [line.id]: { qty: e.target.value, notes: prev[line.id]?.notes || "" }
-                            }))} />
+                            onChange={(e) => setLineDraft(line, { qty: e.target.value })} />
                         ) : (
                           <span className="font-medium">{line.countedQty !== null ? Number(line.countedQty).toFixed(1) : "-"}</span>
                         )}
@@ -260,18 +511,51 @@ export default function StocktakeDetail() {
                       <td className="px-4 py-2">
                         {isEditable ? (
                           <Input className="w-32 h-8" placeholder="Notes..."
-                            value={localCount?.notes || line.notes || ""}
-                            onChange={(e) => setCounts(prev => ({
-                              ...prev,
-                              [line.id]: { qty: prev[line.id]?.qty || displayedQty, notes: e.target.value }
-                            }))} />
+                            value={draft.notes}
+                            onChange={(e) => setLineDraft(line, { notes: e.target.value })} />
                         ) : (
                           <span className="text-xs text-muted-foreground">{line.notes || ""}</span>
                         )}
                       </td>
+                      {isEditable && (
+                        <td className="px-4 py-2">
+                          <div className="flex flex-wrap justify-end gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleAddCountLine(line)}
+                              disabled={addCountLineMutation.isPending}
+                              title="Add another count line for this stock item"
+                            >
+                              <Plus className="w-4 h-4 mr-1" /> Add Line
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleAddCountLine(line, "off_cut")}
+                              disabled={addCountLineMutation.isPending}
+                              title="Add an offcut line for this stock item"
+                            >
+                              Offcut
+                            </Button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
+                {filteredLines.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={isEditable ? 13 : 12}
+                      className="px-4 py-10 text-center text-muted-foreground"
+                    >
+                      No stocktake lines match the current filters.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

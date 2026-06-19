@@ -6,11 +6,12 @@ import {
   stocktakeLines,
   inventoryStockItems,
   inventoryMovements,
+  branches,
 } from "../drizzle/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { makeRequest, type DistanceMatrixResult } from "./_core/map";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -37,10 +38,127 @@ function movementTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 function decimalToNumber(value: unknown): number | null {
   if (value == null) return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function nullableText(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function nullableDecimal(value?: string | null): string | null {
+  const trimmed = nullableText(value);
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  if (!Number.isFinite(numeric)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid stocktake line size value." });
+  }
+  return String(numeric);
+}
+
+function stocktakeLineDescriptor(line: typeof stocktakeLines.$inferSelect): string {
+  const parts = [`variance: ${Number(line.variance || 0) > 0 ? "+" : ""}${line.variance}`];
+  if (line.conditionIndicator) parts.push(`condition: ${line.conditionIndicator.replace("_", " ")}`);
+  if (line.colour) parts.push(`colour: ${line.colour}`);
+  if (line.actualSize) parts.push(`actual size: ${line.actualSize}m`);
+  if (line.sourceFullLength) parts.push(`source length: ${line.sourceFullLength}m`);
+  return parts.join("; ");
+}
+
+function normalizeVariantText(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+}
+
+function normalizeVariantDecimal(value: unknown): string | null {
+  const numeric = decimalToNumber(value);
+  return numeric == null ? null : numeric.toFixed(2);
+}
+
+function variantFieldChanged(lineValue: unknown, itemValue: unknown) {
+  return normalizeVariantText(lineValue)?.toLowerCase() !== normalizeVariantText(itemValue)?.toLowerCase();
+}
+
+function variantDecimalChanged(lineValue: unknown, itemValue: unknown) {
+  return normalizeVariantDecimal(lineValue) !== normalizeVariantDecimal(itemValue);
+}
+
+function stocktakeLineNeedsVariant(line: typeof stocktakeLines.$inferSelect, item: typeof inventoryStockItems.$inferSelect) {
+  return variantFieldChanged(line.conditionIndicator || "new", item.conditionIndicator || "new")
+    || variantFieldChanged(line.colour, item.description?.match(/Colour:\s*([^\n]+)/i)?.[1] || null)
+    || variantDecimalChanged(line.actualSize, item.actualSize)
+    || variantDecimalChanged(line.sourceFullLength, item.sourceFullLength);
+}
+
+function stableVariantHash(input: string) {
+  let hash = 5381;
+  for (let i = 0; i < input.length; i += 1) hash = ((hash << 5) + hash) ^ input.charCodeAt(i);
+  return (hash >>> 0).toString(36).toUpperCase().slice(0, 6);
+}
+
+function stocktakeVariantCode(baseCode: string, line: typeof stocktakeLines.$inferSelect) {
+  const variantKey = [
+    line.conditionIndicator || "new",
+    normalizeVariantText(line.colour) || "",
+    normalizeVariantDecimal(line.actualSize) || "",
+    normalizeVariantDecimal(line.sourceFullLength) || "",
+  ].join("|");
+  const suffix = stableVariantHash(variantKey);
+  return `${baseCode}`.slice(0, Math.max(1, 49 - suffix.length)) + `-${suffix}`;
+}
+
+function stocktakeVariantName(baseName: string, line: typeof stocktakeLines.$inferSelect) {
+  const details = [
+    line.conditionIndicator === "off_cut" ? "Off cut" : line.conditionIndicator === "damaged" ? "Damaged" : null,
+    normalizeVariantText(line.colour),
+    line.actualSize ? `${line.actualSize}m` : null,
+  ].filter(Boolean);
+  return details.length ? `${baseName} (${details.join(", ")})` : baseName;
+}
+
+function lineUnitCost(line: typeof stocktakeLines.$inferSelect, item: typeof inventoryStockItems.$inferSelect) {
+  const stocktakeCost = decimalToNumber(line.unitCost);
+  const itemCost = decimalToNumber(item.costPrice);
+  const baseCost = itemCost ?? stocktakeCost;
+  if (baseCost == null) return null;
+
+  const actualSize = decimalToNumber(line.actualSize);
+  const sourceFullLength = decimalToNumber(line.sourceFullLength);
+  if (line.conditionIndicator === "off_cut" && actualSize != null && sourceFullLength != null && sourceFullLength > 0) {
+    return (baseCost * Math.min(actualSize / sourceFullLength, 1)).toFixed(2);
+  }
+
+  return baseCost.toFixed(2);
+}
+
+function stocktakeVariantDescription(item: typeof inventoryStockItems.$inferSelect, line: typeof stocktakeLines.$inferSelect) {
+  const details = [
+    normalizeVariantText(item.description),
+    line.colour ? `Colour: ${line.colour}` : "",
+    line.conditionIndicator ? `Condition: ${line.conditionIndicator.replace("_", " ")}` : "",
+    line.actualSize ? `Actual size: ${line.actualSize}m` : "",
+    line.sourceFullLength ? `Source length: ${line.sourceFullLength}m` : "",
+  ].filter(Boolean);
+  return details.length ? details.join("\n") : null;
+}
+
+function rowsFromExecuteResult(result: unknown): any[] {
+  return Array.isArray(result) ? result : [];
+}
+
+function manufacturingCatalogueTenantSql(ctx: any) {
+  const tenantId = tenantIdFromContext(ctx);
+  if (!tenantId) return isMultiTenancyMode() ? sql`1 = 0` : sql`1 = 1`;
+  return isMultiTenancyMode() ? sql`tenantId = ${tenantId}` : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
 }
 
 async function requireStocktakeAccess(db: any, ctx: any, stocktakeId: number) {
@@ -61,6 +179,89 @@ async function requireStockItemAccess(db: any, ctx: any, stockItemId: number) {
   return item;
 }
 
+async function requireBranchAccess(db: any, ctx: any, branchId: number) {
+  const [branch] = await db.select({ id: branches.id, name: branches.name })
+    .from(branches)
+    .where(and(...branchTenantConditions(ctx, eq(branches.id, branchId))))
+    .limit(1);
+  if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "Branch not found" });
+  return branch;
+}
+
+async function resolveStocktakeMovementStockItem(db: any, ctx: any, line: typeof stocktakeLines.$inferSelect, branchId: number) {
+  const item = await requireStockItemAccess(db, ctx, line.stockItemId);
+  if (!stocktakeLineNeedsVariant(line, item)) {
+    return { stockItemId: item.id, unitCost: lineUnitCost(line, item), unitType: item.unitType || "unit" };
+  }
+
+  const variantCode = stocktakeVariantCode(item.code, line);
+  const [existingVariant] = await db.select()
+    .from(inventoryStockItems)
+    .where(and(...stockItemTenantConditions(ctx,
+      eq(inventoryStockItems.branchId, branchId),
+      eq(inventoryStockItems.code, variantCode),
+    )))
+    .limit(1);
+
+  if (existingVariant?.id) {
+    return {
+      stockItemId: existingVariant.id,
+      unitCost: lineUnitCost(line, existingVariant),
+      unitType: existingVariant.unitType || "unit",
+    };
+  }
+
+  const [result] = await db.insert(inventoryStockItems).values({
+    tenantId: tenantIdFromContext(ctx),
+    code: variantCode,
+    name: stocktakeVariantName(item.name, line),
+    serialNumber: item.serialNumber || null,
+    category: item.category || "general",
+    unit: item.unit || "EA",
+    unitType: item.unitType || "unit",
+    reorderQty: null,
+    minStockLevel: null,
+    branchId,
+    conditionIndicator: line.conditionIndicator || item.conditionIndicator || "new",
+    actualSize: line.actualSize || null,
+    sourceFullLength: line.sourceFullLength || item.sourceFullLength || null,
+    description: stocktakeVariantDescription(item, line),
+    supplier: item.supplier || null,
+    costPrice: lineUnitCost(line, item),
+    catalogueItemId: item.catalogueItemId || null,
+    manufacturingCatalogueProductId: item.manufacturingCatalogueProductId || null,
+    isActive: true,
+  });
+
+  const rawId = (result as any)?.insertId ?? (result as any)?.[0]?.insertId;
+  const insertedId = Number(rawId);
+  if (Number.isFinite(insertedId) && insertedId > 0) {
+    return { stockItemId: insertedId, unitCost: lineUnitCost(line, item), unitType: item.unitType || "unit" };
+  }
+
+  const [createdVariant] = await db.select({
+    id: inventoryStockItems.id,
+    costPrice: inventoryStockItems.costPrice,
+    unitType: inventoryStockItems.unitType,
+  })
+    .from(inventoryStockItems)
+    .where(and(...stockItemTenantConditions(ctx,
+      eq(inventoryStockItems.branchId, branchId),
+      eq(inventoryStockItems.code, variantCode),
+    )))
+    .limit(1);
+
+  if (!createdVariant?.id) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Stock variant was created but could not be reloaded." });
+  }
+
+  return {
+    stockItemId: createdVariant.id,
+    unitCost: createdVariant.costPrice || lineUnitCost(line, item),
+    unitType: createdVariant.unitType || item.unitType || "unit",
+  };
+}
+
 export const stocktakeRouter = router({
   // ─── Stocktakes CRUD ─────────────────────────────────────────────────────
   list: protectedProcedure.input(z.object({
@@ -69,7 +270,10 @@ export const stocktakeRouter = router({
   }).optional()).query(async ({ input, ctx }) => {
     const db = await requireDb();
     const conditions: any[] = [];
-    if (input?.branchId) conditions.push(eq(stocktakes.branchId, input.branchId));
+    if (input?.branchId) {
+      await requireBranchAccess(db, ctx, input.branchId);
+      conditions.push(eq(stocktakes.branchId, input.branchId));
+    }
     if (input?.status) conditions.push(eq(stocktakes.status, input.status));
 
     return db.select().from(stocktakes)
@@ -83,7 +287,7 @@ export const stocktakeRouter = router({
 
     const lines = await db.select().from(stocktakeLines)
       .where(eq(stocktakeLines.stocktakeId, input.id))
-      .orderBy(stocktakeLines.id);
+      .orderBy(stocktakeLines.stockItemId, stocktakeLines.id);
 
     // Get stock item details for each line
     const itemIds = lines.map(l => l.stockItemId);
@@ -92,12 +296,42 @@ export const stocktakeRouter = router({
       const items = await db.select().from(inventoryStockItems)
         .where(and(...stockItemTenantConditions(ctx, inArray(inventoryStockItems.id, itemIds))));
       itemsMap = Object.fromEntries(items.map(i => [i.id, i]));
+
+      const productIds = Array.from(new Set(items
+        .map((i: any) => Number(i.manufacturingCatalogueProductId))
+        .filter((id: number) => Number.isFinite(id) && id > 0)));
+      if (productIds.length) {
+        try {
+          const [productsResult] = await db.execute(sql`
+            SELECT id, category, subGroup, colour
+            FROM manufacturing_catalogue_products
+            WHERE id IN (${sql.join(productIds, sql`,`)})
+              AND ${manufacturingCatalogueTenantSql(ctx)}
+          `);
+          const productMap = Object.fromEntries(rowsFromExecuteResult(productsResult).map((p: any) => [Number(p.id), p]));
+          items.forEach((item: any) => {
+            const product = productMap[Number(item.manufacturingCatalogueProductId)];
+            if (product && itemsMap[item.id]) {
+              itemsMap[item.id] = {
+                ...itemsMap[item.id],
+                catalogueCategory: product.category || "",
+                catalogueSubGroup: product.subGroup || "",
+                catalogueColour: product.colour || "",
+              };
+            }
+          });
+        } catch (error) {
+          console.warn("Unable to enrich stocktake lines with manufacturing catalogue metadata", error);
+        }
+      }
     }
 
     return {
       ...stocktake,
       lines: lines.map(l => ({
         ...l,
+        actualSize: decimalToNumber(l.actualSize),
+        sourceFullLength: decimalToNumber(l.sourceFullLength),
         systemQty: decimalToNumber(l.systemQty) ?? 0,
         countedQty: decimalToNumber(l.countedQty),
         variance: decimalToNumber(l.variance) ?? 0,
@@ -114,6 +348,7 @@ export const stocktakeRouter = router({
     notes: z.string().optional(),
   })).mutation(async ({ input, ctx }) => {
     const db = await requireDb();
+    await requireBranchAccess(db, ctx, input.branchId);
 
     const stocktakeNumber = `ST-${Date.now().toString(36).toUpperCase()}`;
 
@@ -125,7 +360,14 @@ export const stocktakeRouter = router({
       )));
 
     // Calculate system qty for each item
-    const lineData: Array<{ stockItemId: number; systemQty: string; unitCost: string }> = [];
+    const lineData: Array<{
+      stockItemId: number;
+      conditionIndicator: "new" | "damaged" | "off_cut";
+      actualSize: string | null;
+      sourceFullLength: string | null;
+      systemQty: string;
+      unitCost: string;
+    }> = [];
     for (const item of items) {
       const [result] = await db.select({
         totalIn: sql<string>`COALESCE(SUM(CASE WHEN ${inventoryMovements.movementType} IN ('purchase', 'transfer_in') THEN ${inventoryMovements.quantity} ELSE 0 END), 0)`,
@@ -139,6 +381,9 @@ export const stocktakeRouter = router({
       const onHand = Number(result.totalIn) - Number(result.totalOut);
       lineData.push({
         stockItemId: item.id,
+        conditionIndicator: item.conditionIndicator || "new",
+        actualSize: item.actualSize || null,
+        sourceFullLength: item.sourceFullLength || null,
         systemQty: String(onHand),
         unitCost: item.costPrice || "0",
       });
@@ -163,6 +408,9 @@ export const stocktakeRouter = router({
       await db.insert(stocktakeLines).values(lineData.map(l => ({
         stocktakeId,
         stockItemId: l.stockItemId,
+        conditionIndicator: l.conditionIndicator,
+        actualSize: l.actualSize,
+        sourceFullLength: l.sourceFullLength,
         systemQty: l.systemQty,
         unitCost: l.unitCost,
       })));
@@ -171,13 +419,58 @@ export const stocktakeRouter = router({
     return { id: stocktakeId, stocktakeNumber, totalItems: items.length };
   }),
 
+  addCountLine: protectedProcedure.input(z.object({
+    stocktakeId: z.number(),
+    sourceLineId: z.number(),
+    notes: z.string().optional(),
+    conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
+    colour: z.string().nullable().optional(),
+    actualSize: z.string().nullable().optional(),
+    sourceFullLength: z.string().nullable().optional(),
+  })).mutation(async ({ input, ctx }) => {
+    const db = await requireDb();
+    const stocktake = await requireStocktakeAccess(db, ctx, input.stocktakeId);
+    if (stocktake.status !== "in_progress") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Additional count lines can only be added to an in-progress stocktake." });
+    }
+
+    const [sourceLine] = await db.select().from(stocktakeLines).where(and(
+      eq(stocktakeLines.id, input.sourceLineId),
+      eq(stocktakeLines.stocktakeId, input.stocktakeId)
+    )).limit(1);
+    if (!sourceLine) throw new TRPCError({ code: "NOT_FOUND", message: "Source stocktake line not found" });
+    await requireStockItemAccess(db, ctx, sourceLine.stockItemId);
+
+    const [result] = await db.insert(stocktakeLines).values({
+      stocktakeId: input.stocktakeId,
+      stockItemId: sourceLine.stockItemId,
+      conditionIndicator: input.conditionIndicator || sourceLine.conditionIndicator || "new",
+      colour: input.colour !== undefined ? nullableText(input.colour) : sourceLine.colour || null,
+      actualSize: input.actualSize !== undefined ? nullableDecimal(input.actualSize) : sourceLine.actualSize || null,
+      sourceFullLength: input.sourceFullLength !== undefined ? nullableDecimal(input.sourceFullLength) : sourceLine.sourceFullLength || null,
+      systemQty: "0",
+      unitCost: sourceLine.unitCost || "0",
+      notes: input.notes || "Additional count line",
+    });
+
+    await db.update(stocktakes).set({
+      totalItems: sql`${stocktakes.totalItems} + 1`,
+    }).where(and(...stocktakeTenantConditions(ctx, eq(stocktakes.id, input.stocktakeId))));
+
+    return { success: true, id: Number(result.insertId) };
+  }),
+
   // Update counted quantities for lines
   updateCounts: protectedProcedure.input(z.object({
     stocktakeId: z.number(),
     counts: z.array(z.object({
       lineId: z.number(),
-      countedQty: z.string(),
+      countedQty: z.string().optional(),
       notes: z.string().optional(),
+      conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
+      colour: z.string().nullable().optional(),
+      actualSize: z.string().nullable().optional(),
+      sourceFullLength: z.string().nullable().optional(),
     })),
   })).mutation(async ({ input, ctx }) => {
     const db = await requireDb();
@@ -190,19 +483,31 @@ export const stocktakeRouter = router({
       ));
       if (!line) continue;
 
-      const updates: any = {
-        countedQty: count.countedQty,
-        countedAt: new Date(),
-        countedBy: ctx.user?.name || null,
-      };
+      const updates: any = {};
+      const countedQty = nullableText(count.countedQty);
+      if (countedQty != null) {
+        const numeric = Number(countedQty);
+        if (!Number.isFinite(numeric)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid counted quantity." });
+        }
+        updates.countedQty = String(numeric);
+        updates.countedAt = new Date();
+        updates.countedBy = ctx.user?.name || null;
+      }
       if (count.notes !== undefined) {
         updates.notes = count.notes || null;
       }
+      if (count.conditionIndicator !== undefined) updates.conditionIndicator = count.conditionIndicator;
+      if (count.colour !== undefined) updates.colour = nullableText(count.colour);
+      if (count.actualSize !== undefined) updates.actualSize = nullableDecimal(count.actualSize);
+      if (count.sourceFullLength !== undefined) updates.sourceFullLength = nullableDecimal(count.sourceFullLength);
 
-      await db.update(stocktakeLines).set(updates).where(and(
-        eq(stocktakeLines.id, count.lineId),
-        eq(stocktakeLines.stocktakeId, input.stocktakeId)
-      ));
+      if (Object.keys(updates).length) {
+        await db.update(stocktakeLines).set(updates).where(and(
+          eq(stocktakeLines.id, count.lineId),
+          eq(stocktakeLines.stocktakeId, input.stocktakeId)
+        ));
+      }
     }
 
     // Update items counted
@@ -335,17 +640,18 @@ export const stocktakeRouter = router({
       const movementType = variance < 0 ? "adjustment_waste" : "purchase";
       const quantity = Math.abs(variance);
 
-      await requireStockItemAccess(db, ctx, line.stockItemId);
+      const resolvedItem = await resolveStocktakeMovementStockItem(db, ctx, line, stocktake.branchId!);
       await db.insert(inventoryMovements).values({
         tenantId: tenantIdFromContext(ctx),
-        stockItemId: line.stockItemId,
+        stockItemId: resolvedItem.stockItemId,
         branchId: stocktake.branchId!,
         movementType,
         quantity: String(quantity),
-        unitType: "unit",
+        unitType: resolvedItem.unitType,
         referenceType: "stocktake",
         referenceId: stocktake.id,
-        notes: `Stocktake ${stocktake.stocktakeNumber} adjustment (variance: ${variance > 0 ? "+" : ""}${variance})`,
+        notes: `Stocktake ${stocktake.stocktakeNumber} adjustment (${stocktakeLineDescriptor(line)})`,
+        unitCostAtTime: resolvedItem.unitCost,
         createdBy: ctx.user?.name || null,
       });
 

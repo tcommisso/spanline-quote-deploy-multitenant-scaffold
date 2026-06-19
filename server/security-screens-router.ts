@@ -80,6 +80,133 @@ function compactKey(value: unknown) {
   return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function parseMetadata(value: unknown): Record<string, any> {
+  if (!value) return {};
+  if (typeof value === "object") return value as Record<string, any>;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return {};
+  }
+}
+
+function validHex(value: unknown) {
+  const text = String(value ?? "").trim();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : null;
+}
+
+function fallbackColourHex(...values: unknown[]) {
+  const key = compactKey(values.filter(Boolean).join(" "));
+  const matches: Array<[string, string]> = [
+    ["doverwhite", "#f7f7f2"],
+    ["offwhite", "#f7f7f2"],
+    ["surfmist", "#d9d8cf"],
+    ["classiccream", "#e8dcc4"],
+    ["smoothcream", "#e8dcc4"],
+    ["paperbark", "#c9bda4"],
+    ["merino", "#c9bda4"],
+    ["woodlandgrey", "#4b5047"],
+    ["slategrey", "#4b5047"],
+    ["monument", "#2b3135"],
+    ["eveninghaze", "#c2b9a5"],
+    ["irongrey", "#4f5251"],
+    ["ironstone", "#4f5251"],
+    ["basalt", "#575b5e"],
+    ["jasminbrown", "#7d6a52"],
+    ["armourgrey", "#6b7175"],
+    ["mistgreen", "#9aa58d"],
+    ["ebonyblackmatt", "#0d1117"],
+    ["black", "#0d1117"],
+  ];
+  return matches.find(([needle]) => key.includes(needle))?.[1] || "#f8fafc";
+}
+
+function masterColourName(row: any) {
+  return String(row.value || row.key || "");
+}
+
+function masterColourHex(row: any) {
+  const metadata = parseMetadata(row.metadata);
+  return validHex(metadata.hexCode)
+    || validHex(metadata.hex)
+    || validHex(metadata.color)
+    || fallbackColourHex(row.key, row.value);
+}
+
+function isActiveFlag(value: unknown) {
+  return value !== false && value !== 0 && value !== "0";
+}
+
+function coloursMatchMaster(colour: any, row: any) {
+  const masterKeys = [row.key, row.value].map(compactKey).filter(Boolean);
+  return [colour.name, colour.colorbondName].map(compactKey).some((value) => value && masterKeys.includes(value));
+}
+
+async function resolveScreenColour(db: any, tenantId: number, selection: unknown, fallbackName?: string | null) {
+  const raw = String(selection ?? "").trim();
+  const requestedName = String(fallbackName || raw || "").trim();
+  if (!raw && !requestedName) {
+    return { validColourId: null as number | null, colourName: null as string | null, surchargePercent: 0 };
+  }
+
+  const customId = typeof selection === "number" ? selection : (/^\d+$/.test(raw) ? Number(raw) : null);
+  const customRows = await db.select().from(ssColours).where(scope(ssColours.tenantId, tenantId));
+
+  if (customId) {
+    const colour = customRows.find((row: any) => Number(row.id) === customId);
+    if (colour && isActiveFlag(colour.isActive)) {
+      return {
+        validColourId: colour.id,
+        colourName: requestedName || colour.name || colour.colorbondName || null,
+        surchargePercent: Number(colour.surchargePercent || 0),
+      };
+    }
+  }
+
+  const masterId = raw.startsWith("master:") ? Number(raw.slice(7)) : null;
+  if (Number.isFinite(masterId) && masterId && masterId > 0) {
+    const [master] = await db
+      .select()
+      .from(masterData)
+      .where(and(eq(masterData.id, masterId), eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
+      .limit(1);
+    if (master) {
+      const overlay = customRows.find((colour: any) => coloursMatchMaster(colour, master));
+      return {
+        validColourId: overlay?.id ?? null,
+        colourName: requestedName || masterColourName(master),
+        surchargePercent: overlay && isActiveFlag(overlay.isActive) ? Number(overlay.surchargePercent || 0) : 0,
+      };
+    }
+  }
+
+  const key = compactKey(requestedName || raw);
+  const custom = customRows.find((colour: any) => [colour.name, colour.colorbondName].map(compactKey).includes(key));
+  if (custom && isActiveFlag(custom.isActive)) {
+    return {
+      validColourId: custom.id,
+      colourName: requestedName || custom.name || custom.colorbondName || null,
+      surchargePercent: Number(custom.surchargePercent || 0),
+    };
+  }
+
+  const masterRows = await db
+    .select()
+    .from(masterData)
+    .where(and(eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)));
+  const master = masterRows.find((row: any) => [row.key, row.value].map(compactKey).includes(key));
+  if (master) {
+    const overlay = customRows.find((colour: any) => coloursMatchMaster(colour, master));
+    return {
+      validColourId: overlay?.id ?? null,
+      colourName: requestedName || masterColourName(master),
+      surchargePercent: overlay && isActiveFlag(overlay.isActive) ? Number(overlay.surchargePercent || 0) : 0,
+    };
+  }
+
+  return { validColourId: null as number | null, colourName: requestedName || null, surchargePercent: 0 };
+}
+
 function canonicalBrand(value: string) {
   const key = compactKey(value);
   if (key.includes("invisi")) return "invisigard";
@@ -637,24 +764,69 @@ export const securityScreensRouter = router({
   }),
 
   colours: router({
-    list: tenantProcedure.query(async ({ ctx }) => {
-      const db = await requireDb();
-      const tenantId = tenantIdForContext(ctx);
-      const sharedColours = await db
-        .select({
-          id: masterData.id,
-          name: masterData.key,
-          colorbondName: masterData.value,
-          hexCode: sql<string>`COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${masterData.metadata}, '$.hexCode')), JSON_UNQUOTE(JSON_EXTRACT(${masterData.metadata}, '$.hex')), '#f8fafc')`,
-          surchargePercent: sql<string>`'0.00'`,
-          sortOrder: masterData.sortOrder,
-        })
-        .from(masterData)
-        .where(and(eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
-        .orderBy(asc(masterData.sortOrder), asc(masterData.key));
-      if (sharedColours.length > 0) return sharedColours;
-      return db.select().from(ssColours).where(and(scope(ssColours.tenantId, tenantId), eq(ssColours.isActive, true))).orderBy(asc(ssColours.sortOrder), asc(ssColours.name));
-    }),
+    list: tenantProcedure
+      .input(z.object({ includeHidden: z.boolean().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const includeHidden = Boolean(input?.includeHidden);
+        const [masterRows, customRows] = await Promise.all([
+          db
+            .select()
+            .from(masterData)
+            .where(and(eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
+            .orderBy(asc(masterData.sortOrder), asc(masterData.key)),
+          db
+            .select()
+            .from(ssColours)
+            .where(scope(ssColours.tenantId, tenantId))
+            .orderBy(asc(ssColours.sortOrder), asc(ssColours.name)),
+        ]);
+
+        if (masterRows.length > 0) {
+          const usedCustomIds = new Set<number>();
+          const mergedMaster = masterRows
+            .map((row: any) => {
+              const overlay = customRows.find((colour: any) => coloursMatchMaster(colour, row));
+              if (overlay?.id) usedCustomIds.add(Number(overlay.id));
+              const isActive = overlay ? isActiveFlag(overlay.isActive) : true;
+              return {
+                id: `master:${row.id}`,
+                masterDataId: row.id,
+                customColourId: overlay?.id ?? null,
+                name: masterColourName(row),
+                colorbondName: row.key || masterColourName(row),
+                hexCode: validHex(overlay?.hexCode) || masterColourHex(row),
+                surchargePercent: String(overlay?.surchargePercent ?? "0.00"),
+                sortOrder: row.sortOrder ?? 0,
+                isActive,
+                source: "master",
+              };
+            })
+            .filter((colour: any) => includeHidden || colour.isActive);
+
+          const customOnly = customRows
+            .filter((colour: any) => !usedCustomIds.has(Number(colour.id)))
+            .map((colour: any) => ({
+              ...colour,
+              hexCode: validHex(colour.hexCode) || fallbackColourHex(colour.name, colour.colorbondName),
+              isActive: isActiveFlag(colour.isActive),
+              source: "custom",
+            }))
+            .filter((colour: any) => includeHidden || colour.isActive);
+
+          return [...mergedMaster, ...customOnly];
+        }
+
+        return customRows
+          .map((colour: any) => ({
+            ...colour,
+            hexCode: validHex(colour.hexCode) || fallbackColourHex(colour.name, colour.colorbondName),
+            isActive: isActiveFlag(colour.isActive),
+            source: "custom",
+          }))
+          .filter((colour: any) => includeHidden || colour.isActive);
+      }),
     create: tenantAdminProcedure
       .input(z.object({ name: z.string(), hexCode: z.string(), colorbondName: z.string().optional(), surchargePercent: z.number().optional() }))
       .mutation(async ({ ctx, input }) => {
@@ -669,12 +841,83 @@ export const securityScreensRouter = router({
         });
         return { success: true };
       }),
-    delete: tenantAdminProcedure
-      .input(z.object({ id: z.number() }))
+    setHidden: tenantAdminProcedure
+      .input(z.object({ id: z.union([z.number(), z.string()]), hidden: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        await db.update(ssColours).set({ isActive: false }).where(and(eq(ssColours.id, input.id), scope(ssColours.tenantId, tenantId)));
+        const rawId = String(input.id);
+
+        if (rawId.startsWith("master:")) {
+          const masterId = Number(rawId.slice(7));
+          const [row] = await db
+            .select()
+            .from(masterData)
+            .where(and(eq(masterData.id, masterId), eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
+            .limit(1);
+          if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Colour not found" });
+
+          const customRows = await db.select().from(ssColours).where(scope(ssColours.tenantId, tenantId));
+          const overlay = customRows.find((colour: any) => coloursMatchMaster(colour, row));
+          if (overlay) {
+            await db
+              .update(ssColours)
+              .set({ isActive: !input.hidden })
+              .where(and(eq(ssColours.id, overlay.id), scope(ssColours.tenantId, tenantId)));
+          } else {
+            await db.insert(ssColours).values({
+              tenantId,
+              name: masterColourName(row),
+              colorbondName: row.key || null,
+              hexCode: masterColourHex(row),
+              surchargePercent: "0.00",
+              isActive: !input.hidden,
+            });
+          }
+          return { success: true };
+        }
+
+        const id = Number(input.id);
+        if (!Number.isFinite(id)) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid colour id" });
+        await db
+          .update(ssColours)
+          .set({ isActive: !input.hidden })
+          .where(and(eq(ssColours.id, id), scope(ssColours.tenantId, tenantId)));
+        return { success: true };
+      }),
+    delete: tenantAdminProcedure
+      .input(z.object({ id: z.union([z.number(), z.string()]) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const rawId = String(input.id);
+        if (rawId.startsWith("master:")) {
+          const masterId = Number(rawId.slice(7));
+          const [row] = await db
+            .select()
+            .from(masterData)
+            .where(and(eq(masterData.id, masterId), eq(masterData.category, "colour"), scope(masterData.tenantId, tenantId)))
+            .limit(1);
+          if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Colour not found" });
+          const customRows = await db.select().from(ssColours).where(scope(ssColours.tenantId, tenantId));
+          const overlay = customRows.find((colour: any) => coloursMatchMaster(colour, row));
+          if (overlay) {
+            await db.update(ssColours).set({ isActive: false }).where(and(eq(ssColours.id, overlay.id), scope(ssColours.tenantId, tenantId)));
+          } else {
+            await db.insert(ssColours).values({
+              tenantId,
+              name: masterColourName(row),
+              colorbondName: row.key || null,
+              hexCode: masterColourHex(row),
+              surchargePercent: "0.00",
+              isActive: false,
+            });
+          }
+          return { success: true };
+        }
+        const id = Number(input.id);
+        if (!Number.isFinite(id)) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid colour id" });
+        await db.update(ssColours).set({ isActive: false }).where(and(eq(ssColours.id, id), scope(ssColours.tenantId, tenantId)));
         return { success: true };
       }),
   }),
@@ -833,13 +1076,14 @@ export const securityScreensRouter = router({
         widthMm: z.number(),
         heightMm: z.number(),
         quantity: z.number().default(1),
-        colourId: z.number().optional(),
+        colourId: z.union([z.number(), z.string()]).optional(),
         colourName: z.string().optional(),
         handleSide: z.string().optional(),
         hingeSide: z.string().optional(),
         openingDirection: z.string().optional(),
         hingePosition: z.string().optional(),
         glassInfillId: z.number().optional(),
+        glassInfillQuantity: z.number().optional(),
         photoUrl: z.string().optional(),
         notes: z.string().optional(),
         selectedOptions: z.array(z.object({ productOptionId: z.number(), quantity: z.number().default(1) })).optional(),
@@ -863,19 +1107,20 @@ export const securityScreensRouter = router({
         const adjustedPriceExGst = matrixPriceExGst * factor;
 
         let colourSurchargeExGst = 0;
-        let validColourId: number | null = null;
-        let colourName = input.colourName || null;
-        if (input.colourId) {
-          const [colour] = await db.select().from(ssColours).where(and(eq(ssColours.id, input.colourId), scope(ssColours.tenantId, tenantId))).limit(1);
-          if (colour) {
-            validColourId = colour.id;
-            colourName = colourName || colour.name;
-            colourSurchargeExGst = adjustedPriceExGst * (Number(colour.surchargePercent || 0) / 100);
-          }
+        const colourResolution = await resolveScreenColour(db, tenantId, input.colourId, input.colourName || null);
+        const validColourId = colourResolution.validColourId;
+        const colourName = colourResolution.colourName;
+        if (colourResolution.surchargePercent) {
+          colourSurchargeExGst = adjustedPriceExGst * (colourResolution.surchargePercent / 100);
         }
         const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
+        const glassInfillQuantity = input.glassInfillId ? Math.max(0, Number(input.glassInfillQuantity ?? 1)) : 1;
+        if (input.glassInfillId) {
+          const [glass] = await db.select().from(ssGlassInfill).where(and(eq(ssGlassInfill.id, input.glassInfillId), scope(ssGlassInfill.tenantId, tenantId))).limit(1);
+          if (glass) optionsTotal += Number(glass.cost || 0) * glassInfillQuantity;
+        }
         const selectedOptions = input.selectedOptions || [];
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
@@ -904,6 +1149,7 @@ export const securityScreensRouter = router({
           openingDirection: input.openingDirection || null,
           hingePosition: input.hingePosition || null,
           glassInfillId: input.glassInfillId || null,
+          glassInfillQuantity: glassInfillQuantity.toFixed(2),
           photoUrl: input.photoUrl || null,
           notes: input.notes || null,
           basePriceIncGst: matrixPriceIncGst.toFixed(2),
@@ -947,13 +1193,14 @@ export const securityScreensRouter = router({
         widthMm: z.number(),
         heightMm: z.number(),
         quantity: z.number().default(1),
-        colourId: z.number().optional(),
+        colourId: z.union([z.number(), z.string()]).optional(),
         colourName: z.string().optional(),
         handleSide: z.string().optional(),
         hingeSide: z.string().optional(),
         openingDirection: z.string().optional(),
         hingePosition: z.string().optional(),
         glassInfillId: z.number().optional(),
+        glassInfillQuantity: z.number().optional(),
         notes: z.string().optional(),
         selectedOptions: z.array(z.object({ productOptionId: z.number(), quantity: z.number().default(1) })).optional(),
       }))
@@ -981,19 +1228,20 @@ export const securityScreensRouter = router({
         const adjustedPriceExGst = matrixPriceExGst * factor;
 
         let colourSurchargeExGst = 0;
-        let validColourId: number | null = null;
-        let colourName = input.colourName || null;
-        if (input.colourId) {
-          const [colour] = await db.select().from(ssColours).where(and(eq(ssColours.id, input.colourId), scope(ssColours.tenantId, tenantId))).limit(1);
-          if (colour) {
-            validColourId = colour.id;
-            colourName = colourName || colour.name;
-            colourSurchargeExGst = adjustedPriceExGst * (Number(colour.surchargePercent || 0) / 100);
-          }
+        const colourResolution = await resolveScreenColour(db, tenantId, input.colourId, input.colourName || null);
+        const validColourId = colourResolution.validColourId;
+        const colourName = colourResolution.colourName;
+        if (colourResolution.surchargePercent) {
+          colourSurchargeExGst = adjustedPriceExGst * (colourResolution.surchargePercent / 100);
         }
         const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
+        const glassInfillQuantity = input.glassInfillId ? Math.max(0, Number(input.glassInfillQuantity ?? 1)) : 1;
+        if (input.glassInfillId) {
+          const [glass] = await db.select().from(ssGlassInfill).where(and(eq(ssGlassInfill.id, input.glassInfillId), scope(ssGlassInfill.tenantId, tenantId))).limit(1);
+          if (glass) optionsTotal += Number(glass.cost || 0) * glassInfillQuantity;
+        }
         const selectedOptions = input.selectedOptions || [];
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
@@ -1019,6 +1267,7 @@ export const securityScreensRouter = router({
           openingDirection: input.openingDirection || null,
           hingePosition: input.hingePosition || null,
           glassInfillId: input.glassInfillId || null,
+          glassInfillQuantity: glassInfillQuantity.toFixed(2),
           notes: input.notes || null,
           basePriceIncGst: matrixPriceIncGst.toFixed(2),
           adjustedPrice: basePriceExGst.toFixed(2),

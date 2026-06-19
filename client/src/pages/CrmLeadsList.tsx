@@ -255,7 +255,7 @@ export default function CrmLeadsList() {
   const { data: branchesList } = trpc.branches.list.useQuery();
   const { data: advisorsList } = trpc.designAdvisors.list.useQuery({});
   const activeAdvisors = useMemo(
-    () => (advisorsList || []).filter((advisor: any) => !advisor.archived && advisor.role === "design_adviser"),
+    () => (advisorsList || []).filter((advisor: any) => !advisor.archived && (advisor.name || advisor.email)),
     [advisorsList]
   );
 
@@ -1005,9 +1005,10 @@ export default function CrmLeadsList() {
                       <SelectItem value={user.name}>My Leads ({user.name})</SelectItem>
                     )}
                     {activeAdvisors
-                      .filter((advisor: any) => advisor.name && advisor.name !== user?.name)
-                      .map((advisor: any) => (
-                        <SelectItem key={advisor.id} value={advisor.name}>{advisor.name}</SelectItem>
+                      .map((advisor: any) => advisor.name || advisor.email || `Design Adviser #${advisor.id}`)
+                      .filter((label: string) => label && label !== user?.name)
+                      .map((label: string) => (
+                        <SelectItem key={label} value={label}>{label}</SelectItem>
                       ))}
                   </SelectContent>
                 </Select>

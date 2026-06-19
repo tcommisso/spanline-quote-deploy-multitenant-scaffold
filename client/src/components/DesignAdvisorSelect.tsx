@@ -10,8 +10,9 @@ interface DesignAdvisorSelectProps {
 export default function DesignAdvisorSelect({ value, onChange, placeholder = "Select advisor..." }: DesignAdvisorSelectProps) {
   const { data: advisors } = trpc.designAdvisors.list.useQuery({});
 
-  // Only show team members with the design_adviser role
-  const designAdvisers = advisors?.filter((a) => a.role === "design_adviser") || [];
+  // The backend scopes and syncs this list from tenant users; do not re-filter
+  // by local role here because legacy adviser rows may not have been normalised yet.
+  const designAdvisers = advisors?.filter((a) => !a.archived) || [];
 
   return (
     <Select value={value} onValueChange={onChange}>
@@ -20,7 +21,9 @@ export default function DesignAdvisorSelect({ value, onChange, placeholder = "Se
       </SelectTrigger>
       <SelectContent>
         {designAdvisers.map((a) => (
-          <SelectItem key={a.id} value={a.name}>{a.name}</SelectItem>
+          <SelectItem key={a.id} value={a.name || a.email || `Design Adviser #${a.id}`}>
+            {a.name || a.email || `Design Adviser #${a.id}`}
+          </SelectItem>
         ))}
         {designAdvisers.length === 0 && (
           <SelectItem value="__none" disabled>No design advisers configured</SelectItem>

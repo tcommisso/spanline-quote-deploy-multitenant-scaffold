@@ -57,6 +57,91 @@ function toDateInputValue(value?: string | Date | null) {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
 }
 
+const AU_STATE_ALIASES: Record<string, string> = {
+  act: "ACT",
+  "australian capital territory": "ACT",
+  nsw: "NSW",
+  "new south wales": "NSW",
+  vic: "VIC",
+  victoria: "VIC",
+  qld: "QLD",
+  queensland: "QLD",
+  sa: "SA",
+  "south australia": "SA",
+  wa: "WA",
+  "western australia": "WA",
+  tas: "TAS",
+  tasmania: "TAS",
+  nt: "NT",
+  "northern territory": "NT",
+};
+
+const ACT_DISTRICT_NAMES = new Set([
+  "belconnen",
+  "canberra",
+  "gungahlin",
+  "molonglo valley",
+  "tuggeranong",
+  "weston creek",
+  "woden",
+  "woden valley",
+]);
+
+function cleanAddressToken(value?: string | null) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function normaliseAuState(value?: string | null) {
+  const token = cleanAddressToken(value).toLowerCase();
+  return AU_STATE_ALIASES[token] || cleanAddressToken(value).toUpperCase();
+}
+
+function inferStateFromPostcode(postcode?: string | null) {
+  const pc = Number(String(postcode || "").match(/\b\d{4}\b/)?.[0] || "");
+  if (!pc) return "";
+  if (pc >= 2600 && pc <= 2619) return "ACT";
+  if (pc >= 2900 && pc <= 2920) return "ACT";
+  if (pc >= 2000 && pc <= 2599) return "NSW";
+  if (pc >= 2620 && pc <= 2899) return "NSW";
+  if (pc >= 3000 && pc <= 3999) return "VIC";
+  if (pc >= 4000 && pc <= 4999) return "QLD";
+  if (pc >= 5000 && pc <= 5799) return "SA";
+  if (pc >= 6000 && pc <= 6797) return "WA";
+  if (pc >= 7000 && pc <= 7799) return "TAS";
+  if (pc >= 800 && pc <= 899) return "NT";
+  return "";
+}
+
+function inferAddressParts(address?: string | null) {
+  const text = String(address || "");
+  const parts = text.split(",").map(cleanAddressToken).filter(Boolean);
+  const postcodeMatches = text.match(/\b\d{4}\b/g) || [];
+  const postcode = postcodeMatches[postcodeMatches.length - 1] || "";
+  const postcodeIndex = postcode ? parts.findIndex((part) => new RegExp(`\\b${postcode}\\b`).test(part)) : -1;
+  const stateIndex = parts.findIndex((part) => !!AU_STATE_ALIASES[part.toLowerCase()]);
+  const state = stateIndex >= 0 ? normaliseAuState(parts[stateIndex]) : inferStateFromPostcode(postcode);
+  let suburbIndex = stateIndex >= 0 ? stateIndex - 1 : postcodeIndex >= 0 ? postcodeIndex - 1 : parts.length - 2;
+
+  if (suburbIndex >= 0 && ACT_DISTRICT_NAMES.has(parts[suburbIndex].toLowerCase()) && suburbIndex > 0) {
+    suburbIndex -= 1;
+  }
+
+  const suburb = parts[suburbIndex] && !AU_STATE_ALIASES[parts[suburbIndex].toLowerCase()]
+    ? parts[suburbIndex].replace(/\b\d{4}\b/g, "").trim()
+    : "";
+
+  return { suburb, state, postcode };
+}
+
+function addressPartsFromResult(addr: AddressResult) {
+  const inferred = inferAddressParts(addr.fullAddress);
+  return {
+    suburb: cleanAddressToken(addr.suburb) || inferred.suburb,
+    state: normaliseAuState(addr.state) || inferred.state,
+    postcode: cleanAddressToken(addr.postcode) || inferred.postcode,
+  };
+}
+
 // Section definitions for sidebar nav
 const SECTIONS = [
   { id: "details", label: "Lead Details" },
@@ -159,15 +244,21 @@ export default function CrmLeadDetail() {
   const utils = trpc.useUtils();
   const createMut = trpc.crm.leads.create.useMutation({
     onSuccess: (data) => {
+      if (data.id === 0) {
+        toast.info("Test lead ignored");
+        return;
+      }
       toast.success("Lead created");
       navigate(`/crm/leads/${data.id}`);
     },
+    onError: (err) => toast.error(err.message || "Failed to create lead"),
   });
   const updateMut = trpc.crm.leads.update.useMutation({
     onSuccess: () => {
       toast.success("Lead saved");
       utils.crm.leads.get.invalidate({ id: leadId! });
     },
+    onError: (err) => toast.error(err.message || "Failed to save lead"),
   });
   const deleteMut = trpc.crm.leads.delete.useMutation({
     onSuccess: () => {
@@ -239,8 +330,30 @@ export default function CrmLeadDetail() {
   });
 
   const handleSave = () => {
+    const contactFirstName = form.contactFirstName.trim();
+    const contactLastName = form.contactLastName.trim();
+    const contactPhone = form.contactPhone.trim();
+    const contactEmail = form.contactEmail.trim();
+    if (!contactFirstName && !contactLastName) {
+      toast.error("Enter at least a first or last name before creating the lead.");
+      return;
+    }
+    if (!contactPhone && !contactEmail) {
+      toast.error("Enter a phone number or email address before creating the lead.");
+      return;
+    }
     const payload = {
       ...form,
+      contactFirstName,
+      contactLastName,
+      contactPhone,
+      contactEmail,
+      contactAddress: form.contactAddress.trim(),
+      clientNumber: form.clientNumber.trim(),
+      suburb: form.suburb.trim(),
+      state: normaliseAuState(form.state),
+      postcode: form.postcode.trim(),
+      designAdvisor: form.designAdvisor.trim(),
       branchId: form.branchId ? Number(form.branchId) : null,
       sourceCreatedAt: form.sourceCreatedAt ? new Date(`${form.sourceCreatedAt}T00:00:00Z`) : null,
     };
@@ -373,7 +486,7 @@ export default function CrmLeadDetail() {
               <Trash2 className="h-4 w-4" />
             </Button>
           )}
-          <Button size="sm" onClick={handleSave} disabled={createMut.isPending || updateMut.isPending}>
+          <Button type="button" size="sm" onClick={handleSave} disabled={createMut.isPending || updateMut.isPending}>
             <Save className="h-4 w-4 mr-1" /> {isNew ? "Create" : "Save"}
           </Button>
         </div>
@@ -612,21 +725,35 @@ export default function CrmLeadDetail() {
                           <label className="text-xs font-medium">Address</label>
                           <AddressAutocomplete
                             value={form.contactAddress}
-                            onChange={(val) => setForm(f => ({ ...f, contactAddress: val }))}
+                            onChange={(val) => setForm(f => {
+                              const parts = inferAddressParts(val);
+                              const region = parts.suburb || parts.postcode || parts.state
+                                ? detectRegion(parts.postcode, parts.suburb, parts.state) || ""
+                                : "";
+                              return {
+                                ...f,
+                                contactAddress: val,
+                                suburb: parts.suburb || f.suburb,
+                                state: parts.state || f.state,
+                                postcode: parts.postcode || f.postcode,
+                                detectedRegion: region || f.detectedRegion,
+                              };
+                            })}
                             onAddressSelect={(addr) => {
-                              const region = detectRegion(addr.postcode, addr.suburb, addr.state) || "";
+                              const parts = addressPartsFromResult(addr);
+                              const region = detectRegion(parts.postcode, parts.suburb, parts.state) || "";
                               const street = addr.unitNumber
                                 ? `${addr.unitNumber}/${addr.streetAddress}`
                                 : (addr.streetAddress || addr.fullAddress);
                               setForm(f => ({
                                 ...f,
-                                contactAddress: street,
-                                suburb: addr.suburb,
-                                state: addr.state,
-                                postcode: addr.postcode,
+                                contactAddress: addr.fullAddress || street,
+                                suburb: parts.suburb || f.suburb,
+                                state: parts.state || f.state,
+                                postcode: parts.postcode || f.postcode,
                                 latitude: addr.lat ?? null,
                                 longitude: addr.lng ?? null,
-                                detectedRegion: region,
+                                detectedRegion: region || f.detectedRegion,
                               }));
                               if (addr.lat && addr.lng) {
                                 const coords = { lat: addr.lat, lng: addr.lng };
