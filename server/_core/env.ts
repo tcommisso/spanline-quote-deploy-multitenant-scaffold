@@ -32,7 +32,7 @@ export const ENV = {
   storageProvider: (process.env.STORAGE_PROVIDER ?? "").trim().toLowerCase(),
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-5-mini",
-  openAiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "dall-e-3",
+  openAiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
   openAiTranscriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL ?? "gpt-4o-mini-transcribe",
   mapProvider: (process.env.MAP_PROVIDER ?? "osm").trim().toLowerCase(),
   geocoderProvider: (process.env.GEOCODER_PROVIDER ?? "locationiq").trim().toLowerCase(),

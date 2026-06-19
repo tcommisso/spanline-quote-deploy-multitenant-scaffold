@@ -18,6 +18,14 @@
 import { storagePut } from "server/storage";
 import { ENV } from "./env";
 
+const DEFAULT_IMAGE_MODEL = "gpt-image-2";
+const IMAGE_MODEL_FALLBACKS = [
+  DEFAULT_IMAGE_MODEL,
+  "gpt-image-1.5",
+  "gpt-image-1",
+  "gpt-image-1-mini",
+];
+
 export type GenerateImageOptions = {
   prompt: string;
   originalImages?: Array<{
@@ -42,8 +50,11 @@ export async function generateImage(
   const modelCandidates = imageModelCandidates();
   let response: Response | null = null;
   let lastDetail = "";
+  let modelFailure = false;
+  const attemptedModels: string[] = [];
 
   for (const model of modelCandidates) {
+    attemptedModels.push(model);
     const useEdit = hasOriginals && supportsImageEdits(model);
     response = useEdit
       ? await requestImageEdit(model, options)
@@ -52,10 +63,17 @@ export async function generateImage(
     if (response.ok) break;
 
     lastDetail = await response.text().catch(() => "");
-    if (!isModelAccessError(response.status, lastDetail)) break;
+    const isModelFailure = isModelAccessError(response.status, lastDetail);
+    modelFailure ||= isModelFailure;
+    if (!isModelFailure) break;
   }
 
   if (!response?.ok) {
+    if (modelFailure) {
+      throw new Error(
+        `OpenAI image model unavailable. Tried ${attemptedModels.join(", ")}. Set OPENAI_IMAGE_MODEL to an image model enabled for this OpenAI project.${lastDetail ? ` Provider response: ${lastDetail}` : ""}`
+      );
+    }
     throw new Error(
       `Image generation request failed (${response?.status ?? "unknown"} ${response?.statusText ?? ""})${lastDetail ? `: ${lastDetail}` : ""}`
     );
@@ -130,8 +148,14 @@ async function requestImageGeneration(model: string, prompt: string): Promise<Re
 }
 
 function imageModelCandidates(): string[] {
-  const configured = (ENV.openAiImageModel || "dall-e-3").trim();
-  return Array.from(new Set([configured, "dall-e-3"]));
+  const configured = normalizeImageModel((ENV.openAiImageModel || DEFAULT_IMAGE_MODEL).trim());
+  return Array.from(new Set([configured, ...IMAGE_MODEL_FALLBACKS]));
+}
+
+function normalizeImageModel(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized || normalized === "dall-e-3") return DEFAULT_IMAGE_MODEL;
+  return model;
 }
 
 function supportsImageEdits(model: string): boolean {
@@ -139,9 +163,12 @@ function supportsImageEdits(model: string): boolean {
 }
 
 function isModelAccessError(status: number, detail: string): boolean {
-  return status === 403 && (
-    detail.includes("model_not_found") ||
-    detail.includes("does not have access to model")
+  const lowerDetail = detail.toLowerCase();
+  return (status === 400 || status === 403 || status === 404) && (
+    lowerDetail.includes("model_not_found") ||
+    lowerDetail.includes("does not have access to model") ||
+    lowerDetail.includes("does not exist") ||
+    (lowerDetail.includes("invalid_value") && lowerDetail.includes("model"))
   );
 }
 
