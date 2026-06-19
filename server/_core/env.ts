@@ -33,7 +33,7 @@ export const ENV = {
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   openAiModelFallbacks: process.env.OPENAI_MODEL_FALLBACKS ?? "",
-  openAiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1",
+  openAiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
   openAiImageModelFallbacks: process.env.OPENAI_IMAGE_MODEL_FALLBACKS ?? "",
   openAiTranscriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL ?? "gpt-4o-mini-transcribe",
   mapProvider: (process.env.MAP_PROVIDER ?? "osm").trim().toLowerCase(),

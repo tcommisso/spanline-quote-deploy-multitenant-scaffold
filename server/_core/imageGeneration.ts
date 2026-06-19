@@ -18,7 +18,18 @@
 import { storagePut } from "server/storage";
 import { ENV } from "./env";
 
-const DEFAULT_IMAGE_MODEL = "gpt-image-1";
+const DEFAULT_IMAGE_MODEL = "gpt-image-2";
+const BUILT_IN_IMAGE_MODEL_FALLBACKS = [
+  "gpt-image-2",
+  "gpt-image-2-2026-04-21",
+  "gpt-image-1",
+  "chatgpt-image-latest",
+];
+const LEGACY_IMAGE_MODEL_ALIASES = new Set([
+  "dall-e-3",
+  "gpt-image-1.5",
+  "gpt-image-1-mini",
+]);
 
 const parseModelList = (value: string | undefined): string[] =>
   (value || "")
@@ -47,7 +58,7 @@ export async function generateImage(
   }
 
   const hasOriginals = !!options.originalImages?.length;
-  const modelCandidates = imageModelCandidates();
+  const modelCandidates = imageModelCandidates(hasOriginals);
   let response: Response | null = null;
   let lastDetail = "";
   let modelFailure = false;
@@ -71,7 +82,7 @@ export async function generateImage(
   if (!response?.ok) {
     if (modelFailure) {
       throw new Error(
-        `OpenAI image model unavailable. Tried ${attemptedModels.join(", ")}. This OpenAI project/API key does not have access to the configured image model(s). Set OPENAI_IMAGE_MODEL to an image model enabled for this OpenAI project, or enable image generation access for the Railway API key's OpenAI project.${lastDetail ? ` Provider response: ${lastDetail}` : ""}`
+        `OpenAI image model unavailable. Tried ${attemptedModels.join(", ")}. This OpenAI project/API key does not have access to the configured image model(s). Set OPENAI_IMAGE_MODEL=gpt-image-2 in Railway, or enable image generation access for the Railway API key's OpenAI project.${lastDetail ? ` Provider response: ${lastDetail}` : ""}`
       );
     }
     throw new Error(
@@ -106,22 +117,39 @@ export async function generateImage(
 }
 
 async function requestImageEdit(model: string, options: GenerateImageOptions): Promise<Response> {
-    const form = new FormData();
-    form.append("model", model);
-    form.append("prompt", options.prompt);
-    form.append("size", "1024x1024");
+  const form = new FormData();
+  form.append("model", model);
+  form.append("prompt", options.prompt);
+  form.append("size", "1024x1024");
 
-    for (let index = 0; index < options.originalImages!.length; index += 1) {
-      const image = options.originalImages![index];
-      const mimeType = image.mimeType || "image/png";
-      const buffer = image.b64Json
+  let imageCount = 0;
+  for (let index = 0; index < options.originalImages!.length; index += 1) {
+    const image = options.originalImages![index];
+    const mimeType = image.mimeType || "image/png";
+    let buffer: Buffer | null = null;
+
+    try {
+      buffer = image.b64Json
         ? Buffer.from(image.b64Json, "base64")
         : image.url
           ? await bufferFromImageUrl(image.url)
           : null;
-      if (!buffer) continue;
-      form.append("image", new Blob([new Uint8Array(buffer)], { type: mimeType }), `source-${index}.${extensionForMime(mimeType)}`);
+    } catch {
+      buffer = null;
     }
+
+    if (!buffer) continue;
+    form.append(
+      "image",
+      new Blob([new Uint8Array(buffer)], { type: mimeType }),
+      `source-${index}.${extensionForMime(mimeType)}`
+    );
+    imageCount += 1;
+  }
+
+  if (imageCount === 0) {
+    return requestImageGeneration(model, options.prompt);
+  }
 
   return fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
@@ -147,23 +175,27 @@ async function requestImageGeneration(model: string, prompt: string): Promise<Re
   });
 }
 
-function imageModelCandidates(): string[] {
+function imageModelCandidates(hasOriginals = false): string[] {
   const configured = normalizeImageModel(ENV.openAiImageModel || DEFAULT_IMAGE_MODEL);
-  return Array.from(new Set([
+  const configuredFallbacks = parseModelList(ENV.openAiImageModelFallbacks)
+    .map(normalizeImageModel);
+  const candidates = Array.from(new Set([
     configured,
-    ...parseModelList(ENV.openAiImageModelFallbacks),
-    DEFAULT_IMAGE_MODEL,
+    ...configuredFallbacks,
+    ...BUILT_IN_IMAGE_MODEL_FALLBACKS,
   ].filter(Boolean)));
+  return hasOriginals ? candidates.filter(supportsImageEdits) : candidates;
 }
 
 function normalizeImageModel(model: string): string {
   const normalized = model.trim().toLowerCase();
-  if (!normalized || normalized === "dall-e-3") return DEFAULT_IMAGE_MODEL;
+  if (!normalized || LEGACY_IMAGE_MODEL_ALIASES.has(normalized)) return DEFAULT_IMAGE_MODEL;
   return model.trim();
 }
 
 function supportsImageEdits(model: string): boolean {
-  return model.startsWith("gpt-image") || model === "dall-e-2";
+  const normalized = model.trim().toLowerCase();
+  return normalized.startsWith("gpt-image") || normalized === "dall-e-2";
 }
 
 function isModelAccessError(status: number, detail: string): boolean {
