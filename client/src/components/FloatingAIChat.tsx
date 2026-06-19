@@ -157,10 +157,11 @@ export function FloatingAIChat() {
     onSuccess: (data: { answer: string }) => {
       setMessages((prev) => [...prev, { role: "assistant", content: data.answer }]);
     },
-    onError: () => {
+    onError: (error: { message?: string }) => {
+      const detail = error?.message ? `\n\n${error.message}` : "";
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Sorry, I encountered an error. Please try again." },
+        { role: "assistant", content: `Sorry, I encountered an error processing your question.${detail}` },
       ]);
     },
   });

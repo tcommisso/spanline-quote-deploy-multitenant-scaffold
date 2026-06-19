@@ -210,8 +210,74 @@ const normalizeToolChoice = (
 };
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
-const FALLBACK_OPENAI_MODELS = ["gpt-5-mini", "gpt-4o-mini", "gpt-4o"];
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+
+const parseModelList = (value: string | undefined): string[] =>
+  (value || "")
+    .split(",")
+    .map(model => model.trim())
+    .filter(Boolean);
+
+function buildTextModelCandidates(requestedModel: string): string[] {
+  return Array.from(new Set([
+    requestedModel,
+    ...parseModelList(ENV.openAiModelFallbacks),
+    DEFAULT_OPENAI_MODEL,
+    "gpt-4o",
+  ].filter(Boolean)));
+}
+
+function isModelAccessError(status: number, detail: string): boolean {
+  const lowerDetail = detail.toLowerCase();
+  return (
+    lowerDetail.includes("model_not_found") ||
+    lowerDetail.includes("does not have access to model") ||
+    lowerDetail.includes("does not exist") ||
+    (lowerDetail.includes("invalid_value") && lowerDetail.includes("model")) ||
+    ((status === 403 || status === 404) && lowerDetail.includes("model")) ||
+    (status === 400 && lowerDetail.includes("model"))
+  );
+}
+
+function extractOpenAiText(data: any): string {
+  const direct = typeof data?.output_text === "string" ? data.output_text.trim() : "";
+  if (direct) return direct;
+
+  const chunks: string[] = [];
+  const visit = (value: any) => {
+    if (!value) return;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) chunks.push(trimmed);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    if (typeof value.text === "string") {
+      const trimmed = value.text.trim();
+      if (trimmed) chunks.push(trimmed);
+    } else if (value.text?.value) {
+      const trimmed = String(value.text.value).trim();
+      if (trimmed) chunks.push(trimmed);
+    }
+
+    if (typeof value.content === "string") {
+      const trimmed = value.content.trim();
+      if (trimmed) chunks.push(trimmed);
+    } else if (Array.isArray(value.content)) {
+      visit(value.content);
+    }
+
+    if (Array.isArray(value.output)) visit(value.output);
+  };
+
+  visit(data?.output);
+  return chunks.join("\n").trim();
+}
 
 const assertApiKey = () => {
   if (!ENV.openAiApiKey) {
@@ -374,17 +440,19 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     }
   }
 
-  let response: Response | undefined;
   let lastErrorText = "";
   const requestedModel = String(payload.model || DEFAULT_OPENAI_MODEL);
-  const modelCandidates = Array.from(new Set([
-    requestedModel,
-    ...FALLBACK_OPENAI_MODELS,
-  ].filter(Boolean)));
+  const modelCandidates = buildTextModelCandidates(requestedModel);
+  const attemptedModels: string[] = [];
+  let selectedContent = "";
+  let selectedData: any = null;
+  let selectedModel = requestedModel;
 
-  for (const model of modelCandidates) {
+  for (let index = 0; index < modelCandidates.length; index += 1) {
+    const model = modelCandidates[index];
+    attemptedModels.push(model);
     payload.model = model;
-    response = await fetch(OPENAI_RESPONSES_URL, {
+    const response = await fetch(OPENAI_RESPONSES_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -393,36 +461,47 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
       body: JSON.stringify(payload),
     });
 
-    if (response.ok) break;
-
-    lastErrorText = await response.text();
-    const canRetryWithFallback = response.status === 403 || response.status === 404 || lastErrorText.includes("model_not_found");
-    const hasMoreModels = model !== modelCandidates[modelCandidates.length - 1];
-    if (!canRetryWithFallback || !hasMoreModels) {
+    if (!response.ok) {
+      lastErrorText = await response.text().catch(() => "");
+      const hasMoreModels = index < modelCandidates.length - 1;
+      if (isModelAccessError(response.status, lastErrorText) && hasMoreModels) {
+        console.warn(`[OpenAI] Model ${model} unavailable; retrying with fallback model`);
+        continue;
+      }
       throw new Error(
-        `LLM invoke failed: ${response.status} ${response.statusText} – ${lastErrorText}`
+        `LLM invoke failed (${response.status} ${response.statusText})${lastErrorText ? `: ${lastErrorText}` : ""}`
       );
     }
-    console.warn(`[OpenAI] Model ${model} unavailable; retrying with fallback model`);
+
+    const data = await response.json() as any;
+    const content = extractOpenAiText(data);
+    if (content) {
+      selectedData = data;
+      selectedContent = content;
+      selectedModel = model;
+      break;
+    }
+
+    lastErrorText = `OpenAI returned no text output from ${model} (status: ${String(data?.status ?? "unknown")})`;
+    if (index < modelCandidates.length - 1) {
+      console.warn(`[OpenAI] ${lastErrorText}; retrying with fallback model`);
+      continue;
+    }
   }
 
-  if (!response?.ok) {
-    throw new Error(`LLM invoke failed: ${lastErrorText || "OpenAI request failed"}`);
+  if (!selectedData || !selectedContent) {
+    throw new Error(
+      `LLM invoke failed: ${lastErrorText || "OpenAI returned no text output"}. Tried ${attemptedModels.join(", ")}.`
+    );
   }
 
-  const data = await response.json() as any;
-  const content = typeof data.output_text === "string"
-    ? data.output_text
-    : (data.output || [])
-      .flatMap((item: any) => item.content || [])
-      .map((part: any) => part.text || "")
-      .join("\n")
-      .trim();
+  const data = selectedData;
+  const content = selectedContent;
 
   return {
     id: data.id || "",
     created: data.created_at || Math.floor(Date.now() / 1000),
-    model: data.model || String(payload.model),
+    model: data.model || selectedModel,
     choices: [
       {
         index: 0,

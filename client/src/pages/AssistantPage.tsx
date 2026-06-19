@@ -25,8 +25,9 @@ export default function AssistantPage() {
     onSuccess: (data: { answer: string }) => {
       setMessages(prev => [...prev, { role: "assistant", content: data.answer }]);
     },
-    onError: () => {
-      setMessages(prev => [...prev, { role: "assistant", content: "Sorry, I encountered an error. Please try again." }]);
+    onError: (error: { message?: string }) => {
+      const detail = error?.message ? `\n\n${error.message}` : "";
+      setMessages(prev => [...prev, { role: "assistant", content: `Sorry, I encountered an error processing your question.${detail}` }]);
     },
   });
 

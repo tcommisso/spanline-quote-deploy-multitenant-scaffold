@@ -100,6 +100,22 @@ import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { isStorageConfigured, storageGet, storageDownload, storagePut } from "./storage";
 import { syncQuoteHbcfRequirement } from "./hbcf-service";
 
+function sanitizeProviderError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error || "Unknown provider error");
+  return raw
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-[redacted]")
+    .slice(0, 700);
+}
+
+function enginiProviderFailure(error: unknown): string {
+  return [
+    "Engini could not get a usable OpenAI response.",
+    sanitizeProviderError(error),
+    "Check Railway OPENAI_API_KEY and OPENAI_MODEL. Use an enabled text model such as gpt-4o-mini, or set OPENAI_MODEL_FALLBACKS to another enabled model.",
+  ].filter(Boolean).join("\n\n");
+}
+
 /** Check if a user can access a specific quote based on permissions */
 function canAccessQuote(user: { id: number; role: string; name: string | null; canViewAllQuotes: boolean }, quote: { userId: number; designAdvisor: string | null }): boolean {
   if (isAdminRole(user.role)) return true;
@@ -2001,10 +2017,10 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
               return { answer: fallbackAnswer };
             } catch (fallbackErr: any) {
               console.error("[Engini] Fallback LLM error:", fallbackErr.message);
-              return { answer: "I'm having trouble processing your question right now. The knowledge base may be temporarily overloaded. Please try again in a moment, or rephrase your question to be more specific." };
+              return { answer: enginiProviderFailure(fallbackErr) };
             }
           }
-          return { answer: "Sorry, I encountered an error processing your question. Please try again." };
+          return { answer: enginiProviderFailure(err) };
         }
       }),
   }),

@@ -18,13 +18,13 @@
 import { storagePut } from "server/storage";
 import { ENV } from "./env";
 
-const DEFAULT_IMAGE_MODEL = "gpt-image-2";
-const IMAGE_MODEL_FALLBACKS = [
-  DEFAULT_IMAGE_MODEL,
-  "gpt-image-1.5",
-  "gpt-image-1",
-  "gpt-image-1-mini",
-];
+const DEFAULT_IMAGE_MODEL = "gpt-image-1";
+
+const parseModelList = (value: string | undefined): string[] =>
+  (value || "")
+    .split(",")
+    .map(model => model.trim())
+    .filter(Boolean);
 
 export type GenerateImageOptions = {
   prompt: string;
@@ -71,7 +71,7 @@ export async function generateImage(
   if (!response?.ok) {
     if (modelFailure) {
       throw new Error(
-        `OpenAI image model unavailable. Tried ${attemptedModels.join(", ")}. Set OPENAI_IMAGE_MODEL to an image model enabled for this OpenAI project.${lastDetail ? ` Provider response: ${lastDetail}` : ""}`
+        `OpenAI image model unavailable. Tried ${attemptedModels.join(", ")}. This OpenAI project/API key does not have access to the configured image model(s). Set OPENAI_IMAGE_MODEL to an image model enabled for this OpenAI project, or enable image generation access for the Railway API key's OpenAI project.${lastDetail ? ` Provider response: ${lastDetail}` : ""}`
       );
     }
     throw new Error(
@@ -148,14 +148,18 @@ async function requestImageGeneration(model: string, prompt: string): Promise<Re
 }
 
 function imageModelCandidates(): string[] {
-  const configured = normalizeImageModel((ENV.openAiImageModel || DEFAULT_IMAGE_MODEL).trim());
-  return Array.from(new Set([configured, ...IMAGE_MODEL_FALLBACKS]));
+  const configured = normalizeImageModel(ENV.openAiImageModel || DEFAULT_IMAGE_MODEL);
+  return Array.from(new Set([
+    configured,
+    ...parseModelList(ENV.openAiImageModelFallbacks),
+    DEFAULT_IMAGE_MODEL,
+  ].filter(Boolean)));
 }
 
 function normalizeImageModel(model: string): string {
   const normalized = model.trim().toLowerCase();
   if (!normalized || normalized === "dall-e-3") return DEFAULT_IMAGE_MODEL;
-  return model;
+  return model.trim();
 }
 
 function supportsImageEdits(model: string): boolean {
