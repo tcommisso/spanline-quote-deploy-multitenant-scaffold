@@ -51,23 +51,52 @@ function insertIdFromResult(result: any): number | null {
 }
 
 async function quoteIdFromInsertResult(db: any, tenantId: number, insertResult: any, quoteNumber: string) {
-  const insertId = insertIdFromResult(insertResult);
-  if (insertId) return insertId;
-
   const [quote] = await db
     .select({ id: ssQuotes.id })
     .from(ssQuotes)
     .where(and(eq(ssQuotes.quoteNumber, quoteNumber), scope(ssQuotes.tenantId, tenantId)))
     .limit(1);
 
-  if (!quote?.id) {
+  const quoteId = Number(quote?.id);
+  if (Number.isFinite(quoteId) && quoteId > 0) return quoteId;
+
+  const insertId = insertIdFromResult(insertResult);
+  if (insertId) return insertId;
+
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Quote was created but could not be reloaded.",
+  });
+}
+
+async function quoteItemIdFromInsertResult(
+  db: any,
+  tenantId: number,
+  insertResult: any,
+  quoteId: number,
+  itemNumber: number,
+) {
+  const [item] = await db
+    .select({ id: ssQuoteItems.id })
+    .from(ssQuoteItems)
+    .where(and(
+      eq(ssQuoteItems.quoteId, quoteId),
+      eq(ssQuoteItems.itemNumber, itemNumber),
+      scope(ssQuoteItems.tenantId, tenantId),
+    ))
+    .orderBy(desc(ssQuoteItems.id))
+    .limit(1);
+
+  const itemId = Number(item?.id);
+  if (Number.isFinite(itemId) && itemId > 0) return itemId;
+
+  const insertId = insertIdFromResult(insertResult);
+  if (insertId) return insertId;
+
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
-      message: "Quote was created but could not be reloaded.",
+      message: "Quote item was created but could not be reloaded.",
     });
-  }
-
-  return Number(quote.id);
 }
 
 function createQuoteNumber() {
@@ -1037,8 +1066,8 @@ export const securityScreensRouter = router({
             optionsTotal: item.optionsTotal,
             lineTotalExGst: item.lineTotalExGst,
           });
-          const newItemId = insertIdFromResult(itemResult);
-          if (newItemId) itemIdMap.set(item.id, newItemId);
+          const newItemId = await quoteItemIdFromInsertResult(db, tenantId, itemResult, newQuoteId, Number(item.itemNumber));
+          itemIdMap.set(item.id, newItemId);
         }
         const originalOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
         for (const option of originalOptions) {
@@ -1158,13 +1187,7 @@ export const securityScreensRouter = router({
           lineTotalExGst: lineTotalExGst.toFixed(2),
         });
 
-        const quoteItemId = insertIdFromResult(result);
-        if (!quoteItemId) {
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Quote item was created but could not be reloaded.",
-          });
-        }
+        const quoteItemId = await quoteItemIdFromInsertResult(db, tenantId, result, input.quoteId, itemNumber);
 
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
