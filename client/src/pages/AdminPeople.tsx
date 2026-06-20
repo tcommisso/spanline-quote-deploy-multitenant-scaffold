@@ -91,7 +91,7 @@ export default function AdminPeople() {
   const isSuperAdmin = currentUser?.role === "super_admin";
   const utils = trpc.useUtils();
 
-  const PEOPLE_TABS = ["all", "staff", "trades", "system", "permissions", "notifications", "audit"];
+  const PEOPLE_TABS = ["all", "staff", "trades", "system", "permissions", "notifications", "audit", "invitations"];
   const [activeTab, setActiveTab] = useState("all");
   const swipeRef = useSwipeTabs({
     tabs: PEOPLE_TABS,
@@ -144,7 +144,11 @@ export default function AdminPeople() {
     onError: (err) => toast.error(err.message),
   });
   const updatePermsMut = trpc.userManagement.updatePermissions.useMutation({
-    onSuccess: () => { toast.success("Permissions updated"); utils.userManagement.list.invalidate(); },
+    onSuccess: () => {
+      toast.success("Permissions updated");
+      utils.people.search.invalidate();
+      utils.userManagement.list.invalidate();
+    },
     onError: (err) => toast.error(err.message),
   });
 
@@ -315,6 +319,60 @@ export default function AdminPeople() {
 
   const totalCount = (counts?.staff || 0) + (counts?.trades || 0) + (counts?.system || 0);
 
+  function updateSystemPermission(person: any, field: "canViewAllQuotes" | "canViewAllLeads", checked: boolean) {
+    if (field === "canViewAllQuotes") {
+      updatePermsMut.mutate({ userId: person.id, canViewAllQuotes: checked });
+    } else {
+      updatePermsMut.mutate({ userId: person.id, canViewAllLeads: checked });
+    }
+  }
+
+  function renderSystemPermissionControls(person: any, layout: "mobile" | "desktop") {
+    if (!isSuperAdmin || person.personType !== "system") return null;
+    const disabled = person.id === currentUser?.id || updatePermsMut.isPending;
+    const controls = [
+      { field: "canViewAllQuotes" as const, label: "All quotes", checked: !!person.canViewAllQuotes },
+      { field: "canViewAllLeads" as const, label: "All leads", checked: !!person.canViewAllLeads },
+    ];
+
+    if (layout === "mobile") {
+      return (
+        <div className="rounded-md border bg-muted/20 p-2 mb-2">
+          <p className="text-[11px] font-medium text-muted-foreground mb-2">Supervisor permissions</p>
+          <div className="grid gap-2">
+            {controls.map((control) => (
+              <div key={control.field} className="flex items-center justify-between gap-3 rounded-md bg-background px-2 py-1.5">
+                <span className="text-xs font-medium">{control.label}</span>
+                <Switch
+                  className="h-5 w-9 shrink-0"
+                  checked={control.checked}
+                  onCheckedChange={(checked) => updateSystemPermission(person, control.field, checked)}
+                  disabled={disabled}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col items-center gap-1">
+        {controls.map((control) => (
+          <div key={control.field} className="flex items-center gap-1.5">
+            <Switch
+              className="h-4 w-7"
+              checked={control.checked}
+              onCheckedChange={(checked) => updateSystemPermission(person, control.field, checked)}
+              disabled={disabled}
+            />
+            <span className="text-[10px] text-muted-foreground">{control.label.replace("All ", "")}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 space-y-4">
       {/* Header */}
@@ -370,30 +428,32 @@ export default function AdminPeople() {
       <div ref={swipeRef}>
       <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSelectedTradeIds([]); }}>
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <TabsList className="flex-wrap h-auto">
-            <TabsTrigger value="all">
-              All ({totalCount})
-            </TabsTrigger>
-            <TabsTrigger value="staff">
-              <UserCheck className="h-3.5 w-3.5 mr-1" /> Staff ({counts?.staff || 0})
-            </TabsTrigger>
-            <TabsTrigger value="trades">
-              <Wrench className="h-3.5 w-3.5 mr-1" /> Trades ({counts?.trades || 0})
-            </TabsTrigger>
-            <TabsTrigger value="system">
-              <Shield className="h-3.5 w-3.5 mr-1" /> System Users ({counts?.system || 0})
-            </TabsTrigger>
-            <TabsTrigger value="permissions">Permissions</TabsTrigger>
-            <TabsTrigger value="notifications">
-              <BellRing className="h-3.5 w-3.5 mr-1" /> Notification Rules
-            </TabsTrigger>
-            <TabsTrigger value="audit">
-              <Clock className="h-3.5 w-3.5 mr-1" /> Audit Log
-            </TabsTrigger>
-            <TabsTrigger value="invitations">
-              <Link2 className="h-3.5 w-3.5 mr-1" /> Invitations
-            </TabsTrigger>
-          </TabsList>
+          <div className="w-full overflow-x-auto pb-1 sm:w-auto">
+            <TabsList className="inline-flex h-auto min-w-max flex-nowrap">
+              <TabsTrigger value="all">
+                All ({totalCount})
+              </TabsTrigger>
+              <TabsTrigger value="staff">
+                <UserCheck className="h-3.5 w-3.5 mr-1" /> Staff ({counts?.staff || 0})
+              </TabsTrigger>
+              <TabsTrigger value="trades">
+                <Wrench className="h-3.5 w-3.5 mr-1" /> Trades ({counts?.trades || 0})
+              </TabsTrigger>
+              <TabsTrigger value="system">
+                <Shield className="h-3.5 w-3.5 mr-1" /> System Users ({counts?.system || 0})
+              </TabsTrigger>
+              <TabsTrigger value="permissions">Permissions</TabsTrigger>
+              <TabsTrigger value="notifications">
+                <BellRing className="h-3.5 w-3.5 mr-1" /> Notification Rules
+              </TabsTrigger>
+              <TabsTrigger value="audit">
+                <Clock className="h-3.5 w-3.5 mr-1" /> Audit Log
+              </TabsTrigger>
+              <TabsTrigger value="invitations">
+                <Link2 className="h-3.5 w-3.5 mr-1" /> Invitations
+              </TabsTrigger>
+            </TabsList>
+          </div>
           <div className="flex items-center gap-2">
             <Label htmlFor="show-archived" className="text-xs text-muted-foreground">Show archived/inactive</Label>
             <Switch id="show-archived" checked={showArchived} onCheckedChange={setShowArchived} />
@@ -510,6 +570,8 @@ export default function AdminPeople() {
                           {person.phone && <span>{person.phone}</span>}
                         </div>
 
+                        {renderSystemPermissionControls(person, "mobile")}
+
                         {/* Role editing (inline) */}
                         {isSystem && editingRole === person.id && (
                           <div className="flex gap-1 items-center mb-2 flex-wrap">
@@ -599,7 +661,7 @@ export default function AdminPeople() {
                         <th className="pb-2 font-medium">Phone</th>
                         <th className="pb-2 font-medium">Status</th>
                         {(tabValue === "system" || tabValue === "all") && <th className="pb-2 font-medium">Last Active</th>}
-                        {tabValue === "system" && isSuperAdmin && <th className="pb-2 font-medium text-center">Supervisor</th>}
+                        {tabValue === "system" && isSuperAdmin && <th className="pb-2 font-medium text-center">Permissions</th>}
                         <th className="pb-2 font-medium text-right">Actions</th>
                       </tr>
                     </thead>
@@ -695,19 +757,7 @@ export default function AdminPeople() {
                             )}
                             {tabValue === "system" && isSuperAdmin && (
                               <td className="py-2.5">
-                                {isSystem && (
-                                  <div className="flex flex-col items-center gap-1">
-                                    <div className="flex items-center gap-1.5">
-                                      <Switch
-                                        className="h-4 w-7"
-                                        checked={false}
-                                        onCheckedChange={() => toast.info("Use System Users tab for permission management")}
-                                        disabled={person.id === currentUser?.id}
-                                      />
-                                      <span className="text-[10px] text-muted-foreground">Quotes</span>
-                                    </div>
-                                  </div>
-                                )}
+                                {renderSystemPermissionControls(person, "desktop")}
                               </td>
                             )}
                             <td className="py-2.5 text-right">

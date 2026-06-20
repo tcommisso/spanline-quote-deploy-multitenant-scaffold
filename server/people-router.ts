@@ -44,6 +44,8 @@ export const peopleRouter = router({
         role: string;
         lastSignedIn: Date | null;
         createdAt: Date;
+        canViewAllQuotes: boolean | null;
+        canViewAllLeads: boolean | null;
       }> | null = null;
       const linkedTradeUserIds = new Set<number>();
 
@@ -63,6 +65,8 @@ export const peopleRouter = router({
           role: users.role,
           lastSignedIn: users.lastSignedIn,
           createdAt: users.createdAt,
+          canViewAllQuotes: users.canViewAllQuotes,
+          canViewAllLeads: users.canViewAllLeads,
         }).from(tenantMemberships)
           .innerJoin(users, eq(users.id, tenantMemberships.userId))
           .where(and(...conditions))
@@ -89,6 +93,8 @@ export const peopleRouter = router({
         archived: boolean;
         lastSignedIn: Date | null;
         createdAt: Date;
+        canViewAllQuotes?: boolean;
+        canViewAllLeads?: boolean;
       }> = [];
 
       // Staff (design_advisors)
@@ -206,6 +212,8 @@ export const peopleRouter = router({
             archived: false,
             lastSignedIn: u.lastSignedIn,
             createdAt: u.createdAt,
+            canViewAllQuotes: !!u.canViewAllQuotes,
+            canViewAllLeads: !!u.canViewAllLeads,
           });
         }
       }
