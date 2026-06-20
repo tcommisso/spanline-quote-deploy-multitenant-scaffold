@@ -1,3 +1,35 @@
+SET @inbox_messages_status_col_exists := (
+  SELECT COUNT(*)
+  FROM `INFORMATION_SCHEMA`.`COLUMNS`
+  WHERE `TABLE_SCHEMA` = DATABASE()
+    AND `TABLE_NAME` = 'inbox_messages'
+    AND `COLUMN_NAME` = 'status'
+);
+SET @inbox_messages_status_col_sql := IF(
+  @inbox_messages_status_col_exists > 0,
+  'SELECT 1',
+  'ALTER TABLE `inbox_messages` ADD COLUMN `status` enum(''new'',''open'',''replied'',''closed'',''spam'') NOT NULL DEFAULT ''new'' AFTER `assignedAt`'
+);
+PREPARE inbox_messages_status_col_stmt FROM @inbox_messages_status_col_sql;
+EXECUTE inbox_messages_status_col_stmt;
+DEALLOCATE PREPARE inbox_messages_status_col_stmt;
+
+SET @inbox_messages_legacy_status_col_exists := (
+  SELECT COUNT(*)
+  FROM `INFORMATION_SCHEMA`.`COLUMNS`
+  WHERE `TABLE_SCHEMA` = DATABASE()
+    AND `TABLE_NAME` = 'inbox_messages'
+    AND `COLUMN_NAME` = 'inboxStatus'
+);
+SET @inbox_messages_legacy_status_copy_sql := IF(
+  @inbox_messages_legacy_status_col_exists > 0,
+  'UPDATE `inbox_messages` SET `status` = `inboxStatus` WHERE `inboxStatus` IS NOT NULL',
+  'SELECT 1'
+);
+PREPARE inbox_messages_legacy_status_copy_stmt FROM @inbox_messages_legacy_status_copy_sql;
+EXECUTE inbox_messages_legacy_status_copy_stmt;
+DEALLOCATE PREPARE inbox_messages_legacy_status_copy_stmt;
+
 CREATE TABLE IF NOT EXISTS `inbox_tickets` (
   `id` int AUTO_INCREMENT PRIMARY KEY,
   `tenantId` int NULL,
