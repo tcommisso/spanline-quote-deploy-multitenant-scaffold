@@ -51,6 +51,10 @@ function parseQuoteIdentifier(rawId: unknown): SecurityScreenQuoteIdentifier | n
   return /^\d+$/.test(text) ? Number(text) : text;
 }
 
+function normalizeQuoteNumber(value: unknown) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
 function money(value: unknown) {
   return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
 }
@@ -639,10 +643,24 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
 
 function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) {
   const utils = trpc.useUtils();
-  const quoteQueryInput = { id: quoteRef };
-  const { data: quote, isLoading } = trpc.securityScreens.quotes.getById.useQuery(quoteQueryInput);
+  const isQuoteNumberRoute = typeof quoteRef === "string";
+  const { data: quoteList = [], isLoading: isResolvingQuoteNumber } = trpc.securityScreens.quotes.list.useQuery(
+    undefined,
+    { enabled: isQuoteNumberRoute },
+  );
+  const matchedQuote = isQuoteNumberRoute
+    ? quoteList.find((candidate: any) => normalizeQuoteNumber(candidate.quoteNumber) === normalizeQuoteNumber(quoteRef))
+    : null;
+  const resolvedQuoteId = typeof quoteRef === "number"
+    ? quoteRef
+    : Number(matchedQuote?.id ?? NaN);
+  const quoteQueryInput = { id: Number.isFinite(resolvedQuoteId) ? resolvedQuoteId : 0 };
+  const { data: quote, isLoading } = trpc.securityScreens.quotes.getById.useQuery(
+    quoteQueryInput,
+    { enabled: Number.isFinite(resolvedQuoteId) && resolvedQuoteId > 0 },
+  );
   const { data: costAdditions = [] } = trpc.securityScreens.costAdditions.list.useQuery();
-  const quoteId = Number(quote?.id ?? (typeof quoteRef === "number" ? quoteRef : NaN));
+  const quoteId = Number(quote?.id ?? resolvedQuoteId);
   const removeItemMutation = trpc.securityScreens.quotes.removeItem.useMutation({
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Item removed"); },
   });
@@ -703,7 +721,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
     });
   }, [editingCost]);
 
-  if (isLoading) return <div className="text-center py-8 text-muted-foreground">Loading quote...</div>;
+  if ((isQuoteNumberRoute && isResolvingQuoteNumber) || isLoading) return <div className="text-center py-8 text-muted-foreground">Loading quote...</div>;
   if (!quote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
 
   return (
