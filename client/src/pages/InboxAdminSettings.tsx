@@ -26,6 +26,16 @@ import { toast } from "sonner";
 
 type Tab = "general" | "addresses" | "tags" | "autoreply" | "rateus" | "sla" | "templates" | "signatures";
 
+function summarizeSyncErrors(errors: string[] | undefined | null): string | undefined {
+  if (!errors?.length) return undefined;
+  const visible = errors.slice(0, 4);
+  const extra = errors.length - visible.length;
+  return [
+    ...visible,
+    extra > 0 ? `...and ${extra} more` : null,
+  ].filter(Boolean).join("\n");
+}
+
 const QUEUE_OPTIONS = [
   { value: "sales", label: "Sales" },
   { value: "construction", label: "Construction" },
@@ -175,7 +185,17 @@ function AddressSettings() {
   });
 
   const syncNowMut = trpc.inbox.addresses.syncNow.useMutation({
-    onSuccess: (data) => { toast.success(`Synced ${data.newMessages} new messages`); refetch(); },
+    onSuccess: (data) => {
+      if (data.errors?.length) {
+        toast.warning(`Mailbox sync completed with ${data.errors.length} issue${data.errors.length === 1 ? "" : "s"}`, {
+          description: summarizeSyncErrors(data.errors),
+          duration: 10000,
+        });
+      } else {
+        toast.success(`Synced ${data.newMessages} new messages`);
+      }
+      refetch();
+    },
     onError: (err) => toast.error(err.message),
   });
 

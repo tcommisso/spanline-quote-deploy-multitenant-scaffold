@@ -4,6 +4,7 @@ import { tenantAdminProcedure, router } from "./_core/trpc";
 import { ENV } from "./_core/env";
 import { getDb } from "./db";
 import { daTrackerPollLog, inboxAddresses, nswDaPollLog, xeroWebhookEvents } from "../drizzle/schema";
+import { getTenantMsGraphConfig } from "./tenant-integrations";
 
 type ApiKey =
   | "hbcf_onegov"
@@ -90,7 +91,7 @@ async function fetchJsonHealth(url: string, init?: RequestInit): Promise<{ ok: b
   }
 }
 
-async function testApi(key: ApiKey): Promise<{ ok: boolean; detail: string }> {
+async function testApi(key: ApiKey, tenantId?: number | null): Promise<{ ok: boolean; detail: string }> {
   switch (key) {
     case "act_active_das":
       return fetchJsonHealth("https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_ACTIVE_DEVELOPMENT_APPLICATIONS/FeatureServer/0/query?where=1%3D1&outFields=OBJECTID&returnGeometry=false&resultRecordCount=1&f=json");
@@ -123,6 +124,22 @@ async function testApi(key: ApiKey): Promise<{ ok: boolean; detail: string }> {
           ? "Webhook endpoint configured; validate delivery in Xero by saving the webhook URL, then edit an invoice or credit note."
           : "XERO_WEBHOOK_KEY missing",
       };
+    case "o365_graph": {
+      const config = await getTenantMsGraphConfig(tenantId);
+      const configured = !!(config.tenantId && config.clientId && config.clientSecret);
+      if (!configured) {
+        return {
+          ok: false,
+          detail: "Microsoft Graph credentials are missing for this tenant. Configure MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, and MS_GRAPH_CLIENT_SECRET in Railway or enable the tenant msgraph integration.",
+        };
+      }
+      const msgraph = await import("./email/msgraph");
+      const result = await msgraph.testConnection(tenantId);
+      return {
+        ok: result.success,
+        detail: result.success ? `Connected to ${result.org || "Microsoft Graph"}` : result.error || "Microsoft Graph connection failed",
+      };
+    }
     default: {
       const check = API_CHECKS.find((item) => item.key === key);
       return {
@@ -149,6 +166,12 @@ export const apiHealthRouter = router({
     let lastNswPoll = null as any;
     let lastXeroWebhook = null as any;
     let lastO365MailboxSync = null as { lastSyncAt: Date | string | null } | null;
+    const o365GraphConfig = await getTenantMsGraphConfig(ctx.tenant!.id);
+    const o365GraphConfigured = !!(
+      o365GraphConfig.tenantId
+      && o365GraphConfig.clientId
+      && o365GraphConfig.clientSecret
+    );
     if (db) {
       [lastActPoll] = await db.select().from(daTrackerPollLog)
         .where(eq(daTrackerPollLog.tenantId, ctx.tenant!.id))
@@ -189,8 +212,11 @@ export const apiHealthRouter = router({
       if (check.key === "o365_graph") {
         return {
           ...check,
+          configured: o365GraphConfigured,
           lastSuccessAt: toIsoTimestamp(lastO365MailboxSync?.lastSyncAt),
-          lastError: null,
+          lastError: o365GraphConfigured
+            ? null
+            : "Microsoft Graph credentials are missing for this tenant",
         };
       }
       return {
@@ -202,8 +228,8 @@ export const apiHealthRouter = router({
   }),
   test: tenantAdminProcedure
     .input(z.object({ key: apiKeySchema }))
-    .mutation(async ({ input }) => {
-      const result = await testApi(input.key);
+    .mutation(async ({ ctx, input }) => {
+      const result = await testApi(input.key, ctx.tenant!.id);
       return {
         key: input.key,
         testedAt: new Date().toISOString(),

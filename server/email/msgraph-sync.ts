@@ -23,6 +23,34 @@ interface SyncResult {
   errors: string[];
 }
 
+const MS_GRAPH_MISSING_CONFIG_MESSAGE =
+  "Microsoft Graph credentials are missing for this tenant. Configure MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, and MS_GRAPH_CLIENT_SECRET in Railway or enable the tenant msgraph integration.";
+
+function isRecoverableDeltaError(err: unknown): boolean {
+  const message = String((err as any)?.message || err || "").toLowerCase();
+  return (
+    message.includes("graph api error 410")
+    || message.includes("syncstate")
+    || message.includes("delta token")
+    || message.includes("deltatoken")
+    || message.includes("resync")
+    || message.includes("expired")
+    || (message.includes("delta") && message.includes("invalid"))
+  );
+}
+
+async function fetchInitialDeltaWindow(address: {
+  tenantId: number | null;
+  address: string;
+}): Promise<{ messages: msgraph.GraphEmailMessage[]; newDeltaLink: string }> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const delta = await msgraph.getDeltaLink(address.address, "inbox", address.tenantId);
+  return {
+    messages: delta.messages.filter((message) => new Date(message.receivedDateTime) >= sevenDaysAgo),
+    newDeltaLink: delta.deltaLink,
+  };
+}
+
 // ─── Sync Logic ────────────────────────────────────────────────────────────────
 
 /**
@@ -44,7 +72,7 @@ async function syncMailbox(address: {
   try {
     const configured = await msgraph.isGraphConfiguredForTenant(address.tenantId);
     if (!configured) {
-      result.errors.push("Microsoft Graph is not configured for this mailbox tenant");
+      result.errors.push(MS_GRAPH_MISSING_CONFIG_MESSAGE);
       return result;
     }
 
@@ -53,16 +81,22 @@ async function syncMailbox(address: {
 
     if (address.deltaLink) {
       // Incremental sync using delta
-      const delta = await msgraph.fetchDelta(address.deltaLink, address.tenantId);
-      messages = delta.messages;
-      newDeltaLink = delta.newDeltaLink;
+      try {
+        const delta = await msgraph.fetchDelta(address.deltaLink, address.tenantId);
+        messages = delta.messages;
+        newDeltaLink = delta.newDeltaLink;
+      } catch (err) {
+        if (!isRecoverableDeltaError(err)) throw err;
+        console.warn(`[MSGraph Sync] Delta link expired for ${address.address}; resetting to a fresh 7-day sync window`);
+        const delta = await fetchInitialDeltaWindow(address);
+        messages = delta.messages;
+        newDeltaLink = delta.newDeltaLink;
+      }
     } else {
       // Initial sync — get delta link and recent messages (last 7 days)
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const delta = await msgraph.getDeltaLink(address.address, "inbox", address.tenantId);
-      // Filter to only recent messages for initial load
-      messages = delta.messages.filter(m => new Date(m.receivedDateTime) >= sevenDaysAgo);
-      newDeltaLink = delta.deltaLink;
+      const delta = await fetchInitialDeltaWindow(address);
+      messages = delta.messages;
+      newDeltaLink = delta.newDeltaLink;
     }
 
     // Process each message

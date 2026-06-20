@@ -60,6 +60,16 @@ const WAITING_ON_LABELS: Record<string, string> = {
   none: "No response needed",
 };
 
+function summarizeSyncErrors(errors: string[] | undefined | null): string | undefined {
+  if (!errors?.length) return undefined;
+  const visible = errors.slice(0, 4);
+  const extra = errors.length - visible.length;
+  return [
+    ...visible,
+    extra > 0 ? `...and ${extra} more` : null,
+  ].filter(Boolean).join("\n");
+}
+
 function parseFirstRecipient(toAddresses: unknown): string {
   if (!toAddresses) return "";
   if (Array.isArray(toAddresses)) return String(toAddresses[0] || "");
@@ -278,7 +288,10 @@ export default function InboxPage() {
     try {
       const result = await syncNowMut.mutateAsync();
       if (result.errors?.length) {
-        toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`);
+        toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`, {
+          description: summarizeSyncErrors(result.errors),
+          duration: 10000,
+        });
       } else if (!result.results?.length) {
         toast.warning("No active Microsoft 365 inbox mailboxes are configured for this tenant");
       } else if (result.newMessages > 0) {
