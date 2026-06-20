@@ -1,4 +1,4 @@
-import { COOKIE_NAME, isAdminRole } from "@shared/const";
+import { COOKIE_NAME, isAdminRole, normalizeUserRole } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
@@ -134,6 +134,21 @@ function canAccessTenantRecord(
   return record.tenantId == null || record.tenantId === tenant.id;
 }
 
+function canBypassQuoteTenantScope(ctx: { user?: { role?: string | null } | null }) {
+  return normalizeUserRole(ctx.user?.role) === "super_admin";
+}
+
+function quoteScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }) {
+  return canBypassQuoteTenantScope(ctx) ? { includeAllTenants: true } : undefined;
+}
+
+function canAccessQuoteTenantRecord(
+  ctx: { tenant?: { id: number } | null; user?: { role?: string | null } | null },
+  record: { tenantId?: number | null },
+) {
+  return canBypassQuoteTenantScope(ctx) || canAccessTenantRecord(ctx.tenant ?? null, record);
+}
+
 type BrandingAssetKind = "customLogoUrl" | "appIconUrl" | "faviconUrl";
 
 const BRANDING_ASSET_META_KEYS: Record<BrandingAssetKind, string> = {
@@ -204,16 +219,17 @@ export const appRouter = router({
       .input(z.object({ search: z.string().optional(), status: z.string().optional() }).optional())
       .query(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
+        const quoteScopeOptions = quoteScopeOptionsForContext(ctx);
         let quotes;
         if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes) {
-          quotes = await db.getAllQuotes(input?.search, input?.status, tenantId);
+          quotes = await db.getAllQuotes(input?.search, input?.status, tenantId, quoteScopeOptions);
         } else if (ctx.user.role === 'design_adviser' && ctx.user.name) {
           // Design advisers see only quotes assigned to them
-          quotes = await db.getQuotesByDesignAdviser(ctx.user.name, input?.search, input?.status, tenantId, ctx.user.id);
+          quotes = await db.getQuotesByDesignAdviser(ctx.user.name, input?.search, input?.status, tenantId, ctx.user.id, quoteScopeOptions);
         } else {
-          quotes = await db.getQuotesByUser(ctx.user.id, input?.search, input?.status, tenantId);
+          quotes = await db.getQuotesByUser(ctx.user.id, input?.search, input?.status, tenantId, quoteScopeOptions);
         }
-        quotes = quotes.filter(q => canAccessTenantRecord(ctx.tenant, q));
+        quotes = quotes.filter(q => canAccessQuoteTenantRecord(ctx, q));
         // Attach latest revision info to each quote
         if (quotes.length > 0) {
           try {
@@ -232,9 +248,9 @@ export const appRouter = router({
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return null;
-        if (!canAccessTenantRecord(ctx.tenant, quote)) return null;
+        if (!canAccessQuoteTenantRecord(ctx, quote)) return null;
         if (!canAccessQuote(ctx.user, quote)) return null;
         return quote;
       }),
@@ -243,9 +259,9 @@ export const appRouter = router({
     getQuotePdfData: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.id);
         const lineItems: Array<{ tabName: string; component: string; colour: string; uom: string; qty: number; sellRate: number; total: number }> = [];
@@ -379,9 +395,9 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const { id, validUntil: validUntilStr, ...data } = input;
         const oldStatus = quote.status;
@@ -389,7 +405,7 @@ export const appRouter = router({
         if (validUntilStr !== undefined) {
           updateData.validUntil = validUntilStr ? new Date(validUntilStr) : null;
         }
-        await db.updateQuote(id, updateData, tenantId);
+        await db.updateQuote(id, updateData, tenantId, quoteScopeOptionsForContext(ctx));
 
         // Log revision for financial/status changes
         try {
@@ -429,7 +445,7 @@ export const appRouter = router({
             }
           }
           // Add adjustments
-          const updatedQuote = await db.getQuoteById(input.id, tenantId);
+          const updatedQuote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
           if (updatedQuote) {
             totalSell += parseFloat(updatedQuote.deliveryAmount || "0");
             totalSell += parseFloat(updatedQuote.travelAllowance || "0");
@@ -457,9 +473,9 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
 
         // Log spec sheet changes to revision history
@@ -476,10 +492,10 @@ export const appRouter = router({
           }
         } catch (e) { /* non-blocking */ }
 
-        await db.updateQuote(input.id, input.data as any, tenantId);
+        await db.updateQuote(input.id, input.data as any, tenantId, quoteScopeOptionsForContext(ctx));
 
         // Auto-calculate complexity loading if not manually overridden
-        const updatedQuote = await db.getQuoteById(input.id, tenantId);
+        const updatedQuote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (updatedQuote && !(updatedQuote as any).complexityOverride) {
           const complexityRates = await db.getMasterDataByCategory("complexity", ctx.tenant?.id ?? null);
           const getRate = (key: string) => {
@@ -500,11 +516,11 @@ export const appRouter = router({
           if ((updatedQuote as any).specSiteRestricted === "1") total += getRate("restricted");
           // Rule 5: Mixed materials/angles design
           if ((updatedQuote as any).specSiteMixed === "1") total += getRate("mixed");
-          await db.updateQuote(input.id, { complexityLoading: String(total) } as any, tenantId);
+          await db.updateQuote(input.id, { complexityLoading: String(total) } as any, tenantId, quoteScopeOptionsForContext(ctx));
         }
 
         // Auto-calculate construction management % if not manually overridden
-        const quoteForMgmt = await db.getQuoteById(input.id, tenantId);
+        const quoteForMgmt = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (quoteForMgmt && !(quoteForMgmt as any).constructionMgmtOverride) {
           const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
           const getMgmtRate = (key: string) => {
@@ -519,7 +535,7 @@ export const appRouter = router({
               mgmtTotal += parseFloat(rate.value) || 0;
             }
           }
-          await db.updateQuote(input.id, { constructionMgmtPercent: String(mgmtTotal) } as any, tenantId);
+          await db.updateQuote(input.id, { constructionMgmtPercent: String(mgmtTotal) } as any, tenantId, quoteScopeOptionsForContext(ctx));
         }
 
         return { success: true };
@@ -529,9 +545,9 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
 
         const updates: Record<string, any> = {};
@@ -598,7 +614,7 @@ export const appRouter = router({
           updates.smallJobSurcharge = "0";
         }
 
-        await db.updateQuote(input.id, updates, tenantId);
+        await db.updateQuote(input.id, updates, tenantId, quoteScopeOptionsForContext(ctx));
         await syncQuoteHbcfRequirement(input.id, tenantId);
 
         // Log recalculation revision
@@ -619,9 +635,9 @@ export const appRouter = router({
     getFinancialBreakdown: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
 
         // 1. Complexity breakdown
@@ -693,9 +709,9 @@ export const appRouter = router({
         limit: z.number().min(1).max(200).optional(),
       }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         return db.getQuoteRevisions(input.id, input.limit || 50, {
           fromDate: input.fromDate ? new Date(input.fromDate) : undefined,
@@ -708,7 +724,7 @@ export const appRouter = router({
       .input(z.object({ quoteId: z.number(), revisionId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.quoteId, tenantId);
+        const quote = await db.getQuoteById(input.quoteId, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         // Get the revision to revert
         const revisions = await db.getQuoteRevisions(input.quoteId, 200);
@@ -723,7 +739,7 @@ export const appRouter = router({
           revertData[change.field] = change.oldValue;
           revertChanges.push({ field: change.field, oldValue: (quote as any)[change.field], newValue: change.oldValue });
         }
-        await db.updateQuote(input.quoteId, revertData as any, tenantId);
+        await db.updateQuote(input.quoteId, revertData as any, tenantId, quoteScopeOptionsForContext(ctx));
         // Log the revert as a new revision
         await db.createQuoteRevision({
           quoteId: input.quoteId,
@@ -767,9 +783,9 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        await db.deleteQuote(input.id, tenantId);
+        await db.deleteQuote(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         return { success: true };
       }),
 
@@ -777,11 +793,11 @@ export const appRouter = router({
       .input(z.object({ id: z.number(), archived: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
-        await db.updateQuote(input.id, { archived: input.archived } as any, tenantId);
+        await db.updateQuote(input.id, { archived: input.archived } as any, tenantId, quoteScopeOptionsForContext(ctx));
         return { success: true };
       }),
 
@@ -793,9 +809,9 @@ export const appRouter = router({
         mimeType: z.string(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
 
         const { storagePut } = await import("./storage");
@@ -810,34 +826,34 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.id, tenantId);
+        const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const quoteNumber = await db.getNextQuoteNumber();
-        const newId = await db.duplicateQuote(input.id, ctx.user.id, quoteNumber, tenantId);
+        const newId = await db.duplicateQuote(input.id, ctx.user.id, quoteNumber, tenantId, quoteScopeOptionsForContext(ctx));
         return { id: newId, quoteNumber };
       }),
 
      stats: protectedProcedure.query(async ({ ctx }) => {
       const tenantId = tenantIdFromContext(ctx);
-      if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes) return db.getQuoteStats(undefined, tenantId);
+      if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes) return db.getQuoteStats(undefined, tenantId, quoteScopeOptionsForContext(ctx));
       return db.getQuoteStats(ctx.user.id, tenantId);
     }),
 
     recentRevisions: protectedProcedure
       .input(z.object({ limit: z.number().min(1).max(20).optional() }).optional())
       .query(async ({ ctx, input }) => {
-        return db.getRecentRevisions(input?.limit || 5, tenantIdFromContext(ctx));
+        return db.getRecentRevisions(input?.limit || 5, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
       }),
 
     calculateTravel: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.quoteId, tenantId);
+        const quote = await db.getQuoteById(input.quoteId, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         if (!quote.siteAddress) throw new Error("Site address is required to calculate travel distance");
 
@@ -923,7 +939,7 @@ export const appRouter = router({
           includeTravelAllowance: parseFloat(allowance) > 0,
           travelOverridden: false,
           travelBranchName: closestBranchName,
-        } as any, tenantId);
+        } as any, tenantId, quoteScopeOptionsForContext(ctx));
 
          return { distanceKm, bandKey, allowance: parseFloat(allowance), branchName: closestBranchName };
       }),
@@ -1041,9 +1057,9 @@ export const appRouter = router({
     getByQuote: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
-        if (!canAccessTenantRecord(ctx.tenant, quote)) return [];
+        if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
         if (!canAccessQuote(ctx.user, quote)) return [];
         return db.getComponentsByQuote(input.quoteId);
       }),
@@ -1051,9 +1067,9 @@ export const appRouter = router({
     getByTab: protectedProcedure
       .input(z.object({ quoteId: z.number(), tabName: z.string() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return null;
-        if (!canAccessTenantRecord(ctx.tenant, quote)) return null;
+        if (!canAccessQuoteTenantRecord(ctx, quote)) return null;
         if (!canAccessQuote(ctx.user, quote)) return null;
         return db.getComponentByTab(input.quoteId, input.tabName);
       }),
@@ -1066,9 +1082,9 @@ export const appRouter = router({
         lineItems: z.any(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const id = await db.upsertComponent(input);
         await syncQuoteHbcfRequirement(input.quoteId, tenantIdFromContext(ctx));
@@ -1081,9 +1097,9 @@ export const appRouter = router({
     getByQuote: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
-        if (!canAccessTenantRecord(ctx.tenant, quote)) return [];
+        if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
         if (!canAccessQuote(ctx.user, quote)) return [];
         return db.getSkyluxByQuote(input.quoteId);
       }),
@@ -1107,9 +1123,9 @@ export const appRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const id = await db.upsertSkylux(input as any);
         return { id };
@@ -1128,9 +1144,9 @@ export const appRouter = router({
     getByQuote: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
-        if (!canAccessTenantRecord(ctx.tenant, quote)) return [];
+        if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
         if (!canAccessQuote(ctx.user, quote)) return [];
         return db.getEclipseByQuote(input.quoteId);
       }),
@@ -1152,9 +1168,9 @@ export const appRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const id = await db.upsertEclipse(input as any);
         return { id };
@@ -1641,9 +1657,9 @@ export const appRouter = router({
         previousDescription: z.string().optional(), // The current description to refine
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.quoteId);
         const componentSummary = components
@@ -1855,9 +1871,9 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
     checkMargin: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx));
+        const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.quoteId);
         let totalSell = 0, totalCost = 0;
@@ -2071,9 +2087,9 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
       }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = tenantIdFromContext(ctx);
-        const quote = await db.getQuoteById(input.quoteId, tenantId);
+        const quote = await db.getQuoteById(input.quoteId, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
-        if (!canAccessTenantRecord(ctx.tenant, quote)) throw new Error("Access denied");
+        if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Access denied");
         if (!canAccessQuote(ctx.user, quote)) {
           throw new Error("Access denied");
         }
@@ -2092,12 +2108,12 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
           fromName: input.fromName,
         });
         if (result.success) {
-          await db.updateQuoteProposalSent(input.quoteId, input.to, tenantId);
+          await db.updateQuoteProposalSent(input.quoteId, input.to, tenantId, quoteScopeOptionsForContext(ctx));
           // Auto-set validUntil to 30 days from now if not already set
           if (!quote.validUntil) {
             const validUntil = new Date();
             validUntil.setDate(validUntil.getDate() + 30);
-            await db.updateQuote(input.quoteId, { validUntil } as any, tenantId);
+            await db.updateQuote(input.quoteId, { validUntil } as any, tenantId, quoteScopeOptionsForContext(ctx));
           }
           await guardedSend(
             { settingKey: "notify_proposal_sent", channel: "owner_notify", recipientType: "owner", title: "Proposal Sent" },

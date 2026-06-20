@@ -2,6 +2,7 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getQuoteById } from "./db";
+import { normalizeUserRole } from "../shared/const";
 import {
   listSpecMappings,
   getActiveSpecMappings,
@@ -36,8 +37,11 @@ function extractSpecValues(quote: Record<string, any>): SpecValues {
   return specValues;
 }
 
-async function assertQuoteAccess(quoteId: number, tenantId: number) {
-  const quote = await getQuoteById(quoteId, tenantId);
+async function assertQuoteAccess(quoteId: number, tenantId: number, user?: { role?: string | null } | null) {
+  const quoteScopeOptions = normalizeUserRole(user?.role) === "super_admin"
+    ? { includeAllTenants: true }
+    : undefined;
+  const quote = await getQuoteById(quoteId, tenantId, quoteScopeOptions);
   if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
   return quote;
 }
@@ -165,7 +169,7 @@ export const specItemsRouter = router({
     list: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .query(async ({ input, ctx }) => {
-        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id, ctx.user);
         return getQuoteItems(input.quoteId, ctx.tenant!.id);
       }),
 
@@ -183,7 +187,7 @@ export const specItemsRouter = router({
         productId: z.number().nullable().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id, ctx.user);
         const id = await createQuoteItem({
           ...input,
           source: "manual",
@@ -228,7 +232,7 @@ export const specItemsRouter = router({
     confirmAll: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+        await assertQuoteAccess(input.quoteId, ctx.tenant!.id, ctx.user);
         await confirmAllItems(input.quoteId, ctx.tenant!.id);
         return { success: true };
       }),
@@ -243,7 +247,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, specValues } = input;
-      await assertQuoteAccess(quoteId, ctx.tenant!.id);
+      await assertQuoteAccess(quoteId, ctx.tenant!.id, ctx.user);
 
       // Enrich specValues with derived calculations
       const width = parseFloat(String(specValues.specWidth || "0")) || 0;
@@ -354,7 +358,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, newBeamSize, beamIndex } = input;
-      await assertQuoteAccess(quoteId, ctx.tenant!.id);
+      await assertQuoteAccess(quoteId, ctx.tenant!.id, ctx.user);
 
       // Normalise beam size: replace unicode × with x for matching
       const normalisedSize = newBeamSize.replace(/\u00d7/g, "x").toLowerCase();
@@ -430,7 +434,7 @@ export const specItemsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const { quoteId, angleCuttingMetres } = input;
-      await assertQuoteAccess(quoteId, ctx.tenant!.id);
+      await assertQuoteAccess(quoteId, ctx.tenant!.id, ctx.user);
 
       // If metres is 0 or negative, nothing to do (could optionally remove item)
       if (angleCuttingMetres <= 0) {
@@ -518,7 +522,7 @@ export const specItemsRouter = router({
     .query(async ({ input, ctx }) => {
 
       // Load the quote
-      const quote = await assertQuoteAccess(input.quoteId, ctx.tenant!.id);
+      const quote = await assertQuoteAccess(input.quoteId, ctx.tenant!.id, ctx.user);
 
       // Extract spec values
       const specValues = extractSpecValues(quote as Record<string, any>);

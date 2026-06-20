@@ -10,14 +10,28 @@ import { appendTenantScope } from "./_core/tenant-scope";
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
 
+type EclipseTenantScopeOptions = {
+  includeAllTenants?: boolean;
+};
+
+function appendEclipseTenantScope(
+  conditions: any[],
+  tenantId: number | null | undefined,
+  options?: EclipseTenantScopeOptions,
+) {
+  if (options?.includeAllTenants) return;
+  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+}
+
 // ─── Eclipse Quotes ──────────────────────────────────────────────────────────
 
 export async function listEclipseQuotes(
   user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean },
   tenantId?: number | null,
+  options?: EclipseTenantScopeOptions,
 ) {
   const conditions: any[] = [];
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  appendEclipseTenantScope(conditions, tenantId, options);
   if (!isAdminRole(user.role) && !user.canViewAllQuotes) {
     if (user.role === "design_adviser" && user.name) {
       conditions.push(or(eq(eclipseQuotes.designAdvisor, user.name), eq(eclipseQuotes.userId, user.id)));
@@ -29,9 +43,9 @@ export async function listEclipseQuotes(
   return db.select().from(eclipseQuotes).where(where).orderBy(desc(eclipseQuotes.updatedAt));
 }
 
-export async function getEclipseQuoteById(id: number, tenantId?: number | null) {
+export async function getEclipseQuoteById(id: number, tenantId?: number | null, options?: EclipseTenantScopeOptions) {
   const conditions: any[] = [eq(eclipseQuotes.id, id)];
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  appendEclipseTenantScope(conditions, tenantId, options);
   const rows = await db.select().from(eclipseQuotes).where(and(...conditions));
   return rows[0] || null;
 }
@@ -41,20 +55,20 @@ export async function createEclipseQuote(data: InsertEclipseQuote) {
   return result[0].insertId;
 }
 
-export async function updateEclipseQuote(id: number, data: Partial<InsertEclipseQuote>, tenantId?: number | null) {
+export async function updateEclipseQuote(id: number, data: Partial<InsertEclipseQuote>, tenantId?: number | null, options?: EclipseTenantScopeOptions) {
   const conditions: any[] = [eq(eclipseQuotes.id, id)];
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  appendEclipseTenantScope(conditions, tenantId, options);
   await db.update(eclipseQuotes).set(data).where(and(...conditions));
 }
 
-export async function deleteEclipseQuote(id: number, tenantId?: number | null) {
+export async function deleteEclipseQuote(id: number, tenantId?: number | null, options?: EclipseTenantScopeOptions) {
   const conditions: any[] = [eq(eclipseQuotes.id, id)];
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  appendEclipseTenantScope(conditions, tenantId, options);
   await db.delete(eclipseQuotes).where(and(...conditions));
 }
 
-export async function duplicateEclipseQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null) {
-  const original = await getEclipseQuoteById(id, tenantId);
+export async function duplicateEclipseQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null, options?: EclipseTenantScopeOptions) {
+  const original = await getEclipseQuoteById(id, tenantId, options);
   if (!original) throw new Error("Eclipse quote not found");
   const { id: _id, createdAt, updatedAt, quoteNumber, tenantId: _tenantId, ...rest } = original;
   const newId = await createEclipseQuote({

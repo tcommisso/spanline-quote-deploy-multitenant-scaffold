@@ -55,6 +55,25 @@ function normalizeQuoteNumber(value: unknown) {
   return String(value ?? "").trim().toUpperCase();
 }
 
+function compactQuoteNumber(value: unknown) {
+  return normalizeQuoteNumber(value).replace(/[^A-Z0-9]/g, "");
+}
+
+function matchesQuoteReference(candidate: any, quoteRef: SecurityScreenQuoteIdentifier) {
+  if (typeof quoteRef === "number") return Number(candidate?.id) === quoteRef;
+  const candidateNumber = normalizeQuoteNumber(candidate?.quoteNumber);
+  const routeNumber = normalizeQuoteNumber(quoteRef);
+  if (!candidateNumber || !routeNumber) return false;
+  if (candidateNumber === routeNumber) return true;
+
+  const compactCandidate = compactQuoteNumber(candidateNumber);
+  const compactRoute = compactQuoteNumber(routeNumber);
+  if (!compactCandidate || !compactRoute) return false;
+  if (compactCandidate === compactRoute) return true;
+
+  return compactRoute.length >= 8 && compactCandidate.startsWith(compactRoute);
+}
+
 function money(value: unknown) {
   return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
 }
@@ -649,7 +668,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
     { enabled: isQuoteNumberRoute },
   );
   const matchedQuote = isQuoteNumberRoute
-    ? quoteList.find((candidate: any) => normalizeQuoteNumber(candidate.quoteNumber) === normalizeQuoteNumber(quoteRef))
+    ? quoteList.find((candidate: any) => matchesQuoteReference(candidate, quoteRef))
     : null;
   const resolvedQuoteId = typeof quoteRef === "number"
     ? quoteRef
@@ -722,22 +741,23 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
   }, [editingCost]);
 
   if ((isQuoteNumberRoute && isResolvingQuoteNumber) || isLoading) return <div className="text-center py-8 text-muted-foreground">Loading quote...</div>;
-  if (!quote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
+  const resolvedQuote = quote ?? (matchedQuote ? { ...matchedQuote, items: [], costAdditions: [] } : null);
+  if (!resolvedQuote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <Link href="/security-screens"><Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" /> Back</Button></Link>
-          <h2 className="text-xl font-bold mt-2">{quote.quoteNumber}</h2>
-          <p className="text-muted-foreground">{quote.clientName} — {quote.siteAddress || "No address"}</p>
+          <h2 className="text-xl font-bold mt-2">{resolvedQuote.quoteNumber}</h2>
+          <p className="text-muted-foreground">{resolvedQuote.clientName} — {resolvedQuote.siteAddress || "No address"}</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => exportSecurityScreenQuotePdf(quote)}>
+          <Button variant="outline" onClick={() => exportSecurityScreenQuotePdf(resolvedQuote)}>
             <Download className="h-4 w-4 mr-1" /> Export PDF
           </Button>
           <Select
-            value={quote.status}
+            value={resolvedQuote.status}
             onValueChange={(status) => updateStatusMutation.mutate({ id: quoteId, status: status as any })}
             disabled={updateStatusMutation.isPending}
           >
@@ -756,7 +776,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
       {/* Quote Items */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Items ({quote.items?.length || 0})</CardTitle>
+          <CardTitle>Items ({resolvedQuote.items?.length || 0})</CardTitle>
           <Button size="sm" onClick={() => setAddItemOpen(true)}><Plus className="h-4 w-4 mr-1" /> Add Item</Button>
         </CardHeader>
         <CardContent>
@@ -775,9 +795,9 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(!quote.items || quote.items.length === 0) ? (
+              {(!resolvedQuote.items || resolvedQuote.items.length === 0) ? (
                 <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">No items yet. Click "Add Item" to start building the quote.</TableCell></TableRow>
-              ) : quote.items.map((item: any) => (
+              ) : resolvedQuote.items.map((item: any) => (
                 <TableRow key={item.id}>
                   <TableCell className="font-mono">{item.itemNumber}</TableCell>
                   <TableCell>
@@ -833,13 +853,13 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
           </Dialog>
         </CardHeader>
         <CardContent>
-          {(!quote.costAdditions || quote.costAdditions.length === 0) ? (
+          {(!resolvedQuote.costAdditions || resolvedQuote.costAdditions.length === 0) ? (
             <p className="text-center text-muted-foreground py-4">No additional costs</p>
           ) : (
             <Table>
               <TableHeader><TableRow><TableHead>Cost</TableHead><TableHead>Qty</TableHead><TableHead>Unit Cost</TableHead><TableHead>Line Total</TableHead><TableHead className="w-20"></TableHead></TableRow></TableHeader>
               <TableBody>
-                {quote.costAdditions.map((ca: any) => (
+                {resolvedQuote.costAdditions.map((ca: any) => (
                   <TableRow key={ca.id}>
                     <TableCell>
                       <div className="font-medium">{ca.name || `Cost #${ca.costAdditionId}`}</div>
@@ -866,9 +886,9 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
       <Card className="bg-slate-50">
         <CardContent className="p-4">
           <div className="space-y-2 text-right">
-            <div className="flex justify-between"><span className="text-muted-foreground">Subtotal (ex GST):</span><span className="font-mono font-medium">${parseFloat(quote.subtotalExGst || "0").toFixed(2)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">GST (10%):</span><span className="font-mono">${parseFloat(quote.gstAmount || "0").toFixed(2)}</span></div>
-            <div className="flex justify-between border-t pt-2"><span className="font-semibold">Total (inc GST):</span><span className="font-mono font-bold text-lg">${parseFloat(quote.totalIncGst || "0").toFixed(2)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Subtotal (ex GST):</span><span className="font-mono font-medium">${parseFloat(resolvedQuote.subtotalExGst || "0").toFixed(2)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">GST (10%):</span><span className="font-mono">${parseFloat(resolvedQuote.gstAmount || "0").toFixed(2)}</span></div>
+            <div className="flex justify-between border-t pt-2"><span className="font-semibold">Total (inc GST):</span><span className="font-mono font-bold text-lg">${parseFloat(resolvedQuote.totalIncGst || "0").toFixed(2)}</span></div>
           </div>
         </CardContent>
       </Card>

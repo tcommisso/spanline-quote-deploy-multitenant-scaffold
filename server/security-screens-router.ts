@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
+import { normalizeUserRole } from "../shared/const";
 import {
   crmLeads,
   masterData,
@@ -42,6 +43,26 @@ function tenantIdForContext(ctx: any) {
 
 function scope(column: any, tenantId: number) {
   return tenantScoped(column, tenantId)!;
+}
+
+type ScreenQuoteScopeOptions = {
+  includeAllTenants?: boolean;
+};
+
+function screenQuoteScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }): ScreenQuoteScopeOptions | undefined {
+  return normalizeUserRole(ctx.user?.role) === "super_admin"
+    ? { includeAllTenants: true }
+    : undefined;
+}
+
+function addScreenQuoteTenantScope(
+  conditions: any[],
+  column: any,
+  tenantId: number,
+  options?: ScreenQuoteScopeOptions,
+) {
+  if (options?.includeAllTenants) return;
+  conditions.push(scope(column, tenantId));
 }
 
 function insertIdFromResult(result: any): number | null {
@@ -551,12 +572,16 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
 const statusInput = z.enum(["draft", "sent", "accepted", "declined", "expired"]);
 const quoteIdentifierInput = z.union([z.number().int().positive(), z.string().trim().min(1)]);
 
+function compactQuoteReference(value: unknown) {
+  return String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function quoteLookupCondition(identifier: z.infer<typeof quoteIdentifierInput>) {
   const rawIdentifier = String(identifier).trim();
   const numericId = typeof identifier === "number"
     ? identifier
     : (/^\d+$/.test(rawIdentifier) ? Number(rawIdentifier) : null);
-  const conditions = [];
+  const conditions: any[] = [];
 
   if (numericId && Number.isSafeInteger(numericId) && numericId > 0) {
     conditions.push(eq(ssQuotes.id, numericId));
@@ -564,6 +589,12 @@ function quoteLookupCondition(identifier: z.infer<typeof quoteIdentifierInput>) 
 
   if (rawIdentifier && !/^\d+$/.test(rawIdentifier)) {
     conditions.push(eq(ssQuotes.quoteNumber, rawIdentifier.toUpperCase()));
+    const compactIdentifier = compactQuoteReference(rawIdentifier);
+    if (compactIdentifier.length >= 8) {
+      const compactColumn = sql<string>`REPLACE(REPLACE(UPPER(${ssQuotes.quoteNumber}), '-', ''), ' ', '')`;
+      conditions.push(eq(compactColumn, compactIdentifier));
+      conditions.push(sql`${compactColumn} LIKE ${`${compactIdentifier}%`}`);
+    }
   }
 
   if (conditions.length === 0) {
@@ -571,6 +602,71 @@ function quoteLookupCondition(identifier: z.infer<typeof quoteIdentifierInput>) 
   }
 
   return conditions.length === 1 ? conditions[0] : or(...conditions);
+}
+
+async function loadQuoteDetailRows(db: any, tenantId: number, quote: any, options?: ScreenQuoteScopeOptions) {
+  const quoteId = Number(quote.id);
+  let items: any[] = [];
+  let itemOptions: any[] = [];
+  let costAdditions: any[] = [];
+  let costDefinitions: any[] = [];
+
+  try {
+    const conditions: any[] = [eq(ssQuoteItems.quoteId, quoteId)];
+    addScreenQuoteTenantScope(conditions, ssQuoteItems.tenantId, tenantId, options);
+    items = await db.select().from(ssQuoteItems).where(and(...conditions)).orderBy(asc(ssQuoteItems.itemNumber));
+  } catch (error) {
+    console.warn("[Security screens] Quote items failed to load", { quoteId, error });
+  }
+
+  try {
+    const itemIds = items.map((item: any) => Number(item.id)).filter((id: number) => Number.isFinite(id) && id > 0);
+    if (itemIds.length) {
+      const conditions: any[] = [inArray(ssQuoteItemOptions.quoteItemId, itemIds)];
+      addScreenQuoteTenantScope(conditions, ssQuoteItemOptions.tenantId, tenantId, options);
+      itemOptions = await db.select().from(ssQuoteItemOptions).where(and(...conditions));
+    }
+  } catch (error) {
+    console.warn("[Security screens] Quote item options failed to load", { quoteId, error });
+  }
+
+  try {
+    const conditions: any[] = [eq(ssQuoteCostAdditions.quoteId, quoteId)];
+    addScreenQuoteTenantScope(conditions, ssQuoteCostAdditions.tenantId, tenantId, options);
+    costAdditions = await db.select().from(ssQuoteCostAdditions).where(and(...conditions));
+  } catch (error) {
+    console.warn("[Security screens] Quote cost additions failed to load", { quoteId, error });
+  }
+
+  try {
+    const costIds = costAdditions
+      .map((cost: any) => Number(cost.costAdditionId))
+      .filter((id: number) => Number.isFinite(id) && id > 0);
+    if (costIds.length) {
+      const conditions: any[] = [inArray(ssCostAdditions.id, costIds)];
+      addScreenQuoteTenantScope(conditions, ssCostAdditions.tenantId, tenantId, options);
+      costDefinitions = await db.select().from(ssCostAdditions).where(and(...conditions));
+    }
+  } catch (error) {
+    console.warn("[Security screens] Cost definitions failed to load", { quoteId, error });
+  }
+
+  return {
+    ...quote,
+    items: items.map((item: any) => ({
+      ...item,
+      options: itemOptions.filter((option: any) => option.quoteItemId === item.id),
+    })),
+    costAdditions: costAdditions.map((cost: any) => {
+      const definition = costDefinitions.find((item: any) => item.id === cost.costAdditionId);
+      return {
+        ...cost,
+        name: definition?.name || "Additional cost",
+        category: definition?.category || null,
+        uom: definition?.uom || null,
+      };
+    }),
+  };
 }
 
 export const securityScreensRouter = router({
@@ -980,9 +1076,11 @@ export const securityScreensRouter = router({
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        const conditions = [scope(ssQuotes.tenantId, tenantId)];
+        const quoteScopeOptions = screenQuoteScopeOptionsForContext(ctx);
+        const conditions: any[] = [];
+        addScreenQuoteTenantScope(conditions, ssQuotes.tenantId, tenantId, quoteScopeOptions);
         if (input?.status) conditions.push(eq(ssQuotes.status, input.status));
-        return db.select().from(ssQuotes).where(and(...conditions)).orderBy(desc(ssQuotes.createdAt));
+        return db.select().from(ssQuotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(ssQuotes.createdAt));
       }),
 
     getById: tenantProcedure
@@ -990,33 +1088,17 @@ export const securityScreensRouter = router({
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
+        const quoteScopeOptions = screenQuoteScopeOptionsForContext(ctx);
+        const conditions: any[] = [quoteLookupCondition(input.id)];
+        addScreenQuoteTenantScope(conditions, ssQuotes.tenantId, tenantId, quoteScopeOptions);
         const [quote] = await db
           .select()
           .from(ssQuotes)
-          .where(and(quoteLookupCondition(input.id), scope(ssQuotes.tenantId, tenantId)))
+          .where(and(...conditions))
+          .orderBy(desc(ssQuotes.updatedAt))
           .limit(1);
         if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Security screen quote not found" });
-        const quoteId = Number(quote.id);
-        const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, quoteId), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
-        const itemOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
-        const costAdditions = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
-        const costDefinitions = await db.select().from(ssCostAdditions).where(scope(ssCostAdditions.tenantId, tenantId));
-        return {
-          ...quote,
-          items: items.map((item: any) => ({
-            ...item,
-            options: itemOptions.filter((option: any) => option.quoteItemId === item.id),
-          })),
-          costAdditions: costAdditions.map((cost: any) => {
-            const definition = costDefinitions.find((item: any) => item.id === cost.costAdditionId);
-            return {
-              ...cost,
-              name: definition?.name || "Additional cost",
-              category: definition?.category || null,
-              uom: definition?.uom || null,
-            };
-          }),
-        };
+        return loadQuoteDetailRows(db, tenantId, quote, quoteScopeOptions);
       }),
 
     create: tenantProcedure

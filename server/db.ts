@@ -12,6 +12,20 @@ import { appendTenantScope, tenantScoped } from "./_core/tenant-scope";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
+type QuoteTenantScopeOptions = {
+  includeAllTenants?: boolean;
+};
+
+function appendQuoteTenantScope(
+  conditions: any[],
+  column: any,
+  tenantId: number | null | undefined,
+  options?: QuoteTenantScopeOptions,
+) {
+  if (options?.includeAllTenants) return;
+  appendTenantScope(conditions, column, tenantId);
+}
+
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -261,81 +275,81 @@ export async function createQuote(data: InsertQuote) {
   return quoteId;
 }
 
-export async function getQuoteById(id: number, tenantId?: number | null) {
+export async function getQuoteById(id: number, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return undefined;
   const conditions: any[] = [eq(quotes.id, id)];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   const result = await db.select().from(quotes).where(and(...conditions)).limit(1);
   const [merged] = await mergeQuoteDetails(db, result);
   return merged;
 }
 
-export async function getQuotesByUser(userId: number, search?: string, status?: string, tenantId?: number | null) {
+export async function getQuotesByUser(userId: number, search?: string, status?: string, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [eq(quotes.userId, userId)];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
 
-export async function getAllQuotes(search?: string, status?: string, tenantId?: number | null) {
+export async function getAllQuotes(search?: string, status?: string, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
-export async function getQuotesByDesignAdviser(adviserName: string, search?: string, status?: string, tenantId?: number | null, userId?: number) {
+export async function getQuotesByDesignAdviser(adviserName: string, search?: string, status?: string, tenantId?: number | null, userId?: number, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return [];
   const ownerOrAdvisor = userId != null
     ? or(eq(quotes.designAdvisor, adviserName), eq(quotes.userId, userId))
     : eq(quotes.designAdvisor, adviserName);
   const conditions: any[] = [ownerOrAdvisor];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
 
-export async function updateQuote(id: number, data: Partial<InsertQuote>, tenantId?: number | null) {
+export async function updateQuote(id: number, data: Partial<InsertQuote>, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const existing = await getQuoteById(id, tenantId);
+  const existing = await getQuoteById(id, tenantId, options);
   if (!existing) throw new Error("Quote not found");
   const { core, detail } = splitQuotePayload(data);
   const conditions: any[] = [eq(quotes.id, id)];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (hasValues(core)) await db.update(quotes).set(core as any).where(and(...conditions));
   await upsertQuoteDetail(db, id, detail);
 }
 
-export async function deleteQuote(id: number, tenantId?: number | null) {
+export async function deleteQuote(id: number, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const existing = await getQuoteById(id, tenantId);
+  const existing = await getQuoteById(id, tenantId, options);
   if (!existing) throw new Error("Quote not found");
   await db.delete(quoteDetails).where(eq(quoteDetails.quoteId, id));
   await db.delete(quoteComponents).where(eq(quoteComponents.quoteId, id));
   await db.delete(skyluxEntries).where(eq(skyluxEntries.quoteId, id));
   await db.delete(eclipseEntries).where(eq(eclipseEntries.quoteId, id));
   const conditions: any[] = [eq(quotes.id, id)];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   await db.delete(quotes).where(and(...conditions));
 }
 
-export async function duplicateQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null) {
+export async function duplicateQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const original = await getQuoteById(id, tenantId);
+  const original = await getQuoteById(id, tenantId, options);
   if (!original) throw new Error("Quote not found");
   const { id: _id, createdAt, updatedAt, tenantId: originalTenantId, ...rest } = original;
   const newId = await createQuote({ ...rest, tenantId: tenantId ?? originalTenantId ?? null, userId, quoteNumber: newQuoteNumber, status: "draft" });
@@ -890,11 +904,11 @@ export async function calculateTabProductRates(tabName: string, region: string =
 }
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
-export async function getQuoteStats(userId?: number, tenantId?: number | null) {
+export async function getQuoteStats(userId?: number, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return { total: 0, draft: 0, sent: 0, accepted: 0, lost: 0, totalValue: 0, draftValue: 0, sentValue: 0, acceptedValue: 0, lostValue: 0 };
   const conditions: any[] = [];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (userId) conditions.push(eq(quotes.userId, userId));
   const condition = conditions.length ? and(...conditions) : undefined;
   const all = await db.select({ status: quotes.status, count: sql<number>`COUNT(*)`, value: sql<number>`COALESCE(SUM(total_price), 0)` })
@@ -1170,11 +1184,11 @@ export async function getAnalytics(userId?: number) {
 }
 
 // ─── Update proposal sent timestamp ──────────────────────────────────────────
-export async function updateQuoteProposalSent(quoteId: number, sentTo: string, tenantId?: number | null) {
+export async function updateQuoteProposalSent(quoteId: number, sentTo: string, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return;
   const conditions: any[] = [eq(quotes.id, quoteId)];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   await db
     .update(quotes)
     .set({ proposalSentAt: new Date(), proposalSentTo: sentTo })
@@ -1539,11 +1553,11 @@ export async function getUserById(userId: number) {
   return result[0] || null;
 }
 
-export async function getRecentRevisions(limit: number = 5, tenantId?: number | null) {
+export async function getRecentRevisions(limit: number = 5, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [];
-  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   const results = await db.select({
     id: quoteRevisions.id,
     quoteId: quoteRevisions.quoteId,

@@ -2,7 +2,7 @@
 import { protectedProcedure, adminProcedure, tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as eclipseDb from "./eclipse-db";
-import { isAdminRole } from "../shared/const";
+import { isAdminRole, normalizeUserRole } from "../shared/const";
 import { calculateProject, calculateProjectWithLayout, type UnitInput, type PositionedUnit } from "../shared/eclipseCalculations";
 import { getDefaultPrices, toPricingData, editablePricesToDbRows, dbRowsToEditablePrices } from "../shared/eclipsePricing";
 import { invokeLLM } from "./_core/llm";
@@ -59,17 +59,23 @@ function canAccessEclipseQuote(
   return false;
 }
 
+function eclipseScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }) {
+  return normalizeUserRole(ctx.user?.role) === "super_admin"
+    ? { includeAllTenants: true }
+    : undefined;
+}
+
 export const eclipseRouter = router({
   // ─── Quotes ──────────────────────────────────────────────────────────────────
   quotes: router({
     list: tenantProcedure.query(async ({ ctx }) => {
-      return eclipseDb.listEclipseQuotes(ctx.user, ctx.tenant.id);
+      return eclipseDb.listEclipseQuotes(ctx.user, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
     }),
 
     get: tenantProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
         if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
@@ -175,7 +181,7 @@ export const eclipseRouter = router({
         specData: z.any().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
         if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
@@ -195,7 +201,7 @@ export const eclipseRouter = router({
         await eclipseDb.updateEclipseQuote(id, {
           ...data,
           ...hbcfRequirementFieldsForAmount(amount, "Eclipse quote"),
-        } as any, ctx.tenant.id);
+        } as any, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         return { success: true };
       }),
 
@@ -203,33 +209,33 @@ export const eclipseRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = ctx.tenant!.id;
-        const quote = await eclipseDb.getEclipseQuoteById(input.id, tenantId);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, tenantId, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
-        await eclipseDb.deleteEclipseQuote(input.id, tenantId);
+        await eclipseDb.deleteEclipseQuote(input.id, tenantId, eclipseScopeOptionsForContext(ctx));
         return { success: true };
       }),
 
     archive: tenantProcedure
       .input(z.object({ id: z.number(), archived: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
         if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
-        await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived }, ctx.tenant.id);
+        await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived }, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         return { success: true };
       }),
     duplicate: tenantProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
+        const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
         if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
         const newNumber = await eclipseDb.getNextEclipseQuoteNumber();
-        const newId = await eclipseDb.duplicateEclipseQuote(input.id, ctx.user.id, newNumber, ctx.tenant.id);
+        const newId = await eclipseDb.duplicateEclipseQuote(input.id, ctx.user.id, newNumber, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         return { id: newId, quoteNumber: newNumber };
       }),
   }),
@@ -301,7 +307,7 @@ export const eclipseRouter = router({
       previousDescription: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId, ctx.tenant.id);
+      const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
       if (!quote) throw new Error("Eclipse quote not found");
       if (!canAccessEclipseQuote(ctx.user, quote)) {
         throw new Error("Unauthorized");
