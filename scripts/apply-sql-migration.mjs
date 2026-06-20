@@ -1,3 +1,4 @@
+import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -14,6 +15,24 @@ if (!migrationPath) {
 if (!databaseUrl) {
   console.error("DATABASE_URL, MYSQL_URL, or MYSQL_PUBLIC_URL is required.");
   process.exit(1);
+}
+
+function validateDatabaseUrl(url) {
+  const trimmedUrl = String(url || "").trim();
+  if (!trimmedUrl || trimmedUrl === "..." || /^your-real-db-url$/i.test(trimmedUrl)) {
+    console.error("The database URL is still a placeholder. Replace it with the real MySQL connection string.");
+    process.exit(1);
+  }
+
+  try {
+    new URL(trimmedUrl);
+  } catch {
+    console.error("The database URL is not valid. Use the real MySQL URL, for example mysql://user:password@host:port/database.");
+    console.error("If the password contains special characters such as @, #, %, or /, URL-encode them in the connection string.");
+    process.exit(1);
+  }
+
+  return trimmedUrl;
 }
 
 const resolvedPath = path.resolve(process.cwd(), migrationPath);
@@ -62,9 +81,11 @@ function splitSqlStatements(sql) {
 
 const sql = await fs.readFile(resolvedPath, "utf8");
 const statements = splitSqlStatements(sql);
-const connection = await mysql.createConnection(databaseUrl);
+const validatedDatabaseUrl = validateDatabaseUrl(databaseUrl);
+let connection;
 
 try {
+  connection = await mysql.createConnection(validatedDatabaseUrl);
   await connection.execute(`
     CREATE TABLE IF NOT EXISTS app_migrations (
       id int NOT NULL AUTO_INCREMENT,
@@ -98,5 +119,5 @@ try {
   console.error(`Migration ${migrationName} failed:`, error);
   process.exitCode = 1;
 } finally {
-  await connection.end();
+  await connection?.end();
 }
