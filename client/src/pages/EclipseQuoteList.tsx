@@ -31,7 +31,7 @@ export default function EclipseQuoteList() {
   const isAdmin = isAdminRole(user?.role || "");
   const [search, setSearch] = useState("");
   const [advisorFilter, setAdvisorFilter] = useState("all");
-  const [showArchived, setShowArchived] = useState(false);
+  const [archiveFilter, setArchiveFilter] = useState<"all" | "archived">("all");
   const [viewMode, setViewMode] = useState<"list" | "compact">(() => {
     return (localStorage.getItem("eclipseQuoteListViewMode") as "list" | "compact") || "list";
   });
@@ -90,7 +90,7 @@ export default function EclipseQuoteList() {
 
   const filteredQuotes = (quotes || []).filter((q: any) => {
     const isArchived = !!q.archived;
-    if (showArchived ? !isArchived : isArchived) return false;
+    if (archiveFilter === "archived" && !isArchived) return false;
     if (advisorFilter !== "all" && q.designAdvisor !== advisorFilter) return false;
     // Branch filter: match if the quote's design advisor belongs to the selected branch
     if (branchFilter !== "all") {
@@ -109,6 +109,14 @@ export default function EclipseQuoteList() {
       q.clientAddress?.toLowerCase().includes(s)
     );
   });
+  const hasAnyQuotes = (quotes || []).length > 0;
+  const hasActiveFilters = search.trim() !== "" || advisorFilter !== "all" || branchFilter !== "all" || archiveFilter !== "all";
+  const resetFilters = () => {
+    setSearch("");
+    setAdvisorFilter("all");
+    setBranchFilter("all");
+    setArchiveFilter("all");
+  };
 
   return (
     <div className="space-y-6">
@@ -210,14 +218,14 @@ export default function EclipseQuoteList() {
           </Select>
         )}
         <Button
-          variant={showArchived ? "secondary" : "outline"}
+          variant={archiveFilter === "archived" ? "secondary" : "outline"}
           size="sm"
           className="gap-2 h-9"
-          onClick={() => setShowArchived(!showArchived)}
+          onClick={() => setArchiveFilter(archiveFilter === "archived" ? "all" : "archived")}
         >
           <Archive className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{showArchived ? "Showing Archived" : "Show Archived"}</span>
-          <span className="sm:hidden">{showArchived ? "Archived" : "Archive"}</span>
+          <span className="hidden sm:inline">{archiveFilter === "archived" ? "Showing Archived" : "All Quotes"}</span>
+          <span className="sm:hidden">{archiveFilter === "archived" ? "Archived" : "All"}</span>
         </Button>
         <Button
           variant="ghost"
@@ -243,7 +251,18 @@ export default function EclipseQuoteList() {
         <Card>
           <CardContent className="p-12 text-center text-muted-foreground">
             <Sun className="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p>{showArchived ? "No archived Eclipse quotes" : "No Eclipse quotes found"}</p>
+            <p>
+              {archiveFilter === "archived"
+                ? "No archived Eclipse quotes"
+                : hasAnyQuotes && hasActiveFilters
+                  ? "No Eclipse quotes match the current filters"
+                  : "No Eclipse quotes found"}
+            </p>
+            {hasAnyQuotes && hasActiveFilters && (
+              <Button variant="outline" size="sm" className="mt-4" onClick={resetFilters}>
+                Clear filters
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : viewMode === "compact" ? (

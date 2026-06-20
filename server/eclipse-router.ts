@@ -51,12 +51,19 @@ const unitInputSchema = z.object({
 function canAccessEclipseQuote(
   user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean },
   quote: { userId: number; designAdvisor?: string | null },
+  canViewTenantQuotes = false,
 ) {
   if (isAdminRole(user.role)) return true;
   if (user.canViewAllQuotes) return true;
+  if (canViewTenantQuotes) return true;
   if (quote.userId === user.id) return true;
   if (user.role === "design_adviser" && user.name && quote.designAdvisor === user.name) return true;
   return false;
+}
+
+function canViewAllTenantEclipseQuotes(ctx: { tenantMembership?: { role?: string | null } | null }) {
+  const tenantRole = normalizeUserRole(ctx.tenantMembership?.role);
+  return tenantRole === "owner" || tenantRole === "admin";
 }
 
 function eclipseScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }) {
@@ -65,11 +72,21 @@ function eclipseScopeOptionsForContext(ctx: { user?: { role?: string | null } | 
     : undefined;
 }
 
+function eclipseListUserForContext(ctx: {
+  user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean };
+  tenantMembership?: { role?: string | null } | null;
+}) {
+  if (canViewAllTenantEclipseQuotes(ctx)) {
+    return { ...ctx.user, canViewAllQuotes: true };
+  }
+  return ctx.user;
+}
+
 export const eclipseRouter = router({
   // ─── Quotes ──────────────────────────────────────────────────────────────────
   quotes: router({
     list: tenantProcedure.query(async ({ ctx }) => {
-      return eclipseDb.listEclipseQuotes(ctx.user, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
+      return eclipseDb.listEclipseQuotes(eclipseListUserForContext(ctx), ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
     }),
 
     get: tenantProcedure
@@ -77,7 +94,7 @@ export const eclipseRouter = router({
       .query(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!canAccessEclipseQuote(ctx.user, quote)) {
+        if (!canAccessEclipseQuote(ctx.user, quote, canViewAllTenantEclipseQuotes(ctx))) {
           throw new Error("Unauthorized");
         }
         return quote;
@@ -183,7 +200,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!canAccessEclipseQuote(ctx.user, quote)) {
+        if (!canAccessEclipseQuote(ctx.user, quote, canViewAllTenantEclipseQuotes(ctx))) {
           throw new Error("Unauthorized");
         }
         const { id, ...data } = input;
@@ -220,7 +237,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!canAccessEclipseQuote(ctx.user, quote)) {
+        if (!canAccessEclipseQuote(ctx.user, quote, canViewAllTenantEclipseQuotes(ctx))) {
           throw new Error("Unauthorized");
         }
         await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived }, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
@@ -231,7 +248,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!canAccessEclipseQuote(ctx.user, quote)) {
+        if (!canAccessEclipseQuote(ctx.user, quote, canViewAllTenantEclipseQuotes(ctx))) {
           throw new Error("Unauthorized");
         }
         const newNumber = await eclipseDb.getNextEclipseQuoteNumber();
@@ -309,7 +326,7 @@ export const eclipseRouter = router({
     .mutation(async ({ ctx, input }) => {
       const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId, ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
       if (!quote) throw new Error("Eclipse quote not found");
-      if (!canAccessEclipseQuote(ctx.user, quote)) {
+      if (!canAccessEclipseQuote(ctx.user, quote, canViewAllTenantEclipseQuotes(ctx))) {
         throw new Error("Unauthorized");
       }
 
