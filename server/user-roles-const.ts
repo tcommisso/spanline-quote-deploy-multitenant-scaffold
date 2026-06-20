@@ -8,4 +8,6 @@ export const USER_ROLES = [
   { value: "design_adviser", label: "Design Adviser" },
   { value: "office_user", label: "Office User" },
   { value: "construction_user", label: "Construction User" },
+  { value: "driver", label: "Driver" },
+  { value: "warehouse", label: "Warehouse" },
 ] as const;

@@ -3,8 +3,15 @@ import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as 
 import * as daDb from "./design-advisors-db";
 
 export const designAdvisorsRouter = router({
-  list: protectedProcedure.input(z.object({ includeArchived: z.boolean().optional() }).optional()).query(async ({ input, ctx }) => {
-    return daDb.listDesignAdvisors(input?.includeArchived ?? false, ctx.tenant!.id);
+  list: protectedProcedure.input(z.object({
+    includeArchived: z.boolean().optional(),
+    includePendingInvites: z.boolean().optional(),
+  }).optional()).query(async ({ input, ctx }) => {
+    return daDb.listDesignAdvisors(
+      input?.includeArchived ?? false,
+      ctx.tenant!.id,
+      input?.includePendingInvites ?? false,
+    );
   }),
 
   get: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input, ctx }) => {

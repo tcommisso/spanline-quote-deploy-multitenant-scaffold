@@ -68,7 +68,7 @@ export default function ContactsSection({
 
   // Portal contacts queries
   const portalContactsQuery = trpc.adminPortal.listContacts.useQuery({ jobId });
-  const staffListQuery = trpc.designAdvisors.list.useQuery({ includeArchived: false });
+  const staffListQuery = trpc.designAdvisors.list.useQuery({ includeArchived: false, includePendingInvites: true });
   const upsertContactMut = trpc.adminPortal.upsertContact.useMutation({
     onSuccess: () => {
       toast.success(editingContact ? "Contact updated" : "Staff contact added");

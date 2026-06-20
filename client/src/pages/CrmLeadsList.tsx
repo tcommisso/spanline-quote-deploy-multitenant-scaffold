@@ -253,7 +253,7 @@ export default function CrmLeadsList() {
   const getLeadSourceCreatedAt = (lead: any) => lead.sourceCreatedAt || lead.createdAt;
 
   const { data: branchesList } = trpc.branches.list.useQuery();
-  const { data: advisorsList } = trpc.designAdvisors.list.useQuery({});
+  const { data: advisorsList } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   const activeAdvisors = useMemo(
     () => (advisorsList || []).filter((advisor: any) => !advisor.archived && (advisor.name || advisor.email)),
     [advisorsList]

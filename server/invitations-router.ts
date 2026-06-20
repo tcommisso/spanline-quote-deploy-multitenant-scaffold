@@ -1,14 +1,26 @@
 import { z } from "zod";
 import { protectedProcedure, tenantAdminProcedure as adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { invitations, tenantMemberships, users } from "../drizzle/schema";
+import { constructionInstallers, invitations, tenantMemberships, tradePortalAccess, tradePortalSessions, users } from "../drizzle/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { randomBytes } from "crypto";
-import { buildTrustedAppUrl } from "./_core/url";
+import { buildTrustedAppUrl, buildTrustedAppUrlForTenant } from "./_core/url";
+
+const APP_INVITE_ROLES = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"] as const;
+const INVITE_ROLES = [...APP_INVITE_ROLES, "trade"] as const;
+type AppInviteRole = typeof APP_INVITE_ROLES[number];
 
 function generateToken(): string {
   return randomBytes(32).toString("hex");
+}
+
+function generateLongToken(length = 64): string {
+  return randomBytes(length).toString("hex").slice(0, length);
+}
+
+function normaliseEmail(email: string) {
+  return email.trim().toLowerCase();
 }
 
 function assertEmailSent(result: { success: boolean; error?: string }) {
@@ -17,24 +29,149 @@ function assertEmailSent(result: { success: boolean; error?: string }) {
   }
 }
 
+async function sendTradePortalInvitation(ctx: any, input: { email: string; name: string; origin?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const tenantId = ctx.tenant!.id;
+  const email = normaliseEmail(input.email);
+  const name = input.name.trim();
+
+  const [existingInstaller] = await db.select()
+    .from(constructionInstallers)
+    .where(and(
+      eq(constructionInstallers.tenantId, tenantId),
+      eq(constructionInstallers.email, email),
+    ))
+    .limit(1);
+
+  let installerId = existingInstaller?.id;
+  if (existingInstaller) {
+    const updates: Record<string, unknown> = {};
+    if (!existingInstaller.active) updates.active = true;
+    if (!existingInstaller.name && name) updates.name = name;
+    if (Object.keys(updates).length > 0) {
+      await db.update(constructionInstallers)
+        .set(updates)
+        .where(and(
+          eq(constructionInstallers.tenantId, tenantId),
+          eq(constructionInstallers.id, existingInstaller.id),
+        ));
+    }
+  } else {
+    const [inserted] = await db.insert(constructionInstallers).values({
+      tenantId,
+      name,
+      email,
+      tradeType: "installer",
+      active: true,
+    }).$returningId();
+    installerId = inserted.id;
+  }
+
+  if (!installerId) throw new Error("Could not create trade record");
+
+  const accessToken = generateLongToken(64);
+  const [existingAccess] = await db.select()
+    .from(tradePortalAccess)
+    .where(and(
+      eq(tradePortalAccess.tenantId, tenantId),
+      eq(tradePortalAccess.installerId, installerId),
+    ))
+    .limit(1);
+
+  let accessId = existingAccess?.id;
+  if (existingAccess) {
+    await db.update(tradePortalAccess)
+      .set({ email, accessToken, isActive: true })
+      .where(and(
+        eq(tradePortalAccess.tenantId, tenantId),
+        eq(tradePortalAccess.id, existingAccess.id),
+      ));
+  } else {
+    const [insertedAccess] = await db.insert(tradePortalAccess).values({
+      tenantId,
+      installerId,
+      email,
+      accessToken,
+      isActive: true,
+    }).$returningId();
+    accessId = insertedAccess.id;
+  }
+
+  if (!accessId) throw new Error("Could not create trade portal access");
+
+  const sessionToken = generateLongToken(64);
+  const magicLinkToken = generateLongToken(32);
+  const magicLinkExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  await db.insert(tradePortalSessions).values({
+    tradePortalAccessId: accessId,
+    sessionToken,
+    magicLinkToken,
+    magicLinkExpiresAt,
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  });
+
+  const magicLinkUrl = await buildTrustedAppUrlForTenant(
+    ctx.req,
+    tenantId,
+    `/trade-portal/login?magic=${encodeURIComponent(magicLinkToken)}`,
+    input.origin,
+  );
+
+  const emailResult = await sendNotificationEmail({
+    tenantId,
+    to: email,
+    subject: "Your Altaspan Trade Portal Login Link",
+    htmlBody: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1e293b;">Hi ${name || "there"},</h2>
+        <p style="color: #334155; line-height: 1.6;">
+          ${ctx.user!.name || "An administrator"} has invited you to use the <strong>Altaspan Trade Portal</strong>.
+        </p>
+        <p style="color: #334155; line-height: 1.6;">
+          Click the button below to access your jobs, documents, messages, and remittances.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${magicLinkUrl}" style="background-color: #f59e0b; color: #1a1a1a; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+            Access Trade Portal
+          </a>
+        </div>
+        <p style="color: #64748b; font-size: 14px; line-height: 1.5;">
+          This login link expires in 30 minutes. If it expires, use the Trade Portal login page to request a fresh link.
+        </p>
+      </div>
+    `,
+    module: "admin",
+  });
+  assertEmailSent(emailResult);
+
+  return { success: true, type: "trade" as const, installerId, accessId };
+}
+
 export const invitationsRouter = router({
   // ─── Create Invitation (Admin) ─────────────────────────────────────────────
   create: adminProcedure
     .input(z.object({
       email: z.string().email("Valid email is required"),
       name: z.string().min(1, "Name is required").max(255),
-      role: z.enum(["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"]),
+      role: z.enum(INVITE_ROLES),
+      origin: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+
+      if (input.role === "trade") {
+        return sendTradePortalInvitation(ctx, input);
+      }
 
       // Check if there's already a pending invitation for this email
       const existing = await db.select()
         .from(invitations)
         .where(and(
           eq(invitations.tenantId, ctx.tenant!.id),
-          eq(invitations.email, input.email),
+          eq(invitations.email, normaliseEmail(input.email)),
           eq(invitations.status, "pending")
         ))
         .limit(1);
@@ -48,9 +185,9 @@ export const invitationsRouter = router({
 
       const [result] = await db.insert(invitations).values({
         tenantId: ctx.tenant!.id,
-        email: input.email,
+        email: normaliseEmail(input.email),
         name: input.name,
-        role: input.role,
+        role: input.role as AppInviteRole,
         token,
         status: "pending",
         invitedById: ctx.user!.id,
@@ -64,7 +201,7 @@ export const invitationsRouter = router({
       try {
         const emailResult = await sendNotificationEmail({
           tenantId: ctx.tenant!.id,
-          to: input.email,
+          to: normaliseEmail(input.email),
           subject: `You're invited to join AltaSpan`,
           htmlBody: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -198,8 +335,9 @@ export const invitationsRouter = router({
       invites: z.array(z.object({
         email: z.string().email(),
         name: z.string().min(1).max(255),
-        role: z.enum(["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"]),
+        role: z.enum(INVITE_ROLES),
       })).min(1).max(100),
+      origin: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -209,12 +347,20 @@ export const invitationsRouter = router({
 
       for (const invite of input.invites) {
         try {
+          if (invite.role === "trade") {
+            await sendTradePortalInvitation(ctx, { ...invite, origin: input.origin });
+            results.push({ email: invite.email, success: true });
+            continue;
+          }
+
+          const email = normaliseEmail(invite.email);
+
           // Check for existing pending invitation
           const [existing] = await db.select()
             .from(invitations)
             .where(and(
               eq(invitations.tenantId, ctx.tenant!.id),
-              eq(invitations.email, invite.email),
+              eq(invitations.email, email),
               eq(invitations.status, "pending")
             ))
             .limit(1);
@@ -229,9 +375,9 @@ export const invitationsRouter = router({
 
           const [insertResult] = await db.insert(invitations).values({
             tenantId: ctx.tenant!.id,
-            email: invite.email,
+            email,
             name: invite.name,
-            role: invite.role,
+            role: invite.role as AppInviteRole,
             token,
             status: "pending",
             invitedById: ctx.user!.id,
@@ -243,7 +389,7 @@ export const invitationsRouter = router({
           try {
             const emailResult = await sendNotificationEmail({
               tenantId: ctx.tenant!.id,
-              to: invite.email,
+              to: email,
               subject: `You're invited to join AltaSpan`,
               htmlBody: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

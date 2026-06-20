@@ -351,7 +351,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const { data: dowItems } = trpc.assistant.listDowItems.useQuery(undefined, { enabled: showTemplatePicker });
 
   // Fetch design advisors list for restricted dropdown
-  const { data: designAdvisorsList } = trpc.designAdvisors.list.useQuery();
+  const { data: designAdvisorsList } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   const designAdvisorNames = useMemo(() => designAdvisorsList?.map((da: any) => da.name) || [], [designAdvisorsList]);
 
   // Fetch the lead record to get the authoritative designAdvisor

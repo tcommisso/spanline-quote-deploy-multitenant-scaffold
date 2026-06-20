@@ -84,7 +84,7 @@ export default function DeckQuoteList() {
   });
 
   const { data: branchesList } = trpc.branches.list.useQuery();
-  const { data: advisorsList } = trpc.designAdvisors.list.useQuery({});
+  const { data: advisorsList } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
 
   // Build a map from advisor name to branchId for branch filtering
   const advisorBranchMap = new Map<string, number>();
@@ -390,7 +390,7 @@ export default function DeckQuoteList() {
 }
 
 function DeckAdvisorFilterOptions() {
-  const { data: advisors } = trpc.designAdvisors.list.useQuery({});
+  const { data: advisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   if (!advisors || advisors.length === 0) return null;
   return (
     <>

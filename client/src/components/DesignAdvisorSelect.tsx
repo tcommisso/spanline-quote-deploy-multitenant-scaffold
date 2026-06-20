@@ -8,7 +8,7 @@ interface DesignAdvisorSelectProps {
 }
 
 export default function DesignAdvisorSelect({ value, onChange, placeholder = "Select advisor..." }: DesignAdvisorSelectProps) {
-  const { data: advisors } = trpc.designAdvisors.list.useQuery({});
+  const { data: advisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
 
   // The backend scopes and syncs this list from tenant users; do not re-filter
   // by local role here because legacy adviser rows may not have been normalised yet.

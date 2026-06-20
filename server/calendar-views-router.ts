@@ -173,11 +173,13 @@ export const calendarViewsRouter = router({
             end: Math.floor(endDate.getTime() / 1000),
           });
           if (!nylasEvents[grant.userId]) nylasEvents[grant.userId] = [];
-          nylasEvents[grant.userId].push(...(events || []).map((e: any) => ({
+          nylasEvents[grant.userId].push(...(events || [])
+            .filter((e: any) => e.busy !== false)
+            .map((e: any) => ({
             type: "calendar_event" as const,
             id: e.id,
             grantId: grant.grantId,
-            title: e.title || "Busy",
+            title: "Busy",
             start: e.when?.start_time ? e.when.start_time * 1000 : null,
             end: e.when?.end_time ? e.when.end_time * 1000 : null,
             allDay: e.when?.object === "date",

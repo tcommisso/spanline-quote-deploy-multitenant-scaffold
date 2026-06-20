@@ -6,10 +6,19 @@
 import { z } from "zod";
 import { router, tenantAdminProcedure, sensitiveSuperAdminProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { constructionInstallers, designAdvisors, tenantMemberships, users, constructionAssignments, constructionJobs, tradeNotificationRules } from "../drizzle/schema";
+import { constructionInstallers, designAdvisors, tenantMemberships, users, constructionAssignments, constructionJobs, tradeNotificationRules, tradePortalAccess } from "../drizzle/schema";
 import { eq, like, or, desc, sql, and, inArray } from "drizzle-orm";
+import { randomBytes } from "crypto";
 
 const TRADE_TYPES = ["installer", "electrician", "plumber", "roofer", "carpenter", "concreter", "painter", "tiler", "fencer", "labourer", "other"] as const;
+
+function normaliseEmail(email?: string | null) {
+  return email?.trim().toLowerCase() || "";
+}
+
+function generateToken(length = 64): string {
+  return randomBytes(length).toString("hex").slice(0, length);
+}
 
 export const peopleRouter = router({
   /**
@@ -28,6 +37,43 @@ export const peopleRouter = router({
       const query = input?.query?.trim().toLowerCase() || "";
       const type = input?.type || "all";
       const limit = input?.limit || 100;
+      let tenantUsersCache: Array<{
+        id: number;
+        name: string | null;
+        email: string | null;
+        role: string;
+        lastSignedIn: Date | null;
+        createdAt: Date;
+      }> | null = null;
+      const linkedTradeUserIds = new Set<number>();
+
+      async function getTenantUsers() {
+        if (tenantUsersCache) return tenantUsersCache;
+        const conditions = [eq(tenantMemberships.tenantId, ctx.tenant!.id)];
+        if (query) {
+          conditions.push(or(
+            like(users.name, `%${query}%`),
+            like(users.email, `%${query}%`),
+          )!);
+        }
+        let sysQuery = db!.select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          role: users.role,
+          lastSignedIn: users.lastSignedIn,
+          createdAt: users.createdAt,
+        }).from(tenantMemberships)
+          .innerJoin(users, eq(users.id, tenantMemberships.userId))
+          .where(and(...conditions))
+          .orderBy(desc(users.lastSignedIn))
+          .limit(limit);
+        if (query) {
+          sysQuery = sysQuery as any;
+        }
+        tenantUsersCache = await sysQuery;
+        return tenantUsersCache;
+      }
 
       const results: Array<{
         id: number;
@@ -100,7 +146,29 @@ export const peopleRouter = router({
           tradeQuery = tradeQuery as any;
         }
         const trades = await tradeQuery;
+        const tenantUsers = await getTenantUsers();
+        const usersByEmail = new Map(tenantUsers
+          .filter((u) => Boolean(normaliseEmail(u.email)))
+          .map((u) => [normaliseEmail(u.email), u]));
+        const tradeIds = trades.map((t) => t.id);
+        const accessRows = tradeIds.length > 0
+          ? await db.select({
+              installerId: tradePortalAccess.installerId,
+              email: tradePortalAccess.email,
+              isActive: tradePortalAccess.isActive,
+            })
+              .from(tradePortalAccess)
+              .where(and(
+                eq(tradePortalAccess.tenantId, ctx.tenant!.id),
+                inArray(tradePortalAccess.installerId, tradeIds),
+                eq(tradePortalAccess.isActive, true),
+              ))
+          : [];
+        const accessEmailByInstaller = new Map(accessRows.map((row) => [row.installerId, row.email]));
+
         for (const t of trades) {
+          const linkedUser = usersByEmail.get(normaliseEmail(accessEmailByInstaller.get(t.id) || t.email));
+          if (linkedUser) linkedTradeUserIds.add(linkedUser.id);
           results.push({
             id: t.id,
             personType: "trade",
@@ -110,10 +178,10 @@ export const peopleRouter = router({
             role: null,
             tradeType: t.tradeType,
             branchId: null,
-            userId: null,
+            userId: linkedUser?.id ?? null,
             active: t.active,
             archived: false,
-            lastSignedIn: null,
+            lastSignedIn: linkedUser?.lastSignedIn ?? null,
             createdAt: t.createdAt,
           });
         }
@@ -121,30 +189,9 @@ export const peopleRouter = router({
 
       // System Users (users table - OAuth logged in)
       if (type === "all" || type === "system") {
-        const conditions = [eq(tenantMemberships.tenantId, ctx.tenant!.id)];
-        if (query) {
-          conditions.push(or(
-            like(users.name, `%${query}%`),
-            like(users.email, `%${query}%`),
-          )!);
-        }
-        let sysQuery = db.select({
-          id: users.id,
-          name: users.name,
-          email: users.email,
-          role: users.role,
-          lastSignedIn: users.lastSignedIn,
-          createdAt: users.createdAt,
-        }).from(tenantMemberships)
-          .innerJoin(users, eq(users.id, tenantMemberships.userId))
-          .where(and(...conditions))
-          .orderBy(desc(users.lastSignedIn))
-          .limit(limit);
-        if (query) {
-          sysQuery = sysQuery as any;
-        }
-        const sysUsers = await sysQuery;
+        const sysUsers = await getTenantUsers();
         for (const u of sysUsers) {
+          if (type === "all" && linkedTradeUserIds.has(u.id)) continue;
           results.push({
             id: u.id,
             personType: "system",
@@ -310,6 +357,100 @@ export const peopleRouter = router({
       if (Object.keys(setObj).length === 0) throw new Error("No fields to update");
       await db.update(users).set(setObj).where(eq(users.id, id));
       return { success: true };
+    }),
+
+  /** Link a trade portal row to a system user by keeping portal access on that user's email */
+  linkTradeToUser: tenantAdminProcedure
+    .input(z.object({
+      installerId: z.number(),
+      userId: z.number().nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+
+      const [installer] = await db.select()
+        .from(constructionInstallers)
+        .where(and(
+          eq(constructionInstallers.tenantId, ctx.tenant!.id),
+          eq(constructionInstallers.id, input.installerId),
+        ))
+        .limit(1);
+      if (!installer) throw new Error("Trade not found");
+
+      const [existingAccess] = await db.select()
+        .from(tradePortalAccess)
+        .where(and(
+          eq(tradePortalAccess.tenantId, ctx.tenant!.id),
+          eq(tradePortalAccess.installerId, input.installerId),
+        ))
+        .limit(1);
+
+      if (input.userId == null) {
+        if (existingAccess) {
+          await db.update(tradePortalAccess)
+            .set({ isActive: false })
+            .where(and(
+              eq(tradePortalAccess.tenantId, ctx.tenant!.id),
+              eq(tradePortalAccess.id, existingAccess.id),
+            ));
+        }
+        return { success: true, linked: false };
+      }
+
+      const [membership] = await db.select({ id: tenantMemberships.id })
+        .from(tenantMemberships)
+        .where(and(
+          eq(tenantMemberships.tenantId, ctx.tenant!.id),
+          eq(tenantMemberships.userId, input.userId),
+        ))
+        .limit(1);
+      if (!membership) throw new Error("User is not a member of this tenant");
+
+      const [user] = await db.select()
+        .from(users)
+        .where(eq(users.id, input.userId))
+        .limit(1);
+      if (!user) throw new Error("User not found");
+      if (!user.email) throw new Error("The selected user has no email address");
+
+      const email = normaliseEmail(user.email);
+      if (existingAccess) {
+        await db.update(tradePortalAccess)
+          .set({ email, accessToken: generateToken(64), isActive: true })
+          .where(and(
+            eq(tradePortalAccess.tenantId, ctx.tenant!.id),
+            eq(tradePortalAccess.id, existingAccess.id),
+          ));
+      } else {
+        await db.insert(tradePortalAccess).values({
+          tenantId: ctx.tenant!.id,
+          installerId: input.installerId,
+          email,
+          accessToken: generateToken(64),
+          isActive: true,
+        });
+      }
+
+      const installerUpdates: Record<string, unknown> = {};
+      if (!installer.email || normaliseEmail(installer.email) !== email) installerUpdates.email = email;
+      if (!installer.name && user.name) installerUpdates.name = user.name;
+      if (Object.keys(installerUpdates).length > 0) {
+        await db.update(constructionInstallers)
+          .set(installerUpdates)
+          .where(and(
+            eq(constructionInstallers.tenantId, ctx.tenant!.id),
+            eq(constructionInstallers.id, input.installerId),
+          ));
+      }
+
+      if (user.role === "user") {
+        await db.update(users)
+          .set({ role: "construction_user" })
+          .where(eq(users.id, input.userId));
+      }
+
+      return { success: true, linked: true };
     }),
 
   /** Delete a system user (admin only, cannot delete self) */

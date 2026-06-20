@@ -25,7 +25,7 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
   const pageSize = 50;
 
   const { data: summary } = trpc.crm.leads.advisorAssignmentSummary.useQuery(undefined, { enabled: open });
-  const { data: advisors } = trpc.designAdvisors.list.useQuery(undefined, { enabled: open });
+  const { data: advisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true }, { enabled: open });
 
   // Fetch unassigned leads for selection
   const { data: leadsData, isLoading: leadsLoading } = trpc.crm.leads.list.useQuery(

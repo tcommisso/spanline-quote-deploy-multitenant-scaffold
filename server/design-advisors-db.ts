@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { and, desc, eq, isNull, or } from "drizzle-orm";
-import { designAdvisors, tenantMemberships, users } from "../drizzle/schema";
+import { designAdvisors, invitations, tenantMemberships, users } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
@@ -57,23 +57,60 @@ async function syncDesignAdvisorUsers(tenantId?: number | null) {
   }
 }
 
-export async function listDesignAdvisors(includeArchived = false, tenantId?: number | null) {
+export async function listDesignAdvisors(includeArchived = false, tenantId?: number | null, includePendingInvites = false) {
   await syncDesignAdvisorUsers(tenantId);
 
   const conditions: any[] = [];
   appendTenantScope(conditions, designAdvisors.tenantId, tenantId);
   if (!includeArchived) conditions.push(eq(designAdvisors.archived, false));
 
+  let advisors: Array<typeof designAdvisors.$inferSelect>;
   if (includeArchived) {
-    return db.select()
+    advisors = await db.select()
       .from(designAdvisors)
       .where(conditions.length ? and(...conditions) : undefined)
       .orderBy(desc(designAdvisors.createdAt));
+  } else {
+    advisors = await db.select()
+      .from(designAdvisors)
+      .where(and(...conditions))
+      .orderBy(designAdvisors.name);
   }
-  return db.select()
-    .from(designAdvisors)
-    .where(and(...conditions))
-    .orderBy(designAdvisors.name);
+
+  if (!includePendingInvites || !tenantId) return advisors;
+
+  const pendingInvites = await db.select()
+    .from(invitations)
+    .where(and(
+      eq(invitations.tenantId, tenantId),
+      eq(invitations.role, "design_adviser"),
+      eq(invitations.status, "pending"),
+    ));
+
+  const existingEmails = new Set(advisors.map((advisor) => advisor.email?.trim().toLowerCase()).filter(Boolean));
+  const existingNames = new Set(advisors.map((advisor) => advisor.name.trim().toLowerCase()).filter(Boolean));
+  const pendingRows = pendingInvites
+    .filter((invite) => {
+      const email = invite.email?.trim().toLowerCase();
+      const name = (invite.name || invite.email).trim().toLowerCase();
+      return !existingEmails.has(email) && !existingNames.has(name);
+    })
+    .map((invite) => ({
+      id: -invite.id,
+      tenantId: invite.tenantId,
+      name: invite.name || invite.email,
+      email: invite.email,
+      phone: null,
+      role: "design_adviser",
+      profileDescription: null,
+      photoUrl: null,
+      branchId: null,
+      userId: null,
+      archived: false,
+      createdAt: invite.createdAt,
+    }));
+
+  return [...advisors, ...pendingRows].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getDesignAdvisor(id: number, tenantId?: number | null) {

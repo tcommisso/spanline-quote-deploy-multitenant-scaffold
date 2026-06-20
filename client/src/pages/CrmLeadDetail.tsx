@@ -1947,7 +1947,7 @@ function LinkedConstructionActivities({ leadId }: { leadId: number }) {
  * Only visible to admin/super_admin users when a DA is assigned to the lead.
  */
 function ViewAsDaButton({ designAdvisorName }: { designAdvisorName: string }) {
-  const { data: advisors } = trpc.designAdvisors.list.useQuery({});
+  const { data: advisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   const impersonateMut = trpc.userManagement.startImpersonation.useMutation({
     onSuccess: () => {
       toast.success(`Now viewing as ${designAdvisorName}`);

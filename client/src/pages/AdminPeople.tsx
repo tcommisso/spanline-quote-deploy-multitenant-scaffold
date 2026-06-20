@@ -164,7 +164,12 @@ export default function AdminPeople() {
     onSuccess: () => { toast.success("Account linked"); utils.people.search.invalidate(); utils.designAdvisors.list.invalidate(); setLinkTarget(null); },
     onError: (err) => toast.error(err.message),
   });
+  const linkTradeToUserMut = trpc.people.linkTradeToUser.useMutation({
+    onSuccess: () => { toast.success("Trade account link updated"); utils.people.search.invalidate(); utils.people.counts.invalidate(); utils.userManagement.list.invalidate(); setTradeLinkTarget(null); },
+    onError: (err) => toast.error(err.message),
+  });
   const [linkTarget, setLinkTarget] = useState<{ id: number; name: string; currentUserId: number | null } | null>(null);
+  const [tradeLinkTarget, setTradeLinkTarget] = useState<{ id: number; name: string; currentUserId: number | null } | null>(null);
   const [linkSearch, setLinkSearch] = useState("");
 
   // System user edit/delete/merge
@@ -489,6 +494,9 @@ export default function AdminPeople() {
                           {isTrade && (
                             <Badge variant="outline" className="text-[10px]">{getTradeTypeLabel(person.tradeType || "installer")}</Badge>
                           )}
+                          {isTrade && person.userId && (
+                            <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">System</Badge>
+                          )}
                           {(isStaff || isSystem) && person.role && (
                             <Badge variant="outline" className={`text-[10px] ${roleColorMap[person.role] || roleColorMap.user}`}>
                               {ROLE_LABELS[person.role as UserRole] || person.role}
@@ -554,6 +562,17 @@ export default function AdminPeople() {
                                 }}>
                                   {person.active ? <Archive className="h-3.5 w-3.5 mr-1" /> : <ArchiveRestore className="h-3.5 w-3.5 mr-1" />}
                                   {person.active ? "Deactivate" : "Activate"}
+                                </Button>
+                              )}
+                              {isTrade && isSuperAdmin && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className={`h-7 text-xs ${person.userId ? "text-green-600" : ""}`}
+                                  onClick={() => setTradeLinkTarget({ id: person.id, name: person.name, currentUserId: person.userId })}
+                                >
+                                  {person.userId ? <Link2 className="h-3.5 w-3.5 mr-1" /> : <Unlink className="h-3.5 w-3.5 mr-1" />}
+                                  {person.userId ? "Linked" : "Link User"}
                                 </Button>
                               )}
                               <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => setDeleteTarget({ id: person.id, name: person.name, personType: person.personType })}>
@@ -647,6 +666,9 @@ export default function AdminPeople() {
                                   {isTrade && (
                                     <Badge variant="outline" className="text-[10px]">{getTradeTypeLabel(person.tradeType || "installer")}</Badge>
                                   )}
+                                  {isTrade && person.userId && (
+                                    <Badge variant="outline" className="ml-1 text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">System</Badge>
+                                  )}
                                   {(isStaff || isSystem) && person.role && (
                                     <Badge variant="outline" className={`text-[10px] ${roleColorMap[person.role] || roleColorMap.user}`}>
                                       {ROLE_LABELS[person.role as UserRole] || person.role}
@@ -722,6 +744,17 @@ export default function AdminPeople() {
                                         className={`h-7 w-7 ${person.userId ? "text-green-600" : "text-muted-foreground"}`}
                                         onClick={() => setLinkTarget({ id: person.id, name: person.name, currentUserId: person.userId })}
                                         title={person.userId ? `Linked to user #${person.userId}` : "Link to system user account"}
+                                      >
+                                        {person.userId ? <Link2 className="h-3.5 w-3.5" /> : <Unlink className="h-3.5 w-3.5" />}
+                                      </Button>
+                                    )}
+                                    {isTrade && isSuperAdmin && (
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className={`h-7 w-7 ${person.userId ? "text-green-600" : "text-muted-foreground"}`}
+                                        onClick={() => setTradeLinkTarget({ id: person.id, name: person.name, currentUserId: person.userId })}
+                                        title={person.userId ? `Linked to user #${person.userId}` : "Link trade to system user account"}
                                       >
                                         {person.userId ? <Link2 className="h-3.5 w-3.5" /> : <Unlink className="h-3.5 w-3.5" />}
                                       </Button>
@@ -951,6 +984,73 @@ export default function AdminPeople() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setLinkTarget(null); setLinkSearch(""); }}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ─── Link Trade Account Dialog ─── */}
+      <Dialog open={!!tradeLinkTarget} onOpenChange={(open) => { if (!open) { setTradeLinkTarget(null); setLinkSearch(""); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link Trade: {tradeLinkTarget?.name}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Link this trade to a system user email. The trade keeps using the Trade Portal link flow, and the linked system account is no longer shown as a duplicate row.
+          </p>
+          {tradeLinkTarget?.currentUserId && (
+            <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200 rounded text-sm">
+              <Link2 className="h-4 w-4 text-green-600" />
+              <span>Currently linked to: <strong>{systemUsers?.find(u => u.id === tradeLinkTarget.currentUserId)?.name || `User #${tradeLinkTarget.currentUserId}`}</strong></span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-6 text-xs text-destructive"
+                onClick={() => linkTradeToUserMut.mutate({ installerId: tradeLinkTarget.id, userId: null })}
+                disabled={linkTradeToUserMut.isPending}
+              >
+                <Unlink className="h-3 w-3 mr-1" /> Unlink
+              </Button>
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label>Search system users</Label>
+            <Input
+              placeholder="Type name or email..."
+              value={linkSearch}
+              onChange={(e) => setLinkSearch(e.target.value)}
+            />
+            <div className="max-h-48 overflow-y-auto border rounded divide-y">
+              {(systemUsers || []).filter(u => {
+                if (!linkSearch.trim()) return true;
+                const q = linkSearch.toLowerCase();
+                return u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
+              }).map(u => (
+                <button
+                  key={u.id}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-muted/50 flex items-center justify-between ${
+                    tradeLinkTarget?.currentUserId === u.id ? "bg-green-50" : ""
+                  }`}
+                  onClick={() => linkTradeToUserMut.mutate({ installerId: tradeLinkTarget!.id, userId: u.id })}
+                  disabled={linkTradeToUserMut.isPending}
+                >
+                  <div>
+                    <span className="font-medium">{u.name || "Unnamed"}</span>
+                    <span className="text-xs text-muted-foreground ml-2">{u.email}</span>
+                  </div>
+                  {tradeLinkTarget?.currentUserId === u.id && <Badge variant="secondary" className="text-[10px]">Current</Badge>}
+                </button>
+              ))}
+              {systemUsers && systemUsers.filter(u => {
+                if (!linkSearch.trim()) return true;
+                const q = linkSearch.toLowerCase();
+                return u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q);
+              }).length === 0 && (
+                <p className="p-3 text-sm text-muted-foreground text-center">No matching users found</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setTradeLinkTarget(null); setLinkSearch(""); }}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1792,7 +1892,7 @@ function InvitationsManager() {
       const lines = text.split(/\r?\n/).filter(l => l.trim());
       // Skip header if it looks like one
       const startIdx = lines[0]?.toLowerCase().includes("email") ? 1 : 0;
-      const validRoles = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"];
+      const validRoles = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse", "trade"];
       const parsed: {email:string;name:string;role:string}[] = [];
       const errors: string[] = [];
       for (let i = startIdx; i < lines.length; i++) {
@@ -1819,6 +1919,7 @@ function InvitationsManager() {
     { value: "construction_user", label: "Construction User" },
     { value: "driver", label: "Driver" },
     { value: "warehouse", label: "Warehouse" },
+    { value: "trade", label: "Trade Portal" },
   ];
 
   function getStatusBadge(status: string) {
@@ -1940,7 +2041,7 @@ function InvitationsManager() {
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               Upload a CSV file with columns: <strong>email, name, role</strong> (role is optional, defaults to "user").
-              Valid roles: user, admin, design_adviser, office_user, construction_user, driver, warehouse.
+              Valid roles: user, admin, design_adviser, office_user, construction_user, driver, warehouse, trade.
             </p>
             <Input type="file" accept=".csv" onChange={handleCsvUpload} />
             {bulkError && <p className="text-sm text-destructive">{bulkError}</p>}
@@ -1973,7 +2074,7 @@ function InvitationsManager() {
           <DialogFooter>
             <Button variant="outline" onClick={() => { setShowBulkDialog(false); setBulkInvites([]); setBulkError(""); }}>Cancel</Button>
             <Button
-              onClick={() => bulkCreateMutation.mutate({ invites: bulkInvites as any })}
+              onClick={() => bulkCreateMutation.mutate({ invites: bulkInvites as any, origin: window.location.origin })}
               disabled={bulkInvites.length === 0 || bulkCreateMutation.isPending}
             >
               {bulkCreateMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Sending...</> : `Send ${bulkInvites.length} Invitations`}
@@ -2019,7 +2120,7 @@ function InvitationsManager() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">
-                The user will be assigned this role when they accept the invitation.
+                System users receive an app invitation. Trade Portal users receive a secure login link and can request a fresh link from the Trade Portal login page.
               </p>
             </div>
           </div>
@@ -2030,6 +2131,7 @@ function InvitationsManager() {
                 email: inviteForm.email,
                 name: inviteForm.name,
                 role: inviteForm.role as any,
+                origin: window.location.origin,
               })}
               disabled={!inviteForm.email.trim() || !inviteForm.name.trim() || createMutation.isPending}
             >

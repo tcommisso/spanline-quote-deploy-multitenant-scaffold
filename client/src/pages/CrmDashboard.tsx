@@ -118,7 +118,7 @@ export default function CrmDashboard() {
   const [selectedBranch, setSelectedBranch] = useState<string>("all");
   const [showAllContracts, setShowAllContracts] = useState(false);
 
-  const { data: designAdvisors } = trpc.designAdvisors.list.useQuery({});
+  const { data: designAdvisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   const { data: branchesList } = trpc.branches.list.useQuery();
 
   const fyRange = useMemo(() => {
