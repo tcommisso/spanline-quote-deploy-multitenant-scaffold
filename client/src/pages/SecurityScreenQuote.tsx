@@ -674,7 +674,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
     ? quoteRef
     : Number(matchedQuote?.id ?? NaN);
   const quoteQueryInput = { id: Number.isFinite(resolvedQuoteId) ? resolvedQuoteId : 0 };
-  const { data: quote, isLoading } = trpc.securityScreens.quotes.getById.useQuery(
+  const { data: quote, isLoading, refetch: refetchQuote } = trpc.securityScreens.quotes.getById.useQuery(
     quoteQueryInput,
     { enabled: Number.isFinite(resolvedQuoteId) && resolvedQuoteId > 0 },
   );
@@ -684,10 +684,12 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Item removed"); },
   });
   const addCostMutation = trpc.securityScreens.quotes.addCostAddition.useMutation({
-    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Cost added"); },
+    onSuccess: () => { toast.success("Cost added"); },
+    onError: (e) => toast.error(e.message || "Could not add cost"),
   });
   const removeCostMutation = trpc.securityScreens.quotes.removeCostAddition.useMutation({
     onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Cost removed"); },
+    onError: (e) => toast.error(e.message || "Could not remove cost"),
   });
   const updateStatusMutation = trpc.securityScreens.quotes.updateStatus.useMutation({
     onSuccess: () => {
@@ -732,6 +734,27 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
   const [editingCost, setEditingCost] = useState<any | null>(null);
   const [costEditForm, setCostEditForm] = useState({ quantity: "1", unitCost: "0" });
 
+  const canMutateQuote = Number.isFinite(quoteId) && quoteId > 0;
+
+  const refreshQuote = async () => {
+    await Promise.all([
+      utils.securityScreens.quotes.getById.invalidate(quoteQueryInput),
+      utils.securityScreens.quotes.list.invalidate(),
+    ]);
+    await refetchQuote();
+  };
+
+  const handleAddCostAddition = async (costAdditionId: number) => {
+    if (!canMutateQuote || addCostMutation.isPending) return;
+    try {
+      await addCostMutation.mutateAsync({ quoteId, costAdditionId, quantity: 1 });
+      await refreshQuote();
+      setAddCostOpen(false);
+    } catch {
+      // onError displays the user-facing message.
+    }
+  };
+
   useEffect(() => {
     if (!editingCost) return;
     setCostEditForm({
@@ -743,6 +766,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
   if ((isQuoteNumberRoute && isResolvingQuoteNumber) || isLoading) return <div className="text-center py-8 text-muted-foreground">Loading quote...</div>;
   const resolvedQuote = quote ?? (matchedQuote ? { ...matchedQuote, items: [], costAdditions: [] } : null);
   if (!resolvedQuote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
+  const quoteCostAdditions = resolvedQuote.costAdditions || [];
 
   return (
     <div className="space-y-6">
@@ -838,13 +862,19 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
           <CardTitle>Additional Costs</CardTitle>
           <Dialog open={addCostOpen} onOpenChange={setAddCostOpen}>
             <Button size="sm" onClick={() => setAddCostOpen(true)}><Plus className="h-4 w-4 mr-1" /> Add Cost</Button>
-            <DialogContent>
+            <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
               <DialogHeader><DialogTitle>Add Cost to Quote</DialogTitle></DialogHeader>
               <div className="space-y-2 max-h-[400px] overflow-y-auto">
                 {costAdditions.map((cost: any) => (
-                  <button key={cost.id} className="w-full flex items-center justify-between p-3 rounded border hover:border-primary/50 hover:bg-primary/5 transition-all" onClick={() => { addCostMutation.mutate({ quoteId, costAdditionId: cost.id, quantity: 1 }); setAddCostOpen(false); }}>
+                  <button
+                    key={cost.id}
+                    type="button"
+                    className="w-full flex items-center justify-between gap-3 p-3 rounded border text-left hover:border-primary/50 hover:bg-primary/5 transition-all disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={!canMutateQuote || addCostMutation.isPending}
+                    onClick={() => handleAddCostAddition(cost.id)}
+                  >
                     <div className="text-left"><p className="font-medium text-sm">{cost.name}</p><p className="text-xs text-muted-foreground">{cost.category.replace("_", " ")}</p></div>
-                    <span className="font-mono text-sm">${parseFloat(cost.cost).toFixed(2)}{cost.uom ? `/${cost.uom}` : ""}</span>
+                    <span className="font-mono text-sm whitespace-nowrap">${parseFloat(cost.cost).toFixed(2)}{cost.uom ? `/${cost.uom}` : ""}</span>
                   </button>
                 ))}
                 {costAdditions.length === 0 && <p className="text-center text-muted-foreground py-4">No cost additions configured. Add them in Admin.</p>}
@@ -853,31 +883,76 @@ function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) 
           </Dialog>
         </CardHeader>
         <CardContent>
-          {(!resolvedQuote.costAdditions || resolvedQuote.costAdditions.length === 0) ? (
+          {quoteCostAdditions.length === 0 ? (
             <p className="text-center text-muted-foreground py-4">No additional costs</p>
           ) : (
-            <Table>
-              <TableHeader><TableRow><TableHead>Cost</TableHead><TableHead>Qty</TableHead><TableHead>Unit Cost</TableHead><TableHead>Line Total</TableHead><TableHead className="w-20"></TableHead></TableRow></TableHeader>
-              <TableBody>
-                {resolvedQuote.costAdditions.map((ca: any) => (
-                  <TableRow key={ca.id}>
-                    <TableCell>
-                      <div className="font-medium">{ca.name || `Cost #${ca.costAdditionId}`}</div>
-                      {ca.category ? <p className="text-xs text-muted-foreground">{ca.category.replace("_", " ")}</p> : null}
-                    </TableCell>
-                    <TableCell>{ca.quantity}</TableCell>
-                    <TableCell className="font-mono">${parseFloat(ca.unitCost || "0").toFixed(2)}</TableCell>
-                    <TableCell className="font-mono">${parseFloat(ca.lineTotal || "0").toFixed(2)}</TableCell>
-                    <TableCell className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => setEditingCost(ca)} title="Edit cost">
-                        <Pencil className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => removeCostMutation.mutate({ id: ca.id, quoteId })}><Trash2 className="h-4 w-4 text-destructive" /></Button>
-                    </TableCell>
-                  </TableRow>
+            <>
+              <div className="md:hidden space-y-2">
+                {quoteCostAdditions.map((ca: any) => (
+                  <div key={ca.id} className="rounded-lg border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm">{ca.name || `Cost #${ca.costAdditionId}`}</p>
+                        {ca.category ? <p className="text-xs text-muted-foreground">{ca.category.replace("_", " ")}</p> : null}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setEditingCost(ca)} title="Edit cost">
+                          <Pencil className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          disabled={removeCostMutation.isPending}
+                          onClick={() => removeCostMutation.mutate({ id: ca.id, quoteId })}
+                          title="Remove cost"
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <p className="text-muted-foreground">Qty</p>
+                        <p className="font-mono font-medium">{ca.quantity}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Unit</p>
+                        <p className="font-mono font-medium">${parseFloat(ca.unitCost || "0").toFixed(2)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-muted-foreground">Total</p>
+                        <p className="font-mono font-semibold">${parseFloat(ca.lineTotal || "0").toFixed(2)}</p>
+                      </div>
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+              <div className="hidden md:block overflow-x-auto">
+                <Table>
+                  <TableHeader><TableRow><TableHead>Cost</TableHead><TableHead>Qty</TableHead><TableHead>Unit Cost</TableHead><TableHead>Line Total</TableHead><TableHead className="w-20"></TableHead></TableRow></TableHeader>
+                  <TableBody>
+                    {quoteCostAdditions.map((ca: any) => (
+                      <TableRow key={ca.id}>
+                        <TableCell>
+                          <div className="font-medium">{ca.name || `Cost #${ca.costAdditionId}`}</div>
+                          {ca.category ? <p className="text-xs text-muted-foreground">{ca.category.replace("_", " ")}</p> : null}
+                        </TableCell>
+                        <TableCell>{ca.quantity}</TableCell>
+                        <TableCell className="font-mono">${parseFloat(ca.unitCost || "0").toFixed(2)}</TableCell>
+                        <TableCell className="font-mono">${parseFloat(ca.lineTotal || "0").toFixed(2)}</TableCell>
+                        <TableCell className="flex items-center gap-1">
+                          <Button variant="ghost" size="icon" onClick={() => setEditingCost(ca)} title="Edit cost">
+                            <Pencil className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                          <Button variant="ghost" size="icon" disabled={removeCostMutation.isPending} onClick={() => removeCostMutation.mutate({ id: ca.id, quoteId })}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
