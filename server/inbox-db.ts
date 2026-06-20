@@ -5,7 +5,7 @@
 import { eq, and, desc, like, sql, or, gte, lte, inArray, isNull, isNotNull, asc } from "drizzle-orm";
 import { getDb } from "./db";
 import {
-  inboxMessages, inboxTickets, inboxTicketTags, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
+  inboxMessages, inboxTickets, inboxTicketTags, inboxTicketNotes, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
   crmLeads, portalAccess, constructionJobs, clientActivities, users, tenantMemberships,
   type InboxMessage, type InsertInboxMessage,
   type InboxTicket,
@@ -37,7 +37,9 @@ function normalizeTicketStatus(status: string | null | undefined): InboxTicketSt
     status === "new" ||
     status === "open" ||
     status === "waiting_customer" ||
+    status === "waiting_internal" ||
     status === "customer_replied" ||
+    status === "resolved" ||
     status === "closed" ||
     status === "spam"
   ) {
@@ -49,7 +51,24 @@ function normalizeTicketStatus(status: string | null | undefined): InboxTicketSt
 
 function ticketStatusToStoredStatus(status: InboxTicketStatus): StoredInboxStatus {
   if (status === "waiting_customer" || status === "customer_replied") return "replied";
+  if (status === "waiting_internal") return "open";
+  if (status === "resolved") return "closed";
   return status;
+}
+
+function isResolvedTicketStatus(status: InboxTicketStatus) {
+  return status === "resolved" || status === "closed";
+}
+
+function isTerminalTicketStatus(status: InboxTicketStatus) {
+  return isResolvedTicketStatus(status) || status === "spam";
+}
+
+function waitingOnForStatus(status: InboxTicketStatus): "customer" | "internal" | "staff" | "none" {
+  if (status === "waiting_customer") return "customer";
+  if (status === "waiting_internal") return "internal";
+  if (isTerminalTicketStatus(status)) return "none";
+  return "staff";
 }
 
 function ticketConditions(threadId: string, tenantId?: number | null) {
@@ -86,6 +105,7 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
   if (messages.length === 0) {
     if (existing) {
       await db.delete(inboxTicketTags).where(eq(inboxTicketTags.ticketId, existing.id));
+      await db.delete(inboxTicketNotes).where(eq(inboxTicketNotes.ticketId, existing.id));
       await db.delete(inboxTickets).where(and(eq(inboxTickets.id, existing.id), ...ticketConditions(threadId, tenantId)));
     }
     return null;
@@ -100,22 +120,39 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
   const lastOutbound = outboundMessages[outboundMessages.length - 1] || null;
   const unreadCount = inboundMessages.filter((message) => !message.isRead).length;
   const derived = deriveInboxTicketState(messages);
+  const lastResponderName = latest.direction === "outbound"
+    ? latest.createdByName || latest.fromName || null
+    : latest.fromName || null;
+  const lastResponderEmail = latest.direction === "outbound"
+    ? latest.fromAddress || latest.receivedByAddress || null
+    : latest.fromAddress || null;
 
   let status = derived.key;
   const existingStatus = normalizeTicketStatus(existing?.status);
-  if (existingStatus === "closed" || existingStatus === "spam") {
-    const resolvedAt = existing?.resolvedAt ? new Date(existing.resolvedAt).getTime() : 0;
-    const lastInboundAt = lastInbound?.createdAt ? new Date(lastInbound.createdAt).getTime() : 0;
-    status = existingStatus === "closed" && lastInboundAt > resolvedAt ? "customer_replied" : existingStatus;
+  const hasNewLatestMessage = existing ? latest.id !== existing.latestMessageId : true;
+  if (existingStatus === "spam") {
+    status = "spam";
+  } else if (isResolvedTicketStatus(existingStatus)) {
+    status = hasNewLatestMessage && latest.direction === "inbound" ? "customer_replied" : existingStatus;
+  } else if (existingStatus === "waiting_internal") {
+    if (!hasNewLatestMessage) {
+      status = "waiting_internal";
+    } else if (latest.direction === "outbound") {
+      status = "waiting_customer";
+    } else {
+      status = latest.direction === "inbound" ? "customer_replied" : "waiting_internal";
+    }
   }
 
   const activeSla = await getActiveSlaRule(tenantId);
-  const shouldTrackSla = status !== "closed" && status !== "spam" && status !== "waiting_customer";
+  const shouldTrackSla = !isTerminalTicketStatus(status) && status !== "waiting_customer";
   const slaBase = shouldTrackSla ? (lastInbound?.createdAt || latest.createdAt) : null;
   const slaWarningAt = shouldTrackSla ? addHours(slaBase, activeSla?.warningHours) : null;
   const slaDueAt = shouldTrackSla ? addHours(slaBase, activeSla?.escalationHours) : null;
   const now = new Date();
   const slaBreachedAt = slaDueAt && slaDueAt.getTime() <= now.getTime() ? slaDueAt : null;
+  const receivedByAddress = latest.receivedByAddress || firstInbound.receivedByAddress || null;
+  const queue = receivedByAddress ? await getQueueForAddress(receivedByAddress, tenantId) : existing?.queue ?? null;
 
   const ticketData: any = {
     tenantId: tenantId ?? latest.tenantId ?? null,
@@ -123,13 +160,17 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
     subject: latest.subject || first.subject || null,
     requesterEmail: firstInbound.fromAddress || latest.fromAddress || null,
     requesterName: firstInbound.fromName || latest.fromName || null,
-    receivedByAddress: latest.receivedByAddress || firstInbound.receivedByAddress || null,
+    receivedByAddress,
+    queue,
     channel: existing?.channel || "email",
     priority: existing?.priority || "normal",
     status,
+    waitingOn: waitingOnForStatus(status),
     assignedToId: latest.assignedToId ?? existing?.assignedToId ?? null,
     assignedToName: latest.assignedToName ?? existing?.assignedToName ?? null,
     assignedAt: latest.assignedAt ?? existing?.assignedAt ?? null,
+    lastResponderName,
+    lastResponderEmail,
     matchedJobId: latest.matchedJobId ?? first.matchedJobId ?? existing?.matchedJobId ?? null,
     matchedLeadId: latest.matchedLeadId ?? first.matchedLeadId ?? existing?.matchedLeadId ?? null,
     matchedClientEmail: latest.matchedClientEmail ?? first.matchedClientEmail ?? existing?.matchedClientEmail ?? null,
@@ -145,11 +186,11 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
     slaWarningAt,
     slaDueAt,
     slaBreachedAt,
-    resolvedAt: status === "closed" ? (existing?.resolvedAt || now) : null,
-    resolvedBy: status === "closed" ? existing?.resolvedBy ?? null : null,
-    resolvedByName: status === "closed" ? existing?.resolvedByName ?? null : null,
+    resolvedAt: isResolvedTicketStatus(status) ? (existing?.resolvedAt || now) : null,
+    resolvedBy: isResolvedTicketStatus(status) ? existing?.resolvedBy ?? null : null,
+    resolvedByName: isResolvedTicketStatus(status) ? existing?.resolvedByName ?? null : null,
     resolutionNotes: existing?.resolutionNotes ?? null,
-    closedReason: status === "closed" || status === "spam" ? existing?.closedReason ?? null : null,
+    closedReason: isTerminalTicketStatus(status) ? existing?.closedReason ?? null : null,
     createdBy: existing?.createdBy ?? latest.createdBy ?? null,
     createdByName: existing?.createdByName ?? latest.createdByName ?? null,
   };
@@ -193,6 +234,20 @@ async function syncTicketForThreadBestEffort(threadId: string, tenantId?: number
   } catch (err: any) {
     console.error(`[Inbox Tickets] ${source} failed for thread ${threadId}:`, err?.message || err);
   }
+}
+
+async function getQueueForAddress(address: string, tenantId?: number | null): Promise<string | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const normalized = address.toLowerCase().trim();
+  const conditions: any[] = [eq(inboxAddresses.address, normalized)];
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
+  const [row] = await db
+    .select({ module: inboxAddresses.module })
+    .from(inboxAddresses)
+    .where(and(...conditions))
+    .limit(1);
+  return row?.module || null;
 }
 
 export async function ensureTicketsForTenant(tenantId?: number | null) {
@@ -254,6 +309,41 @@ export async function getTicketTags(ticketId: number, tenantId?: number | null) 
   return rows.map((row) => row.tag);
 }
 
+export async function listTicketNotes(threadId: string, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ticket = await getTicketByThread(threadId, tenantId);
+  if (!ticket) return [];
+  const conditions: any[] = [eq(inboxTicketNotes.ticketId, ticket.id)];
+  appendTenantScope(conditions, inboxTicketNotes.tenantId, tenantId);
+  return db
+    .select()
+    .from(inboxTicketNotes)
+    .where(and(...conditions))
+    .orderBy(asc(inboxTicketNotes.createdAt), asc(inboxTicketNotes.id));
+}
+
+export async function createTicketNote(
+  threadId: string,
+  body: string,
+  tenantId?: number | null,
+  userId?: number | null,
+  userName?: string | null,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ticket = await getTicketByThread(threadId, tenantId);
+  if (!ticket) throw new Error("Ticket not found");
+  const [result] = await db.insert(inboxTicketNotes).values({
+    tenantId: tenantId ?? ticket.tenantId ?? null,
+    ticketId: ticket.id,
+    body,
+    createdBy: userId ?? null,
+    createdByName: userName ?? null,
+  });
+  return { id: (result as any).insertId };
+}
+
 export async function updateTicketMetadata(threadId: string, data: {
   priority?: InboxTicketPriority;
   channel?: InboxTicketChannel;
@@ -282,16 +372,17 @@ export async function updateTicketMetadata(threadId: string, data: {
   if (data.status) {
     const status = normalizeTicketStatus(data.status);
     patch.status = status;
+    patch.waitingOn = waitingOnForStatus(status);
     await db
       .update(inboxMessages)
       .set({ status: ticketStatusToStoredStatus(status) })
       .where(and(...messageThreadConditions(threadId, tenantId)));
 
-    if (status === "closed" || status === "spam") {
+    if (isTerminalTicketStatus(status)) {
       patch.resolvedAt = new Date();
       patch.resolvedBy = userId ?? null;
       patch.resolvedByName = userName ?? null;
-      patch.closedReason = data.closedReason || (status === "spam" ? "spam" : "resolved");
+      patch.closedReason = data.closedReason || (status === "spam" ? "spam" : status);
     } else {
       patch.resolvedAt = null;
       patch.resolvedBy = null;
@@ -491,6 +582,12 @@ export async function listInboxMessages(filters: {
             ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
             ticketPriority: ticket.priority,
             ticketChannel: ticket.channel,
+            ticketQueue: ticket.queue,
+            ticketWaitingOn: ticket.waitingOn,
+            ticketRequesterEmail: ticket.requesterEmail,
+            ticketRequesterName: ticket.requesterName,
+            ticketLastResponderName: ticket.lastResponderName,
+            ticketLastResponderEmail: ticket.lastResponderEmail,
             ticketSlaWarningAt: ticket.slaWarningAt,
             ticketSlaDueAt: ticket.slaDueAt,
             ticketSlaBreachedAt: ticket.slaBreachedAt,
@@ -679,12 +776,12 @@ export async function updateThreadStatus(
     .where(and(...messageThreadConditions(threadId, tenantId)));
   await syncTicketForThreadBestEffort(threadId, tenantId, "thread status");
 
-  const patch: any = { status: ticketStatus };
-  if (ticketStatus === "closed" || ticketStatus === "spam") {
+  const patch: any = { status: ticketStatus, waitingOn: waitingOnForStatus(ticketStatus) };
+  if (isTerminalTicketStatus(ticketStatus)) {
     patch.resolvedAt = new Date();
     patch.resolvedBy = userId ?? null;
     patch.resolvedByName = userName ?? null;
-    patch.closedReason = ticketStatus === "spam" ? "spam" : "resolved";
+    patch.closedReason = ticketStatus === "spam" ? "spam" : ticketStatus;
   } else {
     patch.resolvedAt = null;
     patch.resolvedBy = null;
@@ -1489,6 +1586,7 @@ export async function bulkDeleteThreads(threadIds: string[], tenantId?: number |
     const ownedTicketIds = ownedTickets.map((row) => row.id);
     if (ownedTicketIds.length > 0) {
       await db.delete(inboxTicketTags).where(inArray(inboxTicketTags.ticketId, ownedTicketIds));
+      await db.delete(inboxTicketNotes).where(inArray(inboxTicketNotes.ticketId, ownedTicketIds));
       await db.delete(inboxTickets).where(inArray(inboxTickets.id, ownedTicketIds));
     }
   } catch (err: any) {

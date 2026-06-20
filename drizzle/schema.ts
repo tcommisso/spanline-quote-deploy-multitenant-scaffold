@@ -2201,12 +2201,16 @@ export const inboxTickets = mysqlTable("inbox_tickets", {
   requesterEmail: varchar("requesterEmail", { length: 320 }),
   requesterName: varchar("requesterName", { length: 255 }),
   receivedByAddress: varchar("receivedByAddress", { length: 320 }),
+  queue: varchar("queue", { length: 50 }),
   channel: mysqlEnum("channel", ["email", "phone", "web", "portal", "manual"]).default("email").notNull(),
   priority: mysqlEnum("priority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
-  status: mysqlEnum("status", ["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]).default("new").notNull(),
+  status: mysqlEnum("status", ["new", "open", "waiting_customer", "waiting_internal", "customer_replied", "resolved", "closed", "spam"]).default("new").notNull(),
+  waitingOn: mysqlEnum("waitingOn", ["customer", "internal", "staff", "none"]).default("staff").notNull(),
   assignedToId: int("assignedToId"),
   assignedToName: varchar("assignedToName", { length: 100 }),
   assignedAt: timestamp("assignedAt"),
+  lastResponderName: varchar("lastResponderName", { length: 255 }),
+  lastResponderEmail: varchar("lastResponderEmail", { length: 320 }),
   matchedJobId: int("matchedJobId"),
   matchedLeadId: int("matchedLeadId"),
   matchedClientEmail: varchar("matchedClientEmail", { length: 320 }),
@@ -2240,6 +2244,22 @@ export const inboxTickets = mysqlTable("inbox_tickets", {
 ]);
 export type InboxTicket = typeof inboxTickets.$inferSelect;
 export type InsertInboxTicket = typeof inboxTickets.$inferInsert;
+
+// Private ticket notes — never emailed to customers.
+export const inboxTicketNotes = mysqlTable("inbox_ticket_notes", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  ticketId: int("ticketId").notNull(),
+  body: text("body").notNull(),
+  createdBy: int("createdBy"),
+  createdByName: varchar("createdByName", { length: 100 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_inbox_ticket_notes_tenant_ticket").on(table.tenantId, table.ticketId),
+  index("idx_inbox_ticket_notes_ticket").on(table.ticketId),
+]);
+export type InboxTicketNote = typeof inboxTicketNotes.$inferSelect;
+export type InsertInboxTicketNote = typeof inboxTicketNotes.$inferInsert;
 
 // Junction table: inbox tickets ↔ tags
 export const inboxTicketTags = mysqlTable("inbox_ticket_tags", {

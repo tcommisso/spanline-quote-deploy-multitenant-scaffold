@@ -40,10 +40,19 @@ const STATUS_COLORS: Record<string, string> = {
   open: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   waiting_customer: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  waiting_internal: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
   customer_replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   sent: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+  resolved: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
   closed: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
   spam: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+};
+
+const WAITING_ON_LABELS: Record<string, string> = {
+  customer: "Waiting on customer",
+  internal: "Waiting internally",
+  staff: "Waiting on staff",
+  none: "No response needed",
 };
 
 export default function InboxThread({ threadId: rawThreadId }: { threadId: string }) {
@@ -57,6 +66,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [resolutionNotes, setResolutionNotes] = useState("");
+  const [internalNote, setInternalNote] = useState("");
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
   const { data: thread, isLoading, refetch } = trpc.inbox.getThread.useQuery({ threadId });
@@ -64,6 +74,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const { data: staffUsers } = trpc.inbox.staffUsers.useQuery();
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
+  const { data: internalNotes = [], refetch: refetchInternalNotes } = trpc.inbox.notes.list.useQuery({ threadId });
 
   const replyMut = trpc.inbox.reply.useMutation({
     onSuccess: () => {
@@ -91,6 +102,14 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
 
   const updateTicketMut = trpc.inbox.updateTicket.useMutation({
     onSuccess: () => { toast.success("Ticket updated"); refetch(); },
+    onError: (err) => toast.error(err.message),
+  });
+  const createNoteMut = trpc.inbox.notes.create.useMutation({
+    onSuccess: () => {
+      toast.success("Internal note added");
+      setInternalNote("");
+      refetchInternalNotes();
+    },
     onError: (err) => toast.error(err.message),
   });
 
@@ -275,8 +294,14 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
               <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "open" })}>
                 Reopen Ticket
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "closed" })}>
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "waiting_internal" })}>
+                Waiting Internally
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "resolved" })}>
                 Resolve Ticket
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "closed" })}>
+                Close Ticket
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => updateStatusMut.mutate({ threadId, status: "spam" })} className="text-red-600">
                 Mark as Spam
@@ -343,7 +368,9 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
                     <SelectItem value="new">New</SelectItem>
                     <SelectItem value="open">Open</SelectItem>
                     <SelectItem value="waiting_customer">Waiting on customer</SelectItem>
+                    <SelectItem value="waiting_internal">Waiting internally</SelectItem>
                     <SelectItem value="customer_replied">Customer replied</SelectItem>
+                    <SelectItem value="resolved">Resolved</SelectItem>
                     <SelectItem value="closed">Closed</SelectItem>
                     <SelectItem value="spam">Spam</SelectItem>
                   </SelectContent>
@@ -372,6 +399,18 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
               <div>
                 <p className="text-xs text-muted-foreground">Resolved</p>
                 <p>{ticket.resolvedAt ? `${formatDate(ticket.resolvedAt)}${ticket.resolvedByName ? ` by ${ticket.resolvedByName}` : ""}` : "Not resolved"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Queue</p>
+                <p className="capitalize">{ticket.queue ? String(ticket.queue).replace(/_/g, " ") : "Unqueued"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Waiting on</p>
+                <p>{WAITING_ON_LABELS[ticket.waitingOn as string] || ticket.waitingOn || "Staff"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Last responder</p>
+                <p>{ticket.lastResponderName || ticket.lastResponderEmail || "None"}</p>
               </div>
             </div>
 
@@ -407,6 +446,42 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
                   Save Notes
                 </Button>
               </div>
+            </div>
+
+            <div className="space-y-3 border-t pt-4">
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Internal notes</Label>
+                <Textarea
+                  value={internalNote}
+                  onChange={(event) => setInternalNote(event.target.value)}
+                  placeholder="Private note for staff..."
+                  className="min-h-[72px]"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!internalNote.trim() || createNoteMut.isPending}
+                    onClick={() => createNoteMut.mutate({ threadId, body: internalNote.trim() })}
+                  >
+                    Add Note
+                  </Button>
+                </div>
+              </div>
+
+              {internalNotes.length > 0 && (
+                <div className="space-y-2">
+                  {internalNotes.map((note: any) => (
+                    <div key={note.id} className="rounded-md border bg-muted/35 p-3">
+                      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                        <span>{note.createdByName || "Staff"}</span>
+                        <span>{formatDate(note.createdAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm whitespace-pre-wrap">{note.body}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

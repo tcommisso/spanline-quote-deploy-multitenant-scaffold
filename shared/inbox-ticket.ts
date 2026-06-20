@@ -6,7 +6,9 @@ export type InboxTicketStatus =
   | "new"
   | "open"
   | "waiting_customer"
+  | "waiting_internal"
   | "customer_replied"
+  | "resolved"
   | "closed"
   | "spam";
 
@@ -32,7 +34,9 @@ export const INBOX_TICKET_STATUS_LABELS: Record<InboxTicketStatus, string> = {
   new: "New",
   open: "Open",
   waiting_customer: "Waiting on customer",
+  waiting_internal: "Waiting internally",
   customer_replied: "Customer replied",
+  resolved: "Resolved",
   closed: "Closed",
   spam: "Spam",
 };
@@ -69,6 +73,7 @@ export function deriveInboxTicketState(messages: InboxTicketMessageLike[]): Inbo
   const latest = sorted[sorted.length - 1];
 
   if (latest.status === "spam") return { key: "spam", label: INBOX_TICKET_STATUS_LABELS.spam };
+  if (latest.status === "resolved") return { key: "resolved", label: INBOX_TICKET_STATUS_LABELS.resolved };
   if (latest.status === "closed") return { key: "closed", label: INBOX_TICKET_STATUS_LABELS.closed };
 
   if (latest.direction === "outbound") {

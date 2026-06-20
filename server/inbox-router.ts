@@ -17,7 +17,7 @@ import { getTenantEmailConfig } from "./tenant-integrations";
 import { appendInboxThreadMarkerHtml } from "./inbox-threading";
 
 const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
-const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]);
+const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "waiting_internal", "customer_replied", "resolved", "closed", "spam"]);
 const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
@@ -304,6 +304,29 @@ export const inboxRouter = router({
       );
       return { success: true, ticket };
     }),
+
+  notes: router({
+    list: protectedProcedure
+      .input(z.object({ threadId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        return inboxDb.listTicketNotes(input.threadId, ctx.tenant!.id);
+      }),
+
+    create: protectedProcedure
+      .input(z.object({
+        threadId: z.string(),
+        body: z.string().trim().min(1).max(5000),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        return inboxDb.createTicketNote(
+          input.threadId,
+          input.body,
+          ctx.tenant!.id,
+          ctx.user!.id,
+          ctx.user!.name || ctx.user!.email || null,
+        );
+      }),
+  }),
 
   togglePortalVisible: protectedProcedure
     .input(z.object({ id: z.number() }))

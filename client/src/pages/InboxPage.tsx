@@ -45,10 +45,19 @@ const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   open: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   waiting_customer: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  waiting_internal: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
   customer_replied: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   sent: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+  resolved: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
   closed: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
   spam: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+};
+
+const WAITING_ON_LABELS: Record<string, string> = {
+  customer: "Waiting on customer",
+  internal: "Waiting internally",
+  staff: "Waiting on staff",
+  none: "No response needed",
 };
 
 function parseFirstRecipient(toAddresses: unknown): string {
@@ -129,6 +138,7 @@ export default function InboxPage() {
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
   const { data: staffUsers } = trpc.inbox.staffUsers.useQuery();
   const { data: slaRule } = trpc.inbox.sla.getActive.useQuery();
+  const syncNowMut = trpc.inbox.syncNow.useMutation();
 
   const toggleStarMut = trpc.inbox.toggleStar.useMutation({
     onSuccess: () => { refetch(); },
@@ -236,7 +246,7 @@ export default function InboxPage() {
   // SLA status calculation
   function getSlaStatus(msg: any): "ok" | "warning" | "escalation" | null {
     const status = msg.ticketStatus || msg.status;
-    if (status === "waiting_customer" || status === "closed" || status === "spam") return null;
+    if (status === "waiting_customer" || status === "resolved" || status === "closed" || status === "spam") return null;
     if (msg.ticketSlaBreachedAt) return "escalation";
     if (msg.ticketSlaWarningAt && new Date(msg.ticketSlaWarningAt).getTime() <= Date.now()) return "warning";
     if (msg.ticketSlaDueAt) return "ok";
@@ -266,7 +276,7 @@ export default function InboxPage() {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const result = await utils.client.inbox.syncNow.mutate();
+      const result = await syncNowMut.mutateAsync();
       if (result.errors?.length) {
         toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`);
       } else if (!result.results?.length) {
@@ -283,7 +293,7 @@ export default function InboxPage() {
       utils.inbox.unreadCount.invalidate();
       setIsRefreshing(false);
     }
-  }, [refetch, utils.client.inbox.syncNow, utils.inbox.unreadCount]);
+  }, [refetch, syncNowMut, utils.inbox.unreadCount]);
 
   return (
     <PullToRefresh onRefresh={handleRefresh}>
@@ -315,8 +325,8 @@ export default function InboxPage() {
               <CheckCheck className="h-4 w-4 mr-1" /> Mark All Read
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
-            <RefreshCw className={`h-4 w-4 mr-1 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing || syncNowMut.isPending}>
+            <RefreshCw className={`h-4 w-4 mr-1 ${isRefreshing || syncNowMut.isPending ? "animate-spin" : ""}`} /> Refresh
           </Button>
           <Button size="sm" onClick={() => setLocation("/inbox/compose")}>
             <MailPlus className="h-4 w-4 mr-1" /> Compose
@@ -459,7 +469,9 @@ export default function InboxPage() {
                 <SelectItem value="new">New</SelectItem>
                 <SelectItem value="open">Open</SelectItem>
                 <SelectItem value="waiting_customer">Waiting on customer</SelectItem>
+                <SelectItem value="waiting_internal">Waiting internally</SelectItem>
                 <SelectItem value="customer_replied">Customer replied</SelectItem>
+                <SelectItem value="resolved">Resolved</SelectItem>
                 <SelectItem value="closed">Closed</SelectItem>
                 <SelectItem value="spam">Spam</SelectItem>
               </SelectContent>
@@ -721,6 +733,21 @@ export default function InboxPage() {
                       <span className="flex items-center gap-1">
                         <User className="h-3 w-3" />
                         {msg.assignedToName}
+                      </span>
+                    )}
+                    {msg.ticketQueue && (
+                      <span className="capitalize">
+                        Queue: {String(msg.ticketQueue).replace(/_/g, " ")}
+                      </span>
+                    )}
+                    {msg.ticketWaitingOn && (
+                      <span>
+                        {WAITING_ON_LABELS[msg.ticketWaitingOn] || msg.ticketWaitingOn}
+                      </span>
+                    )}
+                    {(msg.ticketLastResponderName || msg.ticketLastResponderEmail) && (
+                      <span>
+                        Last: {msg.ticketLastResponderName || msg.ticketLastResponderEmail}
                       </span>
                     )}
                     {msg.threadMessageCount > 1 && (
