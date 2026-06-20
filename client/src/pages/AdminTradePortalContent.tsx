@@ -19,10 +19,11 @@ import {
   Newspaper, FileText, MessageSquare, KeyRound, Plus, Trash2, Send,
   Eye, EyeOff, RefreshCw, Copy, ExternalLink, Menu, ChevronDown,
   HardHat, Mail, Pencil, Check, X, Clock, ArrowLeft, Link2, Loader2,
-  Phone, AlertCircle, Download, ArrowUpDown, Users, FileCheck
+  Phone, AlertCircle, Download, ArrowUpDown, Users, FileCheck, BellRing
 } from "lucide-react";
 import { toast } from "sonner";
 import RichTextEditor from "@/components/RichTextEditor";
+import TradeNotificationRulesManager from "@/components/TradeNotificationRulesManager";
 
 // ─── News Tab ───────────────────────────────────────────────────────────────
 
@@ -1162,6 +1163,7 @@ const portalTabs = [
   { value: "news", label: "News", icon: Newspaper },
   { value: "remittances", label: "Remittances", icon: FileText },
   { value: "messages", label: "Messages", icon: MessageSquare },
+  { value: "notifications", label: "Notification Rules", icon: BellRing },
   { value: "access", label: "Access Management", icon: KeyRound },
 ] as const;
 
@@ -1176,7 +1178,7 @@ export default function AdminTradePortalContent() {
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <HardHat className="w-6 h-6" /> Trade Portal Management
         </h1>
-        <p className="text-muted-foreground">Manage trade portal content: news, remittances, messages, and access</p>
+        <p className="text-muted-foreground">Manage trade portal content, notifications, remittances, messages, and access</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
@@ -1225,6 +1227,7 @@ export default function AdminTradePortalContent() {
         <TabsContent value="news"><NewsTab /></TabsContent>
         <TabsContent value="remittances"><RemittancesTab /></TabsContent>
         <TabsContent value="messages"><MessagesTab /></TabsContent>
+        <TabsContent value="notifications"><TradeNotificationRulesManager /></TabsContent>
         <TabsContent value="access"><AccessManagementTab /></TabsContent>
       </Tabs>
     </div>

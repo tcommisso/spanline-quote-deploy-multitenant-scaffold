@@ -815,7 +815,7 @@ export const securityScreensRouter = router({
           adjustedPrice: null,
           factor: 1,
           markupPercent: 0,
-          warnings: ["No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix."],
+          warnings: ["No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Security Screen Data > Matrix."],
           outOfRange: false,
         };
       }
@@ -1294,7 +1294,7 @@ export const securityScreensRouter = router({
         if (!price) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix before adding this item.",
+            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Security Screen Data > Matrix before adding this item.",
           });
         }
         const factor = await getCumulativeAdjustmentFactor(db, tenantId);
@@ -1410,7 +1410,7 @@ export const securityScreensRouter = router({
         if (!price) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Screen Pricing > Matrix before updating this item.",
+            message: "No pricing matrix exists for this brand/product type. Import the matrix in Admin > Data & Pricing > Security Screen Data > Matrix before updating this item.",
           });
         }
         const factor = await getCumulativeAdjustmentFactor(db, tenantId);

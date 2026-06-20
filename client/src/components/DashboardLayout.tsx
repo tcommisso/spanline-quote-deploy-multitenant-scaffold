@@ -275,7 +275,7 @@ const adminGroups: AdminGroup[] = [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
       { icon: Package, label: "Construction Data", path: "/admin/component-catalogue" },
       { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
-      { icon: ShieldCheck, label: "Screen Pricing", path: "/admin/security-screens" },
+      { icon: ShieldCheck, label: "Security Screen Data", path: "/admin/security-screens" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
       { icon: History, label: "Import History", path: "/admin/import-history" },
