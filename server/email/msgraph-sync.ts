@@ -251,7 +251,9 @@ async function processGraphMessage(
     assignedToName: address.defaultAssigneeName || null,
     assignedAt: address.defaultAssigneeId ? new Date() : null,
     status: direction === "outbound" ? "open" : "new",
-    isRead: msg.isRead || direction === "outbound",
+    // Treat newly imported customer mail as unread inside Altaspan, even if the
+    // shared mailbox has already marked it read in Outlook.
+    isRead: direction === "outbound",
     isStarred: false,
     portalVisible: false,
     autoReplySent: false,

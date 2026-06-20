@@ -83,8 +83,32 @@ function parseFirstRecipient(toAddresses: unknown): string {
   return toAddresses.split(/[;,]/)[0]?.trim() || toAddresses;
 }
 
+function timestampMs(value: unknown): number {
+  if (!value) return 0;
+  const time = new Date(String(value)).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function hasCustomerReply(msg: any): boolean {
+  const unreadCount = Number(msg.threadUnreadCount || 0);
+  const messageCount = Number(msg.threadMessageCount || 0);
+  const latestDirection = msg.ticketLatestDirection || msg.direction;
+  if (msg.ticketStatus === "customer_replied") return true;
+  if (latestDirection === "inbound" && messageCount > 1) return true;
+  if (unreadCount <= 0) return false;
+  const lastInboundAt = timestampMs(msg.ticketLastInboundAt);
+  const lastOutboundAt = timestampMs(msg.ticketLastOutboundAt);
+  return lastInboundAt > 0 && lastOutboundAt > 0 && lastInboundAt >= lastOutboundAt;
+}
+
 function displayStatusForMessage(msg: any): { key: string; label: string } | null {
   const key = msg.ticketStatus || msg.status || "open";
+  if (!["resolved", "closed", "spam"].includes(key) && hasCustomerReply(msg)) {
+    return {
+      key: "customer_replied",
+      label: INBOX_TICKET_STATUS_LABELS.customer_replied,
+    };
+  }
   return {
     key,
     label: msg.ticketStatusLabel || INBOX_TICKET_STATUS_LABELS[key as InboxTicketStatus] || key,
@@ -635,11 +659,12 @@ export default function InboxPage() {
             const slaStatus = getSlaStatus(msg);
             const displayStatus = displayStatusForMessage(msg);
             const participantLabel = participantLabelForMessage(msg);
+            const unreadReplies = Number(msg.threadUnreadCount || 0);
             const slaBg =
               slaStatus === "escalation" ? "border-l-4 border-l-red-500 bg-red-50/50 dark:bg-red-950/20" :
               slaStatus === "warning" ? "border-l-4 border-l-amber-500 bg-amber-50/50 dark:bg-amber-950/20" :
               "";
-            const isUnread = !msg.isRead;
+            const isUnread = unreadReplies > 0 || !msg.isRead;
             const isSelected = selectedIds.has(msg.id);
 
             return (
@@ -701,6 +726,11 @@ export default function InboxPage() {
                     {displayStatus && (
                       <Badge className={`text-[10px] px-1.5 py-0 h-4 shrink-0 ${STATUS_COLORS[displayStatus.key] || ""}`}>
                         {displayStatus.label}
+                      </Badge>
+                    )}
+                    {unreadReplies > 0 && (
+                      <Badge className="text-[10px] px-1.5 py-0 h-4 shrink-0 bg-primary text-primary-foreground">
+                        {unreadReplies} unread
                       </Badge>
                     )}
                     {msg.ticketPriority && msg.ticketPriority !== "normal" && (
@@ -773,9 +803,9 @@ export default function InboxPage() {
                         {msg.threadMessageCount} messages
                       </span>
                     )}
-                    {msg.threadUnreadCount > 0 && (
+                    {unreadReplies > 0 && (
                       <span className="text-primary font-medium">
-                        {msg.threadUnreadCount} unread
+                        {unreadReplies} unread message{unreadReplies === 1 ? "" : "s"}
                       </span>
                     )}
                     {Array.isArray(msg.tags) && msg.tags.slice(0, 3).map((tag: any) => (
