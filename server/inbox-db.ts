@@ -304,29 +304,31 @@ async function getQueueForAddress(address: string, tenantId?: number | null): Pr
 export async function ensureTicketsForTenant(tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  const ticketCountConditions: any[] = [];
-  appendTenantScope(ticketCountConditions, inboxTickets.tenantId, tenantId);
+  const ticketConditionsForTenant: any[] = [];
+  appendTenantScope(ticketConditionsForTenant, inboxTickets.tenantId, tenantId);
   const messageConditions: any[] = [];
   appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
-
-  const [ticketCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(inboxTickets)
-    .where(ticketCountConditions.length ? and(...ticketCountConditions) : undefined);
-  const [messageCount] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(inboxMessages)
-    .where(messageConditions.length ? and(...messageConditions) : undefined);
-
-  if (Number(ticketCount?.count || 0) > 0 || Number(messageCount?.count || 0) === 0) return;
 
   const threads = await db
     .select({ threadId: inboxMessages.threadId })
     .from(inboxMessages)
     .where(messageConditions.length ? and(...messageConditions) : undefined)
     .groupBy(inboxMessages.threadId);
+  if (threads.length === 0) return;
 
-  await syncTicketsForThreads(threads.map((thread) => thread.threadId), tenantId);
+  const tickets = await db
+    .select({ threadId: inboxTickets.threadId, latestMessageId: inboxTickets.latestMessageId })
+    .from(inboxTickets)
+    .where(ticketConditionsForTenant.length ? and(...ticketConditionsForTenant) : undefined);
+
+  const ticketThreads = new Set(tickets.map((ticket) => ticket.threadId));
+  const threadsToSync = threads
+    .map((thread) => thread.threadId)
+    .filter((threadId) => threadId && !ticketThreads.has(threadId));
+
+  if (threadsToSync.length === 0 && tickets.length >= threads.length) return;
+
+  await syncTicketsForThreads(threadsToSync.length > 0 ? threadsToSync : threads.map((thread) => thread.threadId), tenantId);
 }
 
 export async function getTicketByThread(threadId: string, tenantId?: number | null) {
@@ -691,6 +693,20 @@ export async function listInboxMessages(filters: {
       .from(inboxMessages)
       .where(inArray(inboxMessages.id, latestMessageIds)) : [];
     const messagesById = new Map(latestMessages.map((message) => [message.id, message]));
+    const fallbackMessagesByThread = new Map<string, InboxMessage>();
+    for (const ticket of tickets) {
+      if (ticket.latestMessageId && messagesById.has(ticket.latestMessageId)) continue;
+      const [latestForThread] = await db
+        .select()
+        .from(inboxMessages)
+        .where(and(...messageThreadConditions(ticket.threadId, filters.tenantId)))
+        .orderBy(desc(inboxMessages.createdAt), desc(inboxMessages.id))
+        .limit(1);
+      if (latestForThread) {
+        fallbackMessagesByThread.set(ticket.threadId, latestForThread);
+        await syncTicketForThreadBestEffort(ticket.threadId, filters.tenantId, "stale ticket latest message repair");
+      }
+    }
 
     const tagRows = await db
       .select({
@@ -727,10 +743,11 @@ export async function listInboxMessages(filters: {
       tagsByTicket.set(row.ticketId, bucket);
     }
 
-    return {
-      messages: tickets
-        .map((ticket) => {
-          const latest = ticket.latestMessageId ? messagesById.get(ticket.latestMessageId) : null;
+    const ticketMessages = tickets
+      .map((ticket) => {
+          const latest = (ticket.latestMessageId ? messagesById.get(ticket.latestMessageId) : null)
+            || fallbackMessagesByThread.get(ticket.threadId)
+            || null;
           if (!latest) return null;
           const status = normalizeTicketStatus(ticket.status);
           return {
@@ -778,7 +795,14 @@ export async function listInboxMessages(filters: {
             tags: tagsByTicket.get(ticket.id) || [],
           };
         })
-        .filter(Boolean),
+        .filter(Boolean);
+
+    if (ticketMessages.length === 0 && Number(totalRow?.count || 0) > 0) {
+      return listInboxMessagesFromLegacy(filters);
+    }
+
+    return {
+      messages: ticketMessages,
       total: Number(totalRow?.count || 0),
     };
   } catch (err: any) {
