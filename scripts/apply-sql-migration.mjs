@@ -24,11 +24,19 @@ function validateDatabaseUrl(url) {
     process.exit(1);
   }
 
+  let parsedUrl;
   try {
-    new URL(trimmedUrl);
+    parsedUrl = new URL(trimmedUrl);
   } catch {
     console.error("The database URL is not valid. Use the real MySQL URL, for example mysql://user:password@host:port/database.");
     console.error("If the password contains special characters such as @, #, %, or /, URL-encode them in the connection string.");
+    process.exit(1);
+  }
+
+  const placeholderHosts = new Set(["...", "host", "hostname", "your-host", "your-database-host"]);
+  const hostname = parsedUrl.hostname.toLowerCase();
+  if (!hostname || hostname.includes("...") || placeholderHosts.has(hostname) || hostname.startsWith("your-")) {
+    console.error("The database URL host is still a placeholder. Replace the host with the real MySQL database host.");
     process.exit(1);
   }
 
@@ -116,8 +124,14 @@ try {
     console.log(`Migration ${migrationName} applied successfully.`);
   }
 } catch (error) {
-  console.error(`Migration ${migrationName} failed:`, error);
-  process.exitCode = 1;
+  if (error?.code === "ENOTFOUND") {
+    console.error("Migration could not connect because the database host could not be resolved.");
+    console.error("Check that DATABASE_URL/MYSQL_PUBLIC_URL contains the real host from your database provider, not a placeholder.");
+    process.exitCode = 1;
+  } else {
+    console.error(`Migration ${migrationName} failed:`, error);
+    process.exitCode = 1;
+  }
 } finally {
   await connection?.end();
 }
