@@ -30,6 +30,27 @@ const SCREEN_QUOTE_STATUS_LABELS: Record<string, string> = {
   expired: "Expired",
 };
 
+type SecurityScreenQuoteIdentifier = number | string;
+
+function quoteDetailPath(quote: { id?: unknown; quoteNumber?: unknown }) {
+  const quoteNumber = String(quote.quoteNumber || "").trim();
+  if (quoteNumber) return `/security-screens/quote/${encodeURIComponent(quoteNumber)}`;
+  return `/security-screens/quote/${quote.id}`;
+}
+
+function parseQuoteIdentifier(rawId: unknown): SecurityScreenQuoteIdentifier | null {
+  const raw = Array.isArray(rawId) ? rawId[0] : rawId;
+  if (!raw) return null;
+  let text = String(raw).trim();
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    // Use the raw route segment if it is not URI encoded cleanly.
+  }
+  if (!text) return null;
+  return /^\d+$/.test(text) ? Number(text) : text;
+}
+
 function money(value: unknown) {
   return Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" });
 }
@@ -616,36 +637,38 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
 
 // ─── Quote Detail / Builder Page ────────────────────────────────────────────
 
-function QuoteDetail({ quoteId }: { quoteId: number }) {
+function QuoteDetail({ quoteRef }: { quoteRef: SecurityScreenQuoteIdentifier }) {
   const utils = trpc.useUtils();
-  const { data: quote, isLoading } = trpc.securityScreens.quotes.getById.useQuery({ id: quoteId });
+  const quoteQueryInput = { id: quoteRef };
+  const { data: quote, isLoading } = trpc.securityScreens.quotes.getById.useQuery(quoteQueryInput);
   const { data: costAdditions = [] } = trpc.securityScreens.costAdditions.list.useQuery();
+  const quoteId = Number(quote?.id ?? (typeof quoteRef === "number" ? quoteRef : NaN));
   const removeItemMutation = trpc.securityScreens.quotes.removeItem.useMutation({
-    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Item removed"); },
+    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Item removed"); },
   });
   const addCostMutation = trpc.securityScreens.quotes.addCostAddition.useMutation({
-    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Cost added"); },
+    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Cost added"); },
   });
   const removeCostMutation = trpc.securityScreens.quotes.removeCostAddition.useMutation({
-    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Cost removed"); },
+    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Cost removed"); },
   });
   const updateStatusMutation = trpc.securityScreens.quotes.updateStatus.useMutation({
     onSuccess: () => {
-      utils.securityScreens.quotes.getById.invalidate({ id: quoteId });
+      utils.securityScreens.quotes.getById.invalidate(quoteQueryInput);
       toast.success("Quote status updated");
     },
     onError: (e) => toast.error(e.message),
   });
   const updateCostMutation = trpc.securityScreens.quotes.updateCostAddition.useMutation({
     onSuccess: () => {
-      utils.securityScreens.quotes.getById.invalidate({ id: quoteId });
+      utils.securityScreens.quotes.getById.invalidate(quoteQueryInput);
       setEditingCost(null);
       toast.success("Cost updated");
     },
     onError: (e) => toast.error(e.message),
   });
   const uploadPhotoMutation = trpc.securityScreens.quotes.uploadPhoto.useMutation({
-    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate({ id: quoteId }); toast.success("Photo uploaded"); },
+    onSuccess: () => { utils.securityScreens.quotes.getById.invalidate(quoteQueryInput); toast.success("Photo uploaded"); },
   });
 
   const handlePhotoUpload = (quoteItemId: number) => {
@@ -900,7 +923,7 @@ function QuoteList() {
     onSuccess: (data) => {
       setForm(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
       setCreateOpen(false);
-      setLocation(`/security-screens/quote/${data.id}`);
+      setLocation(quoteDetailPath(data));
       toast.success(`Quote ${data.quoteNumber} created`);
     },
     onError: (e) => toast.error(e.message || "Could not create security screen quote"),
@@ -909,7 +932,7 @@ function QuoteList() {
     onSuccess: (data) => {
       setLeadQuery("");
       setLeadSearchOpen(false);
-      setLocation(`/security-screens/quote/${data.id}`);
+      setLocation(quoteDetailPath(data));
       toast.success(`Quote ${data.quoteNumber} created from lead`);
       if (data.leadUnarchived) {
         toast.info("Lead was automatically unarchived");
@@ -920,7 +943,7 @@ function QuoteList() {
   const cloneMutation = trpc.securityScreens.quotes.clone.useMutation({
     onSuccess: (data) => {
       utils.securityScreens.quotes.list.invalidate();
-      setLocation(`/security-screens/quote/${data.id}`);
+      setLocation(quoteDetailPath(data));
       toast.success(`Quote ${data.quoteNumber} cloned`);
     },
     onError: (e) => toast.error(e.message),
@@ -1018,7 +1041,7 @@ function QuoteList() {
           <TableHeader><TableRow><TableHead>Quote #</TableHead><TableHead>Client</TableHead><TableHead>Address</TableHead><TableHead>Status</TableHead><TableHead>Total (inc GST)</TableHead><TableHead>Created</TableHead><TableHead className="w-12"></TableHead></TableRow></TableHeader>
           <TableBody>
             {quotes.map((q: any) => (
-              <TableRow key={q.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/security-screens/quote/${q.id}`)}>
+              <TableRow key={q.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(quoteDetailPath(q))}>
                 <TableCell className="font-mono font-medium">{q.quoteNumber}</TableCell>
                 <TableCell>{q.clientName}</TableCell>
                 <TableCell className="text-muted-foreground">{q.siteAddress || "—"}</TableCell>
@@ -1052,8 +1075,8 @@ function QuoteList() {
 
 export default function SecurityScreenQuote() {
   const params = useParams();
-  const quoteId = params?.id ? parseInt(params.id as string) : null;
+  const quoteRef = parseQuoteIdentifier(params?.id);
 
-  if (quoteId) return <QuoteDetail quoteId={quoteId} />;
+  if (quoteRef) return <QuoteDetail quoteRef={quoteRef} />;
   return <QuoteList />;
 }

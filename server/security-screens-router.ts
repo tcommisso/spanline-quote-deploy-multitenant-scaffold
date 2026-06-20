@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
@@ -549,6 +549,29 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
 }
 
 const statusInput = z.enum(["draft", "sent", "accepted", "declined", "expired"]);
+const quoteIdentifierInput = z.union([z.number().int().positive(), z.string().trim().min(1)]);
+
+function quoteLookupCondition(identifier: z.infer<typeof quoteIdentifierInput>) {
+  const rawIdentifier = String(identifier).trim();
+  const numericId = typeof identifier === "number"
+    ? identifier
+    : (/^\d+$/.test(rawIdentifier) ? Number(rawIdentifier) : null);
+  const conditions = [];
+
+  if (numericId && Number.isSafeInteger(numericId) && numericId > 0) {
+    conditions.push(eq(ssQuotes.id, numericId));
+  }
+
+  if (rawIdentifier && !/^\d+$/.test(rawIdentifier)) {
+    conditions.push(eq(ssQuotes.quoteNumber, rawIdentifier.toUpperCase()));
+  }
+
+  if (conditions.length === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid security screen quote reference" });
+  }
+
+  return conditions.length === 1 ? conditions[0] : or(...conditions);
+}
 
 export const securityScreensRouter = router({
   pricingSettings: router({
@@ -963,14 +986,20 @@ export const securityScreensRouter = router({
       }),
 
     getById: tenantProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: quoteIdentifierInput }))
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        const quote = await requireQuote(db, tenantId, input.id);
-        const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
+        const [quote] = await db
+          .select()
+          .from(ssQuotes)
+          .where(and(quoteLookupCondition(input.id), scope(ssQuotes.tenantId, tenantId)))
+          .limit(1);
+        if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Security screen quote not found" });
+        const quoteId = Number(quote.id);
+        const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, quoteId), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
         const itemOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
-        const costAdditions = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, input.id), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+        const costAdditions = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
         const costDefinitions = await db.select().from(ssCostAdditions).where(scope(ssCostAdditions.tenantId, tenantId));
         return {
           ...quote,
