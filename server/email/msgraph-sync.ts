@@ -35,6 +35,8 @@ function isRecoverableDeltaError(err: unknown): boolean {
     || message.includes("deltatoken")
     || message.includes("resync")
     || message.includes("expired")
+    || message.includes("errorinvaliduser")
+    || message.includes("requested user")
     || (message.includes("delta") && message.includes("invalid"))
   );
 }
