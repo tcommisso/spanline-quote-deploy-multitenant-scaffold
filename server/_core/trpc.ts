@@ -1,4 +1,4 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import { isAdminRole, normalizeUserRole, NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -30,15 +30,14 @@ const requireUser = t.middleware(async opts => {
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
-const ADMIN_ROLES = ['admin', 'super_admin'];
 const TENANT_ADMIN_ROLES = ['owner', 'admin'];
 
 export function canAdministerTenant(
   userRole: string | null | undefined,
   tenantRole: string | null | undefined,
 ) {
-  if (tenantRole && TENANT_ADMIN_ROLES.includes(tenantRole)) return true;
-  return ENV.tenancyMode !== "multi" && !!userRole && ADMIN_ROLES.includes(userRole);
+  if (tenantRole && TENANT_ADMIN_ROLES.includes(normalizeUserRole(tenantRole))) return true;
+  return ENV.tenancyMode !== "multi" && isAdminRole(userRole);
 }
 
 export const adminProcedure = t.procedure.use(
@@ -46,7 +45,7 @@ export const adminProcedure = t.procedure.use(
     const { ctx, next } = opts;
     const user = ctx.user;
 
-    if (!user || !ADMIN_ROLES.includes(user.role)) {
+    if (!user || !isAdminRole(user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 
@@ -64,7 +63,7 @@ export const superAdminProcedure = t.procedure.use(
     const { ctx, next } = opts;
     const user = ctx.user;
 
-    if (!user || user.role !== 'super_admin') {
+    if (!user || normalizeUserRole(user.role) !== 'super_admin') {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 

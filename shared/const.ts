@@ -47,8 +47,15 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 export const ADMIN_ROLES: UserRole[] = ['admin', 'super_admin'];
 export const APP_ROLES: UserRole[] = ['super_admin', 'admin', 'design_adviser', 'office_user', 'construction_user', 'driver', 'warehouse'];
 
-export function isAdminRole(role: string): boolean {
-  return ADMIN_ROLES.includes(role as UserRole);
+export function normalizeUserRole(role: string | null | undefined): string {
+  return String(role || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+export function isAdminRole(role: string | null | undefined): boolean {
+  return ADMIN_ROLES.includes(normalizeUserRole(role) as UserRole);
 }
 
 export const PERMISSION_LABELS: Record<PermissionKey, string> = {
