@@ -98,6 +98,7 @@ export async function resolveInboxThreadIdForMessage(args: {
   db?: Db;
   tenantId: number | null;
   fallbackThreadId: string;
+  graphConversationId?: string | null;
   direction: "inbound" | "outbound";
   subject?: string | null;
   fromAddress: string;
@@ -116,6 +117,18 @@ export async function resolveInboxThreadIdForMessage(args: {
   if (markedThreadId) {
     const existing = await existingThreadId(db, markedThreadId, args.tenantId);
     if (existing) return existing;
+  }
+
+  if (args.graphConversationId) {
+    const graphConditions: any[] = [eq(inboxMessages.graphConversationId, args.graphConversationId)];
+    if (args.tenantId != null) graphConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+    const [graphMatch] = await db
+      .select({ threadId: inboxMessages.threadId })
+      .from(inboxMessages)
+      .where(and(...graphConditions))
+      .orderBy(desc(inboxMessages.createdAt))
+      .limit(1);
+    if (graphMatch?.threadId) return graphMatch.threadId;
   }
 
   const referencedIds = collectReferencedMessageIds(args.inReplyToHeader, args.referencesHeader);

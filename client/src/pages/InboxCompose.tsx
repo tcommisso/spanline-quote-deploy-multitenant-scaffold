@@ -162,6 +162,7 @@ export default function InboxCompose() {
   const [includeRateUs, setIncludeRateUs] = useState(false);
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
+  const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
   const composeMut = trpc.inbox.compose.useMutation({
     onSuccess: () => {
       toast.success("Email sent");
@@ -189,6 +190,19 @@ export default function InboxCompose() {
       includeRateUs,
       fromAddressId: fromAddressId !== "default" ? parseInt(fromAddressId) : undefined,
     });
+  }
+
+  function applyTemplate(templateId: string) {
+    const template = replyTemplates.find((item: any) => String(item.id) === templateId);
+    if (!template) return;
+    const rawBody = template.bodyText || String(template.bodyHtml || "").replace(/<[^>]+>/g, "");
+    const rendered = rawBody
+      .replace(/\{\{\s*ticketSubject\s*\}\}/g, subject)
+      .replace(/\{\{\s*clientName\s*\}\}/g, toEmails[0] || "")
+      .replace(/\{\{\s*(jobNumber|branch|constructionManager)\s*\}\}/g, "");
+    setBody((current) => current.trim() ? `${current.trim()}\n\n${rendered.trim()}` : rendered.trim());
+    if (!subject && template.subject) setSubject(template.subject);
+    toast.success(`Inserted "${template.name}"`);
   }
 
   return (
@@ -266,6 +280,24 @@ export default function InboxCompose() {
           </div>
 
           {/* Body */}
+          {replyTemplates.length > 0 && (
+            <div className="flex items-center gap-3">
+              <Label className="w-16 text-sm text-muted-foreground shrink-0">Template</Label>
+              <Select onValueChange={applyTemplate}>
+                <SelectTrigger className="flex-1">
+                  <SelectValue placeholder="Insert canned reply" />
+                </SelectTrigger>
+                <SelectContent>
+                  {replyTemplates.map((template: any) => (
+                    <SelectItem key={template.id} value={String(template.id)}>
+                      {template.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <Textarea
             placeholder="Write your message..."
             value={body}

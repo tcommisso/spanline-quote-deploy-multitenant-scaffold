@@ -2153,6 +2153,7 @@ export const inboxMessages = mysqlTable("inbox_messages", {
   direction: mysqlEnum("direction", ["inbound", "outbound"]).notNull(),
   resendEmailId: varchar("resendEmailId", { length: 128 }),
   graphMessageId: varchar("graphMessageId", { length: 512 }), // Microsoft Graph message ID
+  graphConversationId: varchar("graphConversationId", { length: 512 }),
   messageId: varchar("messageId", { length: 512 }),
   inReplyTo: varchar("inReplyTo", { length: 512 }),
   emailReferences: text("emailReferences"),
@@ -2188,6 +2189,7 @@ export const inboxMessages = mysqlTable("inbox_messages", {
 }, (table) => [
   index("idx_inbox_messages_tenant").on(table.tenantId),
   index("idx_inbox_messages_thread_tenant").on(table.tenantId, table.threadId),
+  index("idx_inbox_messages_tenant_graph_conversation").on(table.tenantId, table.graphConversationId),
 ]);
 export type InboxMessage = typeof inboxMessages.$inferSelect;
 export type InsertInboxMessage = typeof inboxMessages.$inferInsert;
@@ -2197,6 +2199,7 @@ export const inboxTickets = mysqlTable("inbox_tickets", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id),
   threadId: varchar("threadId", { length: 128 }).notNull(),
+  graphConversationId: varchar("graphConversationId", { length: 512 }),
   subject: varchar("subject", { length: 1000 }),
   requesterEmail: varchar("requesterEmail", { length: 320 }),
   requesterName: varchar("requesterName", { length: 255 }),
@@ -2226,6 +2229,11 @@ export const inboxTickets = mysqlTable("inbox_tickets", {
   slaWarningAt: timestamp("slaWarningAt"),
   slaDueAt: timestamp("slaDueAt"),
   slaBreachedAt: timestamp("slaBreachedAt"),
+  slaRuleId: int("slaRuleId"),
+  slaMetric: mysqlEnum("slaMetric", ["first_response", "next_response", "resolution"]),
+  slaFirstResponseDueAt: timestamp("slaFirstResponseDueAt"),
+  slaNextResponseDueAt: timestamp("slaNextResponseDueAt"),
+  slaResolutionDueAt: timestamp("slaResolutionDueAt"),
   resolvedAt: timestamp("resolvedAt"),
   resolvedBy: int("resolvedBy"),
   resolvedByName: varchar("resolvedByName", { length: 100 }),
@@ -2241,6 +2249,7 @@ export const inboxTickets = mysqlTable("inbox_tickets", {
   index("idx_inbox_tickets_tenant_status").on(table.tenantId, table.status),
   index("idx_inbox_tickets_tenant_assignee").on(table.tenantId, table.assignedToId),
   index("idx_inbox_tickets_tenant_last_message").on(table.tenantId, table.lastMessageAt),
+  index("idx_inbox_tickets_tenant_graph_conversation").on(table.tenantId, table.graphConversationId),
 ]);
 export type InboxTicket = typeof inboxTickets.$inferSelect;
 export type InsertInboxTicket = typeof inboxTickets.$inferInsert;
@@ -2260,6 +2269,48 @@ export const inboxTicketNotes = mysqlTable("inbox_ticket_notes", {
 ]);
 export type InboxTicketNote = typeof inboxTicketNotes.$inferSelect;
 export type InsertInboxTicketNote = typeof inboxTicketNotes.$inferInsert;
+
+// Shared reply templates for canned staff responses.
+export const inboxReplyTemplates = mysqlTable("inbox_reply_templates", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  name: varchar("name", { length: 100 }).notNull(),
+  queue: varchar("queue", { length: 50 }),
+  category: varchar("category", { length: 80 }),
+  subject: varchar("subject", { length: 255 }),
+  bodyHtml: mediumtext("bodyHtml").notNull(),
+  bodyText: mediumtext("bodyText"),
+  active: boolean("active").default(true).notNull(),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  createdBy: int("createdBy"),
+  createdByName: varchar("createdByName", { length: 100 }),
+  updatedBy: int("updatedBy"),
+  updatedByName: varchar("updatedByName", { length: 100 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_inbox_reply_templates_tenant").on(table.tenantId),
+  index("idx_inbox_reply_templates_tenant_active").on(table.tenantId, table.active),
+  index("idx_inbox_reply_templates_tenant_queue").on(table.tenantId, table.queue),
+]);
+export type InboxReplyTemplate = typeof inboxReplyTemplates.$inferSelect;
+export type InsertInboxReplyTemplate = typeof inboxReplyTemplates.$inferInsert;
+
+// Lightweight presence used to warn when another staff member has a ticket open/replying.
+export const inboxTicketPresence = mysqlTable("inbox_ticket_presence", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  threadId: varchar("threadId", { length: 128 }).notNull(),
+  userId: int("userId").notNull(),
+  userName: varchar("userName", { length: 100 }),
+  mode: mysqlEnum("mode", ["viewing", "replying"]).default("viewing").notNull(),
+  lastSeenAt: timestamp("lastSeenAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_inbox_ticket_presence_tenant_thread_user").on(table.tenantId, table.threadId, table.userId),
+  index("idx_inbox_ticket_presence_tenant_thread").on(table.tenantId, table.threadId),
+]);
+export type InboxTicketPresence = typeof inboxTicketPresence.$inferSelect;
+export type InsertInboxTicketPresence = typeof inboxTicketPresence.$inferInsert;
 
 // Junction table: inbox tickets ↔ tags
 export const inboxTicketTags = mysqlTable("inbox_ticket_tags", {
@@ -2321,6 +2372,11 @@ export const inboxSlaRules = mysqlTable("inbox_sla_rules", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 100 }).notNull(),
+  queue: varchar("queue", { length: 50 }),
+  priority: mysqlEnum("slaPriority", ["low", "normal", "high", "urgent"]),
+  firstResponseHours: int("firstResponseHours").default(4).notNull(),
+  nextResponseHours: int("nextResponseHours").default(24).notNull(),
+  resolutionHours: int("resolutionHours").default(72).notNull(),
   warningHours: int("warningHours").default(24).notNull(),
   escalationHours: int("escalationHours").default(36).notNull(),
   reminderTargets: varchar("reminderTargets", { length: 512 }).default('["assigned","manager"]').notNull(),

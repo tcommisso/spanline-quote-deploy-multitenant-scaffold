@@ -5,10 +5,11 @@
 import { eq, and, desc, like, sql, or, gte, lte, inArray, isNull, isNotNull, asc } from "drizzle-orm";
 import { getDb } from "./db";
 import {
-  inboxMessages, inboxTickets, inboxTicketTags, inboxTicketNotes, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
+  inboxMessages, inboxTickets, inboxTicketTags, inboxTicketNotes, inboxReplyTemplates, inboxTicketPresence, inboxTags, inboxMessageTags, emailSignatures, inboxSettings, inboxSlaRules, inboxAddresses,
   crmLeads, portalAccess, constructionJobs, clientActivities, users, tenantMemberships,
   type InboxMessage, type InsertInboxMessage,
   type InboxTicket,
+  type InsertInboxReplyTemplate,
   type InboxTag, type InsertInboxTag,
   type EmailSignature, type InsertEmailSignature,
   type InboxSetting, type InsertInboxSetting,
@@ -71,9 +72,32 @@ function waitingOnForStatus(status: InboxTicketStatus): "customer" | "internal" 
   return "staff";
 }
 
+type SlaMetric = "first_response" | "next_response" | "resolution";
+type SlaDueCandidate = { metric: SlaMetric; dueAt: Date | null; baseAt: Date | string | null | undefined };
+
+function chooseEarliestDue(candidates: SlaDueCandidate[]): SlaDueCandidate | null {
+  const valid = candidates.filter((candidate) => candidate.dueAt);
+  if (valid.length === 0) return null;
+  return valid.sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime())[0];
+}
+
+function priorityRank(priority?: string | null) {
+  if (priority === "urgent") return 4;
+  if (priority === "high") return 3;
+  if (priority === "normal") return 2;
+  if (priority === "low") return 1;
+  return 0;
+}
+
 function ticketConditions(threadId: string, tenantId?: number | null) {
   const conditions: any[] = [eq(inboxTickets.threadId, threadId)];
   appendTenantScope(conditions, inboxTickets.tenantId, tenantId);
+  return conditions;
+}
+
+function ticketPresenceConditions(threadId: string, tenantId?: number | null) {
+  const conditions: any[] = [eq(inboxTicketPresence.threadId, threadId)];
+  appendTenantScope(conditions, inboxTicketPresence.tenantId, tenantId);
   return conditions;
 }
 
@@ -106,6 +130,7 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
     if (existing) {
       await db.delete(inboxTicketTags).where(eq(inboxTicketTags.ticketId, existing.id));
       await db.delete(inboxTicketNotes).where(eq(inboxTicketNotes.ticketId, existing.id));
+      await db.delete(inboxTicketPresence).where(and(...ticketPresenceConditions(threadId, tenantId)));
       await db.delete(inboxTickets).where(and(eq(inboxTickets.id, existing.id), ...ticketConditions(threadId, tenantId)));
     }
     return null;
@@ -144,26 +169,47 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
     }
   }
 
-  const activeSla = await getActiveSlaRule(tenantId);
-  const shouldTrackSla = !isTerminalTicketStatus(status) && status !== "waiting_customer";
-  const slaBase = shouldTrackSla ? (lastInbound?.createdAt || latest.createdAt) : null;
-  const slaWarningAt = shouldTrackSla ? addHours(slaBase, activeSla?.warningHours) : null;
-  const slaDueAt = shouldTrackSla ? addHours(slaBase, activeSla?.escalationHours) : null;
-  const now = new Date();
-  const slaBreachedAt = slaDueAt && slaDueAt.getTime() <= now.getTime() ? slaDueAt : null;
   const receivedByAddress = latest.receivedByAddress || firstInbound.receivedByAddress || null;
   const queue = receivedByAddress ? await getQueueForAddress(receivedByAddress, tenantId) : existing?.queue ?? null;
+  const priority = existing?.priority || "normal";
+  const graphConversationId = latest.graphConversationId
+    || messages.find((message) => message.graphConversationId)?.graphConversationId
+    || existing?.graphConversationId
+    || null;
+
+  const activeSla = await getActiveSlaRule(tenantId, queue, priority);
+  const shouldTrackSla = !isTerminalTicketStatus(status);
+  const firstResponseDueAt = shouldTrackSla && firstInbound && !lastOutbound
+    ? addHours(firstInbound.createdAt, activeSla?.firstResponseHours ?? activeSla?.warningHours ?? 24)
+    : null;
+  const nextResponseDueAt = shouldTrackSla && latest.direction === "inbound" && lastOutbound
+    ? addHours(lastInbound?.createdAt, activeSla?.nextResponseHours ?? activeSla?.warningHours ?? 24)
+    : null;
+  const resolutionDueAt = shouldTrackSla && firstInbound
+    ? addHours(firstInbound.createdAt, activeSla?.resolutionHours ?? activeSla?.escalationHours ?? 72)
+    : null;
+  const activeDue = chooseEarliestDue([
+    { metric: "first_response", dueAt: firstResponseDueAt, baseAt: firstInbound?.createdAt },
+    { metric: "next_response", dueAt: nextResponseDueAt, baseAt: lastInbound?.createdAt },
+    { metric: "resolution", dueAt: resolutionDueAt, baseAt: firstInbound?.createdAt },
+  ]);
+  const slaBase = shouldTrackSla ? activeDue?.baseAt || lastInbound?.createdAt || latest.createdAt : null;
+  const slaWarningAt = shouldTrackSla ? addHours(slaBase, activeSla?.warningHours) : null;
+  const slaDueAt = shouldTrackSla ? activeDue?.dueAt || null : null;
+  const now = new Date();
+  const slaBreachedAt = slaDueAt && slaDueAt.getTime() <= now.getTime() ? slaDueAt : null;
 
   const ticketData: any = {
     tenantId: tenantId ?? latest.tenantId ?? null,
     threadId,
+    graphConversationId,
     subject: latest.subject || first.subject || null,
     requesterEmail: firstInbound.fromAddress || latest.fromAddress || null,
     requesterName: firstInbound.fromName || latest.fromName || null,
     receivedByAddress,
     queue,
     channel: existing?.channel || "email",
-    priority: existing?.priority || "normal",
+    priority,
     status,
     waitingOn: waitingOnForStatus(status),
     assignedToId: latest.assignedToId ?? existing?.assignedToId ?? null,
@@ -186,6 +232,11 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
     slaWarningAt,
     slaDueAt,
     slaBreachedAt,
+    slaRuleId: activeSla?.id ?? null,
+    slaMetric: shouldTrackSla ? activeDue?.metric ?? null : null,
+    slaFirstResponseDueAt: firstResponseDueAt,
+    slaNextResponseDueAt: nextResponseDueAt,
+    slaResolutionDueAt: resolutionDueAt,
     resolvedAt: isResolvedTicketStatus(status) ? (existing?.resolvedAt || now) : null,
     resolvedBy: isResolvedTicketStatus(status) ? existing?.resolvedBy ?? null : null,
     resolvedByName: isResolvedTicketStatus(status) ? existing?.resolvedByName ?? null : null,
@@ -342,6 +393,127 @@ export async function createTicketNote(
     createdByName: userName ?? null,
   });
   return { id: (result as any).insertId };
+}
+
+export async function listReplyTemplates(filters: {
+  tenantId?: number | null;
+  activeOnly?: boolean;
+  queue?: string | null;
+} = {}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [];
+  appendTenantScope(conditions, inboxReplyTemplates.tenantId, filters.tenantId);
+  if (filters.activeOnly !== false) conditions.push(eq(inboxReplyTemplates.active, true));
+  if (filters.queue) {
+    conditions.push(or(eq(inboxReplyTemplates.queue, filters.queue), isNull(inboxReplyTemplates.queue)));
+  }
+  return db
+    .select()
+    .from(inboxReplyTemplates)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(asc(inboxReplyTemplates.sortOrder), asc(inboxReplyTemplates.name));
+}
+
+export async function upsertReplyTemplate(
+  data: Partial<InsertInboxReplyTemplate> & { id?: number; name: string; bodyHtml: string },
+  tenantId?: number | null,
+  userId?: number | null,
+  userName?: string | null,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const payload: Partial<InsertInboxReplyTemplate> = {
+    tenantId: tenantId ?? null,
+    name: data.name,
+    queue: data.queue || null,
+    category: data.category || null,
+    subject: data.subject || null,
+    bodyHtml: data.bodyHtml,
+    bodyText: data.bodyText || null,
+    active: data.active ?? true,
+    sortOrder: data.sortOrder ?? 0,
+    updatedBy: userId ?? null,
+    updatedByName: userName ?? null,
+  };
+  if (data.id) {
+    const conditions: any[] = [eq(inboxReplyTemplates.id, data.id)];
+    appendTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
+    await db.update(inboxReplyTemplates).set(payload).where(and(...conditions));
+    return { id: data.id };
+  }
+  const [result] = await db.insert(inboxReplyTemplates).values({
+    ...payload,
+    createdBy: userId ?? null,
+    createdByName: userName ?? null,
+  } as InsertInboxReplyTemplate);
+  return { id: (result as any).insertId };
+}
+
+export async function deleteReplyTemplate(id: number, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const conditions: any[] = [eq(inboxReplyTemplates.id, id)];
+  appendTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
+  await db.update(inboxReplyTemplates).set({ active: false }).where(and(...conditions));
+}
+
+export async function heartbeatTicketPresence(
+  threadId: string,
+  mode: "viewing" | "replying",
+  tenantId?: number | null,
+  userId?: number | null,
+  userName?: string | null,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  if (!userId) throw new Error("User required");
+
+  const [existing] = await db
+    .select({ id: inboxTicketPresence.id })
+    .from(inboxTicketPresence)
+    .where(and(
+      ...ticketPresenceConditions(threadId, tenantId),
+      eq(inboxTicketPresence.userId, userId),
+    ))
+    .limit(1);
+
+  if (existing) {
+    await db.update(inboxTicketPresence).set({
+      mode,
+      userName: userName ?? null,
+      lastSeenAt: new Date(),
+    }).where(eq(inboxTicketPresence.id, existing.id));
+  } else {
+    await db.insert(inboxTicketPresence).values({
+      tenantId: tenantId ?? null,
+      threadId,
+      userId,
+      userName: userName ?? null,
+      mode,
+      lastSeenAt: new Date(),
+    });
+  }
+}
+
+export async function listTicketPresence(
+  threadId: string,
+  tenantId?: number | null,
+  excludeUserId?: number | null,
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const cutoff = new Date(Date.now() - 2 * 60 * 1000);
+  const conditions: any[] = [
+    ...ticketPresenceConditions(threadId, tenantId),
+    gte(inboxTicketPresence.lastSeenAt, cutoff),
+  ];
+  const rows = await db
+    .select()
+    .from(inboxTicketPresence)
+    .where(and(...conditions))
+    .orderBy(desc(inboxTicketPresence.lastSeenAt));
+  return rows.filter((row) => row.userId !== excludeUserId);
 }
 
 export async function updateTicketMetadata(threadId: string, data: {
@@ -578,6 +750,7 @@ export async function listInboxMessages(filters: {
             isStarred: ticket.isStarred,
             createdAt: ticket.lastMessageAt || latest.createdAt,
             ticketId: ticket.id,
+            ticketGraphConversationId: ticket.graphConversationId,
             ticketStatus: status,
             ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
             ticketPriority: ticket.priority,
@@ -591,6 +764,10 @@ export async function listInboxMessages(filters: {
             ticketSlaWarningAt: ticket.slaWarningAt,
             ticketSlaDueAt: ticket.slaDueAt,
             ticketSlaBreachedAt: ticket.slaBreachedAt,
+            ticketSlaMetric: ticket.slaMetric,
+            ticketSlaFirstResponseDueAt: ticket.slaFirstResponseDueAt,
+            ticketSlaNextResponseDueAt: ticket.slaNextResponseDueAt,
+            ticketSlaResolutionDueAt: ticket.slaResolutionDueAt,
             ticketResolvedAt: ticket.resolvedAt,
             ticketResolutionNotes: ticket.resolutionNotes,
             threadMessageCount: ticket.messageCount,
@@ -715,6 +892,7 @@ async function listInboxMessagesFromLegacy(filters: {
       return {
         ...message,
         ticketId: null,
+        ticketGraphConversationId: message.graphConversationId,
         ticketStatus: status,
         ticketStatusLabel: INBOX_TICKET_STATUS_LABELS[status],
         ticketPriority: "normal",
@@ -722,6 +900,10 @@ async function listInboxMessagesFromLegacy(filters: {
         ticketSlaWarningAt: null,
         ticketSlaDueAt: null,
         ticketSlaBreachedAt: null,
+        ticketSlaMetric: null,
+        ticketSlaFirstResponseDueAt: null,
+        ticketSlaNextResponseDueAt: null,
+        ticketSlaResolutionDueAt: null,
         ticketResolvedAt: null,
         ticketResolutionNotes: null,
         threadMessageCount: 1,
@@ -1342,13 +1524,31 @@ export async function listSlaRules(tenantId?: number | null) {
   return db.select().from(inboxSlaRules).where(conditions.length ? and(...conditions) : undefined).orderBy(asc(inboxSlaRules.id));
 }
 
-export async function getActiveSlaRule(tenantId?: number | null): Promise<InboxSlaRule | null> {
+export async function getActiveSlaRule(
+  tenantId?: number | null,
+  queue?: string | null,
+  priority?: InboxTicketPriority | string | null,
+): Promise<InboxSlaRule | null> {
   const db = await getDb();
   if (!db) return null;
   const conditions: any[] = [eq(inboxSlaRules.active, true)];
   appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
-  const [rule] = await db.select().from(inboxSlaRules).where(and(...conditions)).limit(1);
-  return rule || null;
+  const rules = await db.select().from(inboxSlaRules).where(and(...conditions)).orderBy(asc(inboxSlaRules.id));
+  if (rules.length === 0) return null;
+  const normalizedQueue = queue || null;
+  const normalizedPriority = priority || null;
+  const candidates = rules.filter((rule) => {
+    const ruleQueue = (rule as any).queue || null;
+    const rulePriority = (rule as any).priority || null;
+    return (!ruleQueue || ruleQueue === normalizedQueue) && (!rulePriority || rulePriority === normalizedPriority);
+  });
+  const pool = candidates.length > 0 ? candidates : rules.filter((rule) => !(rule as any).queue && !(rule as any).priority);
+  return [...pool].sort((a, b) => {
+    const aSpecificity = ((a as any).queue ? 2 : 0) + ((a as any).priority ? 1 : 0);
+    const bSpecificity = ((b as any).queue ? 2 : 0) + ((b as any).priority ? 1 : 0);
+    if (aSpecificity !== bSpecificity) return bSpecificity - aSpecificity;
+    return priorityRank((b as any).priority) - priorityRank((a as any).priority);
+  })[0] || null;
 }
 
 export async function upsertSlaRule(data: Omit<InsertInboxSlaRule, "id"> & { id?: number }, tenantId?: number | null) {
@@ -1589,6 +1789,9 @@ export async function bulkDeleteThreads(threadIds: string[], tenantId?: number |
       await db.delete(inboxTicketNotes).where(inArray(inboxTicketNotes.ticketId, ownedTicketIds));
       await db.delete(inboxTickets).where(inArray(inboxTickets.id, ownedTicketIds));
     }
+    const presenceConditions: any[] = [inArray(inboxTicketPresence.threadId, ownedThreadIds)];
+    appendTenantScope(presenceConditions, inboxTicketPresence.tenantId, tenantId);
+    await db.delete(inboxTicketPresence).where(and(...presenceConditions));
   } catch (err: any) {
     console.error("[Inbox Tickets] bulk thread ticket cleanup failed:", err?.message || err);
   }

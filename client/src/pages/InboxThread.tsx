@@ -75,6 +75,12 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
   const { data: internalNotes = [], refetch: refetchInternalNotes } = trpc.inbox.notes.list.useQuery({ threadId });
+  const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
+  const { data: presence = [] } = trpc.inbox.presence.list.useQuery(
+    { threadId },
+    { refetchInterval: 30000 }
+  );
+  const { mutate: sendPresenceHeartbeat } = trpc.inbox.presence.heartbeat.useMutation();
 
   const replyMut = trpc.inbox.reply.useMutation({
     onSuccess: () => {
@@ -139,6 +145,15 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
     }
   }, [thread]);
 
+  useEffect(() => {
+    const mode = replyOpen ? "replying" : "viewing";
+    sendPresenceHeartbeat({ threadId, mode });
+    const interval = window.setInterval(() => {
+      sendPresenceHeartbeat({ threadId, mode });
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [threadId, replyOpen, sendPresenceHeartbeat]);
+
   // Get the first (original) message for context
   const firstMsg = thread?.[0];
   const lastInbound = thread?.filter((m: any) => m.direction === "inbound").slice(-1)[0];
@@ -170,6 +185,27 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   useEffect(() => {
     setResolutionNotes(ticket?.resolutionNotes || "");
   }, [ticket?.id, ticket?.resolutionNotes]);
+
+  function applyTemplateVariables(value: string) {
+    const replacements: Record<string, string> = {
+      clientName: ticket?.requesterName || firstMsg?.fromName || firstMsg?.fromAddress || "",
+      ticketSubject: firstMsg?.subject || "",
+      jobNumber: ticket?.matchedJobId ? String(ticket.matchedJobId) : "",
+      branch: ticket?.queue ? String(ticket.queue).replace(/_/g, " ") : "",
+      constructionManager: ticket?.assignedToName || firstMsg?.assignedToName || "",
+    };
+    return value.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (_match, key) => replacements[key] ?? "");
+  }
+
+  function applyReplyTemplate(templateId: string) {
+    const template = replyTemplates.find((item: any) => String(item.id) === templateId);
+    if (!template) return;
+    const rawBody = template.bodyText || String(template.bodyHtml || "").replace(/<[^>]+>/g, "");
+    const rendered = applyTemplateVariables(rawBody).trim();
+    setReplyHtml((current) => current.trim() ? `${current.trim()}\n\n${rendered}` : rendered);
+    setReplyOpen(true);
+    toast.success(`Inserted "${template.name}"`);
+  }
 
   function formatDate(date: string | Date) {
     const d = new Date(date);
@@ -311,6 +347,13 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
         </div>
       </div>
 
+      {presence.length > 0 && (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          {presence.map((entry: any) => entry.userName || "A team member").join(", ")}{" "}
+          {presence.some((entry: any) => entry.mode === "replying") ? "is replying to" : "also has open"} this ticket.
+        </div>
+      )}
+
       <Separator className="mb-4" />
 
       {/* Ticket Metadata */}
@@ -389,7 +432,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
               <div>
                 <p className="text-xs text-muted-foreground">SLA due</p>
                 <p className={ticket.slaBreachedAt ? "text-red-600 font-medium" : ""}>
-                  {ticket.slaDueAt ? formatDate(ticket.slaDueAt) : "No SLA active"}
+                  {ticket.slaDueAt ? `${formatDate(ticket.slaDueAt)}${ticket.slaMetric ? ` (${String(ticket.slaMetric).replace(/_/g, " ")})` : ""}` : "No SLA active"}
                 </p>
               </div>
               <div>
@@ -411,6 +454,18 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
               <div>
                 <p className="text-xs text-muted-foreground">Last responder</p>
                 <p>{ticket.lastResponderName || ticket.lastResponderEmail || "None"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">First response due</p>
+                <p>{ticket.slaFirstResponseDueAt ? formatDate(ticket.slaFirstResponseDueAt) : "Complete or not required"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Next response due</p>
+                <p>{ticket.slaNextResponseDueAt ? formatDate(ticket.slaNextResponseDueAt) : "No customer response waiting"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Resolution due</p>
+                <p>{ticket.slaResolutionDueAt ? formatDate(ticket.slaResolutionDueAt) : "No resolution timer"}</p>
               </div>
             </div>
 
@@ -585,7 +640,21 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
               />
 
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  {replyTemplates.length > 0 && (
+                    <Select onValueChange={applyReplyTemplate}>
+                      <SelectTrigger className="h-8 w-[220px]">
+                        <SelectValue placeholder="Insert template" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {replyTemplates.map((template: any) => (
+                          <SelectItem key={template.id} value={String(template.id)}>
+                            {template.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <div className="flex items-center gap-2">
                     <Switch
                       id="include-sig"

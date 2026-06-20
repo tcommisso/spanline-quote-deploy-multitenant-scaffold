@@ -21,6 +21,7 @@ const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "wait
 const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
+const inboxQueueSchema = z.enum(["sales", "construction", "approvals", "admin", "manufacturing", "support"]);
 
 const EMAIL_ADDRESS_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
@@ -328,6 +329,73 @@ export const inboxRouter = router({
       }),
   }),
 
+  templates: router({
+    list: protectedProcedure
+      .input(z.object({
+        activeOnly: z.boolean().optional(),
+        queue: inboxQueueSchema.nullable().optional(),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        return inboxDb.listReplyTemplates({
+          tenantId: ctx.tenant!.id,
+          activeOnly: input?.activeOnly !== false,
+          queue: input?.queue || null,
+        });
+      }),
+
+    upsert: adminProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1).max(100),
+        queue: inboxQueueSchema.nullable().optional(),
+        category: z.string().max(80).nullable().optional(),
+        subject: z.string().max(255).nullable().optional(),
+        bodyHtml: z.string().min(1),
+        bodyText: z.string().nullable().optional(),
+        active: z.boolean().optional(),
+        sortOrder: z.number().int().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        return inboxDb.upsertReplyTemplate(
+          input,
+          ctx.tenant!.id,
+          ctx.user!.id,
+          ctx.user!.name || ctx.user!.email || null,
+        );
+      }),
+
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await inboxDb.deleteReplyTemplate(input.id, ctx.tenant!.id);
+        return { success: true };
+      }),
+  }),
+
+  presence: router({
+    heartbeat: protectedProcedure
+      .input(z.object({
+        threadId: z.string(),
+        mode: z.enum(["viewing", "replying"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        await inboxDb.heartbeatTicketPresence(
+          input.threadId,
+          input.mode,
+          ctx.tenant!.id,
+          ctx.user!.id,
+          ctx.user!.name || ctx.user!.email || null,
+        );
+        return { success: true };
+      }),
+
+    list: protectedProcedure
+      .input(z.object({ threadId: z.string() }))
+      .query(async ({ ctx, input }) => {
+        return inboxDb.listTicketPresence(input.threadId, ctx.tenant!.id, ctx.user!.id);
+      }),
+  }),
+
   togglePortalVisible: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
@@ -623,6 +691,7 @@ export const inboxRouter = router({
         threadId: originalMsg.threadId,
         direction: "outbound",
         resendEmailId: sendResult.emailId || null,
+        graphConversationId: originalMsg.graphConversationId || null,
         messageId: null,
         inReplyTo: originalMsg.messageId,
         emailReferences: [originalMsg.emailReferences, originalMsg.messageId].filter(Boolean).join(" ") || null,
@@ -710,6 +779,7 @@ export const inboxRouter = router({
         threadId,
         direction: "outbound",
         resendEmailId: null,
+        graphConversationId: null,
         fromAddress,
         fromName: userName,
         toAddresses: JSON.stringify([input.toAddress, ...(input.ccAddresses || [])]),
@@ -1113,6 +1183,11 @@ export const inboxRouter = router({
       .input(z.object({
         id: z.number().optional(),
         name: z.string().min(1).max(100),
+        queue: inboxQueueSchema.nullable().optional(),
+        priority: inboxTicketPrioritySchema.nullable().optional(),
+        firstResponseHours: z.number().min(1).max(720).optional(),
+        nextResponseHours: z.number().min(1).max(720).optional(),
+        resolutionHours: z.number().min(1).max(2160).optional(),
         warningHours: z.number().min(1).max(720),
         escalationHours: z.number().min(1).max(720),
         reminderTargets: z.string(),

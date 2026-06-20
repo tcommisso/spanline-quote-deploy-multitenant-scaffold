@@ -24,7 +24,23 @@ import { loadCompanyDetails, loadCustomLogo } from "@/lib/proposalStore";
 import { sanitiseSignatureHtml, detectSignatureSource } from "@/lib/signatureHtmlSanitiser";
 import { toast } from "sonner";
 
-type Tab = "general" | "addresses" | "tags" | "autoreply" | "rateus" | "sla" | "signatures";
+type Tab = "general" | "addresses" | "tags" | "autoreply" | "rateus" | "sla" | "templates" | "signatures";
+
+const QUEUE_OPTIONS = [
+  { value: "sales", label: "Sales" },
+  { value: "construction", label: "Construction" },
+  { value: "approvals", label: "Approvals" },
+  { value: "manufacturing", label: "Manufacturing" },
+  { value: "support", label: "Support" },
+  { value: "admin", label: "Admin" },
+] as const;
+
+const PRIORITY_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "normal", label: "Normal" },
+  { value: "high", label: "High" },
+  { value: "urgent", label: "Urgent" },
+] as const;
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "general", label: "General", icon: Settings },
@@ -33,6 +49,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "autoreply", label: "Auto-Reply", icon: MessageSquare },
   { id: "rateus", label: "Rate Us", icon: Star },
   { id: "sla", label: "SLA Rules", icon: Clock },
+  { id: "templates", label: "Templates", icon: ClipboardPaste },
   { id: "signatures", label: "Signatures", icon: Edit },
 ];
 
@@ -73,6 +90,7 @@ export default function InboxAdminSettings() {
       {activeTab === "autoreply" && <AutoReplySettings />}
       {activeTab === "rateus" && <RateUsSettings />}
       {activeTab === "sla" && <SlaSettings />}
+      {activeTab === "templates" && <ReplyTemplateSettings />}
       {activeTab === "signatures" && <SignatureSettings />}
     </div>
   );
@@ -664,6 +682,11 @@ function SlaSettings() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editId, setEditId] = useState<number | undefined>(undefined);
   const [name, setName] = useState("");
+  const [queue, setQueue] = useState("all");
+  const [priority, setPriority] = useState("all");
+  const [firstResponseHours, setFirstResponseHours] = useState(4);
+  const [nextResponseHours, setNextResponseHours] = useState(24);
+  const [resolutionHours, setResolutionHours] = useState(72);
   const [warningHours, setWarningHours] = useState(24);
   const [escalationHours, setEscalationHours] = useState(36);
   const [reminderTargets, setReminderTargets] = useState("assigned");
@@ -673,6 +696,11 @@ function SlaSettings() {
   function resetForm() {
     setEditId(undefined);
     setName("");
+    setQueue("all");
+    setPriority("all");
+    setFirstResponseHours(4);
+    setNextResponseHours(24);
+    setResolutionHours(72);
     setWarningHours(24);
     setEscalationHours(36);
     setReminderTargets("assigned");
@@ -683,6 +711,11 @@ function SlaSettings() {
   function openEdit(rule: any) {
     setEditId(rule.id);
     setName(rule.name);
+    setQueue(rule.queue || "all");
+    setPriority(rule.priority || "all");
+    setFirstResponseHours(rule.firstResponseHours || 4);
+    setNextResponseHours(rule.nextResponseHours || 24);
+    setResolutionHours(rule.resolutionHours || 72);
     setWarningHours(rule.warningHours);
     setEscalationHours(rule.escalationHours);
     setReminderTargets(rule.reminderTargets);
@@ -721,6 +754,11 @@ function SlaSettings() {
                     </Badge>
                   </div>
                   <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
+                    {rule.queue && <span className="capitalize">Queue: {rule.queue}</span>}
+                    {rule.priority && <span className="capitalize">Priority: {rule.priority}</span>}
+                    <span>First: {rule.firstResponseHours || rule.warningHours}h</span>
+                    <span>Next: {rule.nextResponseHours || rule.warningHours}h</span>
+                    <span>Resolve: {rule.resolutionHours || rule.escalationHours}h</span>
                     <span className="flex items-center gap-1">
                       <AlertTriangle className="h-3 w-3 text-amber-500" />
                       Warning: {rule.warningHours}h
@@ -758,6 +796,50 @@ function SlaSettings() {
             <div>
               <Label>Rule Name</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Standard Response SLA" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Queue</Label>
+                <Select value={queue} onValueChange={setQueue}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All queues</SelectItem>
+                    {QUEUE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Priority</Label>
+                <Select value={priority} onValueChange={setPriority}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All priorities</SelectItem>
+                    {PRIORITY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label>First Response (hours)</Label>
+                <Input type="number" value={firstResponseHours} onChange={(e) => setFirstResponseHours(parseInt(e.target.value) || 4)} min={1} />
+              </div>
+              <div>
+                <Label>Next Response (hours)</Label>
+                <Input type="number" value={nextResponseHours} onChange={(e) => setNextResponseHours(parseInt(e.target.value) || 24)} min={1} />
+              </div>
+              <div>
+                <Label>Resolution (hours)</Label>
+                <Input type="number" value={resolutionHours} onChange={(e) => setResolutionHours(parseInt(e.target.value) || 72)} min={1} />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -805,12 +887,189 @@ function SlaSettings() {
             <Button onClick={() => upsertMut.mutate({
               id: editId,
               name,
+              queue: queue === "all" ? null : queue as any,
+              priority: priority === "all" ? null : priority as any,
+              firstResponseHours,
+              nextResponseHours,
+              resolutionHours,
               warningHours,
               escalationHours,
               reminderTargets,
               managerEmail: managerEmail || null,
               active,
             })} disabled={!name || upsertMut.isPending}>
+              {editId ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
+// ─── Reply Template Settings ────────────────────────────────────────────────
+
+function ReplyTemplateSettings() {
+  const { data: templates, refetch } = trpc.inbox.templates.list.useQuery({ activeOnly: false });
+  const upsertMut = trpc.inbox.templates.upsert.useMutation({
+    onSuccess: () => { toast.success("Template saved"); refetch(); setDialogOpen(false); resetForm(); },
+    onError: (err) => toast.error(err.message),
+  });
+  const deleteMut = trpc.inbox.templates.delete.useMutation({
+    onSuccess: () => { toast.success("Template archived"); refetch(); },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editId, setEditId] = useState<number | undefined>(undefined);
+  const [name, setName] = useState("");
+  const [queue, setQueue] = useState("all");
+  const [category, setCategory] = useState("");
+  const [subject, setSubject] = useState("");
+  const [bodyHtml, setBodyHtml] = useState("");
+  const [sortOrder, setSortOrder] = useState(0);
+  const [active, setActive] = useState(true);
+
+  function resetForm() {
+    setEditId(undefined);
+    setName("");
+    setQueue("all");
+    setCategory("");
+    setSubject("");
+    setBodyHtml("");
+    setSortOrder(0);
+    setActive(true);
+  }
+
+  function openEdit(template: any) {
+    setEditId(template.id);
+    setName(template.name);
+    setQueue(template.queue || "all");
+    setCategory(template.category || "");
+    setSubject(template.subject || "");
+    setBodyHtml(template.bodyHtml || "");
+    setSortOrder(template.sortOrder || 0);
+    setActive(template.active);
+    setDialogOpen(true);
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Canned Reply Templates</CardTitle>
+          <CardDescription>Shared replies for common customer, trade, and internal ticket responses</CardDescription>
+        </div>
+        <Button size="sm" onClick={() => { resetForm(); setDialogOpen(true); }}>
+          <Plus className="h-4 w-4 mr-1" /> Add Template
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {(!templates || templates.length === 0) ? (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            No templates yet. Add common replies to speed up ticket responses.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {templates.map((template: any) => (
+              <div key={template.id} className="flex items-start justify-between gap-3 p-4 rounded-lg border">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium">{template.name}</p>
+                    {template.queue && <Badge variant="secondary" className="text-xs capitalize">{template.queue}</Badge>}
+                    {template.category && <Badge variant="outline" className="text-xs">{template.category}</Badge>}
+                    <Badge variant={template.active ? "default" : "outline"} className="text-xs">
+                      {template.active ? "Active" : "Inactive"}
+                    </Badge>
+                  </div>
+                  {template.subject && <p className="text-xs text-muted-foreground mt-1">{template.subject}</p>}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(template)}>
+                    <Edit className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500" onClick={() => {
+                    if (confirm("Archive this template?")) deleteMut.mutate({ id: template.id });
+                  }}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="max-w-[680px] max-h-[90dvh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>{editId ? "Edit" : "Create"} Reply Template</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
+            <div>
+              <Label>Name</Label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Site visit booked" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Queue</Label>
+                <Select value={queue} onValueChange={setQueue}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All queues</SelectItem>
+                    {QUEUE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Category</Label>
+                <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Sales, warranty, scheduling..." />
+              </div>
+            </div>
+            <div>
+              <Label>Subject Override</Label>
+              <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Optional" />
+            </div>
+            <div>
+              <Label>Reply Body</Label>
+              <Textarea
+                value={bodyHtml}
+                onChange={(e) => setBodyHtml(e.target.value)}
+                placeholder={"Hi {{clientName}},\n\nThanks for your email..."}
+                className="min-h-[220px] font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Variables: {"{{clientName}}"}, {"{{ticketSubject}}"}, {"{{jobNumber}}"}, {"{{branch}}"}, {"{{constructionManager}}"}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Sort Order</Label>
+                <Input type="number" value={sortOrder} onChange={(e) => setSortOrder(parseInt(e.target.value) || 0)} />
+              </div>
+              <div className="flex items-center gap-3 pt-7">
+                <Switch checked={active} onCheckedChange={setActive} id="template-active" />
+                <Label htmlFor="template-active">Active</Label>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="shrink-0">
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => upsertMut.mutate({
+              id: editId,
+              name,
+              queue: queue === "all" ? null : queue as any,
+              category: category || null,
+              subject: subject || null,
+              bodyHtml,
+              bodyText: bodyHtml.replace(/<[^>]+>/g, ""),
+              sortOrder,
+              active,
+            })} disabled={!name.trim() || !bodyHtml.trim() || upsertMut.isPending}>
               {editId ? "Update" : "Create"}
             </Button>
           </DialogFooter>

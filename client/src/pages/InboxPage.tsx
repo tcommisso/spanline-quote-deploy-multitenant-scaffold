@@ -750,6 +750,11 @@ export default function InboxPage() {
                         Last: {msg.ticketLastResponderName || msg.ticketLastResponderEmail}
                       </span>
                     )}
+                    {msg.ticketSlaMetric && (
+                      <span>
+                        SLA: {String(msg.ticketSlaMetric).replace(/_/g, " ")}
+                      </span>
+                    )}
                     {msg.threadMessageCount > 1 && (
                       <span>
                         {msg.threadMessageCount} messages
