@@ -213,7 +213,7 @@ async function main() {
 
   let insertedCertificates = 0;
   let updatedCertificates = 0;
-  for (const row of certificates) {
+  for (const row of certificates.filter((item) => !boolValue(item.isCompetitorMatch))) {
     const certificateNumber = value(row.certificateNumber);
     const externalId = value(row.id) ? `legacy-hbcf:${value(row.id)}` : null;
     const crmLeadId = existingLeads.has(numberValue(row.leadId)) ? numberValue(row.leadId) : null;
@@ -298,7 +298,9 @@ async function main() {
     const [usageRows] = await conn.execute(
       `select coalesce(sum(cast(contractPrice as decimal(14,2))), 0) as usedAmount
        from hbcf_certificates
-       where tenantId = ? and status = 'issued' and year(issuedAt) = ?`,
+       where tenantId = ? and status = 'issued' and year(issuedAt) = ?
+         and (ownerName is not null or propertyAddress is not null or contractPrice is not null
+           or approvalProjectId is not null or quoteId is not null or crmLeadId is not null)`,
       [tenantId, usageYear],
     );
     const derivedUsedAmount = Number(usageRows[0]?.usedAmount || 0).toFixed(2);

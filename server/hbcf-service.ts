@@ -235,10 +235,124 @@ function isOurBuilder(policy: HbcfPolicyLike, profile: HbcfBuilderProfile | null
     licences.some((item) => !!item && licence === item);
 }
 
+function firstPresent(...values: unknown[]) {
+  for (const value of values) {
+    if (value != null && String(value).trim() !== "") return value;
+  }
+  return null;
+}
+
+function leadDisplayName(lead: any) {
+  return firstPresent(
+    [lead?.contactFirstName, lead?.contactLastName].filter(Boolean).join(" "),
+    lead?.company,
+  );
+}
+
+function rawPayloadValue(rawPayload: unknown, ...keys: string[]) {
+  if (!isRecord(rawPayload)) return null;
+  for (const key of keys) {
+    const value = rawPayload[key];
+    if (value != null && String(value).trim() !== "") return value;
+  }
+  return null;
+}
+
+function isSparseExternalHbcfRecord(row: any, profile: HbcfBuilderProfile | null) {
+  if (row.approvalProjectId || row.quoteId || row.crmLeadId) return false;
+  if (row.ownerName || row.propertyAddress || row.contractPrice || row.issuedAt || row.expiresAt) return false;
+
+  const builderName = firstPresent(
+    row.builderName,
+    rawPayloadValue(row.rawPayload, "licensee", "businessNames", "builderName"),
+  );
+  const builderLicenceNumber = firstPresent(
+    row.builderLicenceNumber,
+    rawPayloadValue(row.rawPayload, "licenceName", "licenseNumber", "licenceNumber"),
+  );
+  if (!builderName && !builderLicenceNumber) return false;
+
+  return !isOurBuilder({
+    builderName: builderName == null ? null : String(builderName),
+    builderLicenceNumber: builderLicenceNumber == null ? null : String(builderLicenceNumber),
+  }, profile);
+}
+
 function scopedConditions(table: any, tenantId: number | null | undefined, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, table.tenantId, tenantId);
   return conditions;
+}
+
+function uniqueIds(values: unknown[]) {
+  return Array.from(new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+async function enrichHbcfCertificates(rows: any[], tenantId: number | null | undefined) {
+  if (!rows.length) return rows;
+  const db = await getDb();
+  if (!db) return rows;
+
+  const projectIds = uniqueIds(rows.map((row) => row.approvalProjectId));
+  const leadIds = uniqueIds(rows.map((row) => row.crmLeadId));
+  const quoteIds = uniqueIds(rows.map((row) => row.quoteId));
+
+  const [projects, leads, quoteRows] = await Promise.all([
+    projectIds.length
+      ? db.select({
+        id: approvalProjects.id,
+        clientName: approvalProjects.clientName,
+        propertyAddress: approvalProjects.propertyAddress,
+        propertySuburb: approvalProjects.propertySuburb,
+        propertyPostcode: approvalProjects.propertyPostcode,
+        estimatedCost: approvalProjects.estimatedCost,
+      }).from(approvalProjects)
+        .where(and(...scopedConditions(approvalProjects, tenantId, inArray(approvalProjects.id, projectIds))))
+      : [],
+    leadIds.length
+      ? db.select({
+        id: crmLeads.id,
+        contactFirstName: crmLeads.contactFirstName,
+        contactLastName: crmLeads.contactLastName,
+        company: crmLeads.company,
+        contactAddress: crmLeads.contactAddress,
+        suburb: crmLeads.suburb,
+        postcode: crmLeads.postcode,
+      }).from(crmLeads)
+        .where(and(...scopedConditions(crmLeads, tenantId, inArray(crmLeads.id, leadIds))))
+      : [],
+    quoteIds.length
+      ? db.select({
+        id: quotes.id,
+        clientName: quotes.clientName,
+        siteAddress: quotes.siteAddress,
+        suburb: quotes.suburb,
+      }).from(quotes)
+        .where(and(...scopedConditions(quotes, tenantId, inArray(quotes.id, quoteIds))))
+      : [],
+  ]);
+
+  const projectById = new Map(projects.map((project: any) => [Number(project.id), project]));
+  const leadById = new Map(leads.map((lead: any) => [Number(lead.id), lead]));
+  const quoteById = new Map(quoteRows.map((quote: any) => [Number(quote.id), quote]));
+
+  return rows.map((row) => {
+    const project = projectById.get(Number(row.approvalProjectId));
+    const lead = leadById.get(Number(row.crmLeadId));
+    const quote = quoteById.get(Number(row.quoteId));
+    const address = firstPresent(row.propertyAddress, project?.propertyAddress, lead?.contactAddress, quote?.siteAddress);
+    const suburb = firstPresent(row.propertySuburb, project?.propertySuburb, lead?.suburb, quote?.suburb);
+    const postcode = firstPresent(row.propertyPostcode, project?.propertyPostcode, lead?.postcode, firstPostcode(address, suburb));
+
+    return {
+      ...row,
+      ownerName: firstPresent(row.ownerName, project?.clientName, leadDisplayName(lead), quote?.clientName),
+      propertyAddress: address,
+      propertySuburb: suburb,
+      propertyPostcode: postcode,
+      contractPrice: firstPresent(row.contractPrice, project?.estimatedCost),
+    };
+  });
 }
 
 async function chargeApiCall(profile: HbcfBuilderProfile) {
@@ -305,6 +419,15 @@ export async function getHbcfBuilderProfile(tenantId?: number | null) {
   const annualLimitYear = profile.annualLimitYear ?? new Date().getFullYear();
   const certificateConditions: any[] = [
     eq(hbcfCertificates.status, "issued"),
+    sql`(
+      ${hbcfCertificates.ownerName} IS NOT NULL
+      OR ${hbcfCertificates.propertyAddress} IS NOT NULL
+      OR ${hbcfCertificates.contractPrice} IS NOT NULL
+      OR ${hbcfCertificates.issuedAt} IS NOT NULL
+      OR ${hbcfCertificates.approvalProjectId} IS NOT NULL
+      OR ${hbcfCertificates.quoteId} IS NOT NULL
+      OR ${hbcfCertificates.crmLeadId} IS NOT NULL
+    )`,
   ];
   if (tenantId) certificateConditions.push(eq(hbcfCertificates.tenantId, tenantId));
   else certificateConditions.push(isMultiTenancyMode() ? sql`1 = 0` : sql`${hbcfCertificates.tenantId} IS NULL`);
@@ -518,9 +641,12 @@ export async function listHbcfCertificates(filters: {
   if (filters.projectId) conditions.push(eq(hbcfCertificates.approvalProjectId, filters.projectId));
   if (filters.quoteId) conditions.push(eq(hbcfCertificates.quoteId, filters.quoteId));
   if (filters.leadId) conditions.push(eq(hbcfCertificates.crmLeadId, filters.leadId));
-  return db.select().from(hbcfCertificates)
+  const rows = await db.select().from(hbcfCertificates)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(hbcfCertificates.updatedAt));
+  const profile = await getHbcfBuilderProfile(filters.tenantId);
+  const certificateRows = rows.filter((row) => !isSparseExternalHbcfRecord(row, profile));
+  return enrichHbcfCertificates(certificateRows, filters.tenantId);
 }
 
 export async function getProjectHbcfGateStatus(projectId: number, tenantId?: number | null) {
