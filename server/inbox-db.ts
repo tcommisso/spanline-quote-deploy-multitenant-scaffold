@@ -683,7 +683,9 @@ export async function listInboxMessages(filters: {
       .limit(limit)
       .offset(offset);
 
-    if (tickets.length === 0) return { messages: [], total: Number(totalRow?.count || 0) };
+    if (tickets.length === 0) {
+      return listInboxMessagesFromLegacy(filters);
+    }
 
     const latestMessageIds = tickets
       .map((ticket) => ticket.latestMessageId)
