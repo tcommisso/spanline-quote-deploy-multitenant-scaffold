@@ -54,12 +54,18 @@ function resolveReplyRecipient(originalMsg: {
   direction?: string | null;
   fromAddress?: string | null;
   toAddresses?: string | null;
-}): string | null {
-  if (originalMsg.direction === "outbound") {
-    const outboundRecipients = extractEmailAddresses(originalMsg.toAddresses);
-    if (outboundRecipients.length > 0) return outboundRecipients[0];
-  }
-  return extractEmailAddresses(originalMsg.fromAddress)[0] || null;
+}, internalAddresses: Set<string> = new Set()): string | null {
+  const primaryCandidates = originalMsg.direction === "outbound"
+    ? extractEmailAddresses(originalMsg.toAddresses)
+    : extractEmailAddresses(originalMsg.fromAddress);
+  const fallbackCandidates = originalMsg.direction === "outbound"
+    ? extractEmailAddresses(originalMsg.fromAddress)
+    : extractEmailAddresses(originalMsg.toAddresses);
+  const externalPrimary = primaryCandidates.find((email) => !internalAddresses.has(email.toLowerCase()));
+  if (externalPrimary) return externalPrimary;
+  const externalFallback = fallbackCandidates.find((email) => !internalAddresses.has(email.toLowerCase()));
+  if (externalFallback) return externalFallback;
+  return internalAddresses.size === 0 ? primaryCandidates[0] || null : null;
 }
 
 export const inboxRouter = router({
@@ -545,7 +551,17 @@ export const inboxRouter = router({
           replyFromEmail = originalMsg.receivedByAddress;
         }
       }
-      const toAddress = resolveReplyRecipient(originalMsg);
+      const tenantInboxAddresses = await inboxDb.listInboxAddresses(false, ctx.tenant!.id);
+      const internalAddresses = new Set(
+        [
+          replyFromEmail,
+          originalMsg.receivedByAddress,
+          ...tenantInboxAddresses.map((address) => address.address),
+        ]
+          .filter(Boolean)
+          .map((address) => String(address).toLowerCase()),
+      );
+      const toAddress = resolveReplyRecipient(originalMsg, internalAddresses);
       if (!toAddress) {
         throw new TRPCError({
           code: "BAD_REQUEST",

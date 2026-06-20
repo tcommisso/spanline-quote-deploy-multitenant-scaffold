@@ -502,6 +502,28 @@ export const stocktakeRouter = router({
       if (count.actualSize !== undefined) updates.actualSize = nullableDecimal(count.actualSize);
       if (count.sourceFullLength !== undefined) updates.sourceFullLength = nullableDecimal(count.sourceFullLength);
 
+      const shouldRecalculateVariance = updates.countedQty !== undefined
+        || updates.conditionIndicator !== undefined
+        || updates.actualSize !== undefined
+        || updates.sourceFullLength !== undefined;
+      const nextCountedQty = updates.countedQty !== undefined
+        ? decimalToNumber(updates.countedQty)
+        : shouldRecalculateVariance
+          ? decimalToNumber(line.countedQty)
+          : null;
+      if (nextCountedQty != null) {
+        const variance = nextCountedQty - (decimalToNumber(line.systemQty) ?? 0);
+        const nextCondition = updates.conditionIndicator ?? line.conditionIndicator;
+        const actualSize = decimalToNumber(updates.actualSize ?? line.actualSize);
+        const sourceFullLength = decimalToNumber(updates.sourceFullLength ?? line.sourceFullLength);
+        let unitCost = decimalToNumber(line.unitCost) ?? 0;
+        if (nextCondition === "off_cut" && actualSize != null && sourceFullLength != null && sourceFullLength > 0) {
+          unitCost *= Math.min(actualSize / sourceFullLength, 1);
+        }
+        updates.variance = variance.toFixed(4);
+        updates.varianceValue = (variance * unitCost).toFixed(4);
+      }
+
       if (Object.keys(updates).length) {
         await db.update(stocktakeLines).set(updates).where(and(
           eq(stocktakeLines.id, count.lineId),

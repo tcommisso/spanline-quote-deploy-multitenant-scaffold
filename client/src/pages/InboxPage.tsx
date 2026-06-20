@@ -100,6 +100,7 @@ export default function InboxPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showAssignPicker, setShowAssignPicker] = useState(false);
   const [showTagPicker, setShowTagPicker] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const queryInput = useMemo(() => ({
     search: search || undefined,
@@ -263,18 +264,24 @@ export default function InboxPage() {
   }
 
   const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
     try {
       const result = await utils.client.inbox.syncNow.mutate();
       if (result.errors?.length) {
         toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`);
       } else if (result.newMessages > 0) {
         toast.success(`Inbox synced: ${result.newMessages} new message${result.newMessages === 1 ? "" : "s"}`);
+      } else {
+        toast.success("Inbox is up to date");
       }
     } catch (err: any) {
       toast.error(err?.message || "Inbox sync failed");
+    } finally {
+      await refetch();
+      utils.inbox.unreadCount.invalidate();
+      setIsRefreshing(false);
     }
-    await refetch();
-  }, [refetch, utils.client.inbox.syncNow]);
+  }, [refetch, utils.client.inbox.syncNow, utils.inbox.unreadCount]);
 
   return (
     <PullToRefresh onRefresh={handleRefresh}>
@@ -306,8 +313,8 @@ export default function InboxPage() {
               <CheckCheck className="h-4 w-4 mr-1" /> Mark All Read
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-1" /> Refresh
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
+            <RefreshCw className={`h-4 w-4 mr-1 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh
           </Button>
           <Button size="sm" onClick={() => setLocation("/inbox/compose")}>
             <MailPlus className="h-4 w-4 mr-1" /> Compose

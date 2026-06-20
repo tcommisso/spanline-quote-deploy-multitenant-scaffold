@@ -48,11 +48,22 @@ const unitInputSchema = z.object({
   wallFixingBracket: z.number().optional().default(0),
 });
 
+function canAccessEclipseQuote(
+  user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean },
+  quote: { userId: number; designAdvisor?: string | null },
+) {
+  if (isAdminRole(user.role)) return true;
+  if (user.canViewAllQuotes) return true;
+  if (quote.userId === user.id) return true;
+  if (user.role === "design_adviser" && user.name && quote.designAdvisor === user.name) return true;
+  return false;
+}
+
 export const eclipseRouter = router({
   // ─── Quotes ──────────────────────────────────────────────────────────────────
   quotes: router({
     list: tenantProcedure.query(async ({ ctx }) => {
-      return eclipseDb.listEclipseQuotes(ctx.user.id, ctx.user.role, ctx.tenant.id);
+      return eclipseDb.listEclipseQuotes(ctx.user, ctx.tenant.id);
     }),
 
     get: tenantProcedure
@@ -60,7 +71,7 @@ export const eclipseRouter = router({
       .query(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
+        if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
         return quote;
@@ -77,6 +88,7 @@ export const eclipseRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const quoteNumber = await eclipseDb.getNextEclipseQuoteNumber();
+        const designAdvisor = input.designAdvisor || (ctx.user.role === "design_adviser" ? ctx.user.name || null : null);
         const id = await eclipseDb.createEclipseQuote({
           tenantId: ctx.tenant.id,
           userId: ctx.user.id,
@@ -86,7 +98,7 @@ export const eclipseRouter = router({
           clientPhone: input.clientPhone || null,
           clientEmail: input.clientEmail || null,
           clientAddress: input.clientAddress || null,
-          designAdvisor: input.designAdvisor || null,
+          designAdvisor,
           units: JSON.stringify([]),
         });
         // If the lead (clientId) is archived, unarchive it
@@ -165,7 +177,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
+        if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
         const { id, ...data } = input;
@@ -202,7 +214,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
+        if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
         await eclipseDb.updateEclipseQuote(input.id, { archived: input.archived }, ctx.tenant.id);
@@ -213,7 +225,7 @@ export const eclipseRouter = router({
       .mutation(async ({ ctx, input }) => {
         const quote = await eclipseDb.getEclipseQuoteById(input.id, ctx.tenant.id);
         if (!quote) throw new Error("Eclipse quote not found");
-        if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
+        if (!canAccessEclipseQuote(ctx.user, quote)) {
           throw new Error("Unauthorized");
         }
         const newNumber = await eclipseDb.getNextEclipseQuoteNumber();
@@ -291,7 +303,7 @@ export const eclipseRouter = router({
     .mutation(async ({ ctx, input }) => {
       const quote = await eclipseDb.getEclipseQuoteById(input.eclipseQuoteId, ctx.tenant.id);
       if (!quote) throw new Error("Eclipse quote not found");
-      if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
+      if (!canAccessEclipseQuote(ctx.user, quote)) {
         throw new Error("Unauthorized");
       }
 

@@ -911,6 +911,9 @@ function QuoteList() {
       setLeadSearchOpen(false);
       setLocation(`/security-screens/quote/${data.id}`);
       toast.success(`Quote ${data.quoteNumber} created from lead`);
+      if (data.leadUnarchived) {
+        toast.info("Lead was automatically unarchived");
+      }
     },
     onError: (e) => toast.error(e.message || "Could not create quote from lead"),
   });

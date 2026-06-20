@@ -310,7 +310,9 @@ export const equipmentRouter = router({
 
         try {
           if (existing) {
-            await db.update(equipment).set(values).where(eq(equipment.id, existing.id));
+            await db.update(equipment)
+              .set(values)
+              .where(and(...equipmentTenantConditions(ctx, eq(equipment.id, existing.id))));
             updated += 1;
             const refreshed = { ...existing, ...values };
             if (serialKey) bySerial.set(serialKey, refreshed);

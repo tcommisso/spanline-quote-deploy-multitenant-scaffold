@@ -641,7 +641,7 @@ export async function checkGateReadiness(projectId: number, gateNumber: number, 
   }
 
   if (isConstructionCommencementGate) {
-    const hbcfStatus = await getProjectHbcfGateStatus(projectId);
+    const hbcfStatus = await getProjectHbcfGateStatus(projectId, tenantId);
     blockers.push(...hbcfStatus.blockers);
   }
 

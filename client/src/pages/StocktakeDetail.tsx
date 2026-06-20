@@ -39,6 +39,8 @@ export default function StocktakeDetail() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [subGroupFilter, setSubGroupFilter] = useState("all");
   const [itemNameFilter, setItemNameFilter] = useState("all");
+  const [conditionFilter, setConditionFilter] = useState<CountCondition | "all">("all");
+  const [colourFilter, setColourFilter] = useState("all");
 
   const updateCountsMutation = trpc.stocktake.updateCounts.useMutation({
     onSuccess: (res) => {
@@ -156,10 +158,12 @@ export default function StocktakeDetail() {
       if (categoryFilter !== "all" && itemCategory(line) !== categoryFilter) return false;
       if (subGroupFilter !== "all" && itemSubGroup(line) !== subGroupFilter) return false;
       if (itemNameFilter !== "all" && itemName(line) !== itemNameFilter) return false;
+      if (conditionFilter !== "all" && lineCondition(line) !== conditionFilter) return false;
+      if (colourFilter !== "all" && lineColour(line) !== colourFilter) return false;
       if (search && !itemSearchText(line).includes(search)) return false;
       return true;
     });
-  }, [data?.lines, filter, searchTerm, categoryFilter, subGroupFilter, itemNameFilter]);
+  }, [data?.lines, filter, searchTerm, categoryFilter, subGroupFilter, itemNameFilter, conditionFilter, colourFilter]);
 
   const filterOptions = useMemo(() => {
     const lines = data?.lines || [];
@@ -168,6 +172,7 @@ export default function StocktakeDetail() {
       categories: unique(lines.map((line: any) => itemCategory(line))),
       subGroups: unique(lines.map((line: any) => itemSubGroup(line))),
       itemNames: unique(lines.map((line: any) => itemName(line))),
+      colours: unique(lines.map((line: any) => lineColour(line))),
     };
   }, [data?.lines]);
 
@@ -176,6 +181,8 @@ export default function StocktakeDetail() {
     setCategoryFilter("all");
     setSubGroupFilter("all");
     setItemNameFilter("all");
+    setConditionFilter("all");
+    setColourFilter("all");
   };
 
   const stats = useMemo(() => {
@@ -228,7 +235,7 @@ export default function StocktakeDetail() {
       sourceLineId: line.id,
       conditionIndicator: conditionIndicator || draft.conditionIndicator,
       colour: draft.colour || undefined,
-      actualSize: isOffcut ? undefined : draft.actualSize || undefined,
+      actualSize: draft.actualSize || undefined,
       sourceFullLength: draft.sourceFullLength || undefined,
       notes: isOffcut ? "Off cut count line" : "Additional count line",
     });
@@ -335,7 +342,7 @@ export default function StocktakeDetail() {
       {/* Line Filters */}
       <Card>
         <CardContent className="p-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1.4fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(220px,1.2fr)_auto]">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1.4fr)_minmax(160px,0.9fr)_minmax(160px,0.9fr)_minmax(200px,1.1fr)_minmax(150px,0.8fr)_minmax(160px,0.8fr)_auto]">
             <Input
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
@@ -372,6 +379,28 @@ export default function StocktakeDetail() {
                 <SelectItem value="all">All Item Names</SelectItem>
                 {filterOptions.itemNames.map((name) => (
                   <SelectItem key={name} value={name}>{name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={conditionFilter} onValueChange={(value) => setConditionFilter(value as CountCondition | "all")}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Count Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Count Types</SelectItem>
+                {conditionOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={colourFilter} onValueChange={setColourFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All Colours" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Colours</SelectItem>
+                {filterOptions.colours.map((colour) => (
+                  <SelectItem key={colour} value={colour}>{colour}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

@@ -193,10 +193,16 @@ export default function StocktakeMobileCount() {
       const code = line.stockItem?.code || "";
       const name = line.stockItem?.name || "";
       const category = line.stockItem?.category || "";
+      const attributes = getAttributeDraft(line);
       const matchesSearch = !query
         || code.toLowerCase().includes(query)
         || name.toLowerCase().includes(query)
-        || category.toLowerCase().includes(query);
+        || category.toLowerCase().includes(query)
+        || String(line.notes || "").toLowerCase().includes(query)
+        || String(attributes.colour || "").toLowerCase().includes(query)
+        || String(attributes.conditionIndicator || "").replace(/_/g, " ").toLowerCase().includes(query)
+        || String(attributes.actualSize || "").toLowerCase().includes(query)
+        || String(attributes.sourceFullLength || "").toLowerCase().includes(query);
       if (!matchesSearch) return false;
       if (filter === "uncounted") {
         // Keep locally edited rows visible until autosave succeeds so mobile controls do not appear to move rows.
@@ -208,7 +214,7 @@ export default function StocktakeMobileCount() {
       }
       return true;
     });
-  }, [draftCounts, filter, lineHasPersistedCount, lines, predictedVariance, search]);
+  }, [draftCounts, filter, getAttributeDraft, lineHasPersistedCount, lines, predictedVariance, search]);
 
   const stopScanner = useCallback(() => {
     if (animationFrameRef.current !== null) {
@@ -422,7 +428,7 @@ export default function StocktakeMobileCount() {
         sourceLineId: line.id,
         conditionIndicator: nextCondition,
         colour: draft.colour || undefined,
-        actualSize: isOffcut ? undefined : draft.actualSize || undefined,
+        actualSize: draft.actualSize || undefined,
         sourceFullLength: draft.sourceFullLength || undefined,
         notes: isOffcut ? "Off cut count line" : "Additional count line",
       },

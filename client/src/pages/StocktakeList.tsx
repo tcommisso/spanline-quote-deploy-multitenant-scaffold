@@ -15,6 +15,7 @@ import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 const statusColors: Record<string, string> = {
   in_progress: "bg-blue-100 text-blue-800",
   review: "bg-yellow-100 text-yellow-800",
+  pending_approval: "bg-orange-100 text-orange-800",
   finalised: "bg-green-100 text-green-800",
   cancelled: "bg-gray-100 text-gray-800",
 };
@@ -93,6 +94,7 @@ export default function StocktakeList() {
             <SelectItem value="all">All Statuses</SelectItem>
             <SelectItem value="in_progress">In Progress</SelectItem>
             <SelectItem value="review">Review</SelectItem>
+            <SelectItem value="pending_approval">Pending Approval</SelectItem>
             <SelectItem value="finalised">Finalised</SelectItem>
             <SelectItem value="cancelled">Cancelled</SelectItem>
           </SelectContent>

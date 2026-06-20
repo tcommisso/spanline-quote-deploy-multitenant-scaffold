@@ -86,7 +86,7 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
   if (messages.length === 0) {
     if (existing) {
       await db.delete(inboxTicketTags).where(eq(inboxTicketTags.ticketId, existing.id));
-      await db.delete(inboxTickets).where(eq(inboxTickets.id, existing.id));
+      await db.delete(inboxTickets).where(and(eq(inboxTickets.id, existing.id), ...ticketConditions(threadId, tenantId)));
     }
     return null;
   }
@@ -155,7 +155,7 @@ export async function syncTicketForThread(threadId: string, tenantId?: number | 
   };
 
   if (existing) {
-    await db.update(inboxTickets).set(ticketData).where(eq(inboxTickets.id, existing.id));
+    await db.update(inboxTickets).set(ticketData).where(and(eq(inboxTickets.id, existing.id), ...ticketConditions(threadId, tenantId)));
   } else {
     await db.insert(inboxTickets).values(ticketData);
   }
@@ -307,7 +307,7 @@ export async function updateTicketMetadata(threadId: string, data: {
     }
     if (ticket) {
       try {
-        await db.update(inboxTickets).set(patch).where(eq(inboxTickets.id, ticket.id));
+        await db.update(inboxTickets).set(patch).where(and(eq(inboxTickets.id, ticket.id), ...ticketConditions(threadId, tenantId)));
       } catch (err: any) {
         console.error(`[Inbox Tickets] metadata update failed for thread ${threadId}:`, err?.message || err);
       }

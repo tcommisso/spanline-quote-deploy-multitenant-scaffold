@@ -1139,7 +1139,7 @@ export const approvalRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         if (isCommencementCertificateType(input.certificateType)) {
-          const gateStatus = await getProjectHbcfGateStatus(input.projectId);
+          const gateStatus = await getProjectHbcfGateStatus(input.projectId, ctx.tenant!.id);
           if (gateStatus.required && !gateStatus.issued) {
             throw new Error(gateStatus.blockers[0] || "Issued HBCF certificate is required before this certificate can be issued");
           }
@@ -1200,7 +1200,7 @@ export const approvalRouter = router({
       .query(async ({ ctx, input }) => {
         const project = await approvalDb.getApprovalProjectById(input.projectId, ctx.tenant!.id);
         if (!project) throw new Error("Project not found");
-        return getProjectHbcfGateStatus(input.projectId);
+        return getProjectHbcfGateStatus(input.projectId, ctx.tenant!.id);
       }),
 
     certificates: router({

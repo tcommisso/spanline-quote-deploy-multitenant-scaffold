@@ -12,11 +12,18 @@ const db = drizzle(pool);
 
 // ─── Eclipse Quotes ──────────────────────────────────────────────────────────
 
-export async function listEclipseQuotes(userId: number, role: string, tenantId?: number | null) {
+export async function listEclipseQuotes(
+  user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean },
+  tenantId?: number | null,
+) {
   const conditions: any[] = [];
   appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
-  if (!isAdminRole(role)) {
-    conditions.push(eq(eclipseQuotes.userId, userId));
+  if (!isAdminRole(user.role) && !user.canViewAllQuotes) {
+    if (user.role === "design_adviser" && user.name) {
+      conditions.push(or(eq(eclipseQuotes.designAdvisor, user.name), eq(eclipseQuotes.userId, user.id)));
+    } else {
+      conditions.push(eq(eclipseQuotes.userId, user.id));
+    }
   }
   const where = conditions.length ? and(...conditions) : undefined;
   return db.select().from(eclipseQuotes).where(where).orderBy(desc(eclipseQuotes.updatedAt));

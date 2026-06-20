@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
+import { appendTenantScope, isMultiTenancyMode } from "./_core/tenant-scope";
 import {
   approvalProjects,
   crmLeads,
@@ -234,6 +235,12 @@ function isOurBuilder(policy: HbcfPolicyLike, profile: HbcfBuilderProfile | null
     licences.some((item) => !!item && licence === item);
 }
 
+function scopedConditions(table: any, tenantId: number | null | undefined, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, table.tenantId, tenantId);
+  return conditions;
+}
+
 async function chargeApiCall(profile: HbcfBuilderProfile) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -251,15 +258,15 @@ async function chargeApiCall(profile: HbcfBuilderProfile) {
       lastSyncStatus: "running",
       lastSyncError: null,
     })
-    .where(eq(hbcfBuilderProfiles.id, profile.id));
+    .where(and(...scopedConditions(hbcfBuilderProfiles, profile.tenantId, eq(hbcfBuilderProfiles.id, profile.id))));
 }
 
-async function recordProfileSync(profileId: number, status: "success" | "failed", error?: string) {
+async function recordProfileSync(profile: HbcfBuilderProfile, status: "success" | "failed", error?: string) {
   const db = await getDb();
   if (!db) return;
   await db.update(hbcfBuilderProfiles)
     .set({ lastSyncAt: new Date(), lastSyncStatus: status, lastSyncError: error || null })
-    .where(eq(hbcfBuilderProfiles.id, profileId));
+    .where(and(...scopedConditions(hbcfBuilderProfiles, profile.tenantId, eq(hbcfBuilderProfiles.id, profile.id))));
 }
 
 async function hbcfApiRequest(profile: HbcfBuilderProfile, params: Record<string, string | undefined> = {}) {
@@ -288,7 +295,7 @@ export async function getHbcfBuilderProfile(tenantId?: number | null) {
   if (!db) return null;
   const conditions: any[] = [];
   if (tenantId) conditions.push(eq(hbcfBuilderProfiles.tenantId, tenantId));
-  else conditions.push(sql`${hbcfBuilderProfiles.tenantId} IS NULL`);
+  else conditions.push(isMultiTenancyMode() ? sql`1 = 0` : sql`${hbcfBuilderProfiles.tenantId} IS NULL`);
   const [profile] = await db.select()
     .from(hbcfBuilderProfiles)
     .where(and(...conditions))
@@ -300,7 +307,7 @@ export async function getHbcfBuilderProfile(tenantId?: number | null) {
     eq(hbcfCertificates.status, "issued"),
   ];
   if (tenantId) certificateConditions.push(eq(hbcfCertificates.tenantId, tenantId));
-  else certificateConditions.push(sql`${hbcfCertificates.tenantId} IS NULL`);
+  else certificateConditions.push(isMultiTenancyMode() ? sql`1 = 0` : sql`${hbcfCertificates.tenantId} IS NULL`);
 
   const [derivedUsage] = await db.select({
     certificateCount: sql<number>`COUNT(*)`,
@@ -348,17 +355,22 @@ export async function upsertHbcfBuilderProfile(
     updatedByUserId: data.updatedByUserId,
   };
   if (existing) {
-    await db.update(hbcfBuilderProfiles).set(values).where(eq(hbcfBuilderProfiles.id, existing.id));
+    await db.update(hbcfBuilderProfiles)
+      .set(values)
+      .where(and(...scopedConditions(hbcfBuilderProfiles, tenantId, eq(hbcfBuilderProfiles.id, existing.id))));
     return existing.id;
   }
   const [result] = await db.insert(hbcfBuilderProfiles).values(values);
   return (result as any).insertId as number;
 }
 
-export async function calculateQuoteHbcfValue(quoteId: number) {
+export async function calculateQuoteHbcfValue(quoteId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const [quote] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  const [quote] = await db.select()
+    .from(quotes)
+    .where(and(...scopedConditions(quotes, tenantId, eq(quotes.id, quoteId))))
+    .limit(1);
   if (!quote) throw new Error("Quote not found");
   const components = await db.select().from(quoteComponents).where(eq(quoteComponents.quoteId, quoteId));
   const componentSubtotal = components.reduce((sum, comp: any) => {
@@ -380,11 +392,14 @@ export async function calculateQuoteHbcfValue(quoteId: number) {
   return afterDiscount + council + homeWarranty;
 }
 
-export async function syncQuoteHbcfRequirement(quoteId: number) {
+export async function syncQuoteHbcfRequirement(quoteId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const value = await calculateQuoteHbcfValue(quoteId);
-  const [quote] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+  const value = await calculateQuoteHbcfValue(quoteId, tenantId);
+  const [quote] = await db.select()
+    .from(quotes)
+    .where(and(...scopedConditions(quotes, tenantId, eq(quotes.id, quoteId))))
+    .limit(1);
   if (!quote) throw new Error("Quote not found");
   const requirement = hbcfRequirementFieldsForAmount(value, "Quote", {
     siteAddress: quote.siteAddress,
@@ -399,15 +414,20 @@ export async function syncQuoteHbcfRequirement(quoteId: number) {
   };
   if (required && !quote.hbcfFlaggedAt) updates.hbcfFlaggedAt = new Date();
   if (!required) updates.hbcfFlaggedAt = null;
-  await db.update(quotes).set(updates).where(eq(quotes.id, quoteId));
+  await db.update(quotes)
+    .set(updates)
+    .where(and(...scopedConditions(quotes, tenantId, eq(quotes.id, quoteId))));
   return { required, value, reason: requirement.hbcfRequirementReason };
 }
 
-export async function applyQuoteHbcfToApprovalProject(quoteId: number, projectId: number) {
+export async function applyQuoteHbcfToApprovalProject(quoteId: number, projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const result = await syncQuoteHbcfRequirement(quoteId);
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  const result = await syncQuoteHbcfRequirement(quoteId, tenantId);
+  const [project] = await db.select()
+    .from(approvalProjects)
+    .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))))
+    .limit(1);
   const appliesToProject = project ? isNswHbcfLocation(project) : false;
   if (result.required && appliesToProject) {
     await db.update(approvalProjects)
@@ -417,7 +437,7 @@ export async function applyQuoteHbcfToApprovalProject(quoteId: number, projectId
         hbcfRequirementReason: result.reason,
         hbcfFlaggedAt: new Date(),
       })
-      .where(eq(approvalProjects.id, projectId));
+      .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))));
   } else if (project && !appliesToProject) {
     await db.update(approvalProjects)
       .set({
@@ -427,7 +447,7 @@ export async function applyQuoteHbcfToApprovalProject(quoteId: number, projectId
         hbcfRequirementReason: null,
         hbcfFlaggedAt: null,
       })
-      .where(eq(approvalProjects.id, projectId));
+      .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))));
   }
   return result;
 }
@@ -435,13 +455,14 @@ export async function applyQuoteHbcfToApprovalProject(quoteId: number, projectId
 export async function createOrUpdateHbcfCertificate(data: InsertHbcfCertificate) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const tenantId = data.tenantId ?? null;
   const matchConditions: any[] = [];
   if (data.policyNumber) matchConditions.push(eq(hbcfCertificates.policyNumber, data.policyNumber));
   if (data.certificateNumber) matchConditions.push(eq(hbcfCertificates.certificateNumber, data.certificateNumber));
   let existing: any = null;
   if (matchConditions.length > 0) {
     const conditions: any[] = [or(...matchConditions)!];
-    if (data.tenantId) conditions.push(eq(hbcfCertificates.tenantId, data.tenantId));
+    appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
     const [row] = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(1);
     existing = row ?? null;
   }
@@ -452,17 +473,24 @@ export async function createOrUpdateHbcfCertificate(data: InsertHbcfCertificate)
     expiresAt: asDate(data.expiresAt),
   };
   if (existing) {
-    await db.update(hbcfCertificates).set(payload as any).where(eq(hbcfCertificates.id, existing.id));
-    await linkCertificateToProject(existing.id, payload.approvalProjectId ?? null, payload.status);
+    await db.update(hbcfCertificates)
+      .set(payload as any)
+      .where(and(...scopedConditions(hbcfCertificates, tenantId, eq(hbcfCertificates.id, existing.id))));
+    await linkCertificateToProject(existing.id, payload.approvalProjectId ?? null, payload.status, tenantId);
     return existing.id;
   }
   const [result] = await db.insert(hbcfCertificates).values(payload as any);
   const id = (result as any).insertId as number;
-  await linkCertificateToProject(id, payload.approvalProjectId ?? null, payload.status);
+  await linkCertificateToProject(id, payload.approvalProjectId ?? null, payload.status, tenantId);
   return id;
 }
 
-async function linkCertificateToProject(certificateId: number, projectId: number | null | undefined, status: string | null | undefined) {
+async function linkCertificateToProject(
+  certificateId: number,
+  projectId: number | null | undefined,
+  status: string | null | undefined,
+  tenantId?: number | null,
+) {
   if (!projectId) return;
   const db = await getDb();
   if (!db) return;
@@ -474,7 +502,7 @@ async function linkCertificateToProject(certificateId: number, projectId: number
       hbcfCertificateId: issued ? certificateId : undefined,
       hbcfFlaggedAt: new Date(),
     } as any)
-    .where(eq(approvalProjects.id, projectId));
+    .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))));
 }
 
 export async function listHbcfCertificates(filters: {
@@ -486,7 +514,7 @@ export async function listHbcfCertificates(filters: {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [];
-  if (filters.tenantId) conditions.push(eq(hbcfCertificates.tenantId, filters.tenantId));
+  appendTenantScope(conditions, hbcfCertificates.tenantId, filters.tenantId);
   if (filters.projectId) conditions.push(eq(hbcfCertificates.approvalProjectId, filters.projectId));
   if (filters.quoteId) conditions.push(eq(hbcfCertificates.quoteId, filters.quoteId));
   if (filters.leadId) conditions.push(eq(hbcfCertificates.crmLeadId, filters.leadId));
@@ -495,16 +523,20 @@ export async function listHbcfCertificates(filters: {
     .orderBy(desc(hbcfCertificates.updatedAt));
 }
 
-export async function getProjectHbcfGateStatus(projectId: number) {
+export async function getProjectHbcfGateStatus(projectId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { required: false, issued: false, blockers: [] as string[] };
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  const [project] = await db.select()
+    .from(approvalProjects)
+    .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))))
+    .limit(1);
   if (!project) return { required: false, issued: false, blockers: ["Project not found"] };
   const required = isNswHbcfLocation(project) &&
     (!!project.hbcfRequired || Number(project.estimatedCost || 0) >= HBCF_REQUIRED_THRESHOLD);
   if (!required) return { required: false, issued: true, blockers: [] as string[] };
   const issued = await db.select().from(hbcfCertificates)
     .where(and(
+      ...scopedConditions(hbcfCertificates, tenantId),
       eq(hbcfCertificates.approvalProjectId, projectId),
       eq(hbcfCertificates.status, "issued"),
     ))
@@ -519,7 +551,10 @@ export async function getProjectHbcfGateStatus(projectId: number) {
 export async function syncProjectHbcfFromApi(projectId: number, tenantId?: number | null, userId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const [project] = await db.select().from(approvalProjects).where(eq(approvalProjects.id, projectId)).limit(1);
+  const [project] = await db.select()
+    .from(approvalProjects)
+    .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))))
+    .limit(1);
   if (!project) throw new Error("Project not found");
   if (!isNswHbcfLocation(project)) {
     return { imported: 0, total: 0, skipped: "non_nsw_project" };
@@ -565,10 +600,10 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
       } as any);
       imported++;
     }
-    await recordProfileSync(profile.id, "success");
+    await recordProfileSync(profile, "success");
     return { imported, total: policies.length };
   } catch (error: any) {
-    await recordProfileSync(profile.id, "failed", error?.message || String(error));
+    await recordProfileSync(profile, "failed", error?.message || String(error));
     throw error;
   }
 }
@@ -593,7 +628,7 @@ export async function runHbcfCompetitorMatching(options: {
       OR UPPER(COALESCE(${crmLeads.contactAddress}, '')) LIKE '%NEW SOUTH WALES%'
     )`,
   ];
-  if (options.tenantId) leadConditions.push(eq(crmLeads.tenantId, options.tenantId));
+  appendTenantScope(leadConditions, crmLeads.tenantId, options.tenantId);
   if (options.leadIds?.length) leadConditions.push(inArray(crmLeads.id, options.leadIds));
   const leads = await db.select({
     id: crmLeads.id,
@@ -617,7 +652,7 @@ export async function runHbcfCompetitorMatching(options: {
           .from(hbcfPolicyMatches)
           .where(and(
             eq(hbcfPolicyMatches.leadId, lead.id),
-            options.tenantId ? eq(hbcfPolicyMatches.tenantId, options.tenantId) : sql`1=1`,
+            ...scopedConditions(hbcfPolicyMatches, options.tenantId),
           ))
           .limit(1);
         if (existing.length > 0) { skipped++; continue; }
@@ -639,7 +674,7 @@ export async function runHbcfCompetitorMatching(options: {
           .where(and(
             eq(hbcfPolicyMatches.leadId, lead.id),
             eq(hbcfPolicyMatches.policyNumber, policyNumber),
-            options.tenantId ? eq(hbcfPolicyMatches.tenantId, options.tenantId) : sql`1=1`,
+            ...scopedConditions(hbcfPolicyMatches, options.tenantId),
           ))
           .limit(1);
         const values = {
@@ -664,7 +699,9 @@ export async function runHbcfCompetitorMatching(options: {
           rawPayload: policy.rawPayload ?? null,
         };
         if (existing.length) {
-          await db.update(hbcfPolicyMatches).set(values as any).where(eq(hbcfPolicyMatches.id, existing[0].id));
+          await db.update(hbcfPolicyMatches)
+            .set(values as any)
+            .where(and(...scopedConditions(hbcfPolicyMatches, options.tenantId, eq(hbcfPolicyMatches.id, existing[0].id))));
         } else {
           await db.insert(hbcfPolicyMatches).values(values as any);
         }
@@ -686,7 +723,7 @@ export async function listHbcfCompetitorMatches(filters: {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
   const conditions: any[] = [eq(hbcfPolicyMatches.isOurs, false)];
-  if (filters.tenantId) conditions.push(eq(hbcfPolicyMatches.tenantId, filters.tenantId));
+  appendTenantScope(conditions, hbcfPolicyMatches.tenantId, filters.tenantId);
   if (filters.leadId) conditions.push(eq(hbcfPolicyMatches.leadId, filters.leadId));
   const where = and(...conditions);
   const [items, countResult] = await Promise.all([

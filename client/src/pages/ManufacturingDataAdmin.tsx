@@ -87,7 +87,8 @@ function parseBool(value: string | undefined) {
   return !["0", "false", "no", "inactive", "archived"].includes(value.trim().toLowerCase());
 }
 
-function colourStyle(colour: string) {
+function colourStyle(colour: string, hex?: string | null) {
+  if (hex) return { backgroundColor: hex };
   const normalized = colour.trim().toLowerCase();
   const named: Record<string, string> = {
     black: "#111827",
@@ -150,11 +151,11 @@ function buildColourOptions(masterColours: Array<{ key?: string | null; value?: 
   });
 }
 
-function ColourSwatch({ colour }: { colour: string }) {
+function ColourSwatch({ colour, hex }: { colour: string; hex?: string | null }) {
   if (!colour) return <span>-</span>;
   return (
     <span className="inline-flex items-center gap-2">
-      <span className="h-4 w-4 rounded-full border border-border shadow-sm" style={colourStyle(colour)} />
+      <span className="h-4 w-4 rounded-full border border-border shadow-sm" style={colourStyle(colour, hex)} />
       <span>{colour}</span>
     </span>
   );
@@ -178,6 +179,10 @@ export default function ManufacturingDataAdmin() {
   const categories = (facetsQuery.data?.categories || []) as string[];
   const subGroups = (facetsQuery.data?.subGroups || []) as string[];
   const masterColourOptions = useMemo(() => buildColourOptions(coloursQuery.data || []), [coloursQuery.data]);
+  const masterColourHexByName = useMemo(() => new Map(masterColourOptions
+    .filter((colour) => colour.hex)
+    .map((colour) => [colour.value.toLowerCase(), colour.hex || null])),
+    [masterColourOptions]);
   const selectedIdSet = new Set(selectedIds);
   const allVisibleSelected = products.length > 0 && products.every((product) => selectedIdSet.has(product.id));
 
@@ -259,7 +264,7 @@ export default function ManufacturingDataAdmin() {
   };
 
   const exportCsv = () => {
-    const header = ["sku", "description", "category", "subGroup", "uom", "unitCost", "colour", "isActive"];
+    const header = ["sku", "description", "category", "style", "uom", "unitCost", "masterColour", "isActive"];
     const body = products.map((p) => [p.sku, p.description, p.category, p.subGroup, p.uom, p.unitCost, p.colour, p.isActive]);
     const csv = [header, ...body].map((row) => row.map(csvEscape).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -286,11 +291,11 @@ export default function ManufacturingDataAdmin() {
         return;
       }
       const skuIdx = idx("sku", "productCode", "code", "spaCode");
-      const categoryIdx = idx("category");
-      const subGroupIdx = idx("subGroup", "sub_group", "group");
+      const categoryIdx = idx("category", "productCategory", "type");
+      const subGroupIdx = idx("subGroup", "sub_group", "group", "style", "productStyle");
       const uomIdx = idx("uom", "unit");
       const costIdx = idx("unitCost", "unitPrice", "price", "cost");
-      const colourIdx = idx("colour", "color");
+      const colourIdx = idx("colour", "color", "masterColour", "masterColor", "master colour", "master color", "finish");
       const activeIdx = idx("isActive", "active", "status");
       const parsed = data.map((cols) => ({
         sku: skuIdx >= 0 ? cols[skuIdx]?.trim() || null : null,
@@ -362,9 +367,9 @@ export default function ManufacturingDataAdmin() {
             </SelectContent>
           </Select>
           <Select value={subGroup} onValueChange={setSubGroup}>
-            <SelectTrigger className="w-[220px]"><SelectValue placeholder="Sub-group" /></SelectTrigger>
+            <SelectTrigger className="w-[220px]"><SelectValue placeholder="Style / Sub-Group" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Sub-Groups</SelectItem>
+              <SelectItem value="all">All Styles / Sub-Groups</SelectItem>
               {subGroups.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -435,7 +440,7 @@ export default function ManufacturingDataAdmin() {
                 <th className="text-left px-3 py-2 font-medium">Code</th>
                 <th className="text-left px-3 py-2 font-medium">Description</th>
                 <th className="text-left px-3 py-2 font-medium">Details</th>
-                <th className="text-left px-3 py-2 font-medium">Colour</th>
+                <th className="text-left px-3 py-2 font-medium">Master Colour</th>
                 <th className="text-left px-3 py-2 font-medium">Category</th>
                 <th className="text-right px-3 py-2 font-medium">Unit Cost</th>
                 <th className="text-left px-3 py-2 font-medium">Status</th>
@@ -465,7 +470,7 @@ export default function ManufacturingDataAdmin() {
                   <td className="px-3 py-2 text-xs text-muted-foreground">
                     {[product.subGroup, product.uom].filter(Boolean).join(" · ") || "-"}
                   </td>
-                  <td className="px-3 py-2 text-xs"><ColourSwatch colour={product.colour} /></td>
+                  <td className="px-3 py-2 text-xs"><ColourSwatch colour={product.colour} hex={masterColourHexByName.get(product.colour.toLowerCase())} /></td>
                   <td className="px-3 py-2">{product.category ? <Badge variant="secondary">{product.category}</Badge> : "-"}</td>
                   <td className="px-3 py-2 text-right">${Number(product.unitCost || 0).toLocaleString("en-AU", { minimumFractionDigits: 2 })}</td>
                   <td className="px-3 py-2">
@@ -567,7 +572,7 @@ function ProductForm({
           <Input value={form.category || ""} onChange={(event) => setForm({ ...form, category: event.target.value })} />
         </div>
         <div>
-          <Label>Sub-Group</Label>
+          <Label>Style / Sub-Group</Label>
           <Input value={form.subGroup || ""} onChange={(event) => setForm({ ...form, subGroup: event.target.value })} />
         </div>
       </div>
@@ -577,7 +582,7 @@ function ProductForm({
           <Input value={form.uom || ""} onChange={(event) => setForm({ ...form, uom: event.target.value })} placeholder="ea" />
         </div>
         <div>
-          <Label>Colour</Label>
+          <Label>Master Colour</Label>
           <Select
             value={form.colour || "__none__"}
             onValueChange={(value) => setForm({ ...form, colour: value === "__none__" ? "" : value })}

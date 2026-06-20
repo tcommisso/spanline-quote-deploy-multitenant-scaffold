@@ -265,66 +265,80 @@ export async function getQuoteById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return undefined;
   const conditions: any[] = [eq(quotes.id, id)];
-  if (tenantId != null) conditions.push(eq(quotes.tenantId, tenantId));
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   const result = await db.select().from(quotes).where(and(...conditions)).limit(1);
   const [merged] = await mergeQuoteDetails(db, result);
   return merged;
 }
 
-export async function getQuotesByUser(userId: number, search?: string, status?: string) {
+export async function getQuotesByUser(userId: number, search?: string, status?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = [eq(quotes.userId, userId)];
+  const conditions: any[] = [eq(quotes.userId, userId)];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
 
-export async function getAllQuotes(search?: string, status?: string) {
+export async function getAllQuotes(search?: string, status?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
-export async function getQuotesByDesignAdviser(adviserName: string, search?: string, status?: string) {
+export async function getQuotesByDesignAdviser(adviserName: string, search?: string, status?: string, tenantId?: number | null, userId?: number) {
   const db = await getDb();
   if (!db) return [];
-  const conditions: any[] = [eq(quotes.designAdvisor, adviserName)];
+  const ownerOrAdvisor = userId != null
+    ? or(eq(quotes.designAdvisor, adviserName), eq(quotes.userId, userId))
+    : eq(quotes.designAdvisor, adviserName);
+  const conditions: any[] = [ownerOrAdvisor];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
   if (search) conditions.push(like(quotes.clientName, `%${search}%`));
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
 
-export async function updateQuote(id: number, data: Partial<InsertQuote>) {
+export async function updateQuote(id: number, data: Partial<InsertQuote>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const existing = await getQuoteById(id, tenantId);
+  if (!existing) throw new Error("Quote not found");
   const { core, detail } = splitQuotePayload(data);
-  if (hasValues(core)) await db.update(quotes).set(core as any).where(eq(quotes.id, id));
+  const conditions: any[] = [eq(quotes.id, id)];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  if (hasValues(core)) await db.update(quotes).set(core as any).where(and(...conditions));
   await upsertQuoteDetail(db, id, detail);
 }
 
-export async function deleteQuote(id: number) {
+export async function deleteQuote(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const existing = await getQuoteById(id, tenantId);
+  if (!existing) throw new Error("Quote not found");
   await db.delete(quoteDetails).where(eq(quoteDetails.quoteId, id));
   await db.delete(quoteComponents).where(eq(quoteComponents.quoteId, id));
   await db.delete(skyluxEntries).where(eq(skyluxEntries.quoteId, id));
   await db.delete(eclipseEntries).where(eq(eclipseEntries.quoteId, id));
-  await db.delete(quotes).where(eq(quotes.id, id));
+  const conditions: any[] = [eq(quotes.id, id)];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  await db.delete(quotes).where(and(...conditions));
 }
 
-export async function duplicateQuote(id: number, userId: number, newQuoteNumber: string) {
+export async function duplicateQuote(id: number, userId: number, newQuoteNumber: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  const original = await getQuoteById(id);
+  const original = await getQuoteById(id, tenantId);
   if (!original) throw new Error("Quote not found");
-  const { id: _id, createdAt, updatedAt, ...rest } = original;
-  const newId = await createQuote({ ...rest, userId, quoteNumber: newQuoteNumber, status: "draft" });
+  const { id: _id, createdAt, updatedAt, tenantId: originalTenantId, ...rest } = original;
+  const newId = await createQuote({ ...rest, tenantId: tenantId ?? originalTenantId ?? null, userId, quoteNumber: newQuoteNumber, status: "draft" });
   // Copy components
   const components = await getComponentsByQuote(id);
   for (const comp of components) {
@@ -876,10 +890,13 @@ export async function calculateTabProductRates(tabName: string, region: string =
 }
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
-export async function getQuoteStats(userId?: number) {
+export async function getQuoteStats(userId?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { total: 0, draft: 0, sent: 0, accepted: 0, lost: 0, totalValue: 0, draftValue: 0, sentValue: 0, acceptedValue: 0, lostValue: 0 };
-  const condition = userId ? eq(quotes.userId, userId) : undefined;
+  const conditions: any[] = [];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
+  if (userId) conditions.push(eq(quotes.userId, userId));
+  const condition = conditions.length ? and(...conditions) : undefined;
   const all = await db.select({ status: quotes.status, count: sql<number>`COUNT(*)`, value: sql<number>`COALESCE(SUM(total_price), 0)` })
     .from(quotes).where(condition).groupBy(quotes.status);
   const stats = { total: 0, draft: 0, sent: 0, accepted: 0, lost: 0, totalValue: 0, draftValue: 0, sentValue: 0, acceptedValue: 0, lostValue: 0 };
@@ -1153,13 +1170,15 @@ export async function getAnalytics(userId?: number) {
 }
 
 // ─── Update proposal sent timestamp ──────────────────────────────────────────
-export async function updateQuoteProposalSent(quoteId: number, sentTo: string) {
+export async function updateQuoteProposalSent(quoteId: number, sentTo: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return;
+  const conditions: any[] = [eq(quotes.id, quoteId)];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   await db
     .update(quotes)
     .set({ proposalSentAt: new Date(), proposalSentTo: sentTo })
-    .where(eq(quotes.id, quoteId));
+    .where(and(...conditions));
 }
 
 // ─── Colour Groups ──────────────────────────────────────────────────────────
@@ -1520,9 +1539,11 @@ export async function getUserById(userId: number) {
   return result[0] || null;
 }
 
-export async function getRecentRevisions(limit: number = 5) {
+export async function getRecentRevisions(limit: number = 5, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
+  const conditions: any[] = [];
+  appendTenantScope(conditions, quotes.tenantId, tenantId);
   const results = await db.select({
     id: quoteRevisions.id,
     quoteId: quoteRevisions.quoteId,
@@ -1531,20 +1552,17 @@ export async function getRecentRevisions(limit: number = 5) {
     action: quoteRevisions.action,
     changes: quoteRevisions.changes,
     createdAt: quoteRevisions.createdAt,
+    quoteNumber: quotes.quoteNumber,
+    clientName: quotes.clientName,
   }).from(quoteRevisions)
+    .innerJoin(quotes, eq(quoteRevisions.quoteId, quotes.id))
+    .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(quoteRevisions.createdAt))
     .limit(limit);
-  // Attach quote number and client name
-  if (results.length === 0) return [];
-  const quoteIds = Array.from(new Set(results.map(r => r.quoteId)));
-  const quoteRows = await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber, clientName: quotes.clientName })
-    .from(quotes)
-    .where(sql`${quotes.id} IN (${sql.raw(quoteIds.join(","))})`);
-  const quoteMap = new Map(quoteRows.map(q => [q.id, q]));
   return results.map(r => ({
     ...r,
-    quoteNumber: quoteMap.get(r.quoteId)?.quoteNumber || "Unknown",
-    clientName: quoteMap.get(r.quoteId)?.clientName || "Unknown",
+    quoteNumber: r.quoteNumber || "Unknown",
+    clientName: r.clientName || "Unknown",
   }));
 }
 

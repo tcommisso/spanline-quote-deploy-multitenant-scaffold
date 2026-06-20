@@ -43,6 +43,63 @@ async function assertQuoteAccess(ctx: any, quoteId: number, quoteType: string) {
   return quote;
 }
 
+const AU_STATE_ALIASES: Record<string, string> = {
+  act: "ACT",
+  "australian capital territory": "ACT",
+  nsw: "NSW",
+  "new south wales": "NSW",
+  vic: "VIC",
+  victoria: "VIC",
+  qld: "QLD",
+  queensland: "QLD",
+  sa: "SA",
+  "south australia": "SA",
+  wa: "WA",
+  "western australia": "WA",
+  tas: "TAS",
+  tasmania: "TAS",
+  nt: "NT",
+  "northern territory": "NT",
+};
+
+function cleanLeadToken(value?: string | null) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function normaliseLeadState(value?: string | null) {
+  const cleaned = cleanLeadToken(value);
+  return AU_STATE_ALIASES[cleaned.toLowerCase()] || cleaned.toUpperCase();
+}
+
+function inferLeadStateFromPostcode(postcode?: string | null) {
+  const pc = Number(String(postcode || "").match(/\b\d{4}\b/)?.[0] || "");
+  if (!pc) return "";
+  if ((pc >= 2600 && pc <= 2619) || (pc >= 2900 && pc <= 2920)) return "ACT";
+  if ((pc >= 2000 && pc <= 2599) || (pc >= 2620 && pc <= 2899)) return "NSW";
+  if (pc >= 3000 && pc <= 3999) return "VIC";
+  if (pc >= 4000 && pc <= 4999) return "QLD";
+  if (pc >= 5000 && pc <= 5799) return "SA";
+  if (pc >= 6000 && pc <= 6797) return "WA";
+  if (pc >= 7000 && pc <= 7799) return "TAS";
+  if (pc >= 800 && pc <= 899) return "NT";
+  return "";
+}
+
+function inferLeadAddressParts(address?: string | null) {
+  const text = String(address || "");
+  const parts = text.split(",").map(cleanLeadToken).filter(Boolean);
+  const postcodeMatches = text.match(/\b\d{4}\b/g) || [];
+  const postcode = postcodeMatches[postcodeMatches.length - 1] || "";
+  const postcodeIndex = postcode ? parts.findIndex((part) => new RegExp(`\\b${postcode}\\b`).test(part)) : -1;
+  const stateIndex = parts.findIndex((part) => !!AU_STATE_ALIASES[part.toLowerCase()]);
+  const state = stateIndex >= 0 ? normaliseLeadState(parts[stateIndex]) : inferLeadStateFromPostcode(postcode);
+  const suburbIndex = stateIndex >= 0 ? stateIndex - 1 : postcodeIndex >= 0 ? postcodeIndex - 1 : parts.length - 2;
+  const suburb = parts[suburbIndex] && !AU_STATE_ALIASES[parts[suburbIndex].toLowerCase()]
+    ? parts[suburbIndex].replace(/\b\d{4}\b/g, "").trim()
+    : "";
+  return { suburb, state, postcode };
+}
+
 const appointmentParticipantSchema = z.object({
   name: z.string().trim().optional(),
   email: z.string().trim().email(),
@@ -250,14 +307,39 @@ export const crmRouter = router({
 
       const tenantId = tenantIdFromContext(ctx);
       const leadNumber = await crmDb.getNextLeadNumber(tenantId);
+      const contactAddress = cleanLeadToken(input.contactAddress);
+      const inferredAddress = inferLeadAddressParts(contactAddress);
+      const suburb = cleanLeadToken(input.suburb) || inferredAddress.suburb;
+      const postcode = cleanLeadToken(input.postcode) || inferredAddress.postcode;
+      const state = normaliseLeadState(input.state || inferredAddress.state);
+      let designAdvisor = cleanLeadToken(input.designAdvisor);
+      if (!designAdvisor && ctx.user.role === "design_adviser" && ctx.user.name) {
+        designAdvisor = ctx.user.name;
+      }
+      if (!designAdvisor) {
+        try {
+          const assignedDa = await crmDb.getAssignedDaForLead(suburb, postcode, state);
+          if (assignedDa) designAdvisor = assignedDa;
+        } catch (e) {
+          console.warn("[CRM] Could not auto-assign design advisor by zone:", e);
+        }
+      }
+      const createData = {
+        ...input,
+        contactAddress,
+        suburb,
+        state,
+        postcode,
+        designAdvisor,
+      };
 
       // Auto-assign branch based on franchise number or address proximity
-      let branchId = input.branchId;
-      if (!branchId && input.franchiseNumber === 'RIV') {
+      let branchId = createData.branchId;
+      if (!branchId && createData.franchiseNumber === 'RIV') {
         branchId = 2; // Wagga Wagga
-      } else if (!branchId && input.franchiseNumber === 'ACT') {
+      } else if (!branchId && createData.franchiseNumber === 'ACT') {
         branchId = 1; // Canberra
-      } else if (!branchId && input.contactAddress) {
+      } else if (!branchId && createData.contactAddress) {
         try {
           const { getDb } = await import("./db");
           const { branches } = await import("../drizzle/schema");
@@ -272,7 +354,7 @@ export const crmRouter = router({
               if (origins) {
                 const resp = await makeRequest(
                   "https://maps.googleapis.com/maps/api/distancematrix/json",
-                  { origins, destinations: input.contactAddress, mode: "driving" }
+                  { origins, destinations: createData.contactAddress, mode: "driving" }
                 );
                 if ((resp as any)?.rows) {
                   let minDist = Infinity;
@@ -297,7 +379,7 @@ export const crmRouter = router({
         }
       }
 
-      return crmDb.createLead({ ...input, branchId, leadNumber, tenantId, createdBy: ctx.user.id });
+      return crmDb.createLead({ ...createData, branchId, leadNumber, tenantId, createdBy: ctx.user.id });
     }),
 
     update: protectedProcedure.input(z.object({

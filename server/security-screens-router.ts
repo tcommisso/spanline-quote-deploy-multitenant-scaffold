@@ -1425,7 +1425,12 @@ export const securityScreensRouter = router({
           createdBy,
         });
         const quoteId = await quoteIdFromInsertResult(db, tenantId, result, quoteNumber);
-        return { id: quoteId, quoteNumber, clientName };
+        let leadUnarchived = false;
+        if (lead.archived) {
+          await db.update(crmLeads).set({ archived: false }).where(and(eq(crmLeads.id, input.leadId), scope(crmLeads.tenantId, tenantId)));
+          leadUnarchived = true;
+        }
+        return { id: quoteId, quoteNumber, clientName, leadUnarchived };
       }),
   }),
 

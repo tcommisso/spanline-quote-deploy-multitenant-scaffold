@@ -111,6 +111,7 @@ export default function CrossSectionDiagram({
 
   // Determine if we should show the connection annotation
   const showConnection = !!connectionType && connectionType !== "FSS";
+  const cutBackEaveMm = parseFloat(cutBackEave) || 0;
 
   return (
     <div className="w-full border rounded-lg bg-white p-3 sm:p-4 overflow-hidden">
@@ -166,6 +167,18 @@ export default function CrossSectionDiagram({
           {/* Eave soffit (dashed) — underside of eave from wall to fascia */}
           <line x1={wallTopX + 5} y1={eaveBottomY} x2={fasciaX - 2} y2={eaveBottomY} stroke="black" strokeWidth="1" strokeDasharray="4 3" />
 
+
+          {cutBackEaveMm > 0 && (
+            <g aria-label="Eave cut-back roof position and roof-to-roof flashing">
+              {/* New roof position after the eave is cut back */}
+              <line x1={fasciaX + 12} y1={wallTopY + 12} x2={fasciaX + 255} y2={wallTopY + 20} stroke="#14b8a6" strokeWidth="4" strokeLinecap="round" />
+              <line x1={fasciaX + 12} y1={wallTopY + 32} x2={fasciaX + 255} y2={wallTopY + 40} stroke="#14b8a6" strokeWidth="4" strokeLinecap="round" />
+              <line x1={fasciaX + 12} y1={wallTopY + 12} x2={fasciaX + 12} y2={wallTopY + 32} stroke="#14b8a6" strokeWidth="4" strokeLinecap="round" />
+              <line x1={fasciaX + 255} y1={wallTopY + 20} x2={fasciaX + 255} y2={wallTopY + 40} stroke="#14b8a6" strokeWidth="4" strokeLinecap="round" />
+              {/* Roof-to-roof flashing over the cut-back eave */}
+              <line x1={fasciaX - 40} y1={wallTopY - 12} x2={fasciaX + 70} y2={wallTopY + 8} stroke="#ef4444" strokeWidth="3" strokeLinecap="round" />
+            </g>
+          )}
           {/* Cut Back Eave dimension arrows */}
           <line x1={wallTopX + 5} y1={eaveBottomY + 16} x2={fasciaX - 2} y2={eaveBottomY + 16} stroke="black" strokeWidth="1" markerStart="url(#csArrL)" markerEnd="url(#csArrR)" />
           <line x1={wallTopX + 5} y1={eaveBottomY + 4} x2={wallTopX + 5} y2={eaveBottomY + 22} stroke="black" strokeWidth="0.5" strokeDasharray="2 2" />
@@ -332,15 +345,8 @@ export default function CrossSectionDiagram({
 
           {/* ═══ LABELS ═══ */}
           <text x="80" y="50" fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Roof Pitch</text>
-          <text x={roofStartX + 60} y={roofStartY + 15} fontSize="12" fontWeight="bold" fill="black" fontFamily="sans-serif">Roof Type</text>
-          <text x={wallTopX - 70} y={eaveBottomY + 12} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Cut Back</text>
-          <text x={wallTopX - 70} y={eaveBottomY + 25} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Eave</text>
-          <text x={fasciaX + 60} y={wallTopY - 2} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Remove gutter &amp;</text>
-          <text x={fasciaX + 60} y={wallTopY + 12} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">flash</text>
           <text x="60" y={wallTopY + 200} fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Wall</text>
           <text x="60" y={wallTopY + 216} fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Type</text>
-          <text x={wallTopX + 40} y={wallTopY + 310} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Fall on Ground from</text>
-          <text x={wallTopX + 40} y={wallTopY + 324} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">wall to Posts</text>
           <text x={wallTopX - 20} y={wallTopY + 398} fontSize="11" fill="black" fontFamily="sans-serif">Floor level</text>
           <text x={wallTopX + 160} y={wallTopY + 390 + groundDropPx + (fallPx / 2)} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Ground level</text>
         </svg>

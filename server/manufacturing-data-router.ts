@@ -328,7 +328,7 @@ export const manufacturingDataRouter = router({
                   supplier = ${row.supplier?.trim() || null},
                   colour = ${row.colour?.trim() || null},
                   isActive = ${row.isActive ?? true}
-              WHERE id = ${existing.id}
+              WHERE id = ${existing.id} AND ${tenantSql(tenantId)}
             `);
             updated += 1;
           } else {

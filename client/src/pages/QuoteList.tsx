@@ -52,6 +52,7 @@ export default function QuoteList() {
   const [selectedClient, setSelectedClient] = useState<{ id: number; name: string; phone?: string | null; email?: string | null; address?: string | null; suburb?: string | null; state?: string | null; postcode?: string | null; designAdvisor?: string | null } | null>(null);
   const [newRegion, setNewRegion] = useState("Canberra");
   const [siteAddress, setSiteAddress] = useState("");
+  const [selectedSiteAddress, setSelectedSiteAddress] = useState<AddressResult | null>(null);
   const [newDesignAdvisor, setNewDesignAdvisor] = useState("");
   const [newLocalCouncil, setNewLocalCouncil] = useState("");
 
@@ -76,6 +77,8 @@ export default function QuoteList() {
       }
       setShowCreate(false);
       setSelectedClient(null);
+      setSelectedSiteAddress(null);
+      setSiteAddress("");
       utils.quotes.list.invalidate();
       utils.quotes.stats.invalidate();
       setLocation(`/quotes/${data.id}`);
@@ -490,7 +493,14 @@ export default function QuoteList() {
       )}
 
       {/* Create Dialog */}
-      <Dialog open={showCreate} onOpenChange={(open) => { setShowCreate(open); if (!open) setSelectedClient(null); }}>
+      <Dialog open={showCreate} onOpenChange={(open) => {
+        setShowCreate(open);
+        if (!open) {
+          setSelectedClient(null);
+          setSelectedSiteAddress(null);
+          setSiteAddress("");
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>New Structure Quote</DialogTitle>
@@ -508,19 +518,23 @@ export default function QuoteList() {
                     setNewDesignAdvisor((client as any).designAdvisor);
                   }
                 }}
-                onClientClear={() => { setSelectedClient(null); setNewDesignAdvisor(""); setNewLocalCouncil(""); }}
+                onClientClear={() => { setSelectedClient(null); setSelectedSiteAddress(null); setSiteAddress(""); setNewDesignAdvisor(""); setNewLocalCouncil(""); }}
               />
             </div>
             <div className="space-y-2">
               <Label className="text-xs font-medium">Site Address</Label>
               <AddressAutocomplete
                 value={siteAddress}
-                onChange={setSiteAddress}
+                onChange={(value) => {
+                  setSiteAddress(value);
+                  setSelectedSiteAddress(null);
+                }}
                 onAddressSelect={(addr) => {
                   const fullAddr = addr.unitNumber
                     ? `${addr.unitNumber}/${addr.streetAddress}, ${addr.suburb} ${addr.state} ${addr.postcode}`
                     : addr.fullAddress;
                   setSiteAddress(fullAddr);
+                  setSelectedSiteAddress(addr);
                   const detected = detectRegion(addr.postcode, addr.suburb, addr.state);
                   if (detected) setNewRegion(detected);
                 }}
@@ -547,6 +561,7 @@ export default function QuoteList() {
                   clientPhone: selectedClient.phone || "",
                   clientEmail: selectedClient.email || "",
                   siteAddress: siteAddress || [selectedClient.address, selectedClient.suburb, selectedClient.state, selectedClient.postcode].filter(Boolean).join(", "),
+                  suburb: selectedSiteAddress?.suburb || selectedClient.suburb || undefined,
                   region: newRegion,
                   designAdvisor: newDesignAdvisor || undefined,
                   localCouncil: newLocalCouncil || undefined,
