@@ -95,9 +95,21 @@ export const inboxRouter = router({
     }),
 
   getThread: protectedProcedure
-    .input(z.object({ threadId: z.string() }))
+    .input(z.object({
+      threadId: z.string().optional(),
+      messageId: z.number().int().optional(),
+    }).refine((value) => Boolean(value.threadId || value.messageId), {
+      message: "Thread ID or message ID is required",
+    }))
     .query(async ({ ctx, input }) => {
-      const messages = await inboxDb.getThreadMessages(input.threadId, ctx.tenant!.id);
+      let threadId = input.threadId;
+      if (input.messageId) {
+        const message = await inboxDb.getInboxMessageById(input.messageId, ctx.tenant!.id);
+        if (!message) throw new TRPCError({ code: "NOT_FOUND", message: "Message not found" });
+        threadId = message.threadId;
+      }
+      if (!threadId) throw new TRPCError({ code: "BAD_REQUEST", message: "Thread ID is required" });
+      const messages = await inboxDb.getThreadMessages(threadId, ctx.tenant!.id);
       if (messages.length === 0) throw new TRPCError({ code: "NOT_FOUND", message: "Thread not found" });
       // Get tags for each message
       const messagesWithTags = await Promise.all(
@@ -106,7 +118,7 @@ export const inboxRouter = router({
           tags: await inboxDb.getMessageTags(msg.id, ctx.tenant!.id),
         }))
       );
-      const ticket = await inboxDb.getTicketByThread(input.threadId, ctx.tenant!.id);
+      const ticket = await inboxDb.getTicketByThread(threadId, ctx.tenant!.id);
       const ticketTags = ticket ? await inboxDb.getTicketTags(ticket.id, ctx.tenant!.id) : [];
       return messagesWithTags.map((msg) => ({
         ...msg,

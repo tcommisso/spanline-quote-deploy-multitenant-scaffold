@@ -671,7 +671,7 @@ export default function InboxPage() {
               <div
                 key={msg.id}
                 className={`group flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors hover:bg-accent/50 ${slaBg} ${isUnread ? "bg-primary/[0.03]" : ""} ${isSelected ? "bg-primary/[0.08] ring-1 ring-primary/20" : ""}`}
-                onClick={() => setLocation(`/inbox/thread/${encodeURIComponent(msg.threadId)}`)}
+                onClick={() => setLocation(`/inbox/thread/message/${msg.id}`)}
               >
                 {/* Checkbox */}
                 <div className="mt-1 shrink-0" onClick={(e) => e.stopPropagation()}>

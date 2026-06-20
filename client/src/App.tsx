@@ -549,6 +549,7 @@ function MainRouter() {
         <Route path="/da-tracker" component={DaTrackerMap} />
 
         <Route path="/inbox/compose" component={InboxCompose} />
+        <Route path="/inbox/thread/message/:messageId">{(params) => <InboxThread messageId={Number(params.messageId)} />}</Route>
         <Route path="/inbox/thread/:threadId">{(params) => <InboxThread threadId={params.threadId!} />}</Route>
         <Route path="/inbox" component={InboxPage} />
         <Route path="/crm/reports" component={CrmReports} />

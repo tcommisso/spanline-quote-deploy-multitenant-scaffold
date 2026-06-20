@@ -55,8 +55,9 @@ const WAITING_ON_LABELS: Record<string, string> = {
   none: "No response needed",
 };
 
-export default function InboxThread({ threadId: rawThreadId }: { threadId: string }) {
-  const threadId = decodeURIComponent(rawThreadId);
+export default function InboxThread({ threadId: rawThreadId, messageId }: { threadId?: string; messageId?: number }) {
+  const initialThreadId = rawThreadId ? decodeURIComponent(rawThreadId) : "";
+  const messageLookupId = Number.isFinite(messageId) ? messageId : undefined;
   const { user } = useAuth();
   const [, setLocation] = useLocation();
   const [replyOpen, setReplyOpen] = useState(false);
@@ -69,16 +70,23 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   const [internalNote, setInternalNote] = useState("");
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
-  const { data: thread, isLoading, refetch } = trpc.inbox.getThread.useQuery({ threadId });
+  const threadQueryInput = messageLookupId ? { messageId: messageLookupId } : { threadId: initialThreadId };
+  const { data: thread, isLoading, error: threadError, refetch } = trpc.inbox.getThread.useQuery(threadQueryInput, {
+    enabled: Boolean(messageLookupId || initialThreadId),
+  });
+  const threadId = thread?.[0]?.threadId || initialThreadId;
   const { data: tags } = trpc.inbox.tags.list.useQuery();
   const { data: staffUsers } = trpc.inbox.staffUsers.useQuery();
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
-  const { data: internalNotes = [], refetch: refetchInternalNotes } = trpc.inbox.notes.list.useQuery({ threadId });
+  const { data: internalNotes = [], refetch: refetchInternalNotes } = trpc.inbox.notes.list.useQuery(
+    { threadId },
+    { enabled: Boolean(threadId) },
+  );
   const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
   const { data: presence = [] } = trpc.inbox.presence.list.useQuery(
     { threadId },
-    { refetchInterval: 30000 }
+    { enabled: Boolean(threadId), refetchInterval: 30000 }
   );
   const { mutate: sendPresenceHeartbeat } = trpc.inbox.presence.heartbeat.useMutation();
 
@@ -146,6 +154,7 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
   }, [thread]);
 
   useEffect(() => {
+    if (!threadId) return;
     const mode = replyOpen ? "replying" : "viewing";
     sendPresenceHeartbeat({ threadId, mode });
     const interval = window.setInterval(() => {
@@ -234,6 +243,26 @@ export default function InboxThread({ threadId: rawThreadId }: { threadId: strin
         <Skeleton className="h-8 w-48 mb-4" />
         <Skeleton className="h-[200px] w-full mb-4" />
         <Skeleton className="h-[200px] w-full" />
+      </div>
+    );
+  }
+
+  if (threadError) {
+    return (
+      <div className="p-4 md:p-6 max-w-[900px] mx-auto">
+        <Button variant="ghost" size="sm" onClick={() => setLocation("/inbox")}>
+          <ArrowLeft className="h-4 w-4 mr-1" /> Back to Inbox
+        </Button>
+        <div className="mt-8 rounded-lg border border-red-200 bg-red-50 p-4 text-red-900 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-200">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertCircle className="h-4 w-4" />
+            Could not load this ticket conversation
+          </div>
+          <p className="mt-2 text-sm">{threadError.message}</p>
+          <p className="mt-2 text-xs opacity-80">
+            Reference: {messageLookupId ? `message ${messageLookupId}` : initialThreadId || "unknown thread"}
+          </p>
+        </div>
       </div>
     );
   }
