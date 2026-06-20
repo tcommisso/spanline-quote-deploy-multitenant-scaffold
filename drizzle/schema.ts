@@ -4036,6 +4036,201 @@ export const ssQuoteCostAdditions = mysqlTable("ss_quote_cost_additions", {
 export type SsQuoteCostAddition = typeof ssQuoteCostAdditions.$inferSelect;
 export type InsertSsQuoteCostAddition = typeof ssQuoteCostAdditions.$inferInsert;
 
+// ─── Blinds Pricing & Quotes ──────────────────────────────────────
+export const blindPricingSettings = mysqlTable("blind_pricing_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  defaultMarkupPercent: decimal("defaultMarkupPercent", { precision: 5, scale: 2 }).default("30.00").notNull(),
+  updatedBy: int("updatedBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_blind_pricing_settings_tenant").on(table.tenantId),
+  index("idx_blind_pricing_settings_tenant").on(table.tenantId),
+]);
+export type BlindPricingSettings = typeof blindPricingSettings.$inferSelect;
+export type InsertBlindPricingSettings = typeof blindPricingSettings.$inferInsert;
+
+export const blindPricingMatrix = mysqlTable("blind_pricing_matrix", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  brand: varchar("brand", { length: 64 }).notNull(),
+  productType: varchar("productType", { length: 64 }).notNull(),
+  heightMm: int("heightMm").notNull(),
+  widthMm: int("widthMm").notNull(),
+  priceIncGst: decimal("priceIncGst", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_matrix_tenant_brand_type").on(table.tenantId, table.brand, table.productType),
+  uniqueIndex("uq_blind_matrix_tenant_size").on(table.tenantId, table.brand, table.productType, table.heightMm, table.widthMm),
+]);
+export type BlindPricingMatrix = typeof blindPricingMatrix.$inferSelect;
+export type InsertBlindPricingMatrix = typeof blindPricingMatrix.$inferInsert;
+
+export const blindPriceAdjustments = mysqlTable("blind_price_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  effectiveDate: varchar("effectiveDate", { length: 10 }).notNull(),
+  percentageIncrease: decimal("percentageIncrease", { precision: 6, scale: 2 }).notNull(),
+  description: text("description"),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_adjustments_tenant_date").on(table.tenantId, table.effectiveDate),
+]);
+export type BlindPriceAdjustment = typeof blindPriceAdjustments.$inferSelect;
+export type InsertBlindPriceAdjustment = typeof blindPriceAdjustments.$inferInsert;
+
+export const blindCostAdditions = mysqlTable("blind_cost_additions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  category: varchar("category", { length: 64 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  cost: decimal("cost", { precision: 12, scale: 2 }).notNull(),
+  uom: varchar("uom", { length: 32 }),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_costs_tenant_category").on(table.tenantId, table.category),
+]);
+export type BlindCostAddition = typeof blindCostAdditions.$inferSelect;
+export type InsertBlindCostAddition = typeof blindCostAdditions.$inferInsert;
+
+export const blindProductOptions = mysqlTable("blind_product_options", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  category: varchar("category", { length: 64 }).notNull(),
+  orderCode: varchar("orderCode", { length: 100 }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  brand: varchar("brand", { length: 64 }),
+  costPrice: decimal("costPrice", { precision: 12, scale: 2 }).notNull(),
+  sellPrice: decimal("sellPrice", { precision: 12, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_options_tenant_category").on(table.tenantId, table.category),
+]);
+export type BlindProductOption = typeof blindProductOptions.$inferSelect;
+export type InsertBlindProductOption = typeof blindProductOptions.$inferInsert;
+
+export const blindGlassInfill = mysqlTable("blind_glass_infill", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  glassType: varchar("glassType", { length: 128 }).notNull(),
+  description: text("description"),
+  cost: decimal("cost", { precision: 12, scale: 2 }).notNull(),
+  uom: varchar("uom", { length: 32 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_glass_tenant").on(table.tenantId),
+]);
+export type BlindGlassInfill = typeof blindGlassInfill.$inferSelect;
+export type InsertBlindGlassInfill = typeof blindGlassInfill.$inferInsert;
+
+export const blindColours = mysqlTable("blind_colours", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 128 }).notNull(),
+  hexCode: varchar("hexCode", { length: 16 }).notNull(),
+  colorbondName: varchar("colorbondName", { length: 128 }),
+  surchargePercent: decimal("surchargePercent", { precision: 5, scale: 2 }).default("0.00").notNull(),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+}, (table) => [
+  index("idx_blind_colours_tenant_sort").on(table.tenantId, table.sortOrder),
+]);
+export type BlindColour = typeof blindColours.$inferSelect;
+export type InsertBlindColour = typeof blindColours.$inferInsert;
+
+export const blindQuotes = mysqlTable("blind_quotes", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteNumber: varchar("quoteNumber", { length: 32 }).notNull(),
+  clientName: varchar("clientName", { length: 255 }).notNull(),
+  clientEmail: varchar("clientEmail", { length: 320 }),
+  clientPhone: varchar("clientPhone", { length: 64 }),
+  siteAddress: text("siteAddress"),
+  markupPercent: decimal("markupPercent", { precision: 5, scale: 2 }).default("30.00").notNull(),
+  status: mysqlEnum("status", ["draft", "sent", "accepted", "declined", "expired"]).default("draft").notNull(),
+  subtotalExGst: decimal("subtotalExGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  gstAmount: decimal("gstAmount", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  totalIncGst: decimal("totalIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  notes: text("notes"),
+  leadId: int("leadId").references(() => crmLeads.id, { onDelete: "set null" }),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_blind_quote_tenant_number").on(table.tenantId, table.quoteNumber),
+  index("idx_blind_quotes_tenant_status").on(table.tenantId, table.status),
+  index("idx_blind_quotes_lead").on(table.leadId),
+]);
+export type BlindQuote = typeof blindQuotes.$inferSelect;
+export type InsertBlindQuote = typeof blindQuotes.$inferInsert;
+
+export const blindQuoteItems = mysqlTable("blind_quote_items", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteId: int("quoteId").notNull().references(() => blindQuotes.id, { onDelete: "cascade" }),
+  itemNumber: int("itemNumber").notNull(),
+  brand: varchar("brand", { length: 64 }).notNull(),
+  productType: varchar("productType", { length: 64 }).notNull(),
+  widthMm: int("widthMm").notNull(),
+  heightMm: int("heightMm").notNull(),
+  quantity: int("quantity").default(1).notNull(),
+  colourId: int("colourId").references(() => blindColours.id, { onDelete: "set null" }),
+  colourName: varchar("colourName", { length: 128 }),
+  handleSide: varchar("handleSide", { length: 32 }),
+  hingeSide: varchar("hingeSide", { length: 32 }),
+  openingDirection: varchar("openingDirection", { length: 32 }),
+  hingePosition: varchar("hingePosition", { length: 32 }),
+  glassInfillId: int("glassInfillId").references(() => blindGlassInfill.id, { onDelete: "set null" }),
+  glassInfillQuantity: decimal("glassInfillQuantity", { precision: 10, scale: 2 }).default("1.00").notNull(),
+  photoUrl: text("photoUrl"),
+  notes: text("notes"),
+  basePriceIncGst: decimal("basePriceIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  adjustedPrice: decimal("adjustedPrice", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  optionsTotal: decimal("optionsTotal", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  lineTotalExGst: decimal("lineTotalExGst", { precision: 12, scale: 2 }).default("0.00").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_items_tenant_quote").on(table.tenantId, table.quoteId),
+  index("idx_blind_items_quote").on(table.quoteId),
+]);
+export type BlindQuoteItem = typeof blindQuoteItems.$inferSelect;
+export type InsertBlindQuoteItem = typeof blindQuoteItems.$inferInsert;
+
+export const blindQuoteItemOptions = mysqlTable("blind_quote_item_options", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteItemId: int("quoteItemId").notNull().references(() => blindQuoteItems.id, { onDelete: "cascade" }),
+  productOptionId: int("productOptionId").references(() => blindProductOptions.id, { onDelete: "set null" }),
+  quantity: int("quantity").default(1).notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
+  lineTotal: decimal("lineTotal", { precision: 12, scale: 2 }).notNull(),
+}, (table) => [
+  index("idx_blind_item_options_tenant_item").on(table.tenantId, table.quoteItemId),
+]);
+export type BlindQuoteItemOption = typeof blindQuoteItemOptions.$inferSelect;
+export type InsertBlindQuoteItemOption = typeof blindQuoteItemOptions.$inferInsert;
+
+export const blindQuoteCostAdditions = mysqlTable("blind_quote_cost_additions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  quoteId: int("quoteId").notNull().references(() => blindQuotes.id, { onDelete: "cascade" }),
+  costAdditionId: int("costAdditionId").references(() => blindCostAdditions.id, { onDelete: "set null" }),
+  quantity: decimal("quantity", { precision: 10, scale: 2 }).default("1.00").notNull(),
+  unitCost: decimal("unitCost", { precision: 12, scale: 2 }).notNull(),
+  lineTotal: decimal("lineTotal", { precision: 12, scale: 2 }).notNull(),
+}, (table) => [
+  index("idx_blind_quote_costs_tenant_quote").on(table.tenantId, table.quoteId),
+]);
+export type BlindQuoteCostAddition = typeof blindQuoteCostAdditions.$inferSelect;
+export type InsertBlindQuoteCostAddition = typeof blindQuoteCostAdditions.$inferInsert;
+
 // ─── Proposals (Centralised Proposal Generation) ─────────────────────────────
 export const proposals = mysqlTable("proposals", {
   id: int("id").autoincrement().primaryKey(),

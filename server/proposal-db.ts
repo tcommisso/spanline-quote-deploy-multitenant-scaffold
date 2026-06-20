@@ -5,7 +5,7 @@ import {
   proposals, proposalActivity,
   type InsertProposal, type Proposal,
   type InsertProposalActivity,
-  quotes, quoteComponents, deckQuotes, eclipseQuotes, ssQuotes, crmLeads,
+  quotes, quoteComponents, deckQuotes, eclipseQuotes, ssQuotes, blindQuotes, crmLeads,
 } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
 
@@ -144,7 +144,7 @@ export type SharedCostItem = { name: string; amount: number; source: string };
 export async function getActiveQuotesForClient(clientId: number, tenantId?: number | null) {
   const client = await getClientInfo(clientId, tenantId);
   if (!client) {
-    return { opq: [], deck: [], eclipse: [], securityScreens: [] };
+    return { opq: [], deck: [], eclipse: [], securityScreens: [], blinds: [] };
   }
   const opqRows = await db.select({
     id: quotes.id,
@@ -247,6 +247,16 @@ export async function getActiveQuotesForClient(clientId: number, tenantId?: numb
     scopedWhere([eq(ssQuotes.leadId, clientId)], ssQuotes.tenantId, tenantId)
   );
 
+  const blindRows = await db.select({
+    id: blindQuotes.id,
+    quoteNumber: blindQuotes.quoteNumber,
+    status: blindQuotes.status,
+    subtotalExGst: blindQuotes.subtotalExGst,
+    totalIncGst: blindQuotes.totalIncGst,
+  }).from(blindQuotes).where(
+    scopedWhere([eq(blindQuotes.leadId, clientId)], blindQuotes.tenantId, tenantId)
+  );
+
   return {
     opq: opqWithTotals,
     deck: deckRows.map(q => {
@@ -303,6 +313,15 @@ export async function getActiveQuotesForClient(clientId: number, tenantId?: numb
       sharedCosts: [],
       label: `Security Screens ${q.quoteNumber}`,
     })),
+    blinds: blindRows.map(q => ({
+      id: q.id,
+      quoteNumber: q.quoteNumber,
+      status: q.status,
+      type: "blind" as const,
+      worksPrice: parseFloat(q.subtotalExGst || "0"),
+      sharedCosts: [],
+      label: `Blinds ${q.quoteNumber}`,
+    })),
   };
 }
 
@@ -328,6 +347,10 @@ export async function syncSectionStatuses(
     } else if (s.type === "security_screen") {
       await db.update(ssQuotes).set({ status: newStatus } as any).where(
         scopedWhere([eq(ssQuotes.id, s.quoteId)], ssQuotes.tenantId, tenantId)
+      );
+    } else if (s.type === "blind") {
+      await db.update(blindQuotes).set({ status: newStatus } as any).where(
+        scopedWhere([eq(blindQuotes.id, s.quoteId)], blindQuotes.tenantId, tenantId)
       );
     }
   }

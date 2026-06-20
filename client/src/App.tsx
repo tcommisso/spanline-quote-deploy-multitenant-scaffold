@@ -27,6 +27,7 @@ const DeckQuoteEditor = lazy(() => import("./pages/DeckQuoteEditor"));
 const EclipseQuoteList = lazy(() => import("./pages/EclipseQuoteList"));
 const EclipseQuoteEditor = lazy(() => import("./pages/EclipseQuoteEditor"));
 const SecurityScreenQuote = lazy(() => import("./pages/SecurityScreenQuote"));
+const BlindsQuote = lazy(() => import("./pages/BlindsQuote"));
 const QuotePreview = lazy(() => import("./pages/QuotePreview"));
 const QuotePdfEdit = lazy(() => import("./pages/QuotePdfEdit"));
 const EmailQuote = lazy(() => import("./pages/EmailQuote"));
@@ -129,6 +130,7 @@ const OrderHistory = lazy(() => import("./pages/OrderHistory"));
 const ComponentCatalogueAdmin = lazy(() => import("./pages/ComponentCatalogueAdmin"));
 const ManufacturingDataAdmin = lazy(() => import("./pages/ManufacturingDataAdmin"));
 const AdminSecurityScreens = lazy(() => import("./pages/admin/AdminSecurityScreens"));
+const AdminBlinds = lazy(() => import("./pages/admin/AdminBlinds"));
 const AdminTextBlocks = lazy(() => import("./pages/AdminTextBlocks"));
 const TemplateManager = lazy(() => import("./pages/TemplateManager"));
 const AdminChecklistPricing = lazy(() => import("./pages/AdminChecklistPricing"));
@@ -470,6 +472,8 @@ function MainRouter() {
         <Route path="/eclipse-quotes/:id">{(params) => <EclipseQuoteEditor id={Number(params.id)} />}</Route>
         <Route path="/security-screens/quote/:id" component={SecurityScreenQuote} />
         <Route path="/security-screens" component={SecurityScreenQuote} />
+        <Route path="/blinds/quote/:id" component={BlindsQuote} />
+        <Route path="/blinds" component={BlindsQuote} />
         <Route path="/proposals" component={ProposalList} />
         <Route path="/proposals/new" component={ProposalEditor} />
         <Route path="/proposals/edit/:id" component={ProposalEditor} />
@@ -505,6 +509,7 @@ function MainRouter() {
         <Route path="/admin/component-catalogue">{() => <AdminRoute><ComponentCatalogueAdmin /></AdminRoute>}</Route>
         <Route path="/admin/manufacturing-data">{() => <AdminRoute><ManufacturingDataAdmin /></AdminRoute>}</Route>
         <Route path="/admin/security-screens">{() => <AdminRoute><AdminSecurityScreens /></AdminRoute>}</Route>
+        <Route path="/admin/blinds">{() => <AdminRoute><AdminBlinds /></AdminRoute>}</Route>
         <Route path="/admin/text-blocks">{() => <AdminRoute><AdminTextBlocks /></AdminRoute>}</Route>
         <Route path="/admin/order-templates">{() => <AdminRoute><TemplateManager /></AdminRoute>}</Route>
         <Route path="/admin/checklist-pricing">{() => <AdminRoute><AdminChecklistPricing /></AdminRoute>}</Route>

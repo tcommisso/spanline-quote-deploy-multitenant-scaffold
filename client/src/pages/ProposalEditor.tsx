@@ -48,7 +48,7 @@ const CONTRACT_B_STAGES = [
 ];
 
 interface SectionItem {
-  type: "opq" | "deck" | "eclipse" | "security_screen";
+  type: "opq" | "deck" | "eclipse" | "security_screen" | "blind";
   quoteId: number;
   label: string;
   worksPrice: number;
@@ -183,6 +183,7 @@ export default function ProposalEditor() {
         ...clientQuotes.deck.map((q: any) => ({ ...q, sharedCosts: q.sharedCosts || [] })),
         ...clientQuotes.eclipse.map((q: any) => ({ ...q, sharedCosts: q.sharedCosts || [] })),
         ...(clientQuotes.securityScreens || []).map((q: any) => ({ ...q, sharedCosts: q.sharedCosts || [] })),
+        ...(clientQuotes.blinds || []).map((q: any) => ({ ...q, sharedCosts: q.sharedCosts || [] })),
       ];
       const existingSections = (existingProposal?.sections || []) as { type: string; quoteId: number }[];
       setSections(allQuotes.map((q: any) => ({
@@ -411,7 +412,7 @@ export default function ProposalEditor() {
               <p className="text-sm font-medium">{s.label}</p>
               <div className="flex gap-2 mt-1">
                 <Badge variant="outline" className="text-xs">
-                  {s.type === "opq" ? "Structure" : s.type === "deck" ? "Deck" : s.type === "eclipse" ? "Eclipse" : "Security Screens"}
+                  {s.type === "opq" ? "Structure" : s.type === "deck" ? "Deck" : s.type === "eclipse" ? "Eclipse" : s.type === "blind" ? "Blinds" : "Security Screens"}
                 </Badge>
                 {s.sharedCosts.length > 0 && (
                   <Badge variant="secondary" className="text-xs">
