@@ -336,12 +336,12 @@ export default function InboxPage() {
     <PullToRefresh onRefresh={handleRefresh}>
     <div className="p-4 md:p-6 max-w-[1400px] mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="p-2 rounded-lg bg-primary/10">
             <Inbox className="h-6 w-6 text-primary" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2"><h1 className="text-2xl font-bold tracking-tight">Inbox</h1><HelpLink section="inbox" tooltip="Help: Inbox" /></div>
             <p className="text-sm text-muted-foreground">
               {total} ticket{total !== 1 ? "s" : ""}
@@ -351,7 +351,7 @@ export default function InboxPage() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-start sm:self-auto">
           {typeof unreadCount === "number" && unreadCount > 0 && (
             <Button
               variant="outline"
@@ -670,46 +670,39 @@ export default function InboxPage() {
             return (
               <div
                 key={msg.id}
-                className={`group flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-colors hover:bg-accent/50 ${slaBg} ${isUnread ? "bg-primary/[0.03]" : ""} ${isSelected ? "bg-primary/[0.08] ring-1 ring-primary/20" : ""}`}
+                className={`group grid grid-cols-[auto_minmax(0,1fr)_auto] gap-x-2 gap-y-1 p-3 rounded-lg cursor-pointer transition-colors hover:bg-accent/50 sm:flex sm:items-start sm:gap-3 ${slaBg} ${isUnread ? "bg-primary/[0.03]" : ""} ${isSelected ? "bg-primary/[0.08] ring-1 ring-primary/20" : ""}`}
                 onClick={() => setLocation(`/inbox/thread/message/${msg.id}`)}
               >
-                {/* Checkbox */}
-                <div className="mt-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2 pt-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                   <Checkbox
                     checked={isSelected}
                     onCheckedChange={() => toggleSelect(msg.id)}
                     aria-label={`Select ticket from ${msg.fromName || msg.fromAddress}`}
                   />
-                </div>
-
-                {/* Star */}
-                <button
-                  className="mt-1 shrink-0"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleStarMut.mutate({ id: msg.id });
-                  }}
-                >
-                  {msg.isStarred ? (
-                    <Star className="h-4 w-4 text-amber-500 fill-amber-500" />
-                  ) : (
-                    <StarOff className="h-4 w-4 text-muted-foreground/30 hover:text-amber-500" />
-                  )}
-                </button>
-
-                {/* Read/Unread indicator */}
-                <div className="mt-1 shrink-0">
+                  <button
+                    className="shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleStarMut.mutate({ id: msg.id });
+                    }}
+                  >
+                    {msg.isStarred ? (
+                      <Star className="h-4 w-4 text-amber-500 fill-amber-500" />
+                    ) : (
+                      <StarOff className="h-4 w-4 text-muted-foreground/30 hover:text-amber-500" />
+                    )}
+                  </button>
                   {isUnread ? (
-                    <div className="w-2.5 h-2.5 rounded-full bg-primary" />
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary shrink-0" />
                   ) : (
-                    <div className="w-2.5 h-2.5" />
+                    <div className="w-2.5 h-2.5 shrink-0" />
                   )}
                 </div>
 
                 {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className={`text-sm truncate ${isUnread ? "font-semibold" : "font-medium"}`}>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5 mb-1 min-w-0">
+                    <span className={`w-full text-sm truncate sm:w-auto sm:max-w-[320px] ${isUnread ? "font-semibold" : "font-medium"}`}>
                       {participantLabel}
                     </span>
                     {msg.direction === "outbound" && (
@@ -765,17 +758,17 @@ export default function InboxPage() {
                     {msg.subject || "(no subject)"}
                   </p>
 
-                  <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-xs text-muted-foreground">
                     {msg.matchedClientEmail && (
-                      <span className="flex items-center gap-1 text-primary/70">
-                        <User className="h-3 w-3" />
-                        {msg.matchedClientEmail}
+                      <span className="flex min-w-0 max-w-full items-center gap-1 text-primary/70">
+                        <User className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{msg.matchedClientEmail}</span>
                       </span>
                     )}
                     {msg.assignedToName && (
-                      <span className="flex items-center gap-1">
-                        <User className="h-3 w-3" />
-                        {msg.assignedToName}
+                      <span className="flex min-w-0 max-w-full items-center gap-1">
+                        <User className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{msg.assignedToName}</span>
                       </span>
                     )}
                     {msg.ticketQueue && (
@@ -827,12 +820,10 @@ export default function InboxPage() {
                   </div>
                 </div>
 
-                {/* Time */}
-                <div className="text-xs text-muted-foreground shrink-0 text-right mt-1">
-                  <span>{formatTimeAgo(msg.createdAt)}</span>
+                <div className="flex items-start gap-1 text-xs text-muted-foreground shrink-0 text-right pt-1">
+                  <span className="whitespace-nowrap">{formatTimeAgo(msg.createdAt)}</span>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/30 shrink-0" />
                 </div>
-
-                <ChevronRight className="h-4 w-4 text-muted-foreground/30 mt-1 shrink-0" />
               </div>
             );
           })}
