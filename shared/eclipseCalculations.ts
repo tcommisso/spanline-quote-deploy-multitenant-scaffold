@@ -107,7 +107,7 @@ export interface UnitInput {
   rakedWidth: number; // mm - horizontal distance the rake spans (raking width)
   rakedEdge: string; // "A-B", "B-C", "C-D", or "D-A" — which edge is the tapered free-end
   // Attachment & Brackets (per-unit)
-  attachmentMethod: string; // "None", "1 Side", "2 Side", "3 Side", "4 Side"
+  attachmentMethod: string; // "None", "Fascia brackets", "Gable brackets", "popup brackets", "wall brackets"
   fasciaBrackets: number;
   extendaBrackets: number;
   gableBracketsQty: number;
@@ -117,6 +117,30 @@ export interface UnitInput {
   popupBrackets?: number;
   wallFixingBeam?: number;
   wallFixingBracket?: number;
+}
+
+const LEGACY_SIDE_ATTACHMENT_METHODS = ["1 Side", "2 Side", "3 Side", "4 Side"];
+const ACTIVE_ATTACHMENT_METHODS = [
+  "Fascia brackets",
+  "Gable brackets",
+  "popup brackets",
+  "wall brackets",
+  ...LEGACY_SIDE_ATTACHMENT_METHODS,
+];
+
+function isActiveAttachmentMethod(method?: string) {
+  return !!method && method !== "None" && ACTIVE_ATTACHMENT_METHODS.includes(method);
+}
+
+function totalAttachmentBrackets(unit: UnitInput) {
+  return (
+    (unit.fasciaBrackets || 0) +
+    (unit.extendaBrackets || 0) +
+    (unit.gableBracketsQty || 0) +
+    (unit.popupBrackets || 0) +
+    (unit.wallFixingBeam || 0) +
+    (unit.wallFixingBracket || 0)
+  );
 }
 
 export interface TakeOffs {
@@ -344,17 +368,17 @@ export function validateUnit(unit: UnitInput, unitIndex: number): ValidationErro
 
   // Wall fixing bracket validation
   if ((unit.wallFixingBeam || 0) > 0 || (unit.wallFixingBracket || 0) > 0) {
-    const wallMethods = ["1 Side", "2 Side", "3 Side", "4 Side"];
+    const wallMethods = ["wall brackets", ...LEGACY_SIDE_ATTACHMENT_METHODS];
     if (!unit.attachmentMethod || !wallMethods.includes(unit.attachmentMethod)) {
       errors.push({ field: "wallFixingBracket", message: `${label}: Wall fixing brackets/beams selected but attachment method is not wall-mounted (${unit.attachmentMethod || "None"})`, severity: "warning" });
     }
   }
 
   // Reciprocal: wall-mounted but no brackets specified
-  if (unit.attachmentMethod && ["1 Side", "2 Side", "3 Side", "4 Side"].includes(unit.attachmentMethod)) {
-    const totalBrackets = (unit.fasciaBrackets || 0) + (unit.extendaBrackets || 0) + (unit.wallFixingBeam || 0) + (unit.wallFixingBracket || 0);
+  if (isActiveAttachmentMethod(unit.attachmentMethod)) {
+    const totalBrackets = totalAttachmentBrackets(unit);
     if (totalBrackets === 0) {
-      errors.push({ field: "fasciaBrackets", message: `${label}: Attachment method is ${unit.attachmentMethod} but no fascia/extenda/wall fixing brackets specified`, severity: "warning" });
+      errors.push({ field: "fasciaBrackets", message: `${label}: Attachment method is ${unit.attachmentMethod} but no bracket quantity is specified`, severity: "warning" });
     }
   }
 
@@ -364,9 +388,9 @@ export function validateUnit(unit: UnitInput, unitIndex: number): ValidationErro
   }
 
   // Bracket quantity suggestion based on beam span (1 per 1200mm)
-  if (unit.length > 0 && unit.attachmentMethod && ["1 Side", "2 Side", "3 Side", "4 Side"].includes(unit.attachmentMethod)) {
+  if (unit.length > 0 && isActiveAttachmentMethod(unit.attachmentMethod)) {
     const recommendedQty = Math.ceil(unit.length / 1200);
-    const totalAttachBrackets = (unit.fasciaBrackets || 0) + (unit.extendaBrackets || 0) + (unit.wallFixingBeam || 0) + (unit.wallFixingBracket || 0);
+    const totalAttachBrackets = totalAttachmentBrackets(unit);
     if (totalAttachBrackets < recommendedQty) {
       errors.push({ field: "fasciaBrackets", message: `${label}: Total attachment brackets (${totalAttachBrackets}) may be insufficient for ${unit.length}mm span — recommend at least ${recommendedQty} (1 per 1200mm)`, severity: "warning" });
     }
@@ -374,7 +398,7 @@ export function validateUnit(unit: UnitInput, unitIndex: number): ValidationErro
 
   // Extenda bracket suggestion: recommend extenda brackets when beam span exceeds 4000mm
   // (longer spans create more leverage on fascia connections, extenda distributes load better)
-  if (unit.length > 4000 && unit.attachmentMethod && ["1 Side", "2 Side", "3 Side", "4 Side"].includes(unit.attachmentMethod)) {
+  if (unit.length > 4000 && (unit.attachmentMethod === "Fascia brackets" || LEGACY_SIDE_ATTACHMENT_METHODS.includes(unit.attachmentMethod))) {
     const extendaCount = unit.extendaBrackets || 0;
     if (extendaCount === 0 && (unit.fasciaBrackets || 0) > 0) {
       errors.push({ field: "extendaBrackets", message: `${label}: Beam span ${unit.length}mm exceeds 4000mm — consider extenda brackets for improved load distribution on fascia connections`, severity: "warning" });
@@ -552,6 +576,8 @@ export function calculateBracketCost(unit: UnitInput, pricing: PricingData): num
   total += (unit.fasciaBrackets || 0) * (pricing.fasciaBracketPrice || 0);
   total += (unit.extendaBrackets || 0) * (pricing.extendaBracketPrice || 0);
   total += (unit.gableBracketsQty || 0) * (pricing.gableBracketPrice || 0);
+  total += (unit.popupBrackets || 0) * (pricing.extendaBracketPrice || pricing.fasciaBracketPrice || 0);
+  total += (unit.wallFixingBracket || 0) * (pricing.fasciaBracketPrice || 0);
   // Bracket cover
   if (unit.bracketCover) {
     switch (unit.bracketCover) {

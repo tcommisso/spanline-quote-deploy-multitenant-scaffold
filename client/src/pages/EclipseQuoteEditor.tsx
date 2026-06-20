@@ -55,18 +55,36 @@ const COLOUR_SWATCHES: Record<string, string> = {
   "Woodland Grey": "#4C5048",
 };
 
+const ECLIPSE_ATTACHMENT_METHODS = ["None", "Fascia brackets", "Gable brackets", "popup brackets", "wall brackets"] as const;
+
+function normaliseEclipseAttachmentMethod(method?: string) {
+  if (ECLIPSE_ATTACHMENT_METHODS.includes(method as any)) return method || "None";
+  return method && method !== "None" ? "Fascia brackets" : "None";
+}
+
+function bracketQuantityFor(unit: UnitInput, method: string) {
+  switch (method) {
+    case "Fascia brackets": return unit.fasciaBrackets || 0;
+    case "Gable brackets": return unit.gableBracketsQty || 0;
+    case "popup brackets": return unit.popupBrackets || 0;
+    case "wall brackets": return unit.wallFixingBracket || 0;
+    default: return 0;
+  }
+}
+
 function fmt(val: number): string {
   return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", minimumFractionDigits: 2 }).format(val);
 }
 
 // ─── Unit Card Component ─────────────────────────────────────────────────────
-function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm }: {
+function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm, canEditInternalNotes }: {
   unitNumber: number;
   unit: UnitInput;
   onChange: (u: UnitInput) => void;
   onRemove: () => void;
   onDuplicate: () => void;
   sqm: number;
+  canEditInternalNotes: boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const update = (partial: Partial<UnitInput>) => onChange({ ...unit, ...partial });
@@ -77,6 +95,42 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm }: {
     if (limits && val > limits.max) val = limits.max;
     update({ [field]: val } as any);
   };
+  const attachmentMethod = normaliseEclipseAttachmentMethod(unit.attachmentMethod);
+  const bracketQuantity = bracketQuantityFor(unit, attachmentMethod);
+
+  function updateAttachmentMethod(value: string) {
+    update({
+      attachmentMethod: value,
+      mountType: value === "None" ? "Freestanding" : "Fascia",
+      fasciaBrackets: value === "Fascia brackets" ? unit.fasciaBrackets || 0 : 0,
+      extendaBrackets: 0,
+      gableBracketsQty: value === "Gable brackets" ? unit.gableBracketsQty || 0 : 0,
+      popupBrackets: value === "popup brackets" ? unit.popupBrackets || 0 : 0,
+      wallFixingBeam: 0,
+      wallFixingBracket: value === "wall brackets" ? unit.wallFixingBracket || 0 : 0,
+      bracketCover: value === "None" ? "" : unit.bracketCover,
+    } as Partial<UnitInput>);
+  }
+
+  function updateBracketQuantity(value: number) {
+    const qty = Math.min(20, Math.max(0, value || 0));
+    switch (attachmentMethod) {
+      case "Fascia brackets":
+        update({ fasciaBrackets: qty });
+        break;
+      case "Gable brackets":
+        update({ gableBracketsQty: qty });
+        break;
+      case "popup brackets":
+        update({ popupBrackets: qty });
+        break;
+      case "wall brackets":
+        update({ wallFixingBracket: qty });
+        break;
+      default:
+        update({ fasciaBrackets: 0, gableBracketsQty: 0, popupBrackets: 0, wallFixingBracket: 0 });
+    }
+  }
 
   return (
     <Card className="border border-border/60 shadow-sm">
@@ -261,12 +315,13 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm }: {
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Mount Type</Label>
-                <Select value={unit.mountType} onValueChange={(v) => update({ mountType: v as "Freestanding" | "Fascia" })}>
+                <Label className="text-xs text-muted-foreground">Attachment Method</Label>
+                <Select value={attachmentMethod} onValueChange={updateAttachmentMethod}>
                   <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Freestanding">Freestanding</SelectItem>
-                    <SelectItem value="Fascia">Fascia</SelectItem>
+                    {ECLIPSE_ATTACHMENT_METHODS.map((method) => (
+                      <SelectItem key={method} value={method}>{method}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -288,36 +343,19 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm }: {
               <Label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 block">Attachment & Brackets</Label>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Attachment Method</Label>
-                  <Select value={unit.attachmentMethod || "None"} onValueChange={(v) => {
-                    update({ attachmentMethod: v });
-                    if (v === "None") {
-                      update({ fasciaBrackets: 0, extendaBrackets: 0, gableBracketsQty: 0, bracketCover: "" });
-                    }
-                  }}>
-                    <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="None">None</SelectItem>
-                      <SelectItem value="1 Side">1 Side</SelectItem>
-                      <SelectItem value="2 Side">2 Side</SelectItem>
-                      <SelectItem value="3 Side">3 Side</SelectItem>
-                      <SelectItem value="4 Side">4 Side</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs text-muted-foreground">Number of Brackets</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={20}
+                    disabled={attachmentMethod === "None"}
+                    value={attachmentMethod === "None" ? "" : bracketQuantity || ""}
+                    onChange={(e) => updateBracketQuantity(parseInt(e.target.value) || 0)}
+                    placeholder="0"
+                    className="h-8 text-sm"
+                  />
                 </div>
-                {unit.attachmentMethod && unit.attachmentMethod !== "None" && (<>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Fascia Brackets</Label>
-                    <Input type="number" min={0} max={20} value={unit.fasciaBrackets || ""} onChange={(e) => update({ fasciaBrackets: parseInt(e.target.value) || 0 })} className="h-8 text-sm" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Extenda Brackets</Label>
-                    <Input type="number" min={0} max={20} value={unit.extendaBrackets || ""} onChange={(e) => update({ extendaBrackets: parseInt(e.target.value) || 0 })} className="h-8 text-sm" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Gable Brackets</Label>
-                    <Input type="number" min={0} max={20} value={unit.gableBracketsQty || ""} onChange={(e) => update({ gableBracketsQty: parseInt(e.target.value) || 0 })} className="h-8 text-sm" />
-                  </div>
+                {attachmentMethod !== "None" && (<>
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Bracket Cover</Label>
                     <Select value={unit.bracketCover || ""} onValueChange={(v) => update({ bracketCover: v })}>
@@ -507,22 +545,24 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm }: {
             </div>
           )}
 
-          <Separator />
-
-          {/* Notes */}
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <StickyNote className="w-4 h-4 text-teal-600" />
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
-            </div>
-            <textarea
-              value={unit.notes}
-              onChange={(e) => update({ notes: e.target.value })}
-              placeholder="e.g. Corner installation, requires crane access"
-              rows={2}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-y"
-            />
-          </div>
+          {canEditInternalNotes && (
+            <>
+              <Separator />
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <StickyNote className="w-4 h-4 text-teal-600" />
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
+                </div>
+                <textarea
+                  value={unit.notes}
+                  onChange={(e) => update({ notes: e.target.value })}
+                  placeholder="e.g. Corner installation, requires crane access"
+                  rows={2}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-y"
+                />
+              </div>
+            </>
+          )}
         </CardContent>
       )}
     </Card>
@@ -1520,7 +1560,14 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider mb-2 px-2">Sections</p>
               <div className="flex gap-1 px-2 mb-2">
                 <button
-                  onClick={() => setOpenSections(["client", "units", "materials", "checklist", "additional", "sitelayout", "propertysite", "airender", "specsheet", "notes", "comms", "summary"])}
+                  onClick={() => setOpenSections([
+                    "client", "units",
+                    ...(isAdmin ? ["materials"] : []),
+                    "specsheet", "checklist", "additional",
+                    ...(units.length > 1 ? ["sitelayout"] : []),
+                    "propertysite", "airender",
+                    ...(isAdmin ? ["notes", ...(clientId && clientPhone ? ["comms"] : []), "summary"] : []),
+                  ])}
                   className="flex-1 text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-muted/60 text-muted-foreground transition-colors"
                 >
                   Expand All
@@ -1536,14 +1583,14 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
                 { id: "client", label: "Client", icon: ArrowLeft },
                 { id: "units", label: "Units", icon: Ruler },
                 ...(isAdmin ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
+                { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
                 { id: "checklist", label: "Checklist Pricing", icon: DollarSign },
                 { id: "additional", label: "Add. Costs", icon: Plus },
                 ...(units.length > 1 ? [{ id: "sitelayout", label: "Site Layout", icon: Sun }] : []),
                 { id: "propertysite", label: "Property Plan", icon: MapPin },
                 { id: "airender", label: "AI Render", icon: Sparkles },
-                { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
-                { id: "notes", label: "Notes", icon: StickyNote },
-                ...(clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
+                ...(isAdmin ? [{ id: "notes", label: "Notes", icon: StickyNote }] : []),
+                ...(isAdmin && clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
                 ...(isAdmin ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
               ].map(section => {
                 const Icon = section.icon;
@@ -1585,7 +1632,14 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
             <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider mb-2 px-2">Sections</p>
             <div className="flex gap-1 px-2 mb-2">
               <button
-                onClick={() => setOpenSections(["client", "units", "materials", "checklist", "additional", "sitelayout", "propertysite", "airender", "specsheet", "notes", "comms", "summary"])}
+                onClick={() => setOpenSections([
+                  "client", "units",
+                  ...(isAdmin ? ["materials"] : []),
+                  "specsheet", "checklist", "additional",
+                  ...(units.length > 1 ? ["sitelayout"] : []),
+                  "propertysite", "airender",
+                  ...(isAdmin ? ["notes", ...(clientId && clientPhone ? ["comms"] : []), "summary"] : []),
+                ])}
                 className="flex-1 text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-muted/60 text-muted-foreground transition-colors"
               >
                 Expand All
@@ -1613,14 +1667,14 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               { id: "client", label: "Client", icon: ArrowLeft },
               { id: "units", label: "Units", icon: Ruler },
               ...(isAdmin ? [{ id: "materials", label: "Materials", icon: Layers }] : []),
+              { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
               { id: "checklist", label: "Checklist Pricing", icon: DollarSign },
               { id: "additional", label: "Add. Costs", icon: Plus },
               ...(units.length > 1 ? [{ id: "sitelayout", label: "Site Layout", icon: Sun }] : []),
               { id: "propertysite", label: "Property Plan", icon: MapPin },
               { id: "airender", label: "AI Render", icon: Sparkles },
-              { id: "specsheet", label: "Construction Spec", icon: ClipboardCheck },
-              { id: "notes", label: "Notes", icon: StickyNote },
-              ...(clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
+              ...(isAdmin ? [{ id: "notes", label: "Notes", icon: StickyNote }] : []),
+              ...(isAdmin && clientId && clientPhone ? [{ id: "comms", label: "Communications", icon: ChevronDown }] : []),
               ...(isAdmin ? [{ id: "summary", label: "Summary", icon: Calculator }] : []),
             ].map(section => {
               const Icon = section.icon;
@@ -1887,15 +1941,17 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <Label>Notes</Label>
-                <Textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  rows={3}
-                  placeholder="Internal notes..."
-                />
-              </div>
+              {isAdmin && (
+                <div className="space-y-1">
+                  <Label>Notes</Label>
+                  <Textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={3}
+                    placeholder="Internal notes..."
+                  />
+                </div>
+              )}
             </CardContent>
           </Card>
               </AccordionContent>
@@ -1914,6 +1970,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               onRemove={() => removeUnit(i)}
               onDuplicate={() => duplicateUnit(i)}
               sqm={(unit.bladeWidth / 1000) * (unit.length / 1000)}
+              canEditInternalNotes={isAdmin}
             />
           ))}
           <Button variant="outline" className="w-full" onClick={addUnit}>
@@ -1942,6 +1999,16 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
             </AccordionItem>}
 
 
+            {/* ═══ Construction Spec ═══ */}
+            <AccordionItem value="specsheet" id="eclipse-section-specsheet" className="border rounded-lg px-4">
+              <AccordionTrigger className="text-sm font-medium">Construction Spec</AccordionTrigger>
+              <AccordionContent>
+                <EclipseSpecSheet
+                  specData={specData}
+                  onChange={setSpecData}
+                />
+              </AccordionContent>
+            </AccordionItem>
 
             {/* Checklist Pricing */}
             <AccordionItem value="checklist" id="eclipse-section-checklist" className="border rounded-lg px-4">
@@ -2296,26 +2363,16 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
               </AccordionContent>
             </AccordionItem>
 
-            {/* ═══ Construction Spec ═══ */}
-            <AccordionItem value="specsheet" id="eclipse-section-specsheet" className="border rounded-lg px-4">
-              <AccordionTrigger className="text-sm font-medium">Construction Spec</AccordionTrigger>
-              <AccordionContent>
-                <EclipseSpecSheet
-                  specData={specData}
-                  onChange={setSpecData}
-                />
-              </AccordionContent>
-            </AccordionItem>
             {/* Notes */}
-            <AccordionItem value="notes" id="eclipse-section-notes" className="border rounded-lg px-4">
+            {isAdmin && <AccordionItem value="notes" id="eclipse-section-notes" className="border rounded-lg px-4">
               <AccordionTrigger className="text-sm font-medium">Notes</AccordionTrigger>
               <AccordionContent>
                 <QuoteNotesSection quoteId={id} quoteType="eclipse" />
               </AccordionContent>
-            </AccordionItem>
+            </AccordionItem>}
 
             {/* Communications */}
-            {clientId && clientPhone && (
+            {isAdmin && clientId && clientPhone && (
               <AccordionItem value="comms" id="eclipse-section-comms" className="border rounded-lg px-4">
                 <AccordionTrigger className="text-sm font-medium">Communications</AccordionTrigger>
                 <AccordionContent>

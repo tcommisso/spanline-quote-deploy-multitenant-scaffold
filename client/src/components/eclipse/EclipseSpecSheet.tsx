@@ -42,11 +42,11 @@ const FOOTING_TYPES = [
 ];
 
 const ATTACHMENT_METHODS = [
-  { value: "freestanding", label: "Freestanding" },
-  { value: "fascia_mount", label: "Fascia Mount" },
-  { value: "top_of_beam", label: "Top of Beam" },
-  { value: "wall_mount", label: "Wall Mount (bracket)" },
-  { value: "roof_mount", label: "Roof Mount" },
+  { value: "None", label: "None" },
+  { value: "Fascia brackets", label: "Fascia brackets" },
+  { value: "Gable brackets", label: "Gable brackets" },
+  { value: "popup brackets", label: "popup brackets" },
+  { value: "wall brackets", label: "wall brackets" },
 ];
 
 export interface EclipseSpecData {
