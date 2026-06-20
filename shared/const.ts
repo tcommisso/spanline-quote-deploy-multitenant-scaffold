@@ -253,6 +253,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/admin/da-invoices', permission: 'finance' },
   { prefix: '/admin/invoice-review', permission: 'finance' },
   { prefix: '/admin/subscriptions', permission: 'finance' },
+  { prefix: '/admin/saas-billing', permission: 'finance' },
   { prefix: '/admin/render-costs', permission: 'finance' },
   { prefix: '/admin/suppliers', permission: 'finance' },
   { prefix: '/admin/supplier-feedback', permission: 'finance' },

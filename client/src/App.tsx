@@ -104,6 +104,7 @@ const AdminTradePortalContent = lazy(() => import("./pages/AdminTradePortalConte
 const AdminInvoiceReview = lazy(() => import("./pages/AdminInvoiceReview"));
 const ProjectPlanTemplates = lazy(() => import("./pages/ProjectPlanTemplates"));
 const SubscriptionManagement = lazy(() => import("./pages/SubscriptionManagement"));
+const SaasBillingAdmin = lazy(() => import("./pages/SaasBillingAdmin"));
 const RenderCostDashboard = lazy(() => import("./pages/admin/RenderCostDashboard"));
 const SubcontractEditor = lazy(() => import("./pages/SubcontractEditor"));
 const HelpGuide = lazy(() => import("./pages/HelpGuide"));
@@ -489,6 +490,7 @@ function MainRouter() {
         <Route path="/admin/invoice-review">{() => <AdminRoute><AdminInvoiceReview /></AdminRoute>}</Route>
         <Route path="/admin/project-plan-templates">{() => <AdminRoute><ProjectPlanTemplates /></AdminRoute>}</Route>
         <Route path="/admin/subscriptions">{() => <AdminRoute><SubscriptionManagement /></AdminRoute>}</Route>
+        <Route path="/admin/saas-billing">{() => <AdminRoute><SaasBillingAdmin /></AdminRoute>}</Route>
         <Route path="/admin/render-costs">{() => <AdminRoute><RenderCostDashboard /></AdminRoute>}</Route>
         <Route path="/admin/inbox-settings">{() => <AdminRoute><InboxAdminSettings /></AdminRoute>}</Route>
         <Route path="/admin/tech-library">{() => <AdminRoute><TechLibraryAdmin /></AdminRoute>}</Route>

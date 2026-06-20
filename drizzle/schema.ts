@@ -76,6 +76,143 @@ export const tenantIntegrationSettings = mysqlTable("tenant_integration_settings
 export type TenantIntegrationSetting = typeof tenantIntegrationSettings.$inferSelect;
 export type InsertTenantIntegrationSetting = typeof tenantIntegrationSettings.$inferInsert;
 
+// Platform SaaS billing — tenant-level commercial model for Altaspan itself.
+export const saasBillingPlans = mysqlTable("saas_billing_plans", {
+  id: int("id").autoincrement().primaryKey(),
+  code: varchar("code", { length: 80 }).notNull().unique(),
+  name: varchar("name", { length: 160 }).notNull(),
+  description: text("description"),
+  status: mysqlEnum("status", ["draft", "active", "archived"]).default("draft").notNull(),
+  billingModel: mysqlEnum("billingModel", ["flat", "seat", "usage", "hybrid", "manual"]).default("hybrid").notNull(),
+  interval: mysqlEnum("interval", ["month", "year", "custom"]).default("month").notNull(),
+  basePriceCents: int("basePriceCents").default(0).notNull(),
+  includedSeats: int("includedSeats").default(0).notNull(),
+  includedUsage: json("includedUsage").$type<Record<string, number>>(),
+  overageRates: json("overageRates").$type<Record<string, number>>(),
+  modules: json("modules").$type<string[]>(),
+  limits: json("limits").$type<Record<string, number | string | boolean>>(),
+  metadata: json("metadata").$type<Record<string, any>>(),
+  stripeProductId: varchar("stripeProductId", { length: 255 }),
+  stripePriceId: varchar("stripePriceId", { length: 255 }),
+  createdBy: int("createdBy").references(() => users.id),
+  createdByName: varchar("createdByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_saas_billing_plans_status").on(table.status),
+  index("idx_saas_billing_plans_model").on(table.billingModel),
+]);
+export type SaasBillingPlan = typeof saasBillingPlans.$inferSelect;
+export type InsertSaasBillingPlan = typeof saasBillingPlans.$inferInsert;
+
+export const saasTenantBillingAccounts = mysqlTable("saas_tenant_billing_accounts", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  legalName: varchar("legalName", { length: 255 }),
+  billingEmail: varchar("billingEmail", { length: 320 }),
+  billingOwnerUserId: int("billingOwnerUserId").references(() => users.id),
+  currency: varchar("currency", { length: 3 }).default("AUD").notNull(),
+  taxId: varchar("taxId", { length: 80 }),
+  paymentProvider: mysqlEnum("paymentProvider", ["stripe", "xero", "manual"]).default("manual").notNull(),
+  providerCustomerId: varchar("providerCustomerId", { length: 255 }),
+  status: mysqlEnum("status", ["trialing", "active", "past_due", "suspended", "cancelled", "manual"]).default("manual").notNull(),
+  trialEndsAt: timestamp("trialEndsAt"),
+  nextInvoiceAt: timestamp("nextInvoiceAt"),
+  reconcileStatus: mysqlEnum("reconcileStatus", ["unknown", "ok", "attention", "failed"]).default("unknown").notNull(),
+  reconcileNotes: text("reconcileNotes"),
+  lastSyncedAt: timestamp("lastSyncedAt"),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_saas_tenant_billing_account_tenant").on(table.tenantId),
+  index("idx_saas_tenant_billing_accounts_status").on(table.status),
+  index("idx_saas_tenant_billing_accounts_reconcile").on(table.reconcileStatus),
+  index("idx_saas_tenant_billing_accounts_provider_customer").on(table.providerCustomerId),
+]);
+export type SaasTenantBillingAccount = typeof saasTenantBillingAccounts.$inferSelect;
+export type InsertSaasTenantBillingAccount = typeof saasTenantBillingAccounts.$inferInsert;
+
+export const saasBillingSubscriptions = mysqlTable("saas_billing_subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  billingAccountId: int("billingAccountId").references(() => saasTenantBillingAccounts.id, { onDelete: "set null" }),
+  planId: int("planId").references(() => saasBillingPlans.id, { onDelete: "set null" }),
+  status: mysqlEnum("status", ["trialing", "active", "paused", "past_due", "cancelled", "expired"]).default("trialing").notNull(),
+  seatQuantity: int("seatQuantity").default(0).notNull(),
+  usageQuantity: int("usageQuantity").default(0).notNull(),
+  billingModelOverride: mysqlEnum("billingModelOverride", ["flat", "seat", "usage", "hybrid", "manual"]),
+  unitAmountCents: int("unitAmountCents"),
+  mrrCents: int("mrrCents").default(0).notNull(),
+  provider: mysqlEnum("provider", ["stripe", "xero", "manual"]).default("manual").notNull(),
+  providerSubscriptionId: varchar("providerSubscriptionId", { length: 255 }),
+  providerPriceId: varchar("providerPriceId", { length: 255 }),
+  providerStatus: varchar("providerStatus", { length: 80 }),
+  currentPeriodStart: timestamp("currentPeriodStart"),
+  currentPeriodEnd: timestamp("currentPeriodEnd"),
+  cancelAtPeriodEnd: boolean("cancelAtPeriodEnd").default(false).notNull(),
+  cancelledAt: timestamp("cancelledAt"),
+  metadata: json("metadata").$type<Record<string, any>>(),
+  reconcileStatus: mysqlEnum("reconcileStatus", ["unknown", "ok", "attention", "failed"]).default("unknown").notNull(),
+  reconcileNotes: text("reconcileNotes"),
+  lastSyncedAt: timestamp("lastSyncedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_saas_billing_subscriptions_tenant").on(table.tenantId),
+  index("idx_saas_billing_subscriptions_tenant_status").on(table.tenantId, table.status),
+  index("idx_saas_billing_subscriptions_plan").on(table.planId),
+  index("idx_saas_billing_subscriptions_provider_sub").on(table.providerSubscriptionId),
+]);
+export type SaasBillingSubscription = typeof saasBillingSubscriptions.$inferSelect;
+export type InsertSaasBillingSubscription = typeof saasBillingSubscriptions.$inferInsert;
+
+export const saasBillingEvents = mysqlTable("saas_billing_events", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "set null" }),
+  billingAccountId: int("billingAccountId").references(() => saasTenantBillingAccounts.id, { onDelete: "set null" }),
+  subscriptionId: int("subscriptionId").references(() => saasBillingSubscriptions.id, { onDelete: "set null" }),
+  provider: mysqlEnum("provider", ["stripe", "xero", "manual", "system"]).default("system").notNull(),
+  providerEventId: varchar("providerEventId", { length: 255 }),
+  eventType: varchar("eventType", { length: 120 }).notNull(),
+  status: mysqlEnum("status", ["received", "processed", "failed", "ignored"]).default("received").notNull(),
+  severity: mysqlEnum("severity", ["info", "warning", "critical"]).default("info").notNull(),
+  payload: json("payload").$type<Record<string, any>>(),
+  errorMessage: text("errorMessage"),
+  retryCount: int("retryCount").default(0).notNull(),
+  receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+  processedAt: timestamp("processedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_saas_billing_events_provider_event").on(table.provider, table.providerEventId),
+  index("idx_saas_billing_events_tenant").on(table.tenantId),
+  index("idx_saas_billing_events_status").on(table.status),
+  index("idx_saas_billing_events_received").on(table.receivedAt),
+]);
+export type SaasBillingEvent = typeof saasBillingEvents.$inferSelect;
+export type InsertSaasBillingEvent = typeof saasBillingEvents.$inferInsert;
+
+export const saasAdminAuditLog = mysqlTable("saas_admin_audit_log", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "set null" }),
+  actorUserId: int("actorUserId").references(() => users.id, { onDelete: "set null" }),
+  actorUserName: varchar("actorUserName", { length: 255 }),
+  action: varchar("action", { length: 120 }).notNull(),
+  entityType: varchar("entityType", { length: 80 }).notNull(),
+  entityId: varchar("entityId", { length: 80 }),
+  beforeJson: json("beforeJson").$type<Record<string, any>>(),
+  afterJson: json("afterJson").$type<Record<string, any>>(),
+  metadata: json("metadata").$type<Record<string, any>>(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_saas_admin_audit_tenant").on(table.tenantId),
+  index("idx_saas_admin_audit_actor").on(table.actorUserId),
+  index("idx_saas_admin_audit_entity").on(table.entityType, table.entityId),
+  index("idx_saas_admin_audit_created").on(table.createdAt),
+]);
+export type SaasAdminAuditLog = typeof saasAdminAuditLog.$inferSelect;
+export type InsertSaasAdminAuditLog = typeof saasAdminAuditLog.$inferInsert;
+
 export const permissionOverrides = mysqlTable("permission_overrides", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),

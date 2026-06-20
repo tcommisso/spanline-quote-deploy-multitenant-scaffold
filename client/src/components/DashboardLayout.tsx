@@ -233,6 +233,7 @@ const financeItems: MenuItem[] = [
   { icon: DollarSign, label: "DA Commissions", path: "/admin/da-commissions" },
   { icon: FileCheck, label: "DA Invoice Approval", path: "/admin/da-invoices" },
   { icon: CreditCard, label: "Subscriptions", path: "/admin/subscriptions" },
+  { icon: CreditCard, label: "SaaS Billing", path: "/admin/saas-billing" },
   { icon: Sparkles, label: "Render Costs", path: "/admin/render-costs" },
   { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
   { icon: ThumbsUp, label: "Supplier Feedback", path: "/admin/supplier-feedback" },

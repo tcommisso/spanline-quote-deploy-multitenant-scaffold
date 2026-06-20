@@ -95,6 +95,7 @@ import { nswDaRouter } from "./nsw-da-router";
 import { aiLearningRouter } from "./ai-learning-router";
 import { tenantRouter } from "./tenant-router";
 import { apiHealthRouter } from "./api-health-router";
+import { saasBillingRouter } from "./saas-billing-router";
 import { securityScreensRouter } from "./security-screens-router";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { isStorageConfigured, storageGet, storageDownload, storagePut } from "./storage";
@@ -193,6 +194,7 @@ export const appRouter = router({
   system: systemRouter,
   tenants: tenantRouter,
   apiHealth: apiHealthRouter,
+  saasBilling: saasBillingRouter,
   geotracking: geotrackingRouter,
   textBlocks: textBlocksRouter,
   notificationLog: notificationLogRouter,
