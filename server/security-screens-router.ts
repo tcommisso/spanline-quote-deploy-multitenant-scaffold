@@ -71,6 +71,57 @@ function insertIdFromResult(result: any): number | null {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
+function rowsFromExecuteResult(result: any): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+async function hasDbColumn(db: any, tableName: string, columnName: string) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `);
+  return Number(rowsFromExecuteResult(result)?.[0]?.count || 0) > 0;
+}
+
+const ssQuoteItemDetailColumns = [
+  { name: "colourId", definition: "`colourId` int NULL AFTER `quantity`" },
+  { name: "colourName", definition: "`colourName` varchar(128) NULL AFTER `colourId`" },
+  { name: "handleSide", definition: "`handleSide` varchar(32) NULL AFTER `colourName`" },
+  { name: "hingeSide", definition: "`hingeSide` varchar(32) NULL AFTER `handleSide`" },
+  { name: "openingDirection", definition: "`openingDirection` varchar(32) NULL AFTER `hingeSide`" },
+  { name: "hingePosition", definition: "`hingePosition` varchar(32) NULL AFTER `openingDirection`" },
+  { name: "glassInfillId", definition: "`glassInfillId` int NULL AFTER `hingePosition`" },
+  { name: "glassInfillQuantity", definition: "`glassInfillQuantity` decimal(10,2) NOT NULL DEFAULT '1.00' AFTER `glassInfillId`" },
+];
+
+let ssQuoteItemDetailColumnsPromise: Promise<void> | null = null;
+
+async function ensureSsQuoteItemDetailColumns(db: any) {
+  if (!ssQuoteItemDetailColumnsPromise) {
+    ssQuoteItemDetailColumnsPromise = (async () => {
+      for (const column of ssQuoteItemDetailColumns) {
+        if (await hasDbColumn(db, "ss_quote_items", column.name)) continue;
+        await db.execute(sql.raw(`ALTER TABLE \`ss_quote_items\` ADD COLUMN ${column.definition}`));
+      }
+    })().catch((error) => {
+      ssQuoteItemDetailColumnsPromise = null;
+      console.error("[Security screens] Failed to verify quote item detail columns", error);
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Security screen quote item columns are not up to date. Run the screen quote database migration.",
+      });
+    });
+  }
+
+  await ssQuoteItemDetailColumnsPromise;
+}
+
 async function quoteIdFromInsertResult(db: any, tenantId: number, insertResult: any, quoteNumber: string) {
   const [quote] = await db
     .select({ id: ssQuotes.id })
@@ -547,6 +598,7 @@ async function requireQuote(db: any, tenantId: number, quoteId: number) {
 }
 
 async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number) {
+  await ensureSsQuoteItemDetailColumns(db);
   const items = await db
     .select()
     .from(ssQuoteItems)
@@ -612,6 +664,7 @@ async function loadQuoteDetailRows(db: any, tenantId: number, quote: any, option
   let costDefinitions: any[] = [];
 
   try {
+    await ensureSsQuoteItemDetailColumns(db);
     const conditions: any[] = [eq(ssQuoteItems.quoteId, quoteId)];
     addScreenQuoteTenantScope(conditions, ssQuoteItems.tenantId, tenantId, options);
     items = await db.select().from(ssQuoteItems).where(and(...conditions)).orderBy(asc(ssQuoteItems.itemNumber));
@@ -1151,6 +1204,7 @@ export const securityScreensRouter = router({
           createdBy,
         });
         const newQuoteId = await quoteIdFromInsertResult(db, tenantId, quoteResult, quoteNumber);
+        await ensureSsQuoteItemDetailColumns(db);
         const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
         const itemIdMap = new Map<number, number>();
         for (const item of items) {
@@ -1170,6 +1224,7 @@ export const securityScreensRouter = router({
             openingDirection: item.openingDirection,
             hingePosition: item.hingePosition,
             glassInfillId: item.glassInfillId,
+            glassInfillQuantity: item.glassInfillQuantity ?? "1.00",
             photoUrl: item.photoUrl,
             notes: item.notes,
             basePriceIncGst: item.basePriceIncGst,
@@ -1232,6 +1287,7 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         const quote = await requireQuote(db, tenantId, input.quoteId);
+        await ensureSsQuoteItemDetailColumns(db);
         const existingItems = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
         const itemNumber = existingItems.length + 1;
         const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
@@ -1342,6 +1398,7 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         const quote = await requireQuote(db, tenantId, input.quoteId);
+        await ensureSsQuoteItemDetailColumns(db);
         const [item] = await db
           .select()
           .from(ssQuoteItems)
@@ -1503,6 +1560,7 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
+        await ensureSsQuoteItemDetailColumns(db);
         const [item] = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.id, input.quoteItemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId))).limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
         const buffer = Buffer.from(input.base64, "base64");

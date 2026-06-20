@@ -12,6 +12,7 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "db:migrate:sql": "node scripts/apply-sql-migration.mjs drizzle/migrations/0001_multi_tenant_scaffold.sql",
+    "db:migrate:screen-quotes": "node scripts/apply-sql-migration.mjs drizzle/migrations/0043_security_screen_quote_item_detail_columns.sql",
     "db:migrate:inbox": "node scripts/apply-sql-migration.mjs drizzle/migrations/0044_inbox_ticket_lifecycle_notes.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0045_inbox_sla_templates_presence_threading.sql",
     "scheduled:dispatch": "node scripts/scheduled-dispatcher.mjs",
     "tenant:repair:dry-run": "node scripts/run-tenant-repair.mjs --dry-run",
