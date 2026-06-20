@@ -24,6 +24,7 @@ import { notifyOwner } from "./_core/notification";
 import { storagePut } from "./storage";
 import { sendPushToAllUsers } from "./push";
 import { findRfiBySubjectMatch, updateRfi } from "./approval-db";
+import { resolveInboxThreadIdForMessage } from "./inbox-threading";
 
 let legacyResendClient: Resend | null | undefined;
 
@@ -255,13 +256,28 @@ export function registerInboxWebhooks(app: Express) {
 
       // Process attachments
       const attachments = await processAttachments(emailId, tenantId);
+      const receivedByAddress = addressRule?.address || (toArray[0] || null);
 
-      // Derive thread ID
-      const threadId = deriveThreadId(emailMessageId, inReplyTo, emailReferences);
+      // Derive thread ID, then attach replies to existing tenant tickets when
+      // headers, hidden thread marker, or subject/recipient matching allows it.
+      const fallbackThreadId = deriveThreadId(emailMessageId, inReplyTo, emailReferences);
+      const threadId = await resolveInboxThreadIdForMessage({
+        tenantId,
+        fallbackThreadId,
+        direction: "inbound",
+        subject,
+        fromAddress,
+        toAddresses: toArray,
+        ccAddresses,
+        mailboxAddress: receivedByAddress,
+        inReplyToHeader: inReplyTo,
+        referencesHeader: emailReferences,
+        htmlBody,
+        textBody,
+      });
 
       // Auto-route to client/job
       const match = await matchEmailToClient(fromAddress, tenantId);
-      const receivedByAddress = addressRule?.address || (toArray[0] || null);
 
       // Create inbox message
       const { id: inboxMsgId } = await createInboxMessage({

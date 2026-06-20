@@ -14,6 +14,7 @@ import { getDb } from "./db";
 import { crmLeads, constructionInstallers, suppliers } from "../drizzle/schema";
 import { and, eq, like, or, sql } from "drizzle-orm";
 import { getTenantEmailConfig } from "./tenant-integrations";
+import { appendInboxThreadMarkerHtml } from "./inbox-threading";
 
 const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
 const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "customer_replied", "closed", "spam"]);
@@ -573,6 +574,7 @@ export const inboxRouter = router({
       const replyAssigneeId = existingTicket?.assignedToId ?? originalMsg.assignedToId ?? ctx.user!.id;
       const replyAssigneeName = existingTicket?.assignedToName ?? originalMsg.assignedToName ?? userName;
       const replyAssignedAt = existingTicket?.assignedAt ?? originalMsg.assignedAt ?? new Date();
+      fullHtml = appendInboxThreadMarkerHtml(fullHtml, originalMsg.threadId);
 
       // Send via unified O365 email service.
       const sendResult = await sendUnifiedEmail({
@@ -584,6 +586,7 @@ export const inboxRouter = router({
         textBody: input.textBody || undefined,
         inReplyTo: originalMsg.messageId || undefined,
         references: [originalMsg.emailReferences, originalMsg.messageId].filter(Boolean).join(" ") || undefined,
+        replyToGraphMessageId: originalMsg.graphMessageId || undefined,
         tenantId: ctx.tenant!.id,
       });
       if (!sendResult.success) {
@@ -712,6 +715,7 @@ export const inboxRouter = router({
         const feedbackHtml = buildRateUsHtml(baseUrl, msgId, rateUsPrompt);
         fullHtml += feedbackHtml;
       }
+      fullHtml = appendInboxThreadMarkerHtml(fullHtml, threadId);
 
       // Send via unified O365 email service.
       const sendResult = await sendUnifiedEmail({

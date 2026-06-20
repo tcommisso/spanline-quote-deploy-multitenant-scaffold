@@ -269,6 +269,8 @@ export default function InboxPage() {
       const result = await utils.client.inbox.syncNow.mutate();
       if (result.errors?.length) {
         toast.warning(`Inbox sync completed with ${result.errors.length} issue${result.errors.length === 1 ? "" : "s"}`);
+      } else if (!result.results?.length) {
+        toast.warning("No active Microsoft 365 inbox mailboxes are configured for this tenant");
       } else if (result.newMessages > 0) {
         toast.success(`Inbox synced: ${result.newMessages} new message${result.newMessages === 1 ? "" : "s"}`);
       } else {

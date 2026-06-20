@@ -37,6 +37,7 @@ export interface UnifiedSendParams {
   /** Threading */
   inReplyTo?: string;
   references?: string;
+  replyToGraphMessageId?: string;
   /** Optional notification setting key for suppression check */
   settingKey?: string;
   /** Importance */
@@ -171,6 +172,9 @@ async function sendViaMsGraph(params: UnifiedSendParams, mailbox: ResolvedMailbo
       subject: params.subject,
       htmlBody: params.htmlBody,
       textBody: params.textBody,
+      inReplyTo: params.inReplyTo,
+      references: params.references,
+      replyToGraphMessageId: params.replyToGraphMessageId,
       importance: params.importance,
       attachments: params.attachments?.map(a => ({
         name: a.filename,

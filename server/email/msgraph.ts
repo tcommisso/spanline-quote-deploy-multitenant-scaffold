@@ -48,6 +48,8 @@ export interface SendEmailParams {
   textBody?: string;
   replyTo?: string;
   inReplyTo?: string; // internetMessageId of the message being replied to
+  references?: string;
+  replyToGraphMessageId?: string; // Graph message ID to create a native Outlook reply from
   attachments?: Array<{
     name: string;
     contentType: string;
@@ -218,6 +220,18 @@ export async function markAsUnread(mailbox: string, messageId: string, tenantId?
  */
 export async function sendEmail(params: SendEmailParams): Promise<void> {
   const { mailbox, to, cc, bcc, subject, htmlBody, textBody, attachments, importance = "normal", saveToSentItems = true } = params;
+
+  if (params.replyToGraphMessageId) {
+    const draft = await createReplyDraft(mailbox, params.replyToGraphMessageId, params.tenantId);
+    await updateDraft(mailbox, draft.id, {
+      body: {
+        contentType: "HTML",
+        content: htmlBody,
+      },
+    }, params.tenantId);
+    await sendDraft(mailbox, draft.id, params.tenantId);
+    return;
+  }
 
   const message: any = {
     subject,
