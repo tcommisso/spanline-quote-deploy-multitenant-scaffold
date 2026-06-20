@@ -862,6 +862,7 @@ export default function CheckMeasureWorkbook() {
                   houseWallType={specData.specHouseWallType || ""}
                   fallOnGround={specData.specFallOnGround || ""}
                   groundLevel={specData.specGroundLevel || ""}
+                  roofOverhang={specData.specRoofOverhang || ""}
                   onRoofPitchChange={() => {}}
                   onHouseRoofTypeChange={() => {}}
                   onCutBackEaveChange={() => {}}
@@ -869,6 +870,7 @@ export default function CheckMeasureWorkbook() {
                   onHouseWallTypeChange={() => {}}
                   onFallOnGroundChange={() => {}}
                   onGroundLevelChange={() => {}}
+                  onRoofOverhangChange={() => {}}
                   readOnly
                   connectionType={(() => {
                     const method = specData.specAttachmentMethod || "";

@@ -27,6 +27,7 @@ interface CrossSectionDiagramProps {
   houseWallType: string;
   fallOnGround: string;
   groundLevel: string;
+  roofOverhang: string;
   onRoofPitchChange: (v: string) => void;
   onHouseRoofTypeChange: (v: string) => void;
   onCutBackEaveChange: (v: string) => void;
@@ -34,6 +35,7 @@ interface CrossSectionDiagramProps {
   onHouseWallTypeChange: (v: string) => void;
   onFallOnGroundChange: (v: string) => void;
   onGroundLevelChange: (v: string) => void;
+  onRoofOverhangChange: (v: string) => void;
   readOnly?: boolean;
   /** Connection type code for the bracket annotation (FLY, BCH, WFX, GBL, FSS, POP) */
   connectionType?: string;
@@ -60,6 +62,7 @@ export default function CrossSectionDiagram({
   houseWallType,
   fallOnGround,
   groundLevel,
+  roofOverhang,
   onRoofPitchChange,
   onHouseRoofTypeChange,
   onCutBackEaveChange,
@@ -67,6 +70,7 @@ export default function CrossSectionDiagram({
   onHouseWallTypeChange,
   onFallOnGroundChange,
   onGroundLevelChange,
+  onRoofOverhangChange,
   readOnly = false,
   connectionType,
 }: CrossSectionDiagramProps) {
@@ -127,22 +131,6 @@ export default function CrossSectionDiagram({
           className="w-full h-auto"
           xmlns="http://www.w3.org/2000/svg"
         >
-          {/* ─── Arrow markers ─── */}
-          <defs>
-            <marker id="csArrR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="black" />
-            </marker>
-            <marker id="csArrL" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
-              <polygon points="8 0, 0 3, 8 6" fill="black" />
-            </marker>
-            <marker id="csArrU" markerWidth="6" markerHeight="8" refX="3" refY="0" orient="auto">
-              <polygon points="0 8, 3 0, 6 8" fill="black" />
-            </marker>
-            <marker id="csArrD" markerWidth="6" markerHeight="8" refX="3" refY="8" orient="auto">
-              <polygon points="0 0, 3 8, 6 0" fill="black" />
-            </marker>
-          </defs>
-
           {/* ═══ HOUSE ROOF ═══ */}
           <line
             x1={roofStartX}
@@ -179,23 +167,11 @@ export default function CrossSectionDiagram({
               <line x1={fasciaX - 40} y1={wallTopY - 12} x2={fasciaX + 70} y2={wallTopY + 8} stroke="#ef4444" strokeWidth="3" strokeLinecap="round" />
             </g>
           )}
-          {/* Cut Back Eave dimension arrows */}
-          <line x1={wallTopX + 5} y1={eaveBottomY + 16} x2={fasciaX - 2} y2={eaveBottomY + 16} stroke="black" strokeWidth="1" markerStart="url(#csArrL)" markerEnd="url(#csArrR)" />
-          <line x1={wallTopX + 5} y1={eaveBottomY + 4} x2={wallTopX + 5} y2={eaveBottomY + 22} stroke="black" strokeWidth="0.5" strokeDasharray="2 2" />
-          <line x1={fasciaX} y1={eaveBottomY + 4} x2={fasciaX} y2={eaveBottomY + 22} stroke="black" strokeWidth="0.5" strokeDasharray="2 2" />
-
-          {/* Gutter/Flash rectangles — positioned at fascia */}
-          <rect x={fasciaX + 12} y={wallTopY - 6} width="40" height="12" fill="none" stroke="black" strokeWidth="1.5" />
-          <rect x={fasciaX + 12} y={wallTopY + 10} width="40" height="12" fill="none" stroke="black" strokeWidth="1.5" />
-
           {/* ═══ HOUSE WALL ═══ */}
           <rect x={wallTopX - 12} y={wallTopY} width="18" height="380" fill="none" stroke="black" strokeWidth="2.5" />
 
           {/* ═══ BEAM — connects at eave level ═══ */}
           <rect x={wallTopX + 6} y={beamY} width="160" height="20" fill="none" stroke="black" strokeWidth="2" />
-
-          {/* Beam dimension arrow */}
-          <line x1={wallTopX + 6} y1={beamY - 10} x2={wallTopX + 166} y2={beamY - 10} stroke="black" strokeWidth="1" markerStart="url(#csArrL)" markerEnd="url(#csArrR)" />
 
           {/* ═══ CONNECTION DETAIL ANNOTATION ═══ */}
           {showConnection && (
@@ -331,22 +307,8 @@ export default function CrossSectionDiagram({
             strokeWidth="2"
           />
 
-          {/* Ground level vertical dimension */}
-          <line
-            x1={wallTopX + 150}
-            y1={wallTopY + 380}
-            x2={wallTopX + 150}
-            y2={wallTopY + 380 + groundDropPx + (fallPx / 2)}
-            stroke="black"
-            strokeWidth="1"
-            markerStart="url(#csArrU)"
-            markerEnd="url(#csArrD)"
-          />
-
           {/* ═══ LABELS ═══ */}
           <text x="80" y="50" fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Roof Pitch</text>
-          <text x="60" y={wallTopY + 200} fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Wall</text>
-          <text x="60" y={wallTopY + 216} fontSize="13" fontWeight="bold" fill="black" fontFamily="sans-serif">Type</text>
           <text x={wallTopX - 20} y={wallTopY + 398} fontSize="11" fill="black" fontFamily="sans-serif">Floor level</text>
           <text x={wallTopX + 160} y={wallTopY + 390 + groundDropPx + (fallPx / 2)} fontSize="11" fontWeight="bold" fill="black" fontFamily="sans-serif">Ground level</text>
         </svg>
@@ -406,6 +368,21 @@ export default function CrossSectionDiagram({
                   className="h-7 text-xs flex-1"
                   value={cutBackEave}
                   onChange={(e) => onCutBackEaveChange(e.target.value)}
+                  placeholder="mm"
+                />
+              )}
+            </div>
+
+            {/* Overhang */}
+            <div className="flex items-center gap-2 px-3 py-2">
+              <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Overhang <ParamTip tip="Roof overhang at the front of the structure in millimetres" /></label>
+              {readOnly ? (
+                <span className="text-xs font-medium">{roofOverhang || "—"} mm</span>
+              ) : (
+                <Input
+                  className="h-7 text-xs flex-1"
+                  value={roofOverhang}
+                  onChange={(e) => onRoofOverhangChange(e.target.value)}
                   placeholder="mm"
                 />
               )}

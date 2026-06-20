@@ -34,7 +34,6 @@ import BeamPositionPlan from "@/components/BeamPositionPlan";
 import PlanViewDiagram from "@/components/PlanViewDiagram";
 import SitePlanPreviewDialog from "@/components/SitePlanPreviewDialog";
 import CrossSectionDiagram from "@/components/CrossSectionDiagram";
-import FrontElevationDiagram from "@/components/FrontElevationDiagram";
 import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
@@ -1512,6 +1511,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     houseWallType={form.specHouseWallType || ""}
                     fallOnGround={form.specFallOnGround || ""}
                     groundLevel={form.specGroundLevel || ""}
+                    roofOverhang={form.specRoofOverhang || ""}
                     onRoofPitchChange={(v) => update("specFall", v)}
                     onHouseRoofTypeChange={(v) => update("specHouseRoofType", v)}
                     onCutBackEaveChange={(v) => update("specCutBackEave", v)}
@@ -1519,6 +1519,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     onHouseWallTypeChange={(v) => update("specHouseWallType", v)}
                     onFallOnGroundChange={(v) => update("specFallOnGround", v)}
                     onGroundLevelChange={(v) => update("specGroundLevel", v)}
+                    onRoofOverhangChange={(v) => update("specRoofOverhang", v)}
                     connectionType={(() => {
                       const method = form.specAttachmentMethod || "";
                       if (!method || method === "None") return undefined;
@@ -1530,49 +1531,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       if (parseInt(form.specFasciaBrackets || "0") > 0) return "BCH";
                       return "BCH";
                     })()}
-                  />
-                </DiagramAnnotation>
-              </div>
-
-              {/* Front Elevation Diagram with Annotations */}
-              <div className="mt-5 border-t pt-4">
-                <DiagramAnnotation
-                  annotations={(() => {
-                    try {
-                      const all = JSON.parse(form.specDiagramAnnotations || "[]") as (Annotation & { diagram?: string })[];
-                      return all.filter(a => a.diagram === "front-elevation");
-                    } catch { return []; }
-                  })()}
-                  onChange={(anns) => {
-                    try {
-                      const all = JSON.parse(form.specDiagramAnnotations || "[]") as (Annotation & { diagram?: string })[];
-                      const others = all.filter(a => a.diagram !== "front-elevation");
-                      const tagged = anns.map(a => ({ ...a, diagram: "front-elevation" }));
-                      update("specDiagramAnnotations", JSON.stringify([...others, ...tagged]));
-                    } catch {
-                      update("specDiagramAnnotations", JSON.stringify(anns.map(a => ({ ...a, diagram: "front-elevation" }))));
-                    }
-                  }}
-                >
-                  <FrontElevationDiagram
-                    structureWidth={form.specWidth || ""}
-                    beamHeight={form.specFloorHeight || ""}
-                    postCount={form.specPostsNumber || ""}
-                    postSpacing={form.specPostSpacing || ""}
-                    gutterType={form.specGutterType || ""}
-                    roofOverhang={form.specRoofOverhang || ""}
-                    postSize={form.specPostsType || ""}
-                    beamSize={form.specBeamSize || ""}
-                    roofShape={form.specRoofShape || ""}
-                    roofFall={form.specFall || ""}
-                    onStructureWidthChange={(v) => update("specWidth", v)}
-                    onBeamHeightChange={(v) => update("specFloorHeight", v)}
-                    onPostCountChange={(v) => update("specPostsNumber", v)}
-                    onPostSpacingChange={(v) => update("specPostSpacing", v)}
-                    onGutterTypeChange={(v) => update("specGutterType", v)}
-                    onRoofOverhangChange={(v) => update("specRoofOverhang", v)}
-                    onPostSizeChange={(v) => update("specPostsType", v)}
-                    onBeamSizeChange={(v) => update("specBeamSize", v)}
                   />
                 </DiagramAnnotation>
               </div>
