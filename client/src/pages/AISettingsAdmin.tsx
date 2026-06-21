@@ -978,20 +978,20 @@ export default function AISettingsAdmin() {
 
       {/* Tabs */}
       <Tabs defaultValue="prompts">
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="prompts" className="text-xs gap-1">
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-5">
+          <TabsTrigger value="prompts" className="h-10 justify-center gap-1 px-2 text-xs sm:h-9">
             <Brain className="h-3.5 w-3.5" />Prompts
           </TabsTrigger>
-          <TabsTrigger value="knowledge" className="text-xs gap-1">
+          <TabsTrigger value="knowledge" className="h-10 justify-center gap-1 px-2 text-xs sm:h-9">
             <BookOpen className="h-3.5 w-3.5" />Knowledge
           </TabsTrigger>
-          <TabsTrigger value="fewshot" className="text-xs gap-1">
+          <TabsTrigger value="fewshot" className="h-10 justify-center gap-1 px-2 text-xs sm:h-9">
             <Lightbulb className="h-3.5 w-3.5" />Few-Shot
           </TabsTrigger>
-          <TabsTrigger value="corrections" className="text-xs gap-1">
+          <TabsTrigger value="corrections" className="h-10 justify-center gap-1 px-2 text-xs sm:h-9">
             <AlertTriangle className="h-3.5 w-3.5" />Corrections
           </TabsTrigger>
-          <TabsTrigger value="feedback" className="text-xs gap-1">
+          <TabsTrigger value="feedback" className="col-span-2 h-10 justify-center gap-1 px-2 text-xs sm:col-span-1 sm:h-9">
             <MessageSquare className="h-3.5 w-3.5" />Feedback
           </TabsTrigger>
         </TabsList>

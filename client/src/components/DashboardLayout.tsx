@@ -84,7 +84,6 @@ import {
   Brain,
   ShieldCheck,
   ClipboardCheck,
-  Settings,
   Library,
   Bot,
   MapPin,
@@ -108,6 +107,9 @@ import {
   Cog,
   Crosshair,
   Files,
+  ImageIcon,
+  Tag,
+  ListFilter,
   Phone,
   type LucideIcon,
 } from "lucide-react";
@@ -260,6 +262,9 @@ const adminGroups: AdminGroup[] = [
       { icon: Building2, label: "Company Settings", path: "/admin/company-settings" },
       { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
       { icon: Palette, label: "Colour Scheme", path: "/admin/colour-scheme" },
+      { icon: Palette, label: "Colours", path: "/admin/master-data/general/colour" },
+      { icon: Palette, label: "Colour Groups", path: "/admin/master-data/general/colour-groups" },
+      { icon: Palette, label: "Colour Palette", path: "/admin/master-data/general/colour-palette" },
       { icon: CalendarDays, label: "Calendar Views", path: "/admin/calendar-views" },
       { icon: MapPin, label: "Territory Management", path: "/admin/territories" },
       { icon: BarChart3, label: "Territory Coverage", path: "/admin/territory-coverage" },
@@ -284,8 +289,9 @@ const adminGroups: AdminGroup[] = [
       { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
       { icon: ShieldCheck, label: "Security Screen Data", path: "/admin/security-screens" },
       { icon: Layers, label: "Blinds Data", path: "/admin/blinds" },
+      { icon: Tag, label: "Supplier Categories", path: "/admin/master-data/general/supplier-categories" },
+      { icon: ListFilter, label: "CRM Dropdowns", path: "/admin/master-data/general/crm-dropdowns" },
       { icon: History, label: "Import History", path: "/admin/import-history" },
-      { icon: Settings, label: "General", path: "/admin/master-data/general/colour" },
     ],
   },
   {
@@ -293,11 +299,13 @@ const adminGroups: AdminGroup[] = [
     icon: Files,
     items: [
       { icon: Files, label: "Descriptions of Work", path: "/admin/master-data/general/descriptions-of-work" },
+      { icon: ImageIcon, label: "Image Library", path: "/admin/master-data/general/image-library" },
       { icon: LayoutGrid, label: "Section Templates", path: "/admin/section-templates" },
       { icon: Mail, label: "Email Templates", path: "/admin/email-templates" },
       { icon: Send, label: "SMS Templates", path: "/admin/master-data/general/sms-templates" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: ClipboardList, label: "Project Plan Templates", path: "/admin/project-plan-templates" },
+      { icon: ClipboardCheck, label: "Induction Form", path: "/admin/induction-config" },
       { icon: FileText, label: "Text Blocks", path: "/admin/text-blocks" },
     ],
   },
@@ -306,6 +314,8 @@ const adminGroups: AdminGroup[] = [
     icon: MessageSquare,
     items: [
       { icon: Shield, label: "Proposal & Notifications", path: "/admin/settings" },
+      { icon: Bell, label: "Notification Settings", path: "/admin/master-data/general/notification" },
+      { icon: AlertTriangle, label: "Notification Thresholds", path: "/admin/master-data/general/threshold" },
       { icon: Bell, label: "Notification Log", path: "/admin/notification-log" },
       { icon: Inbox, label: "Inbox Settings", path: "/admin/inbox-settings" },
     ],
@@ -346,6 +356,11 @@ const helpItems: MenuItem[] = [
   { icon: Lightbulb, label: "Make a Suggestion", path: "/support/suggestion" },
   { icon: ClipboardList, label: "Manage Submissions", path: "/admin/support-submissions" },
 ];
+
+const pathMatches = (currentPath: string, itemPath: string) => {
+  if (itemPath === "/") return currentPath === "/";
+  return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
+};
 
 // ─── Favourites persistence ─────────────────────────────────────────────────
 const FAVOURITES_KEY = "sidebar-favourites";
@@ -713,18 +728,18 @@ function DashboardLayoutContent({
   // ─── Collapsible section state (accordion: only one open at a time) ────────
   const SECTION_KEY = "sidebar-expanded-section";
   const sectionForPath = useCallback((path: string): string | null => {
-    if (financeItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "finance";
-    if (reportingItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "reporting";
-    if (crmItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "crm";
-    if (path === "/sales" || salesItems.some(i => i.path !== "/" && i.path !== "/sales" && path.startsWith(i.path))) return "sales";
-    if (approvalsItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "approvals";
-    if (daTrackerItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path))) || path.startsWith("/da-tracker")) return "daTracker";
-    if (constructionItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "construction";
-    if (manufacturingItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "manufacturing";
-    if (inventoryItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "inventory";
-    if (inboxItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "communications";
-    if (helpItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "support";
-    if (adminItems.some(i => path === i.path || (i.path !== "/" && path.startsWith(i.path)))) return "admin";
+    if (financeItems.some(i => pathMatches(path, i.path))) return "finance";
+    if (reportingItems.some(i => pathMatches(path, i.path))) return "reporting";
+    if (crmItems.some(i => pathMatches(path, i.path))) return "crm";
+    if (salesItems.some(i => pathMatches(path, i.path))) return "sales";
+    if (approvalsItems.some(i => pathMatches(path, i.path))) return "approvals";
+    if (daTrackerItems.some(i => pathMatches(path, i.path)) || pathMatches(path, "/da-tracker")) return "daTracker";
+    if (constructionItems.some(i => pathMatches(path, i.path))) return "construction";
+    if (manufacturingItems.some(i => pathMatches(path, i.path))) return "manufacturing";
+    if (inventoryItems.some(i => pathMatches(path, i.path))) return "inventory";
+    if (inboxItems.some(i => pathMatches(path, i.path))) return "communications";
+    if (helpItems.some(i => pathMatches(path, i.path))) return "support";
+    if (adminItems.some(i => pathMatches(path, i.path))) return "admin";
     return null;
   }, []);
 
@@ -779,7 +794,7 @@ function DashboardLayoutContent({
 
   // Track which admin subgroups are expanded (auto-expand group containing active path)
   const [expandedAdminGroups, setExpandedAdminGroups] = useState<string[]>(() => {
-    const activeGroup = adminGroups.find(g => g.items.some(i => location.startsWith(i.path)));
+    const activeGroup = adminGroups.find(g => g.items.some(i => pathMatches(location, i.path)));
     return activeGroup ? [activeGroup.label] : [];
   });
 
@@ -880,7 +895,7 @@ function DashboardLayoutContent({
   // ─── Dynamic page title ─────────────────────────────────────────────────
   useEffect(() => {
     const matchedItem = accessibleAllMenuItems.find(item =>
-      location === item.path || (item.path !== "/" && location.startsWith(item.path))
+      pathMatches(location, item.path)
     );
     const pageName = matchedItem?.label || "Dashboard";
     document.title = `AltaSpan | ${pageName}`;
@@ -914,9 +929,7 @@ function DashboardLayoutContent({
   }, [isResizing, setSidebarWidth]);
 
   const isActive = (path: string) => {
-    if (path === "/") return location === "/";
-    if (path === "/sales") return location === "/sales";
-    return location.startsWith(path);
+    return pathMatches(location, path);
   };
 
   // Render a single menu item with optional favourite star
@@ -1454,7 +1467,7 @@ function DashboardLayoutContent({
               const sectionId = getSectionForPath(location);
               const section = sectionId ? APP_SECTIONS.find(s => s.id === sectionId) : null;
               const matchedPage = accessibleAllMenuItems.find(item =>
-                location === item.path || (item.path !== "/" && location.startsWith(item.path))
+                pathMatches(location, item.path)
               );
               if (!section && location === "/") return null;
               return (
@@ -1583,7 +1596,7 @@ function DashboardLayoutContent({
           <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur border-t md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
             <div className="flex items-center justify-around h-14">
               {mobileBottomNavItems.map((item) => {
-                const active = item.path === "/" ? location === "/" : location.startsWith(item.path);
+                const active = pathMatches(location, item.path);
                 const inboxBadgeCount = unreadCount + chatUnreadCount;
                 const showBadge = item.path === "/inbox" && inboxBadgeCount > 0;
                 return (

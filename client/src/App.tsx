@@ -400,17 +400,17 @@ function MainRouter() {
         <Route path="/admin/master-data/pricing/small-job-surcharge">{() => <MasterDataPage><PricingSmallJobSurcharge /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/pricing/construction-mgmt">{() => <MasterDataPage><PricingConstructionMgmt /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/pricing/home-warranty">{() => <MasterDataPage><PricingHomeWarranty /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/colour">{() => <MasterDataPage><GeneralColour /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/colour-groups">{() => <MasterDataPage><ColourGroups /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/colour-palette">{() => <MasterDataPage><ColourPaletteSettings /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/notification">{() => <MasterDataPage><GeneralNotification /></MasterDataPage>}</Route>
+        <Route path="/admin/master-data/general/colour">{() => <AdminRoute><GeneralColour /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/colour-groups">{() => <AdminRoute><ColourGroups /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/colour-palette">{() => <AdminRoute><ColourPaletteSettings /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/notification">{() => <AdminRoute><GeneralNotification /></AdminRoute>}</Route>
         <Route path="/admin/notification-log">{() => <AdminRoute><NotificationLog /></AdminRoute>}</Route>
-        <Route path="/admin/master-data/general/threshold">{() => <MasterDataPage><GeneralThreshold /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/descriptions-of-work">{() => <MasterDataPage><DescriptionsOfWork /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/sms-templates">{() => <MasterDataPage><SmsTemplates /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/supplier-categories">{() => <MasterDataPage><SupplierCategoriesPage /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/image-library">{() => <MasterDataPage><AdminImageLibrary /></MasterDataPage>}</Route>
-        <Route path="/admin/master-data/general/crm-dropdowns">{() => <MasterDataPage><CrmDropdownOptions /></MasterDataPage>}</Route>
+        <Route path="/admin/master-data/general/threshold">{() => <AdminRoute><GeneralThreshold /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/descriptions-of-work">{() => <AdminRoute><DescriptionsOfWork /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/sms-templates">{() => <AdminRoute><SmsTemplates /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/supplier-categories">{() => <AdminRoute><SupplierCategoriesPage /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/image-library">{() => <AdminRoute><AdminImageLibrary /></AdminRoute>}</Route>
+        <Route path="/admin/master-data/general/crm-dropdowns">{() => <AdminRoute><CrmDropdownOptions /></AdminRoute>}</Route>
         <Route path="/admin/master-data">{() => <Redirect to="/admin/master-data/structure/products" />}</Route>
         <Route path="/admin/ai-render-pricing">{() => <AdminRoute><AIRenderPricingSettings /></AdminRoute>}</Route>
         <Route path="/admin/company-settings">{() => <AdminRoute><CompanySettings /></AdminRoute>}</Route>
