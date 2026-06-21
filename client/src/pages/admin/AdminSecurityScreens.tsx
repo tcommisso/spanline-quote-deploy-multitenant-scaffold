@@ -507,14 +507,14 @@ export default function AdminSecurityScreens() {
         <p className="text-muted-foreground">Manage pricing, costs, options, and colours for security screen quotes</p>
       </div>
       <Tabs defaultValue="settings" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-7">
-          <TabsTrigger value="settings" className="flex items-center gap-1"><Percent className="h-3 w-3" /> Settings</TabsTrigger>
-          <TabsTrigger value="adjustments" className="flex items-center gap-1"><Percent className="h-3 w-3" /> Adjustments</TabsTrigger>
-          <TabsTrigger value="costs" className="flex items-center gap-1"><DollarSign className="h-3 w-3" /> Costs</TabsTrigger>
-          <TabsTrigger value="options" className="flex items-center gap-1"><Shield className="h-3 w-3" /> Options</TabsTrigger>
-          <TabsTrigger value="glass" className="flex items-center gap-1"><GlassWater className="h-3 w-3" /> Glass</TabsTrigger>
-          <TabsTrigger value="colours" className="flex items-center gap-1"><Palette className="h-3 w-3" /> Colours</TabsTrigger>
-          <TabsTrigger value="matrix">Matrix</TabsTrigger>
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-4 xl:grid-cols-7">
+          <TabsTrigger value="settings" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Percent className="h-3 w-3" /> Settings</TabsTrigger>
+          <TabsTrigger value="adjustments" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Percent className="h-3 w-3" /> Adjustments</TabsTrigger>
+          <TabsTrigger value="costs" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><DollarSign className="h-3 w-3" /> Costs</TabsTrigger>
+          <TabsTrigger value="options" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Shield className="h-3 w-3" /> Options</TabsTrigger>
+          <TabsTrigger value="glass" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><GlassWater className="h-3 w-3" /> Glass</TabsTrigger>
+          <TabsTrigger value="colours" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Palette className="h-3 w-3" /> Colours</TabsTrigger>
+          <TabsTrigger value="matrix" className="min-h-9 justify-start whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm">Matrix</TabsTrigger>
         </TabsList>
         <TabsContent value="settings"><PricingSettingsTab /></TabsContent>
         <TabsContent value="adjustments"><PriceAdjustmentsTab /></TabsContent>
