@@ -1,12 +1,14 @@
 import { Toaster } from "@/components/ui/sonner";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch, Redirect } from "wouter";
+import { Route, Switch, Redirect, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DashboardLayout from "./components/DashboardLayout";
 import { ImpersonationBanner } from "./components/ImpersonationBanner";
+import { useAuth } from "./_core/hooks/useAuth";
+import { useEffectivePermissions } from "./hooks/useEffectivePermissions";
 import { useFavicon } from "./hooks/useFavicon";
 import MasterDataLayout from "./components/MasterDataLayout";
 import Home from "./pages/Home";
@@ -372,6 +374,7 @@ function MainRouter() {
             <p className="text-sm text-muted-foreground font-medium">Loading content...</p>
           </div>
         }>
+      <RoutePermissionGuard>
       <Switch>
         <Route path="/" component={AppCentral} />
         <Route path="/sales" component={Home} />
@@ -560,10 +563,28 @@ function MainRouter() {
         <Route path="/crm/reports" component={CrmReports} />
         <Route component={NotFound} />
       </Switch>
+      </RoutePermissionGuard>
       </Suspense>
       </ErrorBoundary>
     </DashboardLayout>
   );
+}
+
+function RoutePermissionGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
+  const [location, setLocation] = useLocation();
+  const { canAccessPath, loading: permissionsLoading } = useEffectivePermissions();
+  const allowed = !user || canAccessPath(location);
+
+  useEffect(() => {
+    if (authLoading || permissionsLoading || !user || allowed) return;
+    setLocation("/");
+  }, [allowed, authLoading, location, permissionsLoading, setLocation, user]);
+
+  if (authLoading || permissionsLoading) return null;
+  if (user && !allowed) return null;
+
+  return <>{children}</>;
 }
 
 function App() {

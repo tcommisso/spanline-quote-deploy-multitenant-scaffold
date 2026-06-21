@@ -26,7 +26,7 @@ import {
   BarChart3, UserCog, Link2, Unlink, Upload,
 } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { ROLE_LABELS, type UserRole } from "@shared/const";
+import { PERMISSION_LABELS, ROLE_LABELS, type PermissionKey, type UserRole } from "@shared/const";
 import { formatDistanceToNow } from "date-fns";
 
 function formatRelativeTime(date: Date | string | null): string {
@@ -1402,52 +1402,165 @@ function TradeForm({ form, setForm }: {
 }
 
 function PermissionsMatrix() {
+  const utils = trpc.useUtils();
+  const { data: matrix, isLoading } = trpc.userManagement.permissionMatrix.useQuery();
+  const updatePermission = trpc.userManagement.updatePermissionOverride.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.userManagement.permissionMatrix.invalidate(),
+        utils.userManagement.myPermissions.invalidate(),
+      ]);
+      toast.success("Permission updated");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const roles = matrix?.roles ?? [];
+  const permissions = matrix?.permissions ?? [];
+  const effective = (matrix?.effective ?? {}) as Partial<Record<UserRole, Partial<Record<PermissionKey, boolean>>>>;
+  const defaults = (matrix?.defaults ?? {}) as Partial<Record<UserRole, Partial<Record<PermissionKey, boolean>>>>;
+
+  const overrideLookup = useMemo(() => {
+    const lookup = new Set<string>();
+    for (const role of roles) {
+      for (const permission of permissions) {
+        const roleKey = role.role as UserRole;
+        const permissionKey = permission.key as PermissionKey;
+        if (Boolean(effective[roleKey]?.[permissionKey]) !== Boolean(defaults[roleKey]?.[permissionKey])) {
+          lookup.add(`${role.role}:${permission.key}`);
+        }
+      }
+    }
+    return lookup;
+  }, [defaults, effective, permissions, roles]);
+
+  const togglePermission = (role: string, permissionKey: string, allowed: boolean) => {
+    updatePermission.mutate({
+      role: role as UserRole,
+      permissionKey: permissionKey as PermissionKey,
+      allowed,
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Permission Matrix</CardTitle>
+          <p className="text-xs text-muted-foreground">Loading tenant permissions...</p>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} className="h-10 w-full" />
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base">Permission Matrix</CardTitle>
-        <p className="text-xs text-muted-foreground">Reference guide showing what each role can access.</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="text-base">Permission Matrix</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Tenant-level role permissions. Changed switches are saved as overrides; matching the default removes the override.
+            </p>
+          </div>
+          <Badge variant="outline" className="w-fit text-[10px]">
+            {matrix?.tenantId ? `Tenant #${matrix.tenantId}` : "Current tenant"}
+          </Badge>
+        </div>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+        <div className="hidden overflow-x-auto md:block">
+          <table className="w-full min-w-[880px] text-xs">
             <thead>
               <tr className="border-b">
-                <th className="pb-2 text-left font-medium">Permission</th>
-                <th className="pb-2 text-center font-medium">Super Admin</th>
-                <th className="pb-2 text-center font-medium">Admin</th>
-                <th className="pb-2 text-center font-medium">Design Adviser</th>
-                <th className="pb-2 text-center font-medium">Office User</th>
-                <th className="pb-2 text-center font-medium">Construction</th>
+                <th className="w-[240px] pb-2 text-left font-medium">Permission</th>
+                {roles.map(role => (
+                  <th key={role.role} className="pb-2 text-center font-medium">
+                    {role.label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y">
-              {[
-                { label: "View/Create/Edit Quotes", roles: ["super_admin", "admin", "design_adviser", "office_user", "construction_user"] },
-                { label: "Job Financials", roles: ["super_admin", "admin", "office_user", "construction_user"] },
-                { label: "CRM / Leads", roles: ["super_admin", "admin", "design_adviser", "office_user"] },
-                { label: "Proposals", roles: ["super_admin", "admin", "design_adviser", "office_user"] },
-                { label: "SMS / Communications", roles: ["super_admin", "admin", "design_adviser", "office_user"] },
-                { label: "Email Templates", roles: ["super_admin", "admin", "office_user"] },
-                { label: "Analytics", roles: ["super_admin", "admin", "office_user"] },
-                { label: "Sales Data / Settings", roles: ["super_admin", "admin"] },
-                { label: "User Management", roles: ["super_admin"] },
-              ].map((perm) => (
-                <tr key={perm.label}>
-                  <td className="py-1.5 font-medium">{perm.label}</td>
-                  {["super_admin", "admin", "design_adviser", "office_user", "construction_user"].map((role) => (
-                    <td key={role} className="py-1.5 text-center">
-                      {perm.roles.includes(role) ? (
-                        <span className="text-green-600 font-bold">✓</span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                  ))}
+              {permissions.map(permission => (
+                <tr key={permission.key}>
+                  <td className="py-2 pr-4">
+                    <div className="font-medium">{permission.label}</div>
+                    <div className="text-[10px] text-muted-foreground">{permission.key}</div>
+                  </td>
+                  {roles.map(role => {
+                    const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
+                    const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
+                    return (
+                      <td key={`${role.role}-${permission.key}`} className="py-2 text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <Switch
+                            checked={checked}
+                            disabled={role.locked || updatePermission.isPending}
+                            onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
+                            aria-label={`${role.label}: ${permission.label}`}
+                          />
+                          {role.locked ? (
+                            <span className="text-[10px] text-muted-foreground">Locked</span>
+                          ) : isOverride ? (
+                            <span className="text-[10px] font-medium text-primary">Override</span>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground">Default</span>
+                          )}
+                        </div>
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div className="space-y-3 md:hidden">
+          {roles.map(role => (
+            <div key={role.role} className="rounded-lg border p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="font-medium">{role.label}</p>
+                  <p className="text-[11px] text-muted-foreground">{role.role}</p>
+                </div>
+                {role.locked && <Badge variant="secondary" className="text-[10px]">Locked</Badge>}
+              </div>
+              <div className="grid gap-2">
+                {permissions.map(permission => {
+                  const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
+                  const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
+                  return (
+                    <div key={`${role.role}-${permission.key}`} className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium leading-tight">{permission.label}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {isOverride ? "Override" : "Default"}
+                        </p>
+                      </div>
+                      <Switch
+                        className="shrink-0"
+                        checked={checked}
+                        disabled={role.locked || updatePermission.isPending}
+                        onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
+                        aria-label={`${role.label}: ${permission.label}`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">
+          Super Admin is locked on for recovery access. Other role changes affect app tiles, sidebar visibility, and guarded admin routes for this tenant.
         </div>
       </CardContent>
     </Card>
@@ -1460,9 +1573,11 @@ function PermissionAuditLog() {
   const ACTION_LABELS: Record<string, string> = {
     permission_change: "Permission Change",
     role_change: "Role Change",
+    role_permission_change: "Role Permission Change",
   };
 
   const FIELD_LABELS: Record<string, string> = {
+    ...PERMISSION_LABELS,
     canViewAllQuotes: "Can View All Quotes",
     canViewAllLeads: "Can View All Leads",
     role: "User Role",

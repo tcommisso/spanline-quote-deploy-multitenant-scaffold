@@ -33,6 +33,13 @@ export type PermissionKey =
   | 'xero'
   | 'support';
 
+export type PermissionMatrix = Record<PermissionKey, boolean>;
+export type PermissionOverrideInput = {
+  role: string;
+  permissionKey: string;
+  allowed: boolean;
+};
+
 export const ROLE_LABELS: Record<UserRole, string> = {
   user: 'Unassigned',
   admin: 'Admin (Legacy)',
@@ -83,6 +90,8 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   xero: 'Xero',
   support: 'Support',
 };
+
+export const PERMISSION_KEYS = Object.keys(PERMISSION_LABELS) as PermissionKey[];
 
 export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, boolean>> = {
   super_admin: Object.fromEntries(Object.keys(PERMISSION_LABELS).map(key => [key, true])) as Record<PermissionKey, boolean>,
@@ -239,6 +248,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   user: Object.fromEntries(Object.keys(PERMISSION_LABELS).map(key => [key, key === 'app_central' || key === 'support'])) as Record<PermissionKey, boolean>,
 };
 
+export const PERMISSION_MATRIX_ROLES = Object.keys(DEFAULT_PERMISSION_MATRIX) as UserRole[];
+
 const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }> = [
   { prefix: '/admin/permissions', permission: 'permissions_admin' },
   { prefix: '/admin/people', permission: 'user_management' },
@@ -277,6 +288,8 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/quotes', permission: 'quotes' },
   { prefix: '/deck-quotes', permission: 'quotes' },
   { prefix: '/eclipse-quotes', permission: 'quotes' },
+  { prefix: '/security-screens', permission: 'quotes' },
+  { prefix: '/blinds', permission: 'quotes' },
   { prefix: '/patio-planner', permission: 'quotes' },
   { prefix: '/sales', permission: 'sales' },
   { prefix: '/construction', permission: 'construction' },
@@ -286,6 +299,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/admin', permission: 'admin' },
   { prefix: '/support', permission: 'support' },
   { prefix: '/help', permission: 'support' },
+  { prefix: '/process-flows', permission: 'support' },
   { prefix: '/', permission: 'app_central' },
 ];
 
@@ -300,4 +314,53 @@ export function hasPermission(role: string, permission: PermissionKey | keyof ty
 
 export function canAccessPath(role: string, path: string): boolean {
   return hasPermission(role, getPermissionForPath(path));
+}
+
+export function defaultPermissionsForRole(role: string | null | undefined): PermissionMatrix {
+  const normalized = normalizeUserRole(role) as UserRole;
+  return {
+    ...(DEFAULT_PERMISSION_MATRIX[normalized] ?? DEFAULT_PERMISSION_MATRIX.user),
+  };
+}
+
+export function isPermissionKey(value: string | null | undefined): value is PermissionKey {
+  return PERMISSION_KEYS.includes(value as PermissionKey);
+}
+
+export function isPermissionMatrixRole(value: string | null | undefined): value is UserRole {
+  return PERMISSION_MATRIX_ROLES.includes(normalizeUserRole(value) as UserRole);
+}
+
+export function applyPermissionOverrides(
+  role: string | null | undefined,
+  overrides: PermissionOverrideInput[] = [],
+): PermissionMatrix {
+  const normalized = normalizeUserRole(role);
+  const permissions = defaultPermissionsForRole(normalized);
+
+  // Platform super admins stay fully enabled so a tenant-level override cannot
+  // lock out the owner/admin rescue path.
+  if (normalized === 'super_admin') return permissions;
+
+  for (const override of overrides) {
+    if (normalizeUserRole(override.role) !== normalized) continue;
+    if (!isPermissionKey(override.permissionKey)) continue;
+    permissions[override.permissionKey] = Boolean(override.allowed);
+  }
+
+  return permissions;
+}
+
+export function hasEffectivePermission(
+  permissions: PermissionMatrix | null | undefined,
+  permission: PermissionKey,
+): boolean {
+  return Boolean(permissions?.[permission]);
+}
+
+export function canAccessPathWithPermissions(
+  permissions: PermissionMatrix | null | undefined,
+  path: string,
+): boolean {
+  return hasEffectivePermission(permissions, getPermissionForPath(path));
 }

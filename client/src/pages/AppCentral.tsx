@@ -1,9 +1,8 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { isAdminRole, hasPermission, type UserRole } from "@shared/const";
+import { type UserRole } from "@shared/const";
 import { trpc } from "@/lib/trpc";
 import { useState, useCallback, useEffect } from "react";
-import { Users, Package } from "lucide-react";
 import { OnboardingTour, isTourCompleted, TourHelpButton, type TourStep } from "@/components/OnboardingTour";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -12,6 +11,7 @@ import {
   getSectionAccentHex,
   getVisibleSections,
 } from "@/lib/appSections";
+import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
 
 // ─── Tile metric helper — maps section IDs to live KPI snippets ────────────
 function getTileMetric(
@@ -73,7 +73,8 @@ export default function AppCentral() {
   }, []);
 
   const role = (user?.role || "user") as UserRole;
-  const visibleSections = getVisibleSections(role);
+  const { canAccessPath } = useEffectivePermissions();
+  const visibleSections = getVisibleSections(role, canAccessPath);
 
   // Inbox unread count for badge
   const { data: inboxUnread } = trpc.inbox.unreadCount.useQuery(undefined, { refetchInterval: 15000 });

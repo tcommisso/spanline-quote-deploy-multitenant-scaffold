@@ -126,7 +126,7 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Button } from "./ui/button";
-import { isAdminRole, ROLE_LABELS, type UserRole } from "@shared/const";
+import { ROLE_LABELS, type UserRole } from "@shared/const";
 import { loadCustomLogo, loadAppIcon } from "@/lib/proposalStore";
 import { OverdueAlerts } from "@/components/OverdueAlerts";
 import { ScrollToTop } from "@/components/ScrollToTop";
@@ -139,6 +139,7 @@ import { useUnreadNotification } from "@/hooks/useUnreadNotification";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { getSelectedTenantId, setSelectedTenantId } from "@/lib/tenantSelection";
+import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
 
 // ─── Menu item type ───────────────────────────────────────────────────────────────
 type MenuItem = { icon: LucideIcon; label: string; path: string; badge?: number };
@@ -320,11 +321,6 @@ const helpItems: MenuItem[] = [
   { icon: Bug, label: "Report a Bug", path: "/support/bug" },
   { icon: Lightbulb, label: "Make a Suggestion", path: "/support/suggestion" },
   { icon: ClipboardList, label: "Manage Submissions", path: "/admin/support-submissions" },
-];
-
-// All menu items for favourites lookup
-const allMenuItems: MenuItem[] = [
-  ...crmItems, ...salesItems, ...constructionItems, ...approvalsItems, ...daTrackerItems, ...manufacturingItems, ...inventoryItems, ...inboxItems, ...financeItems, ...reportingItems, ...adminItems, ...helpItems,
 ];
 
 // ─── Favourites persistence ─────────────────────────────────────────────────
@@ -566,8 +562,7 @@ function DashboardLayoutContent({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const sidebarContentRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
-  const isAdmin = isAdminRole(user?.role || "");
-  const isOfficeOrAdmin = isAdmin || user?.role === "office_user";
+  const { canAccessPath } = useEffectivePermissions();
   const weather = useWeather();
   const { data: tenantOptions = [] } = trpc.tenants.myTenants.useQuery(undefined, {
     enabled: Boolean(user),
@@ -799,11 +794,67 @@ function DashboardLayoutContent({
     });
   }, []);
 
+  const filterAccessibleItems = useCallback(
+    (items: MenuItem[]) => items.filter(item => canAccessPath(item.path)),
+    [canAccessPath],
+  );
+  const visibleCrmItems = useMemo(() => filterAccessibleItems(crmItems), [filterAccessibleItems]);
+  const visibleSalesItems = useMemo(() => filterAccessibleItems(salesItems), [filterAccessibleItems]);
+  const visibleConstructionItems = useMemo(() => filterAccessibleItems(constructionItems), [filterAccessibleItems]);
+  const visibleApprovalsItems = useMemo(() => filterAccessibleItems(approvalsItems), [filterAccessibleItems]);
+  const visibleDaTrackerItems = useMemo(() => filterAccessibleItems(daTrackerItems), [filterAccessibleItems]);
+  const visibleManufacturingItems = useMemo(() => filterAccessibleItems(manufacturingItems), [filterAccessibleItems]);
+  const visibleInventoryItems = useMemo(() => filterAccessibleItems(inventoryItems), [filterAccessibleItems]);
+  const visibleFinanceItems = useMemo(() => filterAccessibleItems(financeItems), [filterAccessibleItems]);
+  const visibleReportingItems = useMemo(() => filterAccessibleItems(reportingItems), [filterAccessibleItems]);
+  const visibleInboxItems = useMemo(() => filterAccessibleItems(inboxItems), [filterAccessibleItems]);
+  const visibleHelpItems = useMemo(() => filterAccessibleItems(helpItems), [filterAccessibleItems]);
+  const visibleAdminGroups = useMemo(
+    () => adminGroups
+      .map(group => ({ ...group, items: filterAccessibleItems(group.items) }))
+      .filter(group => group.items.length > 0),
+    [filterAccessibleItems],
+  );
+  const visibleAdminItems = useMemo(
+    () => visibleAdminGroups.flatMap(group => group.items),
+    [visibleAdminGroups],
+  );
+  const accessibleAllMenuItems = useMemo(
+    () => [
+      ...visibleCrmItems,
+      ...visibleSalesItems,
+      ...visibleConstructionItems,
+      ...visibleApprovalsItems,
+      ...visibleDaTrackerItems,
+      ...visibleManufacturingItems,
+      ...visibleInventoryItems,
+      ...visibleInboxItems,
+      ...visibleFinanceItems,
+      ...visibleReportingItems,
+      ...visibleAdminItems,
+      ...visibleHelpItems,
+    ],
+    [
+      visibleCrmItems,
+      visibleSalesItems,
+      visibleConstructionItems,
+      visibleApprovalsItems,
+      visibleDaTrackerItems,
+      visibleManufacturingItems,
+      visibleInventoryItems,
+      visibleInboxItems,
+      visibleFinanceItems,
+      visibleReportingItems,
+      visibleAdminItems,
+      visibleHelpItems,
+    ],
+  );
+
   const favouriteItems = useMemo(() => {
     return favourites
-      .map(path => allMenuItems.find(item => item.path === path))
+      .map(path => accessibleAllMenuItems.find(item => item.path === path))
       .filter(Boolean) as MenuItem[];
-  }, [favourites]);
+  }, [accessibleAllMenuItems, favourites]);
 
   // ─── Recently Visited (mobile sidebar) ─────────────────────────────────────
   const [recentlyVisited, setRecentlyVisited] = useState<string[]>(loadRecentlyVisited);
@@ -820,9 +871,9 @@ function DashboardLayoutContent({
 
   const recentItems = useMemo(() => {
     return recentlyVisited
-      .map(path => allMenuItems.find(item => item.path === path))
+      .map(path => accessibleAllMenuItems.find(item => item.path === path))
       .filter(Boolean) as MenuItem[];
-  }, [recentlyVisited]);
+  }, [accessibleAllMenuItems, recentlyVisited]);
 
   // ─── Push notification mutations ─────────────────────────────────────────
   const pushSubscribeMutation = trpc.push.subscribe.useMutation();
@@ -830,12 +881,12 @@ function DashboardLayoutContent({
 
   // ─── Dynamic page title ─────────────────────────────────────────────────
   useEffect(() => {
-    const matchedItem = allMenuItems.find(item =>
+    const matchedItem = accessibleAllMenuItems.find(item =>
       location === item.path || (item.path !== "/" && location.startsWith(item.path))
     );
     const pageName = matchedItem?.label || "Dashboard";
     document.title = `AltaSpan | ${pageName}`;
-  }, [location]);
+  }, [accessibleAllMenuItems, location]);
 
 
   useEffect(() => {
@@ -985,7 +1036,7 @@ function DashboardLayoutContent({
     );
   };
 
-  const adminHasActive = adminItems.some(i => isActive(i.path));
+  const adminHasActive = visibleAdminItems.some(i => isActive(i.path));
   const adminHeaderAccent = sidebarNavColor;
   const hideAdminHeader = scopedMode && activeSection === "admin" && !isCollapsed;
 
@@ -1128,21 +1179,21 @@ function DashboardLayoutContent({
             )}
 
             {/* ─── Scoped Sidebar: show only active section when inside a section ─── */}
-            {(!scopedMode || activeSection === "crm") && (
+            {visibleCrmItems.length > 0 && (!scopedMode || activeSection === "crm") && (
               <>{/* ─── CRM ─── */}
-              {renderCollapsibleSection("crm", "CRM", crmItems, Contact)}
+              {renderCollapsibleSection("crm", "CRM", visibleCrmItems, Contact)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "sales") && (
+            {visibleSalesItems.length > 0 && (!scopedMode || activeSection === "sales") && (
               <>{/* ─── Sales ─── */}
-              {renderCollapsibleSection("sales", "Sales", salesItems, LayoutDashboard)}
+              {renderCollapsibleSection("sales", "Sales", visibleSalesItems, LayoutDashboard)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "construction") && (
+            {visibleConstructionItems.length > 0 && (!scopedMode || activeSection === "construction") && (
               <>{/* ─── Construction ─── */}
-              {renderCollapsibleSection("construction", "Construction", constructionItems.map(item => {
+              {renderCollapsibleSection("construction", "Construction", visibleConstructionItems.map(item => {
                 if (item.path === "/construction" && overdueCount > 0) return { ...item, badge: overdueCount };
                 if (item.path === "/construction/chat" && chatUnreadCount > 0) return { ...item, badge: chatUnreadCount };
                 return item;
@@ -1150,45 +1201,45 @@ function DashboardLayoutContent({
               </>
             )}
 
-            {(!scopedMode || activeSection === "approvals") && (
+            {visibleApprovalsItems.length > 0 && (!scopedMode || activeSection === "approvals") && (
               <>{/* ─── Approvals ─── */}
-              {renderCollapsibleSection("approvals", "Approvals", approvalsItems, ClipboardCheck)}
+              {renderCollapsibleSection("approvals", "Approvals", visibleApprovalsItems, ClipboardCheck)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "daTracker") && (
+            {visibleDaTrackerItems.length > 0 && (!scopedMode || activeSection === "daTracker") && (
               <>{/* ─── DA Tracker ─── */}
-              {renderCollapsibleSection("daTracker", "DA Tracker", daTrackerItems, MapPin)}
+              {renderCollapsibleSection("daTracker", "DA Tracker", visibleDaTrackerItems, MapPin)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "manufacturing") && (
+            {visibleManufacturingItems.length > 0 && (!scopedMode || activeSection === "manufacturing") && (
               <>{/* ─── Manufacturing ─── */}
-              {renderCollapsibleSection("manufacturing", "Manufacturing", manufacturingItems, Factory)}
+              {renderCollapsibleSection("manufacturing", "Manufacturing", visibleManufacturingItems, Factory)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "inventory") && (
+            {visibleInventoryItems.length > 0 && (!scopedMode || activeSection === "inventory") && (
               <>{/* ─── Inventory ─── */}
-              {renderCollapsibleSection("inventory", "Inventory", inventoryItems, Warehouse)}
+              {renderCollapsibleSection("inventory", "Inventory", visibleInventoryItems, Warehouse)}
               </>
             )}
 
-            {isOfficeOrAdmin && (!scopedMode || activeSection === "finance") && (
+            {visibleFinanceItems.length > 0 && (!scopedMode || activeSection === "finance") && (
               <>{/* ─── Finance ─── */}
-              {renderCollapsibleSection("finance", "Finance", financeItems, Wallet)}
+              {renderCollapsibleSection("finance", "Finance", visibleFinanceItems, Wallet)}
               </>
             )}
 
-            {isOfficeOrAdmin && (!scopedMode || activeSection === "reporting") && (
+            {visibleReportingItems.length > 0 && (!scopedMode || activeSection === "reporting") && (
               <>{/* ─── Reporting ─── */}
-              {renderCollapsibleSection("reporting", "Reporting", reportingItems, BarChart3)}
+              {renderCollapsibleSection("reporting", "Reporting", visibleReportingItems, BarChart3)}
               </>
             )}
 
-            {(!scopedMode || activeSection === "communications") && (
+            {visibleInboxItems.length > 0 && (!scopedMode || activeSection === "communications") && (
               <>{/* ─── Communications ─── */}
-              {renderCollapsibleSection("communications", "Communications", inboxItems.map(item =>
+              {renderCollapsibleSection("communications", "Communications", visibleInboxItems.map(item =>
                 item.path === "/inbox" && unreadCount > 0
                   ? { ...item, badge: unreadCount }
                   : item
@@ -1196,14 +1247,14 @@ function DashboardLayoutContent({
               </>
             )}
 
-            {(!scopedMode || activeSection === "support") && (
+            {visibleHelpItems.length > 0 && (!scopedMode || activeSection === "support") && (
               <>{/* ─── Help (available to all users) ─── */}
-              {renderCollapsibleSection("support", "Support", helpItems, HelpCircle)}
+              {renderCollapsibleSection("support", "Support", visibleHelpItems, HelpCircle)}
               </>
             )}
 
             {/* ─── Admin (collapsible with grouped submenus) ─── */}
-            {isAdmin && (!scopedMode || activeSection === "admin") && (
+            {visibleAdminGroups.length > 0 && (!scopedMode || activeSection === "admin") && (
               <div className="mb-0.5">
                 {hideAdminHeader ? null : !isCollapsed ? (
                   <button
@@ -1239,7 +1290,7 @@ function DashboardLayoutContent({
                 )}
                 {(hideAdminHeader || adminExpanded || isCollapsed) && (
                   <SidebarMenu>
-                    {adminGroups.map(group => {
+                    {visibleAdminGroups.map(group => {
                       const groupExpanded = expandedAdminGroups.includes(group.label);
                       const groupHasActive = group.items.some(i => isActive(i.path));
                       return (
@@ -1443,7 +1494,7 @@ function DashboardLayoutContent({
             {(() => {
               const sectionId = getSectionForPath(location);
               const section = sectionId ? APP_SECTIONS.find(s => s.id === sectionId) : null;
-              const matchedPage = allMenuItems.find(item =>
+              const matchedPage = accessibleAllMenuItems.find(item =>
                 location === item.path || (item.path !== "/" && location.startsWith(item.path))
               );
               if (!section && location === "/") return null;

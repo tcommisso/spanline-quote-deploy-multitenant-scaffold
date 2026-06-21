@@ -194,17 +194,18 @@ export const APP_SECTIONS: AppSection[] = [
   },
 ];
 
-export function getVisibleSections(role: UserRole): AppSection[] {
-  return APP_SECTIONS.filter(
-    (s) => s.allowedRoles === "all" || s.allowedRoles.includes(role)
-  );
+export function getVisibleSections(role: UserRole, canAccessPath?: (path: string) => boolean): AppSection[] {
+  return APP_SECTIONS.filter((section) => {
+    if (canAccessPath) return canAccessPath(section.path);
+    return section.allowedRoles === "all" || section.allowedRoles.includes(role);
+  });
 }
 
 export function getSectionForPath(path: string): string | null {
   if (path.startsWith("/inbox")) return "inbox";
   if (path.startsWith("/crm") || path.startsWith("/calls")) return "crm";
   if (path.startsWith("/proposals")) return "proposals";
-  if (path.startsWith("/sales") || path === "/quotes" || path.startsWith("/quotes") || path.startsWith("/deck-quotes") || path.startsWith("/eclipse-quotes") || path.startsWith("/patio-planner")) return "sales";
+  if (path.startsWith("/sales") || path === "/quotes" || path.startsWith("/quotes") || path.startsWith("/deck-quotes") || path.startsWith("/eclipse-quotes") || path.startsWith("/security-screens") || path.startsWith("/blinds") || path.startsWith("/patio-planner")) return "sales";
   if (path.startsWith("/approvals")) return "approvals";
   if (path.startsWith("/da-tracker")) return "da_tracker";
   if (path.startsWith("/construction/analytics") || path === "/analytics" || path.startsWith("/manufacturing/kpi") || path === "/crm/reports") return "reporting";

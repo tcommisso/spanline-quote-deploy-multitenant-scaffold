@@ -6,15 +6,188 @@
 import { z } from "zod";
 import { superAdminProcedure, protectedProcedure, sensitiveSuperAdminProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { tenantMemberships, users, permissionAuditLog } from "../drizzle/schema";
+import { tenantMemberships, users, permissionAuditLog, permissionOverrides } from "../drizzle/schema";
 import { and, desc, eq, like, sql } from "drizzle-orm";
 import { USER_ROLES } from "./user-roles-const";
-import { IMPERSONATE_COOKIE_NAME, EIGHT_HOURS_MS } from "@shared/const";
+import {
+  IMPERSONATE_COOKIE_NAME,
+  EIGHT_HOURS_MS,
+  DEFAULT_PERMISSION_MATRIX,
+  PERMISSION_KEYS,
+  PERMISSION_LABELS,
+  PERMISSION_MATRIX_ROLES,
+  ROLE_LABELS,
+  applyPermissionOverrides,
+  defaultPermissionsForRole,
+  isPermissionKey,
+  isPermissionMatrixRole,
+  normalizeUserRole,
+  type PermissionKey,
+  type UserRole,
+} from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
+const permissionKeySchema = z.string().refine(isPermissionKey, "Invalid permission key").transform(value => value as PermissionKey);
+const permissionRoleSchema = z.string().refine(isPermissionMatrixRole, "Invalid role").transform(value => normalizeUserRole(value) as UserRole);
+
+function rolePermissionRowsToMatrix(rows: Array<{ role: string; permissionKey: string; allowed: boolean }>) {
+  return PERMISSION_MATRIX_ROLES.reduce((acc, role) => {
+    acc[role] = applyPermissionOverrides(role, rows);
+    return acc;
+  }, {} as Record<UserRole, Record<PermissionKey, boolean>>);
+}
+
+function isDefaultPermission(role: UserRole, permissionKey: PermissionKey, allowed: boolean) {
+  return Boolean(DEFAULT_PERMISSION_MATRIX[role]?.[permissionKey]) === allowed;
+}
+
 export const userManagementRouter = router({
+  myPermissions: protectedProcedure.query(async ({ ctx }) => {
+    const role = normalizeUserRole(ctx.user!.role) as UserRole;
+    const tenantId = ctx.tenant?.id ?? null;
+    const fallbackPermissions = defaultPermissionsForRole(role);
+    if (!tenantId) {
+      return {
+        role,
+        tenantId,
+        tenantRole: ctx.tenantMembership?.role ?? null,
+        permissions: fallbackPermissions,
+      };
+    }
+
+    try {
+      const db = (await getDb())!;
+      const rows = await db.select({
+        role: permissionOverrides.role,
+        permissionKey: permissionOverrides.permissionKey,
+        allowed: permissionOverrides.allowed,
+      })
+        .from(permissionOverrides)
+        .where(and(
+          eq(permissionOverrides.tenantId, tenantId),
+          eq(permissionOverrides.role, role),
+        ));
+
+      return {
+        role,
+        tenantId,
+        tenantRole: ctx.tenantMembership?.role ?? null,
+        permissions: applyPermissionOverrides(role, rows),
+      };
+    } catch {
+      return {
+        role,
+        tenantId,
+        tenantRole: ctx.tenantMembership?.role ?? null,
+        permissions: fallbackPermissions,
+      };
+    }
+  }),
+
+  permissionMatrix: tenantAdminProcedure.query(async ({ ctx }) => {
+    const db = (await getDb())!;
+    const rows = await db.select({
+      id: permissionOverrides.id,
+      role: permissionOverrides.role,
+      permissionKey: permissionOverrides.permissionKey,
+      allowed: permissionOverrides.allowed,
+      updatedByName: permissionOverrides.updatedByName,
+      updatedAt: permissionOverrides.updatedAt,
+    })
+      .from(permissionOverrides)
+      .where(eq(permissionOverrides.tenantId, ctx.tenant!.id))
+      .orderBy(permissionOverrides.role, permissionOverrides.permissionKey);
+
+    const effectiveMatrix = rolePermissionRowsToMatrix(rows);
+
+    return {
+      tenantId: ctx.tenant!.id,
+      roles: PERMISSION_MATRIX_ROLES.map(role => ({
+        role,
+        label: ROLE_LABELS[role],
+        locked: role === "super_admin",
+      })),
+      permissions: PERMISSION_KEYS.map(key => ({
+        key,
+        label: PERMISSION_LABELS[key],
+      })),
+      defaults: DEFAULT_PERMISSION_MATRIX,
+      effective: effectiveMatrix,
+      overrides: rows,
+    };
+  }),
+
+  updatePermissionOverride: tenantAdminProcedure
+    .input(z.object({
+      role: permissionRoleSchema,
+      permissionKey: permissionKeySchema,
+      allowed: z.boolean(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (input.role === "super_admin") {
+        throw new Error("Super admin permissions are fixed and cannot be overridden.");
+      }
+
+      const db = (await getDb())!;
+      const tenantId = ctx.tenant!.id;
+      const defaultAllowed = Boolean(DEFAULT_PERMISSION_MATRIX[input.role]?.[input.permissionKey]);
+      const oldAllowed = (await db.select({
+        allowed: permissionOverrides.allowed,
+      })
+        .from(permissionOverrides)
+        .where(and(
+          eq(permissionOverrides.tenantId, tenantId),
+          eq(permissionOverrides.role, input.role),
+          eq(permissionOverrides.permissionKey, input.permissionKey),
+        ))
+        .limit(1))[0]?.allowed ?? defaultAllowed;
+
+      if (isDefaultPermission(input.role, input.permissionKey, input.allowed)) {
+        await db.delete(permissionOverrides)
+          .where(and(
+            eq(permissionOverrides.tenantId, tenantId),
+            eq(permissionOverrides.role, input.role),
+            eq(permissionOverrides.permissionKey, input.permissionKey),
+          ));
+      } else {
+        await db.insert(permissionOverrides)
+          .values({
+            tenantId,
+            role: input.role,
+            permissionKey: input.permissionKey,
+            allowed: input.allowed,
+            updatedBy: ctx.user!.id,
+            updatedByName: ctx.user!.name || ctx.user!.email || "Admin",
+          })
+          .onDuplicateKeyUpdate({
+            set: {
+              allowed: input.allowed,
+              updatedBy: ctx.user!.id,
+              updatedByName: ctx.user!.name || ctx.user!.email || "Admin",
+              updatedAt: new Date(),
+            },
+          });
+      }
+
+      if (oldAllowed !== input.allowed) {
+        await db.insert(permissionAuditLog).values({
+          tenantId,
+          adminUserId: ctx.user!.id,
+          adminUserName: ctx.user!.name || "Admin",
+          targetUserId: ctx.user!.id,
+          targetUserName: `${ROLE_LABELS[input.role]} role`,
+          action: "role_permission_change",
+          field: input.permissionKey,
+          oldValue: String(oldAllowed),
+          newValue: String(input.allowed),
+        });
+      }
+
+      return { success: true };
+    }),
+
   list: tenantAdminProcedure.query(async ({ ctx }) => {
     const db = (await getDb())!;
     if (ENV.tenancyMode === "single") {
