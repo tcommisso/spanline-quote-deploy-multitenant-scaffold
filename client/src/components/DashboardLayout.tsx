@@ -86,7 +86,6 @@ import {
   ClipboardCheck,
   Settings,
   Library,
-  Landmark,
   MapPin,
   FileCheck,
   User,
@@ -100,7 +99,6 @@ import {
   ArrowRightLeft,
   AlertTriangle,
   ThumbsUp,
-  Clock,
   MessageSquare,
   Bug,
   Lightbulb,
@@ -126,7 +124,8 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Button } from "./ui/button";
-import { ROLE_LABELS, type UserRole } from "@shared/const";
+import { ROLE_LABELS, normalizeUserRole, type UserRole } from "@shared/const";
+import { getDefaultNavigationSettings } from "@shared/navigation-config";
 import { loadCustomLogo, loadAppIcon } from "@/lib/proposalStore";
 import { OverdueAlerts } from "@/components/OverdueAlerts";
 import { ScrollToTop } from "@/components/ScrollToTop";
@@ -138,6 +137,7 @@ import { useUnreadNotification } from "@/hooks/useUnreadNotification";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { getSelectedTenantId, setSelectedTenantId } from "@/lib/tenantSelection";
 import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
+import { MOBILE_NAV_DESTINATIONS } from "@/lib/navigationDestinations";
 
 // ─── Menu item type ───────────────────────────────────────────────────────────────
 type MenuItem = { icon: LucideIcon; label: string; path: string; badge?: number };
@@ -253,25 +253,29 @@ type AdminGroup = { label: string; icon: LucideIcon; items: MenuItem[] };
 
 const adminGroups: AdminGroup[] = [
   {
-    label: "Settings",
-    icon: Settings,
+    label: "Company & App",
+    icon: Building2,
     items: [
       { icon: Building2, label: "Company Settings", path: "/admin/company-settings" },
-      { icon: Shield, label: "Proposal & Notifications", path: "/admin/settings" },
-      { icon: Bell, label: "Notification Log", path: "/admin/notification-log" },
-      { icon: Inbox, label: "Inbox Settings", path: "/admin/inbox-settings" },
-      { icon: Globe, label: "API Health", path: "/admin/api-health" },
-      { icon: Link2, label: "Xero Integration", path: "/xero-settings" },
-      { icon: Star, label: "Climbo / Reviews", path: "/admin/climbo-settings" },
+      { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
+      { icon: Palette, label: "Colour Scheme", path: "/admin/colour-scheme" },
+      { icon: CalendarDays, label: "Calendar Views", path: "/admin/calendar-views" },
       { icon: MapPin, label: "Territory Management", path: "/admin/territories" },
       { icon: BarChart3, label: "Territory Coverage", path: "/admin/territory-coverage" },
-      { icon: CalendarDays, label: "Calendar Views", path: "/admin/calendar-views" },
-      { icon: Palette, label: "Colour Scheme", path: "/admin/colour-scheme" },
-      { icon: Phone, label: "VOCPhone Recordings", path: "/admin/extensions" },
     ],
   },
   {
-    label: "Data & Pricing",
+    label: "Users & Access",
+    icon: Users,
+    items: [
+      { icon: Users, label: "People", path: "/admin/people" },
+      { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
+      { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
+      { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },
+    ],
+  },
+  {
+    label: "Sales, Data & Pricing",
     icon: Database,
     items: [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
@@ -280,10 +284,30 @@ const adminGroups: AdminGroup[] = [
       { icon: ShieldCheck, label: "Security Screen Data", path: "/admin/security-screens" },
       { icon: Layers, label: "Blinds Data", path: "/admin/blinds" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
-      { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
       { icon: History, label: "Import History", path: "/admin/import-history" },
       { icon: Files, label: "Templates & Documents", path: "/admin/master-data/general/descriptions-of-work" },
       { icon: Settings, label: "General", path: "/admin/master-data/general/colour" },
+    ],
+  },
+  {
+    label: "Communications",
+    icon: MessageSquare,
+    items: [
+      { icon: Shield, label: "Proposal & Notifications", path: "/admin/settings" },
+      { icon: Bell, label: "Notification Log", path: "/admin/notification-log" },
+      { icon: Inbox, label: "Inbox Settings", path: "/admin/inbox-settings" },
+    ],
+  },
+  {
+    label: "Integrations",
+    icon: Link2,
+    items: [
+      { icon: Link2, label: "Xero Integration", path: "/xero-settings" },
+      { icon: Globe, label: "API Health", path: "/admin/api-health" },
+      { icon: Phone, label: "VOCPhone Recordings", path: "/admin/extensions" },
+      { icon: Star, label: "Climbo / Reviews", path: "/admin/climbo-settings" },
+      { icon: Cog, label: "AI Settings", path: "/admin/ai-settings" },
+      { icon: Sparkles, label: "AI Render Pricing", path: "/admin/ai-render-pricing" },
     ],
   },
   {
@@ -292,19 +316,8 @@ const adminGroups: AdminGroup[] = [
     items: [
       { icon: BookOpen, label: "Technical Library", path: "/admin/tech-library" },
       { icon: Brain, label: "Engini Knowledge", path: "/admin/engini-knowledge" },
-      { icon: Cog, label: "AI Settings", path: "/admin/ai-settings" },
       { icon: ShieldCheck, label: "WH&S Documents", path: "/admin/whs" },
       { icon: Package, label: "Equipment", path: "/admin/equipment" },
-    ],
-  },
-  {
-    label: "Portals & People",
-    icon: Landmark,
-    items: [
-      { icon: Users, label: "People", path: "/admin/people" },
-      { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
-      { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
-      { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },
     ],
   },
 ];
@@ -333,21 +346,6 @@ function loadFavourites(): string[] {
 
 function saveFavourites(paths: string[]) {
   localStorage.setItem(FAVOURITES_KEY, JSON.stringify(paths));
-}
-
-// ─── Recently Visited persistence ──────────────────────────────────────────
-const RECENT_KEY = "sidebar-recently-visited";
-const MAX_RECENT = 5;
-
-function loadRecentlyVisited(): string[] {
-  try {
-    const saved = localStorage.getItem(RECENT_KEY);
-    return saved ? JSON.parse(saved) : [];
-  } catch { return []; }
-}
-
-function saveRecentlyVisited(paths: string[]) {
-  localStorage.setItem(RECENT_KEY, JSON.stringify(paths.slice(0, MAX_RECENT)));
 }
 
 // ─── Weather helpers ────────────────────────────────────────────────────────
@@ -552,6 +550,14 @@ function DashboardLayoutContent({
   const sidebarContentRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
   const { canAccessPath } = useEffectivePermissions();
+  const normalizedRole = normalizeUserRole(user?.role) as UserRole;
+  const { data: navigationSettings } = trpc.globalSettings.getNavigationSettings.useQuery(undefined, {
+    enabled: Boolean(user),
+    staleTime: 60_000,
+  });
+  const defaultNavigationSettings = useMemo(() => getDefaultNavigationSettings(), []);
+  const roleNavigationSettings = (navigationSettings ?? defaultNavigationSettings).roles[normalizedRole]
+    ?? defaultNavigationSettings.roles.user;
   const weather = useWeather();
   const { data: tenantOptions = [] } = trpc.tenants.myTenants.useQuery(undefined, {
     enabled: Boolean(user),
@@ -847,24 +853,12 @@ function DashboardLayoutContent({
       .filter(Boolean) as MenuItem[];
   }, [accessibleAllMenuItems, favourites]);
 
-  // ─── Recently Visited (mobile sidebar) ─────────────────────────────────────
-  const [recentlyVisited, setRecentlyVisited] = useState<string[]>(loadRecentlyVisited);
-
-  useEffect(() => {
-    if (location === "/") return; // Don't track App Central itself
-    setRecentlyVisited(prev => {
-      const filtered = prev.filter(p => p !== location);
-      const next = [location, ...filtered].slice(0, MAX_RECENT);
-      saveRecentlyVisited(next);
-      return next;
-    });
-  }, [location]);
-
-  const recentItems = useMemo(() => {
-    return recentlyVisited
-      .map(path => accessibleAllMenuItems.find(item => item.path === path))
-      .filter(Boolean) as MenuItem[];
-  }, [accessibleAllMenuItems, recentlyVisited]);
+  const mobileBottomNavItems = useMemo(() => {
+    return roleNavigationSettings.mobileBottomNavIds
+      .map(itemId => MOBILE_NAV_DESTINATIONS[itemId])
+      .filter(item => canAccessPath(item.path))
+      .slice(0, 4);
+  }, [canAccessPath, roleNavigationSettings.mobileBottomNavIds]);
 
   // ─── Push notification mutations ─────────────────────────────────────────
   const pushSubscribeMutation = trpc.push.subscribe.useMutation();
@@ -1123,43 +1117,6 @@ function DashboardLayoutContent({
                             <Star className="h-3.5 w-3.5 fill-white" />
                           </button>
                         </div>
-                      </SidebarMenuItem>
-                    );
-                  })}
-                </SidebarMenu>
-              </div>
-            )}
-
-            {/* ─── Recently Visited (mobile only) ─── */}
-            {isMobile && recentItems.length > 0 && !isCollapsed && (
-              <div className="mb-1">
-                <div className="flex items-center justify-between px-3 py-2">
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-sidebar-foreground/40 flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    Recently Visited
-                  </p>
-                  <button
-                    onClick={() => { setRecentlyVisited([]); saveRecentlyVisited([]); }}
-                    className="text-[9px] text-sidebar-foreground/30 hover:text-sidebar-foreground/60 transition-colors"
-                    title="Clear history"
-                  >
-                    Clear
-                  </button>
-                </div>
-                <SidebarMenu>
-                  {recentItems.map(item => {
-                    const active = location === item.path || (item.path !== "/" && location.startsWith(item.path));
-                    return (
-                      <SidebarMenuItem key={`recent-${item.path}`}>
-                        <SidebarMenuButton
-                          isActive={active}
-                          onClick={() => { if (navigator.vibrate) navigator.vibrate(10); setLocation(item.path); }}
-                          tooltip={item.label}
-                          className="h-8 text-[12px] font-normal"
-                        >
-                          <item.icon className={`h-3.5 w-3.5 ${active ? "text-white" : "text-sidebar-foreground/50"}`} />
-                          <span className="truncate">{item.label}</span>
-                        </SidebarMenuButton>
                       </SidebarMenuItem>
                     );
                   })}
@@ -1609,28 +1566,24 @@ function DashboardLayoutContent({
         <ScrollToTop />
 
         {/* ─── Mobile Bottom Navigation Bar ─── */}
-        {isMobile && (
+        {isMobile && mobileBottomNavItems.length > 0 && (
           <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur border-t md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
             <div className="flex items-center justify-around h-14">
-              {[
-                { href: "/", label: "App Central", icon: LayoutDashboard },
-                { href: "/construction/clients", label: "Active Jobs", icon: Users },
-                { href: "/construction", label: "Construction", icon: HardHat },
-                { href: "/inbox", label: "Inbox", icon: Inbox },
-              ].map((item) => {
-                const active = item.href === "/" ? location === "/" : location.startsWith(item.href);
-                const showBadge = item.label === "Inbox" && unreadCount > 0;
+              {mobileBottomNavItems.map((item) => {
+                const active = item.path === "/" ? location === "/" : location.startsWith(item.path);
+                const inboxBadgeCount = unreadCount + chatUnreadCount;
+                const showBadge = item.path === "/inbox" && inboxBadgeCount > 0;
                 return (
-                  <Link key={item.href} href={item.href}>
-                    <div className={`flex flex-col items-center gap-0.5 px-3 py-1 cursor-pointer relative transition-colors ${
+                  <Link key={item.path} href={item.path} className="flex-1 min-w-0">
+                    <div className={`flex flex-col items-center gap-0.5 px-2 py-1 cursor-pointer relative transition-colors min-w-0 ${
                       active ? "text-[#C9AB57]" : "text-muted-foreground"
                     }`}>
                       {active && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-6 h-[3px] rounded-full bg-[#C9AB57]" />}
                       <item.icon className="h-5 w-5" />
-                      <span className="text-[10px] font-medium">{item.label}</span>
+                      <span className="text-[10px] font-medium truncate max-w-[74px]">{item.label}</span>
                       {showBadge && (
                         <span className="absolute -top-0.5 right-0.5 w-4 h-4 bg-destructive text-destructive-foreground text-[9px] rounded-full flex items-center justify-center font-bold">
-                          {unreadCount > 9 ? "9+" : unreadCount}
+                          {inboxBadgeCount > 9 ? "9+" : inboxBadgeCount}
                         </span>
                       )}
                     </div>

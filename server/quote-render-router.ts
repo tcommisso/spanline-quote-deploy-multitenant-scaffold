@@ -1,24 +1,26 @@
 /**
- * Quote Render Router — AI render generation for Deck and Eclipse quotes.
+ * Quote Render Router — AI render generation for Structure, Deck, and Eclipse quotes.
  * Follows the same pattern as patio-render-router but operates on quote records
  * directly (no separate planner project needed).
  */
 import { z } from "zod";
-import { router, tenantProcedure } from "./_core/trpc";
+import { canAdministerTenant, router, tenantProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { generateImage } from "./_core/imageGeneration";
 import { getPresetById } from "../shared/render-style-presets";
 import { buildDeckRenderPrompt, buildDeckRenderPromptQuick, type DeckRenderInput } from "../shared/deck-render-prompt";
 import { buildEclipseRenderPrompt, buildEclipseRenderPromptQuick, type EclipseRenderInput } from "../shared/eclipse-render-prompt";
+import { buildStructureRenderPrompt, buildStructureRenderPromptQuick, type StructureRenderInput } from "../shared/structure-render-prompt";
 import { randomUUID } from "crypto";
 import { applyWatermark, fetchImageBuffer } from "./watermark";
 import { storagePut } from "./storage";
 import { logRenderCost } from "./render-cost-router";
-import { getDb, getTenantBrandingSettings } from "./db";
+import { getDb, getQuoteById, getTenantBrandingSettings, updateQuote } from "./db";
 import { getDeckProductById } from "./deck-db";
 import { deckQuotes, eclipseQuotes } from "../drizzle/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { getCompanyName } from "./company-name";
+import { isAdminRole } from "@shared/const";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +43,28 @@ function parseRenderHistory(raw: unknown): RenderHistoryEntry[] {
   } catch {
     return [];
   }
+}
+
+function parseJsonObject(raw: unknown): Record<string, any> {
+  if (!raw) return {};
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, any>;
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+function normalizeRenderInstructions(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 2000) : null;
+}
+
+function appendUserRenderInstructions(prompt: string, userInstructions?: string): string {
+  const trimmed = userInstructions?.trim();
+  if (!trimmed) return prompt;
+  return `${prompt}\n\nUser-provided positioning and layout directions: ${trimmed}`;
 }
 
 // ─── Deck helpers ───────────────────────────────────────────────────────────
@@ -113,6 +137,11 @@ function deckQuoteToRenderInput(quote: any, productImageUrl?: string): DeckRende
   };
 }
 
+function getDeckRenderInstructions(quote: any): string {
+  const specData = parseJsonObject(quote.specData);
+  return typeof specData.renderInstructions === "string" ? specData.renderInstructions : "";
+}
+
 // ─── Eclipse helpers ────────────────────────────────────────────────────────
 
 async function getEclipseQuote(quoteId: number, userId: number, userRole?: string, tenantId?: number | null) {
@@ -174,6 +203,49 @@ function eclipseQuoteToRenderInput(quote: any): EclipseRenderInput {
   };
 }
 
+function getEclipseRenderInstructions(quote: any): string {
+  const specData = parseJsonObject(quote.specData);
+  return typeof specData.renderInstructions === "string" ? specData.renderInstructions : "";
+}
+
+// ─── Structure quote helpers ────────────────────────────────────────────────
+
+function canAccessStructureQuote(ctx: any, quote: any): boolean {
+  if (!ctx?.tenant?.id || quote?.tenantId !== ctx.tenant.id) return false;
+  if (isAdminRole(ctx.user?.role)) return true;
+  if (ctx.user?.canViewAllQuotes) return true;
+  if (canAdministerTenant(ctx.user?.role, ctx.tenantMembership?.role)) return true;
+  if (quote.userId === ctx.user?.id) return true;
+  if (ctx.user?.role === "design_adviser" && ctx.user?.name && quote.designAdvisor === ctx.user.name) return true;
+  return false;
+}
+
+async function getStructureQuote(quoteId: number, ctx: any) {
+  const quote = await getQuoteById(quoteId, ctx.tenant?.id);
+  if (!quote) return null;
+  return canAccessStructureQuote(ctx, quote) ? quote : null;
+}
+
+function structureQuoteToRenderInput(quote: any): StructureRenderInput {
+  const spec: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(quote || {})) {
+    if (key.startsWith("spec")) spec[key] = value;
+  }
+
+  return {
+    quoteNumber: quote.quoteNumber || undefined,
+    region: quote.region || undefined,
+    siteAddress: quote.siteAddress || undefined,
+    descriptionOfWork: quote.descriptionOfWork || undefined,
+    spec,
+    hasPhoto: !!quote.photoUrl,
+  };
+}
+
+function getStructureRenderInstructions(quote: any): string {
+  return typeof quote.renderInstructions === "string" ? quote.renderInstructions : "";
+}
+
 // ─── Watermark helper ───────────────────────────────────────────────────────
 
 async function applyRenderWatermark(imageUrl: string, userId: number, tenantId?: number | null): Promise<string> {
@@ -219,6 +291,7 @@ export const quoteRenderRouter = router({
       quoteId: z.number(),
       mode: z.enum(["full", "quick"]).default("full"),
       stylePreset: z.string().optional(),
+      userInstructions: z.string().max(2000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
@@ -244,6 +317,7 @@ export const quoteRenderRouter = router({
         const preset = getPresetById(input.stylePreset);
         if (preset) prompt += `\n\n${preset.promptModifier}`;
       }
+      prompt = appendUserRenderInstructions(prompt, input.userInstructions);
 
       // Build generation options — include photo and/or product sample as originalImages
       const genOptions: { prompt: string; originalImages?: { url: string; mimeType: string }[] } = { prompt };
@@ -306,6 +380,7 @@ export const quoteRenderRouter = router({
       quoteId: z.number(),
       mode: z.enum(["full", "quick"]).default("full"),
       stylePreset: z.string().optional(),
+      userInstructions: z.string().max(2000).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
@@ -322,6 +397,7 @@ export const quoteRenderRouter = router({
         const preset = getPresetById(input.stylePreset);
         if (preset) prompt += `\n\n${preset.promptModifier}`;
       }
+      prompt = appendUserRenderInstructions(prompt, input.userInstructions);
 
       // Build generation options — include photo as originalImages if available
       const eclipseGenOptions: { prompt: string; originalImages?: { url: string; mimeType: string }[] } = { prompt };
@@ -370,6 +446,69 @@ export const quoteRenderRouter = router({
     }),
 
   /**
+   * Generate an AI render for a Structure quote.
+   */
+  generateStructure: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      mode: z.enum(["full", "quick"]).default("full"),
+      stylePreset: z.string().optional(),
+      userInstructions: z.string().max(2000).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+      }
+
+      const renderInput = structureQuoteToRenderInput(quote);
+      let prompt = input.mode === "quick"
+        ? buildStructureRenderPromptQuick(renderInput)
+        : buildStructureRenderPrompt(renderInput);
+
+      if (input.stylePreset) {
+        const preset = getPresetById(input.stylePreset);
+        if (preset) prompt += `\n\n${preset.promptModifier}`;
+      }
+      prompt = appendUserRenderInstructions(prompt, input.userInstructions);
+
+      const genOptions: { prompt: string; originalImages?: { url: string; mimeType: string }[] } = { prompt };
+      if (quote.photoUrl) {
+        genOptions.originalImages = [{ url: quote.photoUrl, mimeType: "image/jpeg" }];
+      }
+
+      const result = await generateImage(genOptions);
+      if (!result.url) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Image generation did not return a URL" });
+      }
+
+      const finalUrl = await applyRenderWatermark(result.url, ctx.user.id, ctx.tenant?.id ?? null);
+
+      await logRenderCost({
+        userId: ctx.user.id,
+        projectId: input.quoteId,
+        renderMode: input.mode,
+        stylePreset: input.stylePreset,
+        tenantId: ctx.tenant?.id,
+      });
+
+      const entry: RenderHistoryEntry = {
+        id: randomUUID(),
+        imageUrl: finalUrl,
+        prompt,
+        promptMode: input.mode,
+        createdAt: Date.now(),
+        stylePreset: input.stylePreset,
+      };
+
+      const existing = parseRenderHistory(quote.renderHistory);
+      const updated = [...existing, entry];
+      await updateQuote(input.quoteId, { renderHistory: JSON.stringify(updated) } as any, ctx.tenant.id);
+
+      return { id: entry.id, imageUrl: entry.imageUrl, prompt: entry.prompt, promptMode: entry.promptMode, createdAt: entry.createdAt };
+    }),
+
+  /**
    * Get render history for a Deck quote.
    */
   deckHistory: tenantProcedure
@@ -388,6 +527,17 @@ export const quoteRenderRouter = router({
     .query(async ({ ctx, input }) => {
       const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
+      return parseRenderHistory(quote.renderHistory);
+    }),
+
+  /**
+   * Get render history for a Structure quote.
+   */
+  structureHistory: tenantProcedure
+    .input(z.object({ quoteId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
       return parseRenderHistory(quote.renderHistory);
     }),
 
@@ -434,6 +584,22 @@ export const quoteRenderRouter = router({
     }),
 
   /**
+   * Delete a render from Structure quote history.
+   */
+  deleteStructureRender: tenantProcedure
+    .input(z.object({ quoteId: z.number(), renderId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+
+      const history = parseRenderHistory(quote.renderHistory);
+      const filtered = history.filter(r => r.id !== input.renderId);
+
+      await updateQuote(input.quoteId, { renderHistory: JSON.stringify(filtered) } as any, ctx.tenant.id);
+      return { success: true };
+    }),
+
+  /**
    * Toggle favourite on a Deck render.
    */
   toggleDeckFavourite: tenantProcedure
@@ -473,6 +639,23 @@ export const quoteRenderRouter = router({
           .set({ renderHistory: JSON.stringify(updated) })
           .where(eq(eclipseQuotes.id, input.quoteId));
       }
+      const toggled = updated.find(r => r.id === input.renderId);
+      return { success: true, isFavourite: toggled?.isFavourite ?? false };
+    }),
+
+  /**
+   * Toggle favourite on a Structure render.
+   */
+  toggleStructureFavourite: tenantProcedure
+    .input(z.object({ quoteId: z.number(), renderId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+
+      const history = parseRenderHistory(quote.renderHistory);
+      const updated = history.map(r => r.id === input.renderId ? { ...r, isFavourite: !r.isFavourite } : r);
+
+      await updateQuote(input.quoteId, { renderHistory: JSON.stringify(updated) } as any, ctx.tenant.id);
       const toggled = updated.find(r => r.id === input.renderId);
       return { success: true, isFavourite: toggled?.isFavourite ?? false };
     }),
@@ -536,6 +719,30 @@ export const quoteRenderRouter = router({
     }),
 
   /**
+   * Upload a site photo for a Structure quote (used as base for AI render).
+   */
+  uploadStructurePhoto: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      base64: z.string(),
+      mimeType: z.string(),
+      fileName: z.string(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+
+      const buffer = Buffer.from(input.base64, "base64");
+      const ext = input.fileName.split(".").pop() || "jpg";
+      const key = `structure-renders/tenant-${ctx.tenant.id}/${ctx.user.id}/${input.quoteId}/photo-${randomUUID()}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
+
+      await updateQuote(input.quoteId, { photoUrl: url, photoKey: key } as any, ctx.tenant.id);
+
+      return { url, key };
+    }),
+
+  /**
    * Remove the site photo from a Deck quote.
    */
   removeDeckPhoto: tenantProcedure
@@ -572,6 +779,19 @@ export const quoteRenderRouter = router({
     }),
 
   /**
+   * Remove the site photo from a Structure quote.
+   */
+  removeStructurePhoto: tenantProcedure
+    .input(z.object({ quoteId: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+
+      await updateQuote(input.quoteId, { photoUrl: null, photoKey: null, calibrationData: null } as any, ctx.tenant.id);
+      return { success: true };
+    }),
+
+  /**
    * Get photo info for a Deck quote.
    */
   getDeckPhoto: tenantProcedure
@@ -579,7 +799,11 @@ export const quoteRenderRouter = router({
     .query(async ({ ctx, input }) => {
       const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
-      return { photoUrl: quote.photoUrl || null, calibrationData: quote.calibrationData || null };
+      return {
+        photoUrl: quote.photoUrl || null,
+        calibrationData: quote.calibrationData || null,
+        renderInstructions: getDeckRenderInstructions(quote),
+      };
     }),
 
   /**
@@ -590,7 +814,86 @@ export const quoteRenderRouter = router({
     .query(async ({ ctx, input }) => {
       const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
       if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
-      return { photoUrl: quote.photoUrl || null, calibrationData: quote.calibrationData || null };
+      return {
+        photoUrl: quote.photoUrl || null,
+        calibrationData: quote.calibrationData || null,
+        renderInstructions: getEclipseRenderInstructions(quote),
+      };
+    }),
+  /**
+   * Get photo info for a Structure quote.
+   */
+  getStructurePhoto: tenantProcedure
+    .input(z.object({ quoteId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+      return {
+        photoUrl: quote.photoUrl || null,
+        calibrationData: quote.calibrationData || null,
+        renderInstructions: getStructureRenderInstructions(quote),
+      };
+    }),
+  /**
+   * Save render prompt directions for a Deck quote.
+   */
+  saveDeckRenderInstructions: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      renderInstructions: z.string().max(2000).nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getDeckQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Deck quote not found" });
+      const nextInstructions = normalizeRenderInstructions(input.renderInstructions);
+      const specData = parseJsonObject(quote.specData);
+      if (nextInstructions) specData.renderInstructions = nextInstructions;
+      else delete specData.renderInstructions;
+      const db = await getDb();
+      if (db) {
+        await db.update(deckQuotes)
+          .set({ specData: Object.keys(specData).length > 0 ? JSON.stringify(specData) : null })
+          .where(eq(deckQuotes.id, input.quoteId));
+      }
+      return { success: true, renderInstructions: nextInstructions || "" };
+    }),
+  /**
+   * Save render prompt directions for an Eclipse quote.
+   */
+  saveEclipseRenderInstructions: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      renderInstructions: z.string().max(2000).nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getEclipseQuote(input.quoteId, ctx.user.id, ctx.user.role, ctx.tenant.id);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Eclipse quote not found" });
+      const nextInstructions = normalizeRenderInstructions(input.renderInstructions);
+      const specData = parseJsonObject(quote.specData);
+      if (nextInstructions) specData.renderInstructions = nextInstructions;
+      else delete specData.renderInstructions;
+      const db = await getDb();
+      if (db) {
+        await db.update(eclipseQuotes)
+          .set({ specData: Object.keys(specData).length > 0 ? JSON.stringify(specData) : null })
+          .where(eq(eclipseQuotes.id, input.quoteId));
+      }
+      return { success: true, renderInstructions: nextInstructions || "" };
+    }),
+  /**
+   * Save render prompt directions for a Structure quote.
+   */
+  saveStructureRenderInstructions: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      renderInstructions: z.string().max(2000).nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+      const nextInstructions = normalizeRenderInstructions(input.renderInstructions);
+      await updateQuote(input.quoteId, { renderInstructions: nextInstructions } as any, ctx.tenant.id);
+      return { success: true, renderInstructions: nextInstructions || "" };
     }),
   /**
    * Save calibration data for a Deck quote photo.
@@ -636,6 +939,24 @@ export const quoteRenderRouter = router({
           .set({ calibrationData: input.calibrationData })
           .where(eq(eclipseQuotes.id, input.quoteId));
       }
+      return { success: true };
+    }),
+  /**
+   * Save calibration data for a Structure quote photo.
+   */
+  saveStructureCalibration: tenantProcedure
+    .input(z.object({
+      quoteId: z.number(),
+      calibrationData: z.object({
+        point1: z.object({ x: z.number(), y: z.number() }),
+        point2: z.object({ x: z.number(), y: z.number() }),
+        realDistanceMm: z.number(),
+      }).nullable(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const quote = await getStructureQuote(input.quoteId, ctx);
+      if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Structure quote not found" });
+      await updateQuote(input.quoteId, { calibrationData: input.calibrationData } as any, ctx.tenant.id);
       return { success: true };
     }),
 });

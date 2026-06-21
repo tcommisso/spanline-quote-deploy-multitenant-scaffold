@@ -91,6 +91,7 @@ const AIRenderPricingSettings = lazy(() => import("./pages/admin/AIRenderPricing
 const AdminImageLibrary = lazy(() => import("./pages/AdminImageLibrary"));
 const UserSettings = lazy(() => import("./pages/admin/UserSettings"));
 const ColourPaletteSettings = lazy(() => import("./pages/admin/ColourPaletteSettings"));
+const NavigationSettings = lazy(() => import("./pages/admin/NavigationSettings"));
 const CompanySettings = lazy(() => import("./pages/admin/CompanySettings"));
 const ClimboSettings = lazy(() => import("./pages/admin/ClimboSettings"));
 const CrmDropdownOptions = lazy(() => import("./pages/admin/CrmDropdownOptions"));
@@ -412,6 +413,7 @@ function MainRouter() {
         <Route path="/admin/master-data">{() => <Redirect to="/admin/master-data/structure/products" />}</Route>
         <Route path="/admin/ai-render-pricing">{() => <AdminRoute><AIRenderPricingSettings /></AdminRoute>}</Route>
         <Route path="/admin/company-settings">{() => <AdminRoute><CompanySettings /></AdminRoute>}</Route>
+        <Route path="/admin/navigation-settings">{() => <AdminRoute><NavigationSettings /></AdminRoute>}</Route>
         <Route path="/admin/settings">{() => <AdminRoute><AdminSettings /></AdminRoute>}</Route>
         <Route path="/admin/climbo-settings">{() => <AdminRoute><ClimboSettings /></AdminRoute>}</Route>
         <Route path="/admin/section-templates">{() => <AdminRoute><AdminSectionTemplates /></AdminRoute>}</Route>

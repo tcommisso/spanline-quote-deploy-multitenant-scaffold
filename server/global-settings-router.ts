@@ -7,6 +7,10 @@ import {
   removeTenantAppSetting,
   setTenantAppSetting,
 } from "./tenant-settings-store";
+import {
+  NAVIGATION_SETTINGS_KEY,
+  normalizeNavigationSettings,
+} from "../shared/navigation-config";
 
 const LOGIN_BACKGROUND_MAX_BYTES = 1.5 * 1024 * 1024;
 const LOGIN_BACKGROUND_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -63,6 +67,22 @@ export const globalSettingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       return setTenantAppSetting(ctx.tenant!.id, "renderPricing", input);
     }),
+
+  // Get role-based App Central and mobile bottom navigation settings.
+  getNavigationSettings: tenantProcedure.query(async ({ ctx }) => {
+    const stored = await getTenantAppSetting(ctx.tenant?.id, NAVIGATION_SETTINGS_KEY);
+    return normalizeNavigationSettings(stored);
+  }),
+
+  // Set role-based App Central and mobile bottom navigation settings.
+  setNavigationSettings: tenantAdminProcedure
+    .input(z.any())
+    .mutation(async ({ ctx, input }) => {
+      const settings = normalizeNavigationSettings(input);
+      await setTenantAppSetting(ctx.tenant!.id, NAVIGATION_SETTINGS_KEY, settings);
+      return settings;
+    }),
+
   // ─── Approvals Overdue Threshold ──────────────────────────────────────────────────
   getBaOverdueThreshold: tenantProcedure.query(async ({ ctx }) => {
     return (await getTenantAppSetting<number>(ctx.tenant?.id, "baOverdueThresholdDays")) ?? 30;

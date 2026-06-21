@@ -1,3 +1,4 @@
+import { type AppCentralSectionId } from "@shared/navigation-config";
 import { type UserRole } from "@shared/const";
 import {
   BarChart3,
@@ -194,11 +195,22 @@ export const APP_SECTIONS: AppSection[] = [
   },
 ];
 
-export function getVisibleSections(role: UserRole, canAccessPath?: (path: string) => boolean): AppSection[] {
-  return APP_SECTIONS.filter((section) => {
+export function getVisibleSections(
+  role: UserRole,
+  canAccessPath?: (path: string) => boolean,
+  configuredSectionIds?: readonly AppCentralSectionId[],
+): AppSection[] {
+  const accessibleSections = APP_SECTIONS.filter((section) => {
     if (canAccessPath) return canAccessPath(section.path);
     return section.allowedRoles === "all" || section.allowedRoles.includes(role);
   });
+
+  if (!configuredSectionIds) return accessibleSections;
+
+  const sectionById = new Map(accessibleSections.map(section => [section.id, section]));
+  return configuredSectionIds
+    .map(sectionId => sectionById.get(sectionId))
+    .filter(Boolean) as AppSection[];
 }
 
 export function getSectionForPath(path: string): string | null {

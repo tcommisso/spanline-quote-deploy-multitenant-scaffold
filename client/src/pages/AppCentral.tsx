@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { type UserRole } from "@shared/const";
+import { normalizeUserRole, type UserRole } from "@shared/const";
+import { getDefaultNavigationSettings } from "@shared/navigation-config";
 import { trpc } from "@/lib/trpc";
 import { useState, useCallback, useEffect } from "react";
 import { OnboardingTour, isTourCompleted, TourHelpButton, type TourStep } from "@/components/OnboardingTour";
@@ -72,9 +73,15 @@ export default function AppCentral() {
     setTourActive(false);
   }, []);
 
-  const role = (user?.role || "user") as UserRole;
+  const role = normalizeUserRole(user?.role) as UserRole;
   const { canAccessPath } = useEffectivePermissions();
-  const visibleSections = getVisibleSections(role, canAccessPath);
+  const { data: navigationSettings } = trpc.globalSettings.getNavigationSettings.useQuery(undefined, {
+    enabled: Boolean(user),
+    staleTime: 60_000,
+  });
+  const roleNavigationSettings = (navigationSettings ?? getDefaultNavigationSettings()).roles[role]
+    ?? getDefaultNavigationSettings().roles.user;
+  const visibleSections = getVisibleSections(role, canAccessPath, roleNavigationSettings.appCentralSectionIds);
 
   // Inbox unread count for badge
   const { data: inboxUnread } = trpc.inbox.unreadCount.useQuery(undefined, { refetchInterval: 15000 });

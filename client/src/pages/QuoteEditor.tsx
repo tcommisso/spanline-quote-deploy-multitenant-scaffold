@@ -9,7 +9,7 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, Save, FileDown, Eye, AlertTriangle, User, ClipboardList, Package, StickyNote, DollarSign, MessageSquare, ChevronsUpDown, Menu, Copy } from "lucide-react";
+import { ArrowLeft, Save, FileDown, Eye, AlertTriangle, User, ClipboardList, Package, StickyNote, DollarSign, MessageSquare, ChevronsUpDown, Menu, Copy, Sparkles } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
@@ -36,6 +36,7 @@ import CommunicationsTab from "@/components/CommunicationsTab";
 
 import ProposalPhotoGallery from "@/components/ProposalPhotoGallery";
 import PdfPreviewModal from "@/components/PdfPreviewModal";
+import { QuoteAIRender } from "@/components/QuoteAIRender";
 
 const statusOptions = [
   { value: "draft", label: "Draft", class: "bg-muted text-muted-foreground" },
@@ -513,7 +514,7 @@ export default function QuoteEditor({ id }: { id: number }) {
               <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider mb-2 px-2">Sections</p>
               <div className="flex gap-1 px-2 mb-2">
                 <button
-                  onClick={() => setOpenSections(["details", "spec", "quote_items", "notes", "opq", "comms"])}
+                  onClick={() => setOpenSections(["details", "spec", "airender", "quote_items", "notes", "opq", "comms"])}
                   className="flex-1 text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-muted/60 text-muted-foreground transition-colors"
                 >
                   Expand All
@@ -528,6 +529,7 @@ export default function QuoteEditor({ id }: { id: number }) {
               {[
                 { id: "details", label: "Details", icon: User },
                 { id: "spec", label: "Spec Sheet", icon: ClipboardList },
+                { id: "airender", label: "AI Render", icon: Sparkles },
                 { id: "quote_items", label: "Quote Items", icon: Package },
                 { id: "notes", label: "Notes", icon: StickyNote },
                 { id: "opq", label: "Job Financials", icon: DollarSign },
@@ -579,7 +581,7 @@ export default function QuoteEditor({ id }: { id: number }) {
             <p className="text-[10px] uppercase font-semibold text-muted-foreground tracking-wider mb-2 px-2">Sections</p>
             <div className="flex gap-1 px-2 mb-2">
               <button
-                onClick={() => setOpenSections(["details", "spec", "quote_items", "notes", "opq", "comms"])}
+                onClick={() => setOpenSections(["details", "spec", "airender", "quote_items", "notes", "opq", "comms"])}
                 className="flex-1 text-[10px] px-1.5 py-0.5 rounded border border-border hover:bg-muted/60 text-muted-foreground transition-colors"
               >
                 Expand All
@@ -594,6 +596,7 @@ export default function QuoteEditor({ id }: { id: number }) {
             {[
               { id: "details", label: "Details", icon: User },
               { id: "spec", label: "Spec Sheet", icon: ClipboardList },
+              { id: "airender", label: "AI Render", icon: Sparkles },
               { id: "quote_items", label: "Quote Items", icon: Package },
               { id: "notes", label: "Notes", icon: StickyNote },
               { id: "opq", label: "Job Financials", icon: DollarSign },
@@ -776,6 +779,14 @@ export default function QuoteEditor({ id }: { id: number }) {
               </AccordionContent>
             </AccordionItem>
 
+            {/* AI Render */}
+            <AccordionItem value="airender" id="quote-section-airender" className="border rounded-lg px-4">
+              <AccordionTrigger className="text-sm font-medium">AI Render</AccordionTrigger>
+              <AccordionContent>
+                <QuoteAIRender quoteId={id} quoteType="structure" />
+              </AccordionContent>
+            </AccordionItem>
+
             {/* Quote Items */}
             <AccordionItem value="quote_items" id="quote-section-quote_items" className="border rounded-lg px-4">
               <AccordionTrigger className="text-sm font-medium">Quote Items</AccordionTrigger>
@@ -910,4 +921,3 @@ export default function QuoteEditor({ id }: { id: number }) {
     </div>
   );
 }
-

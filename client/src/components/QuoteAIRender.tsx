@@ -1,18 +1,19 @@
 /**
- * QuoteAIRender — Reusable AI render panel for Deck and Eclipse quote editors.
+ * QuoteAIRender — Reusable AI render panel for Structure, Deck, and Eclipse quote editors.
  * Provides photo upload, calibration, generate, history, favourite, delete, compare, and style preset selection.
  */
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { RENDER_STYLE_PRESETS } from "../../../shared/render-style-presets";
 import {
   Sparkles, Zap, Trash2, Star, Download, Eye, ChevronDown, ChevronUp, Loader2,
-  Camera, X, ImageIcon, ArrowLeftRight, Maximize2
+  Camera, X, ImageIcon, ArrowLeftRight
 } from "lucide-react";
 import { compressImage, formatFileSize } from "@/lib/imageCompression";
 import {
@@ -34,7 +35,7 @@ interface RenderHistoryEntry {
 
 interface QuoteAIRenderProps {
   quoteId: number;
-  quoteType: "deck" | "eclipse";
+  quoteType: "structure" | "deck" | "eclipse";
 }
 
 export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
@@ -43,25 +44,46 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>("none");
   const [expanded, setExpanded] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [photoExpanded, setPhotoExpanded] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
+  const [renderInstructions, setRenderInstructions] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoContainerRef = useRef<HTMLDivElement>(null);
+  const renderInstructionsLoadedRef = useRef(false);
+  const renderInstructionsSavedRef = useRef("");
 
   // Fetch render history
   const historyQuery = quoteType === "deck"
     ? trpc.quoteRender.deckHistory.useQuery({ quoteId })
-    : trpc.quoteRender.eclipseHistory.useQuery({ quoteId });
+    : quoteType === "eclipse"
+      ? trpc.quoteRender.eclipseHistory.useQuery({ quoteId })
+      : trpc.quoteRender.structureHistory.useQuery({ quoteId });
 
   // Fetch photo info (includes calibrationData)
   const photoQuery = quoteType === "deck"
     ? trpc.quoteRender.getDeckPhoto.useQuery({ quoteId })
-    : trpc.quoteRender.getEclipsePhoto.useQuery({ quoteId });
+    : quoteType === "eclipse"
+      ? trpc.quoteRender.getEclipsePhoto.useQuery({ quoteId })
+      : trpc.quoteRender.getStructurePhoto.useQuery({ quoteId });
 
   const photoUrl = photoQuery.data?.photoUrl || null;
   const calibrationData = (photoQuery.data?.calibrationData as CalibrationData | null) || null;
 
   const renderHistory: RenderHistoryEntry[] = (historyQuery.data as RenderHistoryEntry[] | undefined) ?? [];
+  const subjectLabel = quoteType === "deck" ? "deck" : quoteType === "eclipse" ? "opening roof" : "structure";
+
+  useEffect(() => {
+    renderInstructionsLoadedRef.current = false;
+    renderInstructionsSavedRef.current = "";
+    setRenderInstructions("");
+  }, [quoteId, quoteType]);
+
+  useEffect(() => {
+    if (!photoQuery.data || renderInstructionsLoadedRef.current) return;
+    const savedInstructions = photoQuery.data.renderInstructions || "";
+    setRenderInstructions(savedInstructions);
+    renderInstructionsSavedRef.current = savedInstructions.trim();
+    renderInstructionsLoadedRef.current = true;
+  }, [photoQuery.data]);
 
   // Upload mutations
   const uploadDeckPhoto = trpc.quoteRender.uploadDeckPhoto.useMutation({
@@ -82,6 +104,15 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
     onSettled: () => setUploading(false),
   });
 
+  const uploadStructurePhoto = trpc.quoteRender.uploadStructurePhoto.useMutation({
+    onSuccess: () => {
+      toast.success("Site photo uploaded");
+      photoQuery.refetch();
+    },
+    onError: (err) => toast.error(`Upload failed: ${err.message}`),
+    onSettled: () => setUploading(false),
+  });
+
   // Remove photo mutations
   const removeDeckPhoto = trpc.quoteRender.removeDeckPhoto.useMutation({
     onSuccess: () => { toast.success("Photo removed"); photoQuery.refetch(); },
@@ -89,6 +120,11 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
   });
 
   const removeEclipsePhoto = trpc.quoteRender.removeEclipsePhoto.useMutation({
+    onSuccess: () => { toast.success("Photo removed"); photoQuery.refetch(); },
+    onError: (err) => toast.error(`Failed: ${err.message}`),
+  });
+
+  const removeStructurePhoto = trpc.quoteRender.removeStructurePhoto.useMutation({
     onSuccess: () => { toast.success("Photo removed"); photoQuery.refetch(); },
     onError: (err) => toast.error(`Failed: ${err.message}`),
   });
@@ -102,6 +138,27 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
   const saveEclipseCalibration = trpc.quoteRender.saveEclipseCalibration.useMutation({
     onSuccess: () => { photoQuery.refetch(); },
     onError: (err) => toast.error(`Calibration save failed: ${err.message}`),
+  });
+
+  const saveStructureCalibration = trpc.quoteRender.saveStructureCalibration.useMutation({
+    onSuccess: () => { photoQuery.refetch(); },
+    onError: (err) => toast.error(`Calibration save failed: ${err.message}`),
+  });
+
+  // Render prompt directions save mutations
+  const saveDeckRenderInstructions = trpc.quoteRender.saveDeckRenderInstructions.useMutation({
+    onSuccess: (data) => { renderInstructionsSavedRef.current = data.renderInstructions.trim(); },
+    onError: (err) => toast.error(`Render directions save failed: ${err.message}`),
+  });
+
+  const saveEclipseRenderInstructions = trpc.quoteRender.saveEclipseRenderInstructions.useMutation({
+    onSuccess: (data) => { renderInstructionsSavedRef.current = data.renderInstructions.trim(); },
+    onError: (err) => toast.error(`Render directions save failed: ${err.message}`),
+  });
+
+  const saveStructureRenderInstructions = trpc.quoteRender.saveStructureRenderInstructions.useMutation({
+    onSuccess: (data) => { renderInstructionsSavedRef.current = data.renderInstructions.trim(); },
+    onError: (err) => toast.error(`Render directions save failed: ${err.message}`),
   });
 
   // Generate mutations
@@ -129,6 +186,18 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
     onSettled: () => setGenerating(false),
   });
 
+  const generateStructure = trpc.quoteRender.generateStructure.useMutation({
+    onSuccess: (data) => {
+      toast.success("AI render generated successfully");
+      setPreviewUrl(data.imageUrl);
+      historyQuery.refetch();
+    },
+    onError: (err) => {
+      toast.error(`Render failed: ${err.message}`);
+    },
+    onSettled: () => setGenerating(false),
+  });
+
   // Delete mutations
   const deleteDeck = trpc.quoteRender.deleteDeckRender.useMutation({
     onSuccess: () => { toast.success("Render deleted"); historyQuery.refetch(); },
@@ -136,6 +205,11 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
   });
 
   const deleteEclipse = trpc.quoteRender.deleteEclipseRender.useMutation({
+    onSuccess: () => { toast.success("Render deleted"); historyQuery.refetch(); },
+    onError: (err) => toast.error(`Delete failed: ${err.message}`),
+  });
+
+  const deleteStructure = trpc.quoteRender.deleteStructureRender.useMutation({
     onSuccess: () => { toast.success("Render deleted"); historyQuery.refetch(); },
     onError: (err) => toast.error(`Delete failed: ${err.message}`),
   });
@@ -150,6 +224,14 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
   });
 
   const favEclipse = trpc.quoteRender.toggleEclipseFavourite.useMutation({
+    onSuccess: (data) => {
+      toast.success(data.isFavourite ? "Marked as favourite" : "Removed from favourites");
+      historyQuery.refetch();
+    },
+    onError: (err) => toast.error(`Failed: ${err.message}`),
+  });
+
+  const favStructure = trpc.quoteRender.toggleStructureFavourite.useMutation({
     onSuccess: (data) => {
       toast.success(data.isFavourite ? "Marked as favourite" : "Removed from favourites");
       historyQuery.refetch();
@@ -199,8 +281,10 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
 
       if (quoteType === "deck") {
         uploadDeckPhoto.mutate(payload);
-      } else {
+      } else if (quoteType === "eclipse") {
         uploadEclipsePhoto.mutate(payload);
+      } else {
+        uploadStructurePhoto.mutate(payload);
       }
     } catch (err) {
       toast.error("Failed to process image");
@@ -209,58 +293,96 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
 
     // Reset input
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [quoteId, quoteType, uploadDeckPhoto, uploadEclipsePhoto]);
+  }, [quoteId, quoteType, uploadDeckPhoto, uploadEclipsePhoto, uploadStructurePhoto]);
 
   const handleRemovePhoto = useCallback(() => {
     if (quoteType === "deck") {
       removeDeckPhoto.mutate({ quoteId });
-    } else {
+    } else if (quoteType === "eclipse") {
       removeEclipsePhoto.mutate({ quoteId });
+    } else {
+      removeStructurePhoto.mutate({ quoteId });
     }
-  }, [quoteId, quoteType, removeDeckPhoto, removeEclipsePhoto]);
+  }, [quoteId, quoteType, removeDeckPhoto, removeEclipsePhoto, removeStructurePhoto]);
 
   const handleCalibrationChange = useCallback((data: CalibrationData | null) => {
     if (quoteType === "deck") {
       saveDeckCalibration.mutate({ quoteId, calibrationData: data });
-    } else {
+    } else if (quoteType === "eclipse") {
       saveEclipseCalibration.mutate({ quoteId, calibrationData: data });
+    } else {
+      saveStructureCalibration.mutate({ quoteId, calibrationData: data });
     }
-  }, [quoteId, quoteType, saveDeckCalibration, saveEclipseCalibration]);
+  }, [quoteId, quoteType, saveDeckCalibration, saveEclipseCalibration, saveStructureCalibration]);
 
   const handleAutoScale = useCallback((_pixelsPerMm: number) => {
     // For quote photos, calibration is informational (helps AI understand scale)
     // No visual overlay scaling needed here unlike the patio canvas
   }, []);
 
+  const saveRenderInstructions = useCallback((nextInstructions: string) => {
+    const payload = {
+      quoteId,
+      renderInstructions: nextInstructions.trim() || null,
+    };
+    if (quoteType === "deck") {
+      saveDeckRenderInstructions.mutate(payload);
+    } else if (quoteType === "eclipse") {
+      saveEclipseRenderInstructions.mutate(payload);
+    } else {
+      saveStructureRenderInstructions.mutate(payload);
+    }
+  }, [quoteId, quoteType, saveDeckRenderInstructions, saveEclipseRenderInstructions, saveStructureRenderInstructions]);
+
+  useEffect(() => {
+    if (!renderInstructionsLoadedRef.current) return;
+    const normalized = renderInstructions.trim();
+    if (normalized === renderInstructionsSavedRef.current) return;
+    const timeout = setTimeout(() => {
+      saveRenderInstructions(renderInstructions);
+    }, 900);
+    return () => clearTimeout(timeout);
+  }, [renderInstructions, saveRenderInstructions]);
+
   const handleGenerate = useCallback((mode: "full" | "quick") => {
+    if (renderInstructions.trim() !== renderInstructionsSavedRef.current) {
+      saveRenderInstructions(renderInstructions);
+    }
     setGenerating(true);
     const params = {
       quoteId,
       mode,
       stylePreset: selectedPreset === "none" ? undefined : selectedPreset,
+      userInstructions: renderInstructions.trim() || undefined,
     };
     if (quoteType === "deck") {
       generateDeck.mutate(params);
-    } else {
+    } else if (quoteType === "eclipse") {
       generateEclipse.mutate(params);
+    } else {
+      generateStructure.mutate(params);
     }
-  }, [quoteId, quoteType, selectedPreset, generateDeck, generateEclipse]);
+  }, [quoteId, quoteType, selectedPreset, renderInstructions, saveRenderInstructions, generateDeck, generateEclipse, generateStructure]);
 
   const handleDelete = useCallback((renderId: string) => {
     if (quoteType === "deck") {
       deleteDeck.mutate({ quoteId, renderId });
-    } else {
+    } else if (quoteType === "eclipse") {
       deleteEclipse.mutate({ quoteId, renderId });
+    } else {
+      deleteStructure.mutate({ quoteId, renderId });
     }
-  }, [quoteId, quoteType, deleteDeck, deleteEclipse]);
+  }, [quoteId, quoteType, deleteDeck, deleteEclipse, deleteStructure]);
 
   const handleToggleFavourite = useCallback((renderId: string) => {
     if (quoteType === "deck") {
       favDeck.mutate({ quoteId, renderId });
-    } else {
+    } else if (quoteType === "eclipse") {
       favEclipse.mutate({ quoteId, renderId });
+    } else {
+      favStructure.mutate({ quoteId, renderId });
     }
-  }, [quoteId, quoteType, favDeck, favEclipse]);
+  }, [quoteId, quoteType, favDeck, favEclipse, favStructure]);
 
   // Sort: favourites first, then newest first
   const sortedHistory = useMemo(() => {
@@ -316,16 +438,7 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="h-8 w-8 ml-auto text-muted-foreground hover:text-foreground"
-                      onClick={() => setPhotoExpanded(!photoExpanded)}
-                      title={photoExpanded ? "Collapse photo" : "Expand photo for calibration"}
-                    >
-                      <Maximize2 className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      className="h-8 w-8 ml-auto text-muted-foreground hover:text-destructive"
                       onClick={handleRemovePhoto}
                       title="Remove photo"
                     >
@@ -335,22 +448,22 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
                   {/* Photo container with calibration overlay */}
                   <div
                     ref={photoContainerRef}
-                    className="relative rounded-md overflow-hidden border cursor-crosshair"
+                    className="relative rounded-md overflow-hidden border bg-muted cursor-crosshair"
                   >
                     <img
                       src={photoUrl}
                       alt="Site photo"
-                      className={`w-full ${photoExpanded ? "h-auto max-h-[70vh]" : "h-48"} object-cover`}
+                      className="block w-full h-auto object-contain"
                     />
                     <CalibrationCanvasOverlay />
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1">
-                      <span className="text-[10px] text-white/90 flex items-center gap-1">
-                        <Camera className="h-3 w-3" />
-                        {calibrationData
-                          ? `Calibrated: ${calibrationData.realDistanceMm}mm reference`
-                          : "Photo uploaded — use Calibrate to set scale"}
-                      </span>
-                    </div>
+                  </div>
+                  <div className="rounded-md border bg-muted/40 px-2 py-1">
+                    <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                      <Camera className="h-3 w-3" />
+                      {calibrationData
+                        ? `Calibrated: ${calibrationData.realDistanceMm}mm reference`
+                        : "Photo uploaded - use Calibrate to set scale"}
+                    </span>
                   </div>
                 </div>
               </CalibrationProvider>
@@ -383,6 +496,23 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
               accept="image/*"
               className="hidden"
               onChange={handleFileSelect}
+            />
+          </div>
+
+          {/* Prompt Directions */}
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">Render Directions</label>
+            <Textarea
+              value={renderInstructions}
+              onChange={(e) => setRenderInstructions(e.target.value.slice(0, 2000))}
+              onBlur={() => {
+                if (renderInstructions.trim() !== renderInstructionsSavedRef.current) {
+                  saveRenderInstructions(renderInstructions);
+                }
+              }}
+              rows={3}
+              className="text-xs resize-y"
+              placeholder="Positioning, layout, camera angle, or site-specific details for this render..."
             />
           </div>
 
@@ -436,7 +566,7 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
           {photoUrl && (
             <p className="text-[10px] text-amber-600 bg-amber-50 rounded px-2 py-1">
               <Camera className="h-3 w-3 inline mr-1" />
-              Photo mode: AI will overlay the {quoteType === "deck" ? "deck" : "opening roof"} onto your site photo
+              Photo mode: AI will overlay the {subjectLabel} onto your site photo
             </p>
           )}
 
@@ -560,8 +690,8 @@ export function QuoteAIRender({ quoteId, quoteType }: QuoteAIRenderProps) {
               <ImageIcon className="h-8 w-8 mx-auto mb-2 opacity-30" />
               <p className="text-xs">
                 {photoUrl
-                  ? `Photo uploaded. Generate an AI render to visualise the ${quoteType === "deck" ? "deck" : "opening roof"} on your site.`
-                  : `No renders yet. Upload a site photo or generate an AI visualisation of this ${quoteType === "deck" ? "deck" : "opening roof"} project.`
+                  ? `Photo uploaded. Generate an AI render to visualise the ${subjectLabel} on your site.`
+                  : `No renders yet. Upload a site photo or generate an AI visualisation of this ${subjectLabel} project.`
                 }
               </p>
             </div>

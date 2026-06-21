@@ -354,7 +354,17 @@ export async function duplicateQuote(id: number, userId: number, newQuoteNumber:
   if (!db) throw new Error("Database not available");
   const original = await getQuoteById(id, tenantId, options);
   if (!original) throw new Error("Quote not found");
-  const { id: _id, createdAt, updatedAt, tenantId: originalTenantId, ...rest } = original;
+  const {
+    id: _id,
+    createdAt,
+    updatedAt,
+    tenantId: originalTenantId,
+    renderHistory: _renderHistory,
+    photoUrl: _photoUrl,
+    photoKey: _photoKey,
+    calibrationData: _calibrationData,
+    ...rest
+  } = original;
   const newId = await createQuote({ ...rest, tenantId: tenantId ?? originalTenantId ?? null, userId, quoteNumber: newQuoteNumber, status: "draft" });
   // Copy components
   const components = await getComponentsByQuote(id);
