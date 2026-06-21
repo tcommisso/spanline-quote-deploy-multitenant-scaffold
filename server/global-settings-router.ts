@@ -2,6 +2,7 @@ import { router, publicProcedure, tenantAdminProcedure, tenantProcedure } from "
 import { z } from "zod";
 import { getActiveStorageProvider, isStorageConfigured, storagePut } from "./storage";
 import crypto from "crypto";
+import { ENV } from "./_core/env";
 import {
   getTenantAppSetting,
   removeTenantAppSetting,
@@ -17,6 +18,13 @@ const LOGIN_BACKGROUND_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", 
 
 function loginBackgroundDataUrl(mimeType: string, base64: string) {
   return `data:${mimeType};base64,${base64}`;
+}
+
+function parseCsv(value: string | null | undefined) {
+  return String(value || "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
 }
 
 export const globalSettingsRouter = router({
@@ -67,6 +75,44 @@ export const globalSettingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       return setTenantAppSetting(ctx.tenant!.id, "renderPricing", input);
     }),
+
+  // Read-only AI provider state. Secrets remain platform-managed in Railway.
+  getAiProviderState: tenantAdminProcedure.query(async ({ ctx }) => {
+    const pricing = {
+      ...getDefaultRenderPricing(),
+      ...(await getTenantAppSetting<Partial<RenderPricingSettings>>(ctx.tenant?.id, "renderPricing")),
+    };
+    const configured = Boolean(ENV.openAiApiKey);
+
+    return {
+      provider: "OpenAI",
+      providerMode: "platform_managed",
+      connectionSource: "Railway environment variables",
+      configured,
+      apiKey: {
+        configured,
+        source: "OPENAI_API_KEY",
+        editableInApp: false,
+      },
+      text: {
+        model: ENV.openAiModel || "gpt-4o-mini",
+        fallbackModels: parseCsv(ENV.openAiModelFallbacks),
+      },
+      image: {
+        model: ENV.openAiImageModel || "gpt-image-2",
+        fallbackModels: parseCsv(ENV.openAiImageModelFallbacks),
+      },
+      transcription: {
+        model: ENV.openAiTranscriptionModel || "gpt-4o-mini-transcribe",
+      },
+      tenantLimits: {
+        fullRenderCostAud: pricing.fullRenderCostAud,
+        quickRenderCostAud: pricing.quickRenderCostAud,
+        batchRenderCostAud: pricing.batchRenderCostAud,
+        monthlyBudgetAud: pricing.monthlyBudgetAud,
+      },
+    };
+  }),
 
   // Get role-based App Central and mobile bottom navigation settings.
   getNavigationSettings: tenantProcedure.query(async ({ ctx }) => {

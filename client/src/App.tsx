@@ -119,6 +119,7 @@ const AcceptInvitation = lazy(() => import("./pages/AcceptInvitation"));
 const AdminSupportSubmissions = lazy(() => import("./pages/AdminSupportSubmissions"));
 const TechLibraryAdmin = lazy(() => import("./pages/TechLibraryAdmin"));
 const EnginiKnowledgeViewer = lazy(() => import("./pages/EnginiKnowledgeViewer"));
+const AIProviderIntegration = lazy(() => import("./pages/admin/AIProviderIntegration"));
 const AISettingsAdmin = lazy(() => import("./pages/AISettingsAdmin"));
 const ApiHealthAdmin = lazy(() => import("./pages/ApiHealthAdmin"));
 const WhsAdmin = lazy(() => import("./pages/WhsAdmin"));
@@ -504,6 +505,7 @@ function MainRouter() {
         <Route path="/admin/inbox-settings">{() => <AdminRoute><InboxAdminSettings /></AdminRoute>}</Route>
         <Route path="/admin/tech-library">{() => <AdminRoute><TechLibraryAdmin /></AdminRoute>}</Route>
         <Route path="/admin/engini-knowledge">{() => <AdminRoute><EnginiKnowledgeViewer /></AdminRoute>}</Route>
+        <Route path="/admin/ai-provider">{() => <AdminRoute><AIProviderIntegration /></AdminRoute>}</Route>
         <Route path="/admin/ai-settings">{() => <AdminRoute><AISettingsAdmin /></AdminRoute>}</Route>
         <Route path="/admin/api-health">{() => <AdminRoute><ApiHealthAdmin /></AdminRoute>}</Route>
         <Route path="/admin/whs">{() => <AdminRoute><WhsAdmin /></AdminRoute>}</Route>
