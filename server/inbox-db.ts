@@ -17,6 +17,7 @@ import {
   type InboxAddress, type InsertInboxAddress,
 } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
+import { appendPrivateTenantScope } from "./private-tenant-scope";
 import {
   INBOX_TICKET_STATUS_LABELS,
   deriveInboxTicketState,
@@ -405,7 +406,7 @@ export async function listReplyTemplates(filters: {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [];
-  appendTenantScope(conditions, inboxReplyTemplates.tenantId, filters.tenantId);
+  await appendPrivateTenantScope(conditions, inboxReplyTemplates.tenantId, filters.tenantId);
   if (filters.activeOnly !== false) conditions.push(eq(inboxReplyTemplates.active, true));
   if (filters.queue) {
     conditions.push(or(eq(inboxReplyTemplates.queue, filters.queue), isNull(inboxReplyTemplates.queue)));
@@ -440,7 +441,7 @@ export async function upsertReplyTemplate(
   };
   if (data.id) {
     const conditions: any[] = [eq(inboxReplyTemplates.id, data.id)];
-    appendTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
+    await appendPrivateTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
     await db.update(inboxReplyTemplates).set(payload).where(and(...conditions));
     return { id: data.id };
   }
@@ -456,7 +457,7 @@ export async function deleteReplyTemplate(id: number, tenantId?: number | null) 
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxReplyTemplates.id, id)];
-  appendTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
+  await appendPrivateTenantScope(conditions, inboxReplyTemplates.tenantId, tenantId);
   await db.update(inboxReplyTemplates).set({ active: false }).where(and(...conditions));
 }
 

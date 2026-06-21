@@ -14,6 +14,7 @@ import {
 import { eq, desc, and, gte, lte, inArray, sql, asc, or, isNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
 import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
+import { privateTenantConditions } from "./private-tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -28,10 +29,8 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
-function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
-  const conditions = [...baseConditions];
-  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
-  return conditions;
+async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  return privateTenantConditions(ctx, branches.tenantId, ...baseConditions);
 }
 
 function purchaseOrderTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -848,7 +847,7 @@ export const manufacturingRouter = router({
     return db
       .select({ id: branches.id, name: branches.name })
       .from(branches)
-      .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))))
+      .where(and(...await branchTenantConditions(ctx, eq(branches.isActive, true))))
       .orderBy(asc(branches.name));
   }),
 

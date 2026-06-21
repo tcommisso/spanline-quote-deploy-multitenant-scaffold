@@ -4,9 +4,9 @@
  * - Caching by location key (postcode/name)
  * - Daily history storage for main locations
  */
-import { getDb } from "./db";
+import { getDb, getDefaultTenantId } from "./db";
 import { weatherHistory, weatherForecastCache } from "../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 
 // ─── Main Locations ─────────────────────────────────────────────────────────
 export const MAIN_LOCATIONS = [
@@ -17,6 +17,24 @@ export const MAIN_LOCATIONS = [
   { name: "Griffith", latitude: -34.2890, longitude: 146.0540 },
   { name: "Young", latitude: -34.3130, longitude: 148.3010 },
 ] as const;
+
+async function getEffectiveWeatherTenantId(tenantId?: number | null) {
+  return tenantId ?? await getDefaultTenantId();
+}
+
+function weatherTenantCondition(column: any, tenantId: number | null | undefined) {
+  return tenantId ? eq(column, tenantId) : isNull(column);
+}
+
+export async function getTenantWeatherLocations(tenantId?: number | null) {
+  const defaultTenantId = await getDefaultTenantId();
+  if (!defaultTenantId && !tenantId) {
+    return MAIN_LOCATIONS.map((location) => ({ ...location }));
+  }
+  const effectiveTenantId = tenantId ?? defaultTenantId;
+  if (!effectiveTenantId || effectiveTenantId !== defaultTenantId) return [];
+  return MAIN_LOCATIONS.map((location) => ({ ...location }));
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 export type DayForecast = {
@@ -114,14 +132,19 @@ export async function fetchCurrentAndForecast(latitude: number, longitude: numbe
 /**
  * Get cached forecast or fetch fresh one. Cache key is locationKey (e.g. postcode or location name).
  */
-export async function getCachedForecast(locationKey: string, latitude: number, longitude: number): Promise<ForecastResult> {
+export async function getCachedForecast(locationKey: string, latitude: number, longitude: number, tenantId?: number | null): Promise<ForecastResult> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const effectiveTenantId = await getEffectiveWeatherTenantId(tenantId);
+  const cacheConditions = [
+    eq(weatherForecastCache.locationKey, locationKey),
+    weatherTenantCondition(weatherForecastCache.tenantId, effectiveTenantId),
+  ];
 
   // Check cache
   const cached = await db.select()
     .from(weatherForecastCache)
-    .where(eq(weatherForecastCache.locationKey, locationKey))
+    .where(and(...cacheConditions))
     .limit(1);
 
   if (cached.length > 0) {
@@ -146,9 +169,10 @@ export async function getCachedForecast(locationKey: string, latitude: number, l
   if (cached.length > 0) {
     await db.update(weatherForecastCache)
       .set({ forecastJson, fetchedAt: new Date(), latitude: latitude.toFixed(5), longitude: longitude.toFixed(5) })
-      .where(eq(weatherForecastCache.locationKey, locationKey));
+      .where(and(...cacheConditions));
   } else {
     await db.insert(weatherForecastCache).values({
+      tenantId: effectiveTenantId ?? null,
       locationKey,
       latitude: latitude.toFixed(5),
       longitude: longitude.toFixed(5),
@@ -170,14 +194,16 @@ export async function getCachedForecast(locationKey: string, latitude: number, l
 /**
  * Store daily weather data for a location. Skips if already stored for that date.
  */
-export async function storeDailyWeather(locationName: string, latitude: number, longitude: number, day: DayForecast) {
+export async function storeDailyWeather(locationName: string, latitude: number, longitude: number, day: DayForecast, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const effectiveTenantId = await getEffectiveWeatherTenantId(tenantId);
 
   // Check if already stored
   const existing = await db.select({ id: weatherHistory.id })
     .from(weatherHistory)
     .where(and(
+      weatherTenantCondition(weatherHistory.tenantId, effectiveTenantId),
       eq(weatherHistory.locationName, locationName),
       eq(weatherHistory.date, day.date),
     ))
@@ -186,6 +212,7 @@ export async function storeDailyWeather(locationName: string, latitude: number, 
   if (existing.length > 0) return; // Already stored
 
   await db.insert(weatherHistory).values({
+    tenantId: effectiveTenantId ?? null,
     locationName,
     latitude: latitude.toFixed(5),
     longitude: longitude.toFixed(5),
@@ -202,33 +229,40 @@ export async function storeDailyWeather(locationName: string, latitude: number, 
  * Poll all main locations: fetch today's weather and store in history.
  * Called by the scheduled heartbeat job.
  */
-export async function pollMainLocations(): Promise<{ success: string[]; failed: string[] }> {
+export async function pollMainLocations(tenantId?: number | null): Promise<{ success: string[]; failed: string[] }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
+  const effectiveTenantId = await getEffectiveWeatherTenantId(tenantId);
+  const locations = await getTenantWeatherLocations(effectiveTenantId);
 
   const success: string[] = [];
   const failed: string[] = [];
 
-  for (const loc of MAIN_LOCATIONS) {
+  for (const loc of locations) {
     try {
       const daily = await fetchForecast(loc.latitude, loc.longitude);
       // Store today's data (first element)
       if (daily.length > 0) {
-        await storeDailyWeather(loc.name, loc.latitude, loc.longitude, daily[0]);
+        await storeDailyWeather(loc.name, loc.latitude, loc.longitude, daily[0], effectiveTenantId);
       }
       // Also update the forecast cache for this location
       const forecastJson = JSON.stringify(daily);
+      const cacheConditions = [
+        eq(weatherForecastCache.locationKey, loc.name),
+        weatherTenantCondition(weatherForecastCache.tenantId, effectiveTenantId),
+      ];
       const existing = await db.select({ id: weatherForecastCache.id })
         .from(weatherForecastCache)
-        .where(eq(weatherForecastCache.locationKey, loc.name))
+        .where(and(...cacheConditions))
         .limit(1);
 
       if (existing.length > 0) {
         await db.update(weatherForecastCache)
           .set({ forecastJson, fetchedAt: new Date(), latitude: loc.latitude.toFixed(5), longitude: loc.longitude.toFixed(5) })
-          .where(eq(weatherForecastCache.locationKey, loc.name));
+          .where(and(...cacheConditions));
       } else {
         await db.insert(weatherForecastCache).values({
+          tenantId: effectiveTenantId ?? null,
           locationKey: loc.name,
           latitude: loc.latitude.toFixed(5),
           longitude: loc.longitude.toFixed(5),

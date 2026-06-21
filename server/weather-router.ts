@@ -4,10 +4,10 @@
 import { protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import {
-  MAIN_LOCATIONS,
   fetchCurrentAndForecast,
   getCachedForecast,
   geocodeLocation,
+  getTenantWeatherLocations,
   pollMainLocations,
 } from "./weather-service";
 import { weatherHistory } from "../drizzle/schema";
@@ -24,12 +24,12 @@ export const weatherRouter = router({
       longitude: z.number().optional(),
       locationKey: z.string().optional(),
     }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const lat = input?.latitude ?? -35.2809; // Canberra default
       const lng = input?.longitude ?? 149.1300;
       const key = input?.locationKey ?? "Canberra";
 
-      const result = await getCachedForecast(key, lat, lng);
+      const result = await getCachedForecast(key, lat, lng, ctx.tenant?.id ?? null);
       // Also get current conditions
       const currentData = await fetchCurrentAndForecast(lat, lng);
 
@@ -49,7 +49,7 @@ export const weatherRouter = router({
       suburb: z.string().optional(),
       postcode: z.string().optional(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const query = input.suburb || input.postcode;
       if (!query) return null;
 
@@ -58,7 +58,7 @@ export const weatherRouter = router({
       if (!geo) return null;
 
       const locationKey = input.postcode || input.suburb || geo.name;
-      const result = await getCachedForecast(locationKey, geo.latitude, geo.longitude);
+      const result = await getCachedForecast(locationKey, geo.latitude, geo.longitude, ctx.tenant?.id ?? null);
 
       return {
         locationName: geo.name,
@@ -77,11 +77,13 @@ export const weatherRouter = router({
       startDate: z.string().optional(), // YYYY-MM-DD
       endDate: z.string().optional(),   // YYYY-MM-DD
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
+      const tenantId = ctx.tenant?.id ?? null;
+      if (!tenantId) return [];
 
-      const conditions = [eq(weatherHistory.locationName, input.locationName)];
+      const conditions = [eq(weatherHistory.tenantId, tenantId), eq(weatherHistory.locationName, input.locationName)];
       if (input.startDate) conditions.push(gte(weatherHistory.date, input.startDate));
       if (input.endDate) conditions.push(lte(weatherHistory.date, input.endDate));
 
@@ -104,15 +106,15 @@ export const weatherRouter = router({
   /**
    * Get list of main locations
    */
-  getMainLocations: protectedProcedure.query(() => {
-    return MAIN_LOCATIONS.map(l => ({ name: l.name, latitude: l.latitude, longitude: l.longitude }));
+  getMainLocations: protectedProcedure.query(async ({ ctx }) => {
+    return getTenantWeatherLocations(ctx.tenant?.id ?? null);
   }),
 
   /**
    * Manually trigger a poll of all main locations (admin only)
    */
-  pollNow: protectedProcedure.mutation(async () => {
-    const result = await pollMainLocations();
+  pollNow: protectedProcedure.mutation(async ({ ctx }) => {
+    const result = await pollMainLocations(ctx.tenant?.id ?? null);
     return result;
   }),
 });

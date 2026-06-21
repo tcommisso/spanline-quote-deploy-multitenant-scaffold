@@ -3,12 +3,10 @@ import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { branches } from "../drizzle/schema";
 import { and, asc, eq } from "drizzle-orm";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { privateTenantConditions } from "./private-tenant-scope";
 
-function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
-  const conditions = [...baseConditions];
-  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
-  return conditions;
+async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  return privateTenantConditions(ctx, branches.tenantId, ...baseConditions);
 }
 
 export const branchesRouter = router({
@@ -18,7 +16,7 @@ export const branchesRouter = router({
     return db
       .select()
       .from(branches)
-      .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))))
+      .where(and(...await branchTenantConditions(ctx, eq(branches.isActive, true))))
       .orderBy(asc(branches.name));
   }),
 
@@ -26,7 +24,7 @@ export const branchesRouter = router({
     const db = await getDb();
     if (!db) return [];
     return db.select().from(branches)
-      .where(and(...branchTenantConditions(ctx)))
+      .where(and(...await branchTenantConditions(ctx)))
       .orderBy(asc(branches.name));
   }),
 
@@ -71,7 +69,7 @@ export const branchesRouter = router({
       await db
         .update(branches)
         .set({ ...data, tenantId: ctx.tenant!.id })
-        .where(and(...branchTenantConditions(ctx, eq(branches.id, id))));
+        .where(and(...await branchTenantConditions(ctx, eq(branches.id, id))));
       return { success: true };
     }),
 
@@ -83,7 +81,7 @@ export const branchesRouter = router({
       await db
         .update(branches)
         .set({ isActive: false, tenantId: ctx.tenant!.id })
-        .where(and(...branchTenantConditions(ctx, eq(branches.id, input.id))));
+        .where(and(...await branchTenantConditions(ctx, eq(branches.id, input.id))));
       return { success: true };
     }),
 });

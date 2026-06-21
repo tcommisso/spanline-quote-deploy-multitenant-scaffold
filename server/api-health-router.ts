@@ -2,9 +2,10 @@ import { z } from "zod";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { tenantAdminProcedure, router } from "./_core/trpc";
 import { ENV } from "./_core/env";
-import { getDb } from "./db";
+import { getDb, getDefaultTenantId } from "./db";
 import { daTrackerPollLog, inboxAddresses, nswDaPollLog, xeroWebhookEvents } from "../drizzle/schema";
 import { getTenantMsGraphConfig } from "./tenant-integrations";
+import { TRPCError } from "@trpc/server";
 
 type ApiKey =
   | "hbcf_onegov"
@@ -78,6 +79,16 @@ const API_CHECKS: ApiCheck[] = [
   { key: "signwell", name: "SignWell", category: "Signing", baseUrl: "https://www.signwell.com/api/v1", configured: !!ENV.signwellApiKey, schedule: "Webhooks + on demand" },
   { key: "zapier", name: "Zapier Lead API", category: "Automation", baseUrl: "/api/v1/leads", configured: !!ENV.zapierApiKey, schedule: "Inbound webhook" },
 ];
+
+async function ensureDefaultTenantAccess(tenantId: number | null | undefined) {
+  const defaultTenantId = await getDefaultTenantId();
+  if (!defaultTenantId || tenantId !== defaultTenantId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "API Health is only available to the default tenant.",
+    });
+  }
+}
 
 async function fetchJsonHealth(url: string, init?: RequestInit): Promise<{ ok: boolean; detail: string }> {
   const controller = new AbortController();
@@ -161,6 +172,7 @@ function toIsoTimestamp(value: unknown): string | null {
 
 export const apiHealthRouter = router({
   list: tenantAdminProcedure.query(async ({ ctx }) => {
+    await ensureDefaultTenantAccess(ctx.tenant!.id);
     const db = await getDb();
     let lastActPoll = null as any;
     let lastNswPoll = null as any;
@@ -229,6 +241,7 @@ export const apiHealthRouter = router({
   test: tenantAdminProcedure
     .input(z.object({ key: apiKeySchema }))
     .mutation(async ({ ctx, input }) => {
+      await ensureDefaultTenantAccess(ctx.tenant!.id);
       const result = await testApi(input.key, ctx.tenant!.id);
       return {
         key: input.key,

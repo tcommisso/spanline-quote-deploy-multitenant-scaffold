@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -51,7 +51,7 @@ function formatDateShort(dateStr: string): string {
 }
 
 export default function WeatherHistory() {
-  const [selectedLocation, setSelectedLocation] = useState("Canberra");
+  const [selectedLocation, setSelectedLocation] = useState("");
   const [dateRange, setDateRange] = useState(30);
 
   // Calculate date range
@@ -67,21 +67,35 @@ export default function WeatherHistory() {
 
   // Queries
   const locationsQuery = trpc.weather.getMainLocations.useQuery();
+  const locations = locationsQuery.data ?? [];
   const historyQuery = trpc.weather.getHistory.useQuery({
     locationName: selectedLocation,
     startDate,
     endDate,
-  });
+  }, { enabled: Boolean(selectedLocation) });
   const pollMutation = trpc.weather.pollNow.useMutation({
     onSuccess: (data) => {
-      toast.success(`Weather polled: ${data.success.length} locations updated`);
+      toast.success(
+        data.success.length
+          ? `Weather polled: ${data.success.length} locations updated`
+          : "No weather locations configured for this tenant"
+      );
       historyQuery.refetch();
     },
     onError: (err) => toast.error(err.message),
   });
 
-  const locations = locationsQuery.data ?? [];
   const history = historyQuery.data ?? [];
+
+  useEffect(() => {
+    if (locations.length === 0) {
+      if (selectedLocation) setSelectedLocation("");
+      return;
+    }
+    if (!selectedLocation || !locations.some((loc) => loc.name === selectedLocation)) {
+      setSelectedLocation(locations[0].name);
+    }
+  }, [locations, selectedLocation]);
 
   // Reverse for chronological order (API returns desc)
   const chartData = useMemo(() => [...history].reverse(), [history]);
@@ -108,10 +122,10 @@ export default function WeatherHistory() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <Select value={selectedLocation} onValueChange={setSelectedLocation}>
+          <Select value={selectedLocation} onValueChange={setSelectedLocation} disabled={locations.length === 0}>
             <SelectTrigger className="w-[160px]">
               <MapPin className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
-              <SelectValue />
+              <SelectValue placeholder="No locations" />
             </SelectTrigger>
             <SelectContent>
               {locations.map(loc => (
@@ -134,7 +148,7 @@ export default function WeatherHistory() {
             variant="outline"
             size="sm"
             onClick={() => pollMutation.mutate()}
-            disabled={pollMutation.isPending}
+            disabled={pollMutation.isPending || locations.length === 0}
           >
             {pollMutation.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -217,7 +231,7 @@ export default function WeatherHistory() {
               Temperature Trend
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Daily high and low temperatures for {selectedLocation}
+              Daily high and low temperatures for {selectedLocation || "this tenant"}
             </p>
           </CardHeader>
           <CardContent className="pt-0">
@@ -227,7 +241,9 @@ export default function WeatherHistory() {
               <div className="h-[250px] flex flex-col items-center justify-center text-sm text-muted-foreground gap-2">
                 <Thermometer className="h-8 w-8 opacity-30" />
                 <p>No temperature data available for this period</p>
-                <p className="text-xs">Try polling weather data or selecting a different date range</p>
+                <p className="text-xs">
+                  {locations.length === 0 ? "No weather locations are configured for this tenant" : "Try polling weather data or selecting a different date range"}
+                </p>
               </div>
             ) : (
               <ChartContainer config={{
@@ -288,7 +304,7 @@ export default function WeatherHistory() {
               Rainfall
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Daily precipitation for {selectedLocation}
+              Daily precipitation for {selectedLocation || "this tenant"}
             </p>
           </CardHeader>
           <CardContent className="pt-0">
@@ -297,7 +313,7 @@ export default function WeatherHistory() {
             ) : chartData.length === 0 ? (
               <div className="h-[250px] flex flex-col items-center justify-center text-sm text-muted-foreground gap-2">
                 <CloudRain className="h-8 w-8 opacity-30" />
-                <p>No rainfall data available for this period</p>
+                <p>{locations.length === 0 ? "No weather locations are configured for this tenant" : "No rainfall data available for this period"}</p>
                 <p className="text-xs">Try polling weather data or selecting a different date range</p>
               </div>
             ) : (
@@ -336,7 +352,7 @@ export default function WeatherHistory() {
               Wind Speed
             </CardTitle>
             <p className="text-xs text-muted-foreground">
-              Daily maximum wind speed for {selectedLocation}
+              Daily maximum wind speed for {selectedLocation || "this tenant"}
             </p>
           </CardHeader>
           <CardContent className="pt-0">
@@ -345,7 +361,7 @@ export default function WeatherHistory() {
             ) : chartData.length === 0 ? (
               <div className="h-[250px] flex flex-col items-center justify-center text-sm text-muted-foreground gap-2">
                 <Wind className="h-8 w-8 opacity-30" />
-                <p>No wind data available for this period</p>
+                <p>{locations.length === 0 ? "No weather locations are configured for this tenant" : "No wind data available for this period"}</p>
               </div>
             ) : (
               <ChartContainer config={{
@@ -394,7 +410,7 @@ export default function WeatherHistory() {
             ) : chartData.length === 0 ? (
               <div className="h-[250px] flex flex-col items-center justify-center text-sm text-muted-foreground gap-2">
                 <TrendingUp className="h-8 w-8 opacity-30" />
-                <p>No data available for this period</p>
+                <p>{locations.length === 0 ? "No weather locations are configured for this tenant" : "No data available for this period"}</p>
               </div>
             ) : (
               <ChartContainer config={{
@@ -449,7 +465,7 @@ export default function WeatherHistory() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base font-medium">
-              Daily Records — {selectedLocation}
+              Daily Records — {selectedLocation || "this tenant"}
             </CardTitle>
             <p className="text-xs text-muted-foreground">
               Showing {chartData.length} days of weather data

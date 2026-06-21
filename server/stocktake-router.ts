@@ -12,6 +12,7 @@ import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { makeRequest, type DistanceMatrixResult } from "./_core/map";
 import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
+import { privateTenantConditions } from "./private-tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -38,10 +39,8 @@ function movementTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
-function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
-  const conditions = [...baseConditions];
-  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
-  return conditions;
+async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  return privateTenantConditions(ctx, branches.tenantId, ...baseConditions);
 }
 
 function decimalToNumber(value: unknown): number | null {
@@ -182,7 +181,7 @@ async function requireStockItemAccess(db: any, ctx: any, stockItemId: number) {
 async function requireBranchAccess(db: any, ctx: any, branchId: number) {
   const [branch] = await db.select({ id: branches.id, name: branches.name })
     .from(branches)
-    .where(and(...branchTenantConditions(ctx, eq(branches.id, branchId))))
+    .where(and(...await branchTenantConditions(ctx, eq(branches.id, branchId))))
     .limit(1);
   if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "Branch not found" });
   return branch;

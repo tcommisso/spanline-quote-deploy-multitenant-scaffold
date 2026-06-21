@@ -134,9 +134,7 @@ import { useSettingsSync } from "@/hooks/useSettingsSync";
 import PWAInstallPrompt from "@/components/PWAInstallPrompt";
 import { PushNotificationOptIn } from "@/components/PushNotificationOptIn";
 import { QuickActions } from "@/components/QuickActions";
-import { QuickCompose } from "@/components/QuickCompose";
 import { useUnreadNotification } from "@/hooks/useUnreadNotification";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { getSelectedTenantId, setSelectedTenantId } from "@/lib/tenantSelection";
 import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
@@ -569,6 +567,7 @@ function DashboardLayoutContent({
     );
   }, [selectedTenantId, tenantOptions]);
   const showTenantSwitcher = tenantOptions.length > 1;
+  const isDefaultTenant = currentTenant ? currentTenant.slug === "default" : true;
 
   useEffect(() => {
     if (!tenantOptions.length || !selectedTenantId) return;
@@ -671,9 +670,6 @@ function DashboardLayoutContent({
 
   // ─── Notification sound/vibration on unread increase ──────────────────────
   useUnreadNotification(unreadCount + chatUnreadCount);
-
-  // ─── Quick compose popover state ──────────────────────────────────────────
-  const [quickComposeOpen, setQuickComposeOpen] = useState(false);
 
   // ─── Sidebar scroll position persistence ──────────────────────────────────
   const SCROLL_KEY = "sidebar-scroll-position";
@@ -786,8 +782,12 @@ function DashboardLayoutContent({
   }, []);
 
   const filterAccessibleItems = useCallback(
-    (items: MenuItem[]) => items.filter(item => canAccessPath(item.path)),
-    [canAccessPath],
+    (items: MenuItem[]) =>
+      items.filter(item => {
+        if (!isDefaultTenant && item.path === "/admin/api-health") return false;
+        return canAccessPath(item.path);
+      }),
+    [canAccessPath, isDefaultTenant],
   );
   const visibleCrmItems = useMemo(() => filterAccessibleItems(crmItems), [filterAccessibleItems]);
   const visibleSalesItems = useMemo(() => filterAccessibleItems(salesItems), [filterAccessibleItems]);
@@ -1607,49 +1607,6 @@ function DashboardLayoutContent({
         <QuickActions />
         <main className="flex-1 p-4 sm:p-6 pb-20 md:pb-6">{children}</main>
         <ScrollToTop />
-
-        {/* ─── Floating Chat Icon with Quick Compose (desktop only) ─── */}
-        {!isMobile && (unreadCount + chatUnreadCount) >= 0 && (
-          <div className="fixed bottom-6 right-6 z-50">
-            <Popover open={quickComposeOpen} onOpenChange={setQuickComposeOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  className="relative h-14 w-14 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center"
-                  title="Quick Compose"
-                  aria-label="Quick compose email"
-                  onClick={(e) => {
-                    // Right-click or long-press navigates to inbox
-                    if (e.ctrlKey || e.metaKey) {
-                      e.preventDefault();
-                      setLocation("/inbox");
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setLocation("/inbox");
-                  }}
-                >
-                  <MessageSquare className="h-6 w-6" />
-                  {(unreadCount + chatUnreadCount) > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[11px] font-bold leading-none shadow-sm">
-                      {(unreadCount + chatUnreadCount) > 99 ? "99+" : (unreadCount + chatUnreadCount)}
-                    </span>
-                  )}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent side="top" align="end" sideOffset={12} className="w-auto p-4">
-                <QuickCompose onClose={() => setQuickComposeOpen(false)} />
-              </PopoverContent>
-            </Popover>
-            {/* Link to full inbox below the button */}
-            <button
-              onClick={() => setLocation("/inbox")}
-              className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
-            >
-              Open Inbox
-            </button>
-          </div>
-        )}
 
         {/* ─── Mobile Bottom Navigation Bar ─── */}
         {isMobile && (

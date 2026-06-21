@@ -4,7 +4,7 @@ import { getDb } from "./db";
 import { rainDays, rainDayJobImpacts, extensionOfTimeRecords, constructionScheduleEvents, constructionJobs, weatherHistory } from "../drizzle/schema";
 import { eq, and, gte, lte, sql, desc, or } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
-import { getCachedForecast, geocodeLocation, MAIN_LOCATIONS, isRainWeatherCode } from "./weather-service";
+import { getCachedForecast, geocodeLocation, getTenantWeatherLocations, isRainWeatherCode } from "./weather-service";
 import { getClientEmail } from "./construction-notifications";
 import { storagePut } from "./storage";
 import { generateEotSummaryPdf } from "./construction-pdf";
@@ -416,12 +416,12 @@ export const rainDayRouter = router({
       date: z.string(),
       location: z.string().optional(),
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       try {
         const loc = input.location || "Sydney";
         const geo = await geocodeLocation(loc);
         if (!geo) return null;
-        const forecast = await getCachedForecast(loc, geo.latitude, geo.longitude);
+        const forecast = await getCachedForecast(loc, geo.latitude, geo.longitude, ctx.tenant!.id);
         return forecast;
       } catch (e) {
         return null;
@@ -514,7 +514,7 @@ export const rainDayRouter = router({
       zone: z.string().optional(), // specific location or default to all main locations
       precipitationThreshold: z.number().default(10), // mm threshold
     }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const suggestions: Array<{
         date: string;
         location: string;
@@ -526,7 +526,7 @@ export const rainDayRouter = router({
       // Determine which locations to check
       const locationsToCheck = input.zone
         ? [{ name: input.zone, latitude: 0, longitude: 0 }]
-        : MAIN_LOCATIONS.map(l => ({ ...l }));
+        : await getTenantWeatherLocations(ctx.tenant!.id);
 
       for (const loc of locationsToCheck) {
         try {
@@ -541,7 +541,7 @@ export const rainDayRouter = router({
             lng = geo.longitude;
           }
 
-          const forecast = await getCachedForecast(loc.name, lat, lng);
+          const forecast = await getCachedForecast(loc.name, lat, lng, ctx.tenant!.id);
 
           for (const day of forecast.daily) {
             // Skip past dates
@@ -729,7 +729,7 @@ export const rainDayRouter = router({
         tempMin: weatherHistory.tempMin,
         weatherCode: weatherHistory.weatherCode,
       }).from(weatherHistory)
-        .where(gte(weatherHistory.date, startStr))
+        .where(and(eq(weatherHistory.tenantId, ctx.tenant!.id), gte(weatherHistory.date, startStr)))
         .orderBy(weatherHistory.date, weatherHistory.locationName);
 
       // Group by location

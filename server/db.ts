@@ -461,16 +461,25 @@ export async function deleteEclipse(id: number) {
 // ─── Master Data ─────────────────────────────────────────────────────────────
 type TenantScope = number | null | undefined;
 
-function masterDataScopePredicate(tenantId: TenantScope) {
-  return tenantId == null
-    ? isNull(masterData.tenantId)
-    : or(eq(masterData.tenantId, tenantId), isNull(masterData.tenantId))!;
+async function masterDataScopePredicate(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tenantId: TenantScope) {
+  return privateTenantScope(db, masterData.tenantId, tenantId);
 }
 
-function scopedTenantConditions(column: any, tenantId: TenantScope) {
+async function scopedTenantConditions(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, column: any, tenantId: TenantScope) {
   const conditions: any[] = [];
-  appendTenantScope(conditions, column, tenantId);
+  const scope = await privateTenantScope(db, column, tenantId);
+  if (scope) conditions.push(scope);
   return conditions;
+}
+
+async function appendPrivateTenantCondition(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  conditions: any[],
+  column: any,
+  tenantId: TenantScope,
+) {
+  const scope = await privateTenantScope(db, column, tenantId);
+  if (scope) conditions.push(scope);
 }
 
 function preferTenantMasterData<T extends { tenantId?: number | null; category: string; key: string; sortOrder?: number | null }>(
@@ -496,8 +505,9 @@ function preferTenantMasterData<T extends { tenantId?: number | null; category: 
 export async function getMasterDataByCategory(category: string, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
+  const scope = await masterDataScopePredicate(db, tenantId);
   const rows = await db.select().from(masterData)
-    .where(and(eq(masterData.category, category), masterDataScopePredicate(tenantId)))
+    .where(and(eq(masterData.category, category), scope))
     .orderBy(masterData.sortOrder);
   return preferTenantMasterData(rows, tenantId);
 }
@@ -505,8 +515,9 @@ export async function getMasterDataByCategory(category: string, tenantId?: Tenan
 export async function getAllMasterData(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
+  const scope = await masterDataScopePredicate(db, tenantId);
   const rows = await db.select().from(masterData)
-    .where(masterDataScopePredicate(tenantId))
+    .where(scope)
     .orderBy(masterData.category, masterData.sortOrder);
   return preferTenantMasterData(rows, tenantId);
 }
@@ -529,8 +540,9 @@ export async function upsertMasterData(data: InsertMasterData, tenantId?: Tenant
 export async function getMasterDataById(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return undefined;
+  const scope = await masterDataScopePredicate(db, tenantId);
   const result = await db.select().from(masterData)
-    .where(and(eq(masterData.id, id), masterDataScopePredicate(tenantId)))
+    .where(and(eq(masterData.id, id), scope))
     .limit(1);
   return result[0];
 }
@@ -555,7 +567,7 @@ export async function removeColourGroupMembersByValue(colourValue: string, tenan
   const db = await getDb();
   if (!db) return;
   const conditions: any[] = [eq(colourGroupMembers.colourValue, colourValue)];
-  appendTenantScope(conditions, colourGroupMembers.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, colourGroupMembers.tenantId, tenantId);
   await db.delete(colourGroupMembers).where(and(...conditions));
 }
 
@@ -563,7 +575,7 @@ export async function reassignProductsFromTab(oldTabKey: string, newTabKey: stri
   const db = await getDb();
   if (!db) return;
   const conditions: any[] = [eq(products.tabName, oldTabKey)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   await db.update(products)
     .set({ tabName: newTabKey || "" })
     .where(and(...conditions));
@@ -573,7 +585,7 @@ export async function getProductCountByTab(tabKey: string, tenantId?: TenantScop
   const db = await getDb();
   if (!db) return 0;
   const conditions: any[] = [eq(products.tabName, tabKey)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   const result = await db.select({ count: sql<number>`count(*)` }).from(products)
     .where(and(...conditions));
   return Number(result[0]?.count || 0);
@@ -587,6 +599,7 @@ export async function getMasterDataValue(category: string, key: string, tenantId
       .where(and(eq(masterData.category, category), eq(masterData.key, key), eq(masterData.tenantId, tenantId)))
       .limit(1);
     if (tenantResult[0]?.value !== undefined) return tenantResult[0].value;
+    if (!(await canReadLegacyTenantRows(db, tenantId))) return undefined;
   }
   const result = await db.select().from(masterData)
     .where(and(eq(masterData.category, category), eq(masterData.key, key), isNull(masterData.tenantId)))
@@ -598,7 +611,7 @@ export async function getMasterDataValue(category: string, key: string, tenantId
 export async function getAllSkyluxMatrix(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = scopedTenantConditions(skyluxMatrix.tenantId, tenantId);
+  const conditions = await scopedTenantConditions(db, skyluxMatrix.tenantId, tenantId);
   const query = db.select().from(skyluxMatrix);
   return (conditions.length ? query.where(and(...conditions)) : query)
     .orderBy(skyluxMatrix.length, skyluxMatrix.width);
@@ -610,7 +623,7 @@ export async function upsertSkyluxMatrix(data: InsertSkyluxMatrix, tenantId?: Te
   if (data.id) {
     const { id, ...rest } = data as any;
     const existing = await db.select({ id: skyluxMatrix.id }).from(skyluxMatrix)
-      .where(and(eq(skyluxMatrix.id, id), ...(scopedTenantConditions(skyluxMatrix.tenantId, tenantId))))
+      .where(and(eq(skyluxMatrix.id, id), ...(await scopedTenantConditions(db, skyluxMatrix.tenantId, tenantId))))
       .limit(1);
     if (!existing[0]) throw new Error("Skylux matrix row not found");
     if (tenantId != null) rest.tenantId = tenantId;
@@ -626,7 +639,7 @@ export async function getProductsByTab(tabName: string, tenantId?: TenantScope) 
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [eq(products.tabName, tabName), eq(products.active, true)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   return db.select().from(products)
     .where(and(...conditions))
     .orderBy(products.sortOrder);
@@ -636,7 +649,7 @@ export async function getProductNamesByTabPattern(pattern: string, tenantId?: Te
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [like(products.tabName, `%${pattern}%`), eq(products.active, true)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   const rows = await db.select({ name: products.name, subTab: products.subTab, colourGroup: products.colourGroup, colourGroupBottom: products.colourGroupBottom, coverageWidth: products.coverageWidth }).from(products)
     .where(and(...conditions))
     .orderBy(products.sortOrder);
@@ -652,7 +665,7 @@ export async function getAllProducts(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [eq(products.active, true)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   return db.select().from(products).where(and(...conditions)).orderBy(products.tabName, products.sortOrder);
 }
 
@@ -660,7 +673,7 @@ export async function getProductById(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return undefined;
   const conditions: any[] = [eq(products.id, id)];
-  appendTenantScope(conditions, products.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
   const result = await db.select().from(products).where(and(...conditions)).limit(1);
   return result[0];
 }
@@ -723,7 +736,7 @@ export async function bulkUpsertProducts(rows: Array<{
     try {
       // Find existing product by tabName + name
       const conditions: any[] = [eq(products.tabName, row.tabName), eq(products.name, row.name)];
-      appendTenantScope(conditions, products.tenantId, tenantId);
+      await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
       const existing = await db.select().from(products)
         .where(and(...conditions))
         .limit(1);
@@ -785,7 +798,7 @@ export async function bulkUpsertProducts(rows: Array<{
 export async function getAllProductsForExport(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = scopedTenantConditions(products.tenantId, tenantId);
+  const conditions = await scopedTenantConditions(db, products.tenantId, tenantId);
   const query = db.select({
     productCode: products.productCode,
     tabName: products.tabName,
@@ -1199,7 +1212,7 @@ export async function updateQuoteProposalSent(quoteId: number, sentTo: string, t
 export async function getAllColourGroups(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = scopedTenantConditions(colourGroups.tenantId, tenantId);
+  const conditions = await scopedTenantConditions(db, colourGroups.tenantId, tenantId);
   const query = db.select().from(colourGroups);
   return (conditions.length ? query.where(and(...conditions)) : query).orderBy(colourGroups.sortOrder);
 }
@@ -1208,7 +1221,7 @@ export async function getColourGroupById(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return null;
   const conditions: any[] = [eq(colourGroups.id, id)];
-  appendTenantScope(conditions, colourGroups.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, colourGroups.tenantId, tenantId);
   const rows = await db.select().from(colourGroups).where(and(...conditions));
   return rows[0] || null;
 }
@@ -1253,7 +1266,7 @@ export async function deleteColourGroup(id: number, tenantId?: TenantScope) {
   if (!existing) throw new Error("Colour group not found");
   // Remove all members of this group
   const memberConditions: any[] = [eq(colourGroupMembers.colourGroupId, id)];
-  appendTenantScope(memberConditions, colourGroupMembers.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, memberConditions, colourGroupMembers.tenantId, tenantId);
   await db.delete(colourGroupMembers).where(and(...memberConditions));
   // Remove group
   await db.delete(colourGroups).where(eq(colourGroups.id, id));
@@ -1264,14 +1277,14 @@ export async function getColourGroupMembers(colourGroupId: number, tenantId?: Te
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [eq(colourGroupMembers.colourGroupId, colourGroupId)];
-  appendTenantScope(conditions, colourGroupMembers.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, colourGroupMembers.tenantId, tenantId);
   return db.select().from(colourGroupMembers).where(and(...conditions)).orderBy(colourGroupMembers.sortOrder);
 }
 
 export async function getAllColourGroupMembers(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = scopedTenantConditions(colourGroupMembers.tenantId, tenantId);
+  const conditions = await scopedTenantConditions(db, colourGroupMembers.tenantId, tenantId);
   const query = db.select().from(colourGroupMembers);
   return (conditions.length ? query.where(and(...conditions)) : query).orderBy(colourGroupMembers.sortOrder);
 }
@@ -1283,7 +1296,7 @@ export async function setColourGroupMembers(colourGroupId: number, colours: stri
   if (!existing) throw new Error("Colour group not found");
   // Delete existing members for this group
   const conditions: any[] = [eq(colourGroupMembers.colourGroupId, colourGroupId)];
-  appendTenantScope(conditions, colourGroupMembers.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, conditions, colourGroupMembers.tenantId, tenantId);
   await db.delete(colourGroupMembers).where(and(...conditions));
   // Insert new members
   if (colours.length > 0) {
@@ -1298,8 +1311,8 @@ export async function cleanupOrphanedColourGroupMembers(tenantId?: TenantScope):
   if (!db) return 0;
   // Get all valid colour values from master data
   const colourConditions: any[] = [eq(masterData.category, "colour")];
-  if (tenantId == null) colourConditions.push(isNull(masterData.tenantId));
-  else colourConditions.push(or(eq(masterData.tenantId, tenantId), isNull(masterData.tenantId))!);
+  const colourScope = await masterDataScopePredicate(db, tenantId);
+  if (colourScope) colourConditions.push(colourScope);
   const validColours = await db.select({ value: masterData.value })
     .from(masterData)
     .where(and(...colourConditions));
@@ -1307,7 +1320,7 @@ export async function cleanupOrphanedColourGroupMembers(tenantId?: TenantScope):
   
   if (validValues.length === 0) {
     // If no colours exist at all, remove all members
-    const memberScope = scopedTenantConditions(colourGroupMembers.tenantId, tenantId);
+    const memberScope = await scopedTenantConditions(db, colourGroupMembers.tenantId, tenantId);
     const allMembersQuery = db.select({ id: colourGroupMembers.id }).from(colourGroupMembers);
     const allMembers = memberScope.length ? await allMembersQuery.where(and(...memberScope)) : await allMembersQuery;
     if (allMembers.length > 0) {
@@ -1318,7 +1331,7 @@ export async function cleanupOrphanedColourGroupMembers(tenantId?: TenantScope):
   
   // Find orphaned members (colourValue not in valid colours)
   const orphanConditions: any[] = [notInArray(colourGroupMembers.colourValue, validValues)];
-  appendTenantScope(orphanConditions, colourGroupMembers.tenantId, tenantId);
+  await appendPrivateTenantCondition(db, orphanConditions, colourGroupMembers.tenantId, tenantId);
   const orphaned = await db.select({ id: colourGroupMembers.id })
     .from(colourGroupMembers)
     .where(and(...orphanConditions));

@@ -293,7 +293,7 @@ export const specItemsRouter = router({
       }
 
       // Get all products for lookup
-      const allProducts = await getAllProducts();
+      const allProducts = await getAllProducts(ctx.tenant!.id);
 
       // TODO: Get markup rates from master data (for now use default)
       const markupRates: Record<string, number> = {};
@@ -364,7 +364,7 @@ export const specItemsRouter = router({
       const normalisedSize = newBeamSize.replace(/\u00d7/g, "x").toLowerCase();
 
       // Get all products in the beams tab
-      const allProducts = await getAllProducts();
+      const allProducts = await getAllProducts(ctx.tenant!.id);
       const beamProducts = (allProducts as any[]).filter(p =>
         p.tabName && p.tabName.toLowerCase().includes("beam")
       );
@@ -442,7 +442,7 @@ export const specItemsRouter = router({
       }
 
       // Get all products and find the "Angle Cutting" product
-      const allProducts = await getAllProducts();
+      const allProducts = await getAllProducts(ctx.tenant!.id);
       const angleCuttingProduct = (allProducts as any[]).find(p =>
         p.name.toLowerCase().includes("angle cutting") ||
         p.name.toLowerCase().includes("angle cut")
@@ -560,7 +560,7 @@ export const specItemsRouter = router({
 
       // Get active mappings and products
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
-      const allProducts = await getAllProducts();
+      const allProducts = await getAllProducts(ctx.tenant!.id);
 
       // Markup rates
       const { getMasterDataByCategory: getMD } = await import("./db");
@@ -707,7 +707,7 @@ export const specItemsRouter = router({
 
       // If productId provided, inject productCover and compute roofSheetLM
       if (productId) {
-        const allProducts = await getAllProducts();
+        const allProducts = await getAllProducts(ctx.tenant!.id);
         const product = (allProducts as any[]).find(p => p.id === productId);
         if (product && product.coverageWidth) {
           specValues.productCover = product.coverageWidth;
@@ -765,7 +765,7 @@ export const specItemsRouter = router({
   validateAll: adminProcedure
     .query(async ({ ctx }) => {
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
-      const allProds = await getAllProducts();
+      const allProds = await getAllProducts(ctx.tenant!.id);
 
       // Valid spec fields (from schema + computed)
       const VALID_SPEC_FIELDS = new Set([

@@ -4,6 +4,7 @@ import { getDb } from "./db";
 import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts, branches } from "../drizzle/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
+import { privateTenantConditions } from "./private-tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -95,10 +96,8 @@ function rowsFromExecuteResult(result: unknown): any[] {
   return Array.isArray(result) ? result : [];
 }
 
-function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
-  const conditions = [...baseConditions];
-  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
-  return conditions;
+async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  return privateTenantConditions(ctx, branches.tenantId, ...baseConditions);
 }
 
 function isInventorySeedBranch(branch: { name?: string | null }) {
@@ -154,7 +153,7 @@ async function requireStockItemAccess(db: any, ctx: any, stockItemId: number) {
 async function requireBranchAccess(db: any, ctx: any, branchId: number) {
   const [branch] = await db.select({ id: branches.id, name: branches.name })
     .from(branches)
-    .where(and(...branchTenantConditions(ctx, eq(branches.id, branchId))))
+    .where(and(...await branchTenantConditions(ctx, eq(branches.id, branchId))))
     .limit(1);
   if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "Branch not found" });
   return branch;
@@ -327,7 +326,7 @@ export const inventoryRouter = router({
 
       const branchRows = await db.select({ id: branches.id, name: branches.name })
         .from(branches)
-        .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))));
+        .where(and(...await branchTenantConditions(ctx, eq(branches.isActive, true))));
 
       const requestedBranchIds = new Set(input?.branchIds || []);
       const targetBranches = requestedBranchIds.size

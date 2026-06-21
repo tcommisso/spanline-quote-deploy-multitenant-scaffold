@@ -3801,6 +3801,7 @@ export type InsertSpecSectionTemplate = typeof specSectionTemplates.$inferInsert
 // ─── Weather Data ─────────────────────────────────────────────────────────────
 export const weatherHistory = mysqlTable("weather_history", {
   id: int("id").primaryKey().autoincrement(),
+  tenantId: int("tenantId").references(() => tenants.id),
   locationName: varchar("locationName", { length: 128 }).notNull(), // e.g. "Canberra", "Goulburn", or postcode "2600"
   latitude: decimal("latitude", { precision: 8, scale: 5 }).notNull(),
   longitude: decimal("longitude", { precision: 8, scale: 5 }).notNull(),
@@ -3811,18 +3812,23 @@ export const weatherHistory = mysqlTable("weather_history", {
   windSpeedMax: decimal("windSpeedMax", { precision: 5, scale: 1 }), // km/h
   weatherCode: int("weatherCode"), // WMO code
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantLocationDateIdx: index("idx_weather_history_tenant_location_date").on(table.tenantId, table.locationName, table.date),
+}));
 export type WeatherHistory = typeof weatherHistory.$inferSelect;
 export type InsertWeatherHistory = typeof weatherHistory.$inferInsert;
 
 export const weatherForecastCache = mysqlTable("weather_forecast_cache", {
   id: int("id").primaryKey().autoincrement(),
+  tenantId: int("tenantId").references(() => tenants.id),
   locationKey: varchar("locationKey", { length: 128 }).notNull(), // postcode or location name
   latitude: decimal("latitude", { precision: 8, scale: 5 }).notNull(),
   longitude: decimal("longitude", { precision: 8, scale: 5 }).notNull(),
   forecastJson: text("forecastJson").notNull(), // JSON array of 7-day forecast
   fetchedAt: timestamp("fetchedAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  tenantLocationIdx: index("idx_weather_forecast_cache_tenant_location").on(table.tenantId, table.locationKey),
+}));
 export type WeatherForecastCache = typeof weatherForecastCache.$inferSelect;
 export type InsertWeatherForecastCache = typeof weatherForecastCache.$inferInsert;
 

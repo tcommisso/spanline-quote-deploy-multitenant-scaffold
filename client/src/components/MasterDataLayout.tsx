@@ -1,5 +1,7 @@
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
+import { trpc } from "@/lib/trpc";
+import { getSelectedTenantId } from "@/lib/tenantSelection";
 import {
   Package,
   Fence,
@@ -34,7 +36,7 @@ import {
   ListChecks,
   Layers,
 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useIsMobile } from "@/hooks/useMobile";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 
@@ -119,8 +121,8 @@ const menuGroups: MenuGroup[] = [
 ];
 
 // Helper to find the current page label from the menu structure
-function getCurrentPageLabel(location: string): string {
-  for (const group of menuGroups) {
+function getCurrentPageLabel(location: string, groups: MenuGroup[] = menuGroups): string {
+  for (const group of groups) {
     if (group.path === location) return group.label;
     if (group.items) {
       const item = group.items.find(i => i.path === location);
@@ -133,10 +135,25 @@ function getCurrentPageLabel(location: string): string {
 export default function MasterDataLayout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
   const isMobile = useIsMobile();
+  const { data: tenantOptions = [] } = trpc.tenants.myTenants.useQuery(undefined, { staleTime: 60_000 });
+  const selectedTenantId = getSelectedTenantId();
+  const currentTenant = useMemo(() => {
+    if (!tenantOptions.length) return null;
+    return (
+      tenantOptions.find((tenant) => tenant.tenantId === selectedTenantId) ??
+      tenantOptions.find((tenant) => tenant.isDefault) ??
+      tenantOptions[0]
+    );
+  }, [selectedTenantId, tenantOptions]);
+  const isDefaultTenant = currentTenant ? currentTenant.slug === "default" : true;
+  const visibleMenuGroups = useMemo(() => {
+    if (isDefaultTenant) return menuGroups;
+    return menuGroups.filter((group) => group.label !== "Deck Data" && group.label !== "Eclipse Data");
+  }, [isDefaultTenant]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<string[]>(() => {
     // Auto-expand the group that contains the current path
-    const active = menuGroups.find(g =>
+    const active = visibleMenuGroups.find(g =>
       g.path === location || g.items?.some(i => i.path === location)
     );
     return active ? [active.label] : ["Structure Data"];
@@ -144,13 +161,19 @@ export default function MasterDataLayout({ children }: { children: React.ReactNo
 
   // Auto-expand group when location changes
   useEffect(() => {
-    const active = menuGroups.find(g =>
+    const active = visibleMenuGroups.find(g =>
       g.path === location || g.items?.some(i => i.path === location)
     );
     if (active && !expandedGroups.includes(active.label)) {
       setExpandedGroups(prev => [...prev, active.label]);
     }
-  }, [location]);
+  }, [expandedGroups, location, visibleMenuGroups]);
+
+  useEffect(() => {
+    if (!isDefaultTenant && (location === "/admin/master-data/deck" || location === "/admin/master-data/eclipse")) {
+      setLocation("/admin/master-data/structure/products");
+    }
+  }, [isDefaultTenant, location, setLocation]);
 
   const toggleGroup = (label: string) => {
     setExpandedGroups(prev =>
@@ -172,7 +195,7 @@ export default function MasterDataLayout({ children }: { children: React.ReactNo
     }
   }, [setLocation, isMobile]);
 
-  const currentPageLabel = getCurrentPageLabel(location);
+  const currentPageLabel = getCurrentPageLabel(location, visibleMenuGroups);
 
   // Sidebar content (shared between desktop aside and mobile sheet)
   const sidebarContent = (
@@ -180,7 +203,7 @@ export default function MasterDataLayout({ children }: { children: React.ReactNo
       <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-2 mb-3">
         Sales Data
       </h2>
-      {menuGroups.map(group => {
+      {visibleMenuGroups.map(group => {
         const expanded = expandedGroups.includes(group.label);
         const groupActive = isGroupActive(group);
 
