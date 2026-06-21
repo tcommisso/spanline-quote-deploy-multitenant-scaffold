@@ -106,6 +106,7 @@ export const supportRouter = router({
           footerNote: "This is an automated bug report submitted through the AltaSpan support system.",
         });
         await sendNotificationViaGraph({
+          tenantId: ctx.tenant!.id,
           to: "support@commissogroup.au",
           subject,
           htmlBody,
@@ -162,6 +163,7 @@ export const supportRouter = router({
           footerNote: "This is an automated suggestion submitted through the AltaSpan support system.",
         });
         await sendNotificationViaGraph({
+          tenantId: ctx.tenant!.id,
           to: "support@commissogroup.au",
           subject,
           htmlBody,

@@ -25,9 +25,16 @@ export const weatherRouter = router({
       locationKey: z.string().optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
-      const lat = input?.latitude ?? -35.2809; // Canberra default
-      const lng = input?.longitude ?? 149.1300;
-      const key = input?.locationKey ?? "Canberra";
+      const locations = await getTenantWeatherLocations(ctx.tenant?.id ?? null);
+      if (locations.length === 0) return null;
+
+      const requestedLocation = input?.locationKey
+        ? locations.find((location) => location.name === input.locationKey)
+        : null;
+      const location = requestedLocation ?? locations[0];
+      const lat = input?.latitude ?? location.latitude;
+      const lng = input?.longitude ?? location.longitude;
+      const key = input?.locationKey ?? location.name;
 
       const result = await getCachedForecast(key, lat, lng, ctx.tenant?.id ?? null);
       // Also get current conditions

@@ -9,7 +9,7 @@ import { storagePut } from "./storage";
 import { randomBytes } from "crypto";
 import { ALL_TEMPLATES } from "./seed-workflow-templates";
 import { getDb } from "./db";
-import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections } from "../drizzle/schema";
+import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections, crmLeads, quotes } from "../drizzle/schema";
 import { eq, desc, isNull, and, ne, sql } from "drizzle-orm";
 import { appendTenantScope } from "./_core/tenant-scope";
 import {
@@ -1240,9 +1240,23 @@ export const approvalRouter = router({
           notes: z.string().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
+          const db = await getDb();
+          if (!db) throw new Error("Database not available");
           if (input.approvalProjectId) {
             const project = await approvalDb.getApprovalProjectById(input.approvalProjectId, ctx.tenant!.id);
             if (!project) throw new Error("Project not found");
+          }
+          if (input.quoteId) {
+            const quoteConditions: any[] = [eq(quotes.id, input.quoteId)];
+            appendTenantScope(quoteConditions, quotes.tenantId, ctx.tenant!.id);
+            const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(...quoteConditions)).limit(1);
+            if (!quote) throw new Error("Quote not found");
+          }
+          if (input.crmLeadId) {
+            const leadConditions: any[] = [eq(crmLeads.id, input.crmLeadId)];
+            appendTenantScope(leadConditions, crmLeads.tenantId, ctx.tenant!.id);
+            const [lead] = await db.select({ id: crmLeads.id }).from(crmLeads).where(and(...leadConditions)).limit(1);
+            if (!lead) throw new Error("Lead not found");
           }
           const id = await createOrUpdateHbcfCertificate({
             ...input,

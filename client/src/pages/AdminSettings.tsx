@@ -43,6 +43,9 @@ const SECTIONS = [
 export default function AdminSettings() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const { data: tenantContext } = trpc.tenants.current.useQuery();
+  const tenantRole = String(tenantContext?.membership?.role || "").toLowerCase();
+  const canManageSettings = isAdminRole(user?.role || "") || tenantRole === "owner" || tenantRole === "admin";
   const { data: masterData } = trpc.masterData.getAll.useQuery();
   const upsertMutation = trpc.masterData.upsert.useMutation({
     onSuccess: () => {
@@ -213,7 +216,7 @@ export default function AdminSettings() {
     }, 100);
   };
 
-  if (!isAdminRole(user?.role || "")) {
+  if (!canManageSettings) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <Shield className="h-12 w-12 text-muted-foreground/30 mb-4" />

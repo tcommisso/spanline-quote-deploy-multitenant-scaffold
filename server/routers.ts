@@ -2,7 +2,7 @@ import { COOKIE_NAME, isAdminRole, normalizeUserRole } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, adminProcedure, superAdminProcedure, tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, adminProcedure, superAdminProcedure, tenantProcedure, tenantAdminProcedure, router, canAdministerTenant } from "./_core/trpc";
 import { z } from "zod";
 import { randomBytes } from "crypto";
 import * as db from "./db";
@@ -119,12 +119,24 @@ function enginiProviderFailure(error: unknown): string {
 }
 
 /** Check if a user can access a specific quote based on permissions */
-function canAccessQuote(user: { id: number; role: string; name: string | null; canViewAllQuotes: boolean }, quote: { userId: number; designAdvisor: string | null }): boolean {
+function canAccessQuote(user: { id: number; role: string; name: string | null; canViewAllQuotes?: boolean }, quote: { userId: number; designAdvisor: string | null }): boolean {
   if (isAdminRole(user.role)) return true;
   if (user.canViewAllQuotes) return true;
   if (quote.userId === user.id) return true;
   if (user.role === 'design_adviser' && user.name && quote.designAdvisor === user.name) return true;
   return false;
+}
+
+function canViewAllTenantStructureQuotes(ctx: { user?: { role?: string | null } | null; tenantMembership?: { role?: string | null } | null }) {
+  return canAdministerTenant(ctx.user?.role, ctx.tenantMembership?.role);
+}
+
+function quoteAccessUserForContext(ctx: {
+  user: { id: number; role: string; name: string | null; canViewAllQuotes?: boolean };
+  tenantMembership?: { role?: string | null } | null;
+}) {
+  if (!canViewAllTenantStructureQuotes(ctx)) return ctx.user;
+  return { ...ctx.user, canViewAllQuotes: true };
 }
 
 function canAccessTenantRecord(
@@ -224,7 +236,7 @@ export const appRouter = router({
         const tenantId = tenantIdFromContext(ctx);
         const quoteScopeOptions = quoteScopeOptionsForContext(ctx);
         let quotes;
-        if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes) {
+        if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes || canViewAllTenantStructureQuotes(ctx)) {
           quotes = await db.getAllQuotes(input?.search, input?.status, tenantId, quoteScopeOptions);
         } else if (ctx.user.role === 'design_adviser' && ctx.user.name) {
           // Design advisers see only quotes assigned to them
@@ -254,7 +266,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return null;
         if (!canAccessQuoteTenantRecord(ctx, quote)) return null;
-        if (!canAccessQuote(ctx.user, quote)) return null;
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) return null;
         return quote;
       }),
 
@@ -265,7 +277,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.id);
         const lineItems: Array<{ tabName: string; component: string; colour: string; uom: string; qty: number; sellRate: number; total: number }> = [];
         let componentSubtotal = 0;
@@ -344,9 +356,9 @@ export const appRouter = router({
         if (input.clientId) {
           try {
             const { updateLead, getLead } = await import("./crm-db");
-            const lead = await getLead(input.clientId);
+            const lead = await getLead(input.clientId, ctx.tenant?.id ?? null);
             if (lead && lead.archived) {
-              await updateLead(input.clientId, { archived: false } as any);
+              await updateLead(input.clientId, { archived: false } as any, ctx.tenant?.id ?? null);
               leadUnarchived = true;
             }
           } catch (e) { /* non-blocking */ }
@@ -401,7 +413,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const { id, validUntil: validUntilStr, ...data } = input;
         const oldStatus = quote.status;
         const updateData: any = { ...data };
@@ -479,7 +491,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
 
         // Log spec sheet changes to revision history
         try {
@@ -551,7 +563,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
 
         const updates: Record<string, any> = {};
 
@@ -641,7 +653,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
 
         // 1. Complexity breakdown
         const complexityRates = await db.getMasterDataByCategory("complexity", ctx.tenant?.id ?? null);
@@ -715,7 +727,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         return db.getQuoteRevisions(input.id, input.limit || 50, {
           fromDate: input.fromDate ? new Date(input.fromDate) : undefined,
           toDate: input.toDate ? new Date(input.toDate) : undefined,
@@ -799,7 +811,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         await db.updateQuote(input.id, { archived: input.archived } as any, tenantId, quoteScopeOptionsForContext(ctx));
         return { success: true };
       }),
@@ -815,7 +827,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
 
         const { storagePut } = await import("./storage");
         const buffer = Buffer.from(input.base64Data, "base64");
@@ -832,7 +844,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const quoteNumber = await db.getNextQuoteNumber();
         const newId = await db.duplicateQuote(input.id, ctx.user.id, quoteNumber, tenantId, quoteScopeOptionsForContext(ctx));
         return { id: newId, quoteNumber };
@@ -857,7 +869,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         if (!quote.siteAddress) throw new Error("Site address is required to calculate travel distance");
 
         // Get all branch addresses from branches table
@@ -1063,7 +1075,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
         if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
-        if (!canAccessQuote(ctx.user, quote)) return [];
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) return [];
         return db.getComponentsByQuote(input.quoteId);
       }),
 
@@ -1073,7 +1085,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return null;
         if (!canAccessQuoteTenantRecord(ctx, quote)) return null;
-        if (!canAccessQuote(ctx.user, quote)) return null;
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) return null;
         return db.getComponentByTab(input.quoteId, input.tabName);
       }),
 
@@ -1088,7 +1100,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const id = await db.upsertComponent(input);
         await syncQuoteHbcfRequirement(input.quoteId, tenantIdFromContext(ctx));
         return { id };
@@ -1103,7 +1115,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
         if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
-        if (!canAccessQuote(ctx.user, quote)) return [];
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) return [];
         return db.getSkyluxByQuote(input.quoteId);
       }),
 
@@ -1129,7 +1141,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const id = await db.upsertSkylux(input as any);
         return { id };
       }),
@@ -1150,7 +1162,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) return [];
         if (!canAccessQuoteTenantRecord(ctx, quote)) return [];
-        if (!canAccessQuote(ctx.user, quote)) return [];
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) return [];
         return db.getEclipseByQuote(input.quoteId);
       }),
 
@@ -1174,7 +1186,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const id = await db.upsertEclipse(input as any);
         return { id };
       }),
@@ -1663,7 +1675,7 @@ export const appRouter = router({
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.quoteId);
         const componentSummary = components
           .filter(c => c.included)
@@ -1877,7 +1889,7 @@ ${SPANLINE_TECHNICAL_PROMPT}` },
         const quote = await db.getQuoteById(input.quoteId, tenantIdFromContext(ctx), quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
-        if (!canAccessQuote(ctx.user, quote)) throw new Error("Unauthorized");
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
         const components = await db.getComponentsByQuote(input.quoteId);
         let totalSell = 0, totalCost = 0;
         for (const comp of components) {
@@ -2093,7 +2105,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         const quote = await db.getQuoteById(input.quoteId, tenantId, quoteScopeOptionsForContext(ctx));
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Access denied");
-        if (!canAccessQuote(ctx.user, quote)) {
+        if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) {
           throw new Error("Access denied");
         }
         // If render URL provided, append to cover message

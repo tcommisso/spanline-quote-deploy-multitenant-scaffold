@@ -365,9 +365,14 @@ export async function duplicateQuote(id: number, userId: number, newQuoteNumber:
 export async function getNextQuoteNumber() {
   const db = await getDb();
   if (!db) return "Q-0001";
-  const result = await db.select({ count: sql<number>`COUNT(*)` }).from(quotes);
-  const count = result[0]?.count ?? 0;
-  return `Q-${String(count + 1).padStart(4, "0")}`;
+  const rows = await db.select({ quoteNumber: quotes.quoteNumber })
+    .from(quotes)
+    .orderBy(desc(quotes.id))
+    .limit(1);
+  const last = rows[0]?.quoteNumber;
+  const lastNumber = last?.match(/^Q-(\d+)$/)?.[1];
+  const next = Number.parseInt(lastNumber || "0", 10) + 1;
+  return `Q-${String(next).padStart(4, "0")}`;
 }
 
 // ─── Quote Components ────────────────────────────────────────────────────────

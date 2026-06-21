@@ -164,8 +164,20 @@ export const equipmentRouter = router({
       const db = await requireDb();
       const tenantId = tenantIdFromContext(ctx);
       const visibleWhere = tenantScoped(equipment.tenantId, tenantId);
-      const [total] = await db.select({ count: sql<number>`count(*)` }).from(equipment);
       const [visible] = await db.select({ count: sql<number>`count(*)` }).from(equipment).where(visibleWhere);
+      if (ENV.tenancyMode === "multi") {
+        const visibleCount = Number(visible?.count || 0);
+        return {
+          tenantId,
+          tenancyMode: ENV.tenancyMode,
+          total: visibleCount,
+          visible: visibleCount,
+          unassigned: 0,
+          otherTenants: 0,
+        };
+      }
+
+      const [total] = await db.select({ count: sql<number>`count(*)` }).from(equipment);
       const [unassigned] = await db.select({ count: sql<number>`count(*)` }).from(equipment).where(isNull(equipment.tenantId));
       const [otherTenants] = await db.select({ count: sql<number>`count(*)` }).from(equipment)
         .where(sql`${equipment.tenantId} IS NOT NULL AND ${equipment.tenantId} <> ${tenantId}`);
@@ -184,6 +196,15 @@ export const equipmentRouter = router({
     .mutation(async ({ ctx }) => {
       const db = await requireDb();
       const tenantId = tenantIdFromContext(ctx);
+      if (ENV.tenancyMode === "multi") {
+        const [visible] = await db.select({ count: sql<number>`count(*)` }).from(equipment)
+          .where(tenantScoped(equipment.tenantId, tenantId));
+        return {
+          reassigned: 0,
+          visible: Number(visible?.count || 0),
+        };
+      }
+
       const where = ENV.tenancyMode === "single"
         ? sql`${equipment.tenantId} IS NULL OR ${equipment.tenantId} <> ${tenantId}`
         : isNull(equipment.tenantId);
