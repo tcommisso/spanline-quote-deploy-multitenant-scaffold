@@ -4169,6 +4169,7 @@ export const blindFabricColours = mysqlTable("blind_fabric_colours", {
   categoryNumber: varchar("categoryNumber", { length: 16 }),
   name: varchar("name", { length: 128 }).notNull(),
   hexCode: varchar("hexCode", { length: 16 }),
+  swatchUrl: varchar("swatchUrl", { length: 255 }),
   isActive: boolean("isActive").default(true).notNull(),
   sortOrder: int("sortOrder").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

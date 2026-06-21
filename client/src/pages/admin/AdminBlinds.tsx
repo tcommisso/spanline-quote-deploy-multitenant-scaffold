@@ -27,7 +27,7 @@ const DEFAULT_COST_FORM = { category: "per_uom", name: "", description: "", cost
 const DEFAULT_OPTION_FORM = { category: "accessory_crankoperation", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "", priceUnit: "Each" };
 const DEFAULT_FABRIC_FORM = { glassType: "", category: "category1", fabricBrand: "", fabricType: "", fabricWidth: "", description: "", cost: "0", uom: "m2" };
 const DEFAULT_COLOUR_FORM = { name: "", hexCode: "#000000", colorbondName: "", surchargePercent: "0" };
-const DEFAULT_FABRIC_COLOUR_FORM = { name: "", hexCode: "#ffffff", category: "category1", fabricRangeId: "none" };
+const DEFAULT_FABRIC_COLOUR_FORM = { name: "", hexCode: "#ffffff", swatchUrl: "", category: "category1", fabricRangeId: "none" };
 
 function PricingSettingsTab() {
   const utils = trpc.useUtils();
@@ -417,8 +417,9 @@ function FabricColoursTab() {
                 <div><Label>Fabric Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select></div>
                 <div><Label>Fabric Range (optional)</Label><Select value={form.fabricRangeId} onValueChange={(v) => setForm({ ...form, fabricRangeId: v })}><SelectTrigger><SelectValue placeholder="All ranges" /></SelectTrigger><SelectContent><SelectItem value="none">All ranges in category</SelectItem>{fabrics.map((fabric: any) => <SelectItem key={fabric.id} value={String(fabric.id)}>{fabric.glassType}{fabric.categoryNumber ? ` — ${categoryLabelForNumber(fabric.categoryNumber)}` : ""}</SelectItem>)}</SelectContent></Select></div>
               </div>
-              <div><Label>Swatch</Label><div className="flex items-center gap-2"><input type="color" value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="h-10 w-12 cursor-pointer rounded border" /><Input value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="font-mono" /></div></div>
-              <Button className="w-full" disabled={!form.name.trim() || createMutation.isPending} onClick={() => createMutation.mutate({ name: form.name.trim(), hexCode: form.hexCode, category: form.category, fabricRangeId: form.fabricRangeId !== "none" ? Number(form.fabricRangeId) : undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
+              <div><Label>Swatch colour</Label><div className="flex items-center gap-2"><input type="color" value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="h-10 w-12 cursor-pointer rounded border" /><Input value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="font-mono" /></div></div>
+              <div><Label>Texture image URL (optional)</Label><Input value={form.swatchUrl} onChange={(e) => setForm({ ...form, swatchUrl: e.target.value })} placeholder="/assets/blinds/fabric-swatches/example.jpg" /></div>
+              <Button className="w-full" disabled={!form.name.trim() || createMutation.isPending} onClick={() => createMutation.mutate({ name: form.name.trim(), hexCode: form.hexCode, swatchUrl: form.swatchUrl || undefined, category: form.category, fabricRangeId: form.fabricRangeId !== "none" ? Number(form.fabricRangeId) : undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -430,7 +431,10 @@ function FabricColoursTab() {
           <Card key={colour.id} className="relative group">
             <CardContent className="p-3">
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 flex-shrink-0 rounded-md border shadow-sm" style={{ backgroundColor: colour.hexCode || "#f8fafc" }} />
+                <div
+                  className="h-10 w-10 flex-shrink-0 rounded-md border bg-cover bg-center shadow-sm"
+                  style={colour.swatchUrl ? { backgroundImage: `url(${colour.swatchUrl})` } : { backgroundColor: colour.hexCode || "#f8fafc" }}
+                />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{colour.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{colour.fabricRangeName || categoryLabelForNumber(colour.categoryNumber)}</p>

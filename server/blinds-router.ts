@@ -1110,6 +1110,7 @@ export const blindsRouter = router({
       .input(z.object({
         name: z.string().trim().min(1, "Fabric colour name is required"),
         hexCode: z.string().optional(),
+        swatchUrl: z.string().optional(),
         fabricRangeId: z.number().optional(),
         category: z.string().optional(),
       }))
@@ -1144,6 +1145,7 @@ export const blindsRouter = router({
           categoryNumber,
           name: input.name.trim(),
           hexCode,
+          swatchUrl: input.swatchUrl?.trim() || null,
         });
         return { success: true };
       }),

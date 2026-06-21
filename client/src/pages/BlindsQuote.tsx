@@ -122,6 +122,13 @@ function colourSwatchStyle(colour: any) {
   return `hsl(${hash} 55% 55%)`;
 }
 
+function fabricSwatchStyle(colour: any) {
+  if (colour?.swatchUrl) {
+    return { backgroundImage: `url(${colour.swatchUrl})` };
+  }
+  return { backgroundColor: colour?.hexCode || "#f8fafc" };
+}
+
 function blindQuotePrintHtml(quote: any) {
   const company = loadCompanyDetails();
   const logo = loadCustomLogo();
@@ -576,7 +583,14 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
                 <SelectTrigger><SelectValue placeholder="No fabric colour" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No fabric colour</SelectItem>
-                  {visibleFabricColours.map((colour: any) => <SelectItem key={colour.id} value={String(colour.id)}>{colour.name}{colour.fabricRangeName ? ` — ${colour.fabricRangeName}` : ""}</SelectItem>)}
+                  {visibleFabricColours.map((colour: any) => (
+                    <SelectItem key={colour.id} value={String(colour.id)}>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(colour)} />
+                        <span>{colour.name}{colour.fabricRangeName ? ` — ${colour.fabricRangeName}` : ""}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
                   <SelectItem value="custom">Custom fabric colour</SelectItem>
                 </SelectContent>
               </Select>
@@ -589,7 +603,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
                 />
               ) : selectedFabricColour ? (
                 <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="h-4 w-4 rounded border" style={{ backgroundColor: selectedFabricColour.hexCode || "#f8fafc" }} />
+                  <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(selectedFabricColour)} />
                   <span>{selectedFabricColour.fabricRangeName || "Fabric colour option"}</span>
                 </div>
               ) : null}
