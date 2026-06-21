@@ -21,11 +21,6 @@ type QuickAction = {
 };
 
 const SECTION_ACTIONS: Record<string, QuickAction[]> = {
-  sales: [
-    { label: "New Struct Quote", icon: Plus, path: "/quotes/new" },
-    { label: "New Deck Quote", icon: Plus, path: "/deck-quotes/new" },
-    { label: "New Eclipse Quote", icon: Plus, path: "/eclipse-quotes/new" },
-  ],
   crm: [
     { label: "New Lead", icon: UserPlus, path: "/crm/leads?action=new" },
   ],
