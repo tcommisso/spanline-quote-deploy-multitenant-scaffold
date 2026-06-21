@@ -1,17 +1,59 @@
-ALTER TABLE `blind_pricing_matrix` ADD COLUMN `fabricCategory` varchar(64) NULL AFTER `productType`;
-ALTER TABLE `blind_pricing_matrix` ADD COLUMN `fabricCategoryNumber` varchar(16) NULL AFTER `fabricCategory`;
-ALTER TABLE `blind_pricing_matrix` ADD COLUMN `categoryFabrics` text NULL AFTER `fabricCategoryNumber`;
-ALTER TABLE `blind_pricing_matrix` ADD COLUMN `discountedCost` decimal(12,2) NULL AFTER `widthMm`;
-ALTER TABLE `blind_pricing_matrix` ADD COLUMN `supplierListPrice` decimal(12,2) NULL AFTER `discountedCost`;
-ALTER TABLE `blind_pricing_matrix` ADD KEY `idx_blind_matrix_tenant_type_category` (`tenantId`, `productType`, `fabricCategoryNumber`);
-ALTER TABLE `blind_product_options` ADD COLUMN `priceUnit` varchar(32) NULL AFTER `sellPrice`;
-ALTER TABLE `blind_product_options` ADD COLUMN `metadata` json NULL AFTER `priceUnit`;
-ALTER TABLE `blind_glass_infill` ADD COLUMN `categoryName` varchar(64) NULL AFTER `glassType`;
-ALTER TABLE `blind_glass_infill` ADD COLUMN `categoryNumber` varchar(16) NULL AFTER `categoryName`;
-ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricBrand` varchar(128) NULL AFTER `categoryNumber`;
-ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricType` varchar(128) NULL AFTER `fabricBrand`;
-ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricWidth` varchar(64) NULL AFTER `fabricType`;
-ALTER TABLE `blind_glass_infill` ADD KEY `idx_blind_glass_tenant_category` (`tenantId`, `categoryNumber`);
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND column_name = 'fabricCategory') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD COLUMN `fabricCategory` varchar(64) NULL AFTER `productType`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND column_name = 'fabricCategoryNumber') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD COLUMN `fabricCategoryNumber` varchar(16) NULL AFTER `fabricCategory`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND column_name = 'categoryFabrics') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD COLUMN `categoryFabrics` text NULL AFTER `fabricCategoryNumber`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND column_name = 'discountedCost') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD COLUMN `discountedCost` decimal(12,2) NULL AFTER `widthMm`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND column_name = 'supplierListPrice') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD COLUMN `supplierListPrice` decimal(12,2) NULL AFTER `discountedCost`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'blind_pricing_matrix' AND index_name = 'idx_blind_matrix_tenant_type_category') = 0, 'ALTER TABLE `blind_pricing_matrix` ADD KEY `idx_blind_matrix_tenant_type_category` (`tenantId`, `productType`, `fabricCategoryNumber`)', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_product_options' AND column_name = 'priceUnit') = 0, 'ALTER TABLE `blind_product_options` ADD COLUMN `priceUnit` varchar(32) NULL AFTER `sellPrice`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_product_options' AND column_name = 'metadata') = 0, 'ALTER TABLE `blind_product_options` ADD COLUMN `metadata` json NULL AFTER `priceUnit`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND column_name = 'categoryName') = 0, 'ALTER TABLE `blind_glass_infill` ADD COLUMN `categoryName` varchar(64) NULL AFTER `glassType`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND column_name = 'categoryNumber') = 0, 'ALTER TABLE `blind_glass_infill` ADD COLUMN `categoryNumber` varchar(16) NULL AFTER `categoryName`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND column_name = 'fabricBrand') = 0, 'ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricBrand` varchar(128) NULL AFTER `categoryNumber`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND column_name = 'fabricType') = 0, 'ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricType` varchar(128) NULL AFTER `fabricBrand`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND column_name = 'fabricWidth') = 0, 'ALTER TABLE `blind_glass_infill` ADD COLUMN `fabricWidth` varchar(64) NULL AFTER `fabricType`', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
+SET @migration_sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'blind_glass_infill' AND index_name = 'idx_blind_glass_tenant_category') = 0, 'ALTER TABLE `blind_glass_infill` ADD KEY `idx_blind_glass_tenant_category` (`tenantId`, `categoryNumber`)', 'SELECT 1');
+PREPARE migration_stmt FROM @migration_sql;
+EXECUTE migration_stmt;
+DEALLOCATE PREPARE migration_stmt;
 
 CREATE TEMPORARY TABLE `tmp_blind_pricing_seed` (
   `brand` varchar(64) NOT NULL,
@@ -7297,6 +7339,7 @@ INSERT INTO `blind_pricing_matrix` (`tenantId`, `brand`, `productType`, `fabricC
 SELECT `tenants`.`id`, `seed`.`brand`, `seed`.`productType`, `seed`.`fabricCategory`, `seed`.`fabricCategoryNumber`, `seed`.`categoryFabrics`, `seed`.`heightMm`, `seed`.`widthMm`, `seed`.`discountedCost`, `seed`.`supplierListPrice`, `seed`.`priceIncGst`
 FROM `tenants`
 CROSS JOIN `tmp_blind_pricing_seed` AS `seed`
+WHERE 1 = 1
 ON DUPLICATE KEY UPDATE
   `fabricCategory` = VALUES(`fabricCategory`),
   `fabricCategoryNumber` = VALUES(`fabricCategoryNumber`),
