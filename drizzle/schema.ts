@@ -4056,12 +4056,18 @@ export const blindPricingMatrix = mysqlTable("blind_pricing_matrix", {
   tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   brand: varchar("brand", { length: 64 }).notNull(),
   productType: varchar("productType", { length: 64 }).notNull(),
+  fabricCategory: varchar("fabricCategory", { length: 64 }),
+  fabricCategoryNumber: varchar("fabricCategoryNumber", { length: 16 }),
+  categoryFabrics: text("categoryFabrics"),
   heightMm: int("heightMm").notNull(),
   widthMm: int("widthMm").notNull(),
+  discountedCost: decimal("discountedCost", { precision: 12, scale: 2 }),
+  supplierListPrice: decimal("supplierListPrice", { precision: 12, scale: 2 }),
   priceIncGst: decimal("priceIncGst", { precision: 12, scale: 2 }).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("idx_blind_matrix_tenant_brand_type").on(table.tenantId, table.brand, table.productType),
+  index("idx_blind_matrix_tenant_type_category").on(table.tenantId, table.productType, table.fabricCategoryNumber),
   uniqueIndex("uq_blind_matrix_tenant_size").on(table.tenantId, table.brand, table.productType, table.heightMm, table.widthMm),
 ]);
 export type BlindPricingMatrix = typeof blindPricingMatrix.$inferSelect;
@@ -4107,10 +4113,13 @@ export const blindProductOptions = mysqlTable("blind_product_options", {
   brand: varchar("brand", { length: 64 }),
   costPrice: decimal("costPrice", { precision: 12, scale: 2 }).notNull(),
   sellPrice: decimal("sellPrice", { precision: 12, scale: 2 }).notNull(),
+  priceUnit: varchar("priceUnit", { length: 32 }),
+  metadata: json("metadata").$type<Record<string, any>>(),
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("idx_blind_options_tenant_category").on(table.tenantId, table.category),
+  uniqueIndex("uq_blind_options_tenant_category_name").on(table.tenantId, table.category, table.name),
 ]);
 export type BlindProductOption = typeof blindProductOptions.$inferSelect;
 export type InsertBlindProductOption = typeof blindProductOptions.$inferInsert;
@@ -4119,6 +4128,11 @@ export const blindGlassInfill = mysqlTable("blind_glass_infill", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
   glassType: varchar("glassType", { length: 128 }).notNull(),
+  categoryName: varchar("categoryName", { length: 64 }),
+  categoryNumber: varchar("categoryNumber", { length: 16 }),
+  fabricBrand: varchar("fabricBrand", { length: 128 }),
+  fabricType: varchar("fabricType", { length: 128 }),
+  fabricWidth: varchar("fabricWidth", { length: 64 }),
   description: text("description"),
   cost: decimal("cost", { precision: 12, scale: 2 }).notNull(),
   uom: varchar("uom", { length: 32 }).notNull(),
@@ -4126,6 +4140,8 @@ export const blindGlassInfill = mysqlTable("blind_glass_infill", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("idx_blind_glass_tenant").on(table.tenantId),
+  index("idx_blind_glass_tenant_category").on(table.tenantId, table.categoryNumber),
+  uniqueIndex("uq_blind_glass_tenant_category_type").on(table.tenantId, table.categoryNumber, table.glassType),
 ]);
 export type BlindGlassInfill = typeof blindGlassInfill.$inferSelect;
 export type InsertBlindGlassInfill = typeof blindGlassInfill.$inferInsert;

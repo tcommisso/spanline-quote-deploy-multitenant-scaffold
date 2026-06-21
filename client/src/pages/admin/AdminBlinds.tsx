@@ -11,13 +11,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Plus, Trash2, Percent, DollarSign, Palette, Shield, Upload } from "lucide-react";
 import { toast } from "sonner";
+import {
+  BLIND_FABRIC_CATEGORIES,
+  BLIND_OPTION_CATEGORIES,
+  BLIND_PRODUCT_TYPES,
+  blindFabricCategoryLabel,
+  blindOptionCategoryLabel,
+  blindProductTypeLabel,
+} from "@shared/blinds";
 
 // ─── Price Adjustments Tab ──────────────────────────────────────────────────
 
 const DEFAULT_ADJUSTMENT_FORM = { effectiveDate: "", percentageIncrease: "", description: "" };
 const DEFAULT_COST_FORM = { category: "per_uom", name: "", description: "", cost: "", uom: "" };
-const DEFAULT_OPTION_FORM = { category: "control", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "" };
-const DEFAULT_FABRIC_FORM = { glassType: "", description: "", cost: "", uom: "m2" };
+const DEFAULT_OPTION_FORM = { category: "accessory_crankoperation", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "", priceUnit: "Each" };
+const DEFAULT_FABRIC_FORM = { glassType: "", category: "category1", fabricBrand: "", fabricType: "", fabricWidth: "", description: "", cost: "0", uom: "m2" };
 const DEFAULT_COLOUR_FORM = { name: "", hexCode: "#000000", colorbondName: "", surchargePercent: "0" };
 
 function PricingSettingsTab() {
@@ -219,12 +227,7 @@ function CostAdditionsTab() {
 
 // ─── Product Options Tab ────────────────────────────────────────────────────
 
-const OPTION_CATEGORIES = [
-  { value: "vertical_blind_handle", label: "Vertical Blind Handles" },
-  { value: "closer", label: "Brackets" },
-  { value: "buildout_frame", label: "Tracks / Channels" },
-  { value: "other", label: "Other" },
-] as const;
+const OPTION_CATEGORIES = BLIND_OPTION_CATEGORIES;
 
 function ProductOptionsTab() {
   const utils = trpc.useUtils();
@@ -250,7 +253,7 @@ function ProductOptionsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div><h3 className="text-lg font-semibold">Product Options</h3><p className="text-sm text-muted-foreground">Vertical Blind handles, closers, buildout frames, and other accessories</p></div>
+        <div><h3 className="text-lg font-semibold">Product Options</h3><p className="text-sm text-muted-foreground">Accessories, upgrades, locks, brackets, remotes, and motorisation items</p></div>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Option</Button></DialogTrigger>
           <DialogContent>
@@ -259,15 +262,16 @@ function ProductOptionsTab() {
               <div><Label>Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{OPTION_CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-4">
                 <div><Label>Order Code</Label><Input value={form.orderCode} onChange={(e) => setForm({ ...form, orderCode: e.target.value })} placeholder="e.g. DH-001" /></div>
-                <div><Label>Brand</Label><Input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} placeholder="e.g. Lockwood" /></div>
+                <div><Label>Supplier / Brand</Label><Input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} placeholder="e.g. Automate by Acmeda" /></div>
               </div>
               <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Chain Control" /></div>
               <div><Label>Description (optional)</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div><Label>Cost Price ($)</Label><Input type="number" step="0.01" value={form.costPrice} onChange={(e) => setForm({ ...form, costPrice: e.target.value })} /></div>
                 <div><Label>Sell Price ($)</Label><Input type="number" step="0.01" value={form.sellPrice} onChange={(e) => setForm({ ...form, sellPrice: e.target.value })} /></div>
+                <div><Label>Price Unit</Label><Input value={form.priceUnit} onChange={(e) => setForm({ ...form, priceUnit: e.target.value })} placeholder="Each" /></div>
               </div>
-              <Button className="w-full" disabled={!form.name || !form.costPrice || !form.sellPrice || createMutation.isPending} onClick={() => createMutation.mutate({ category: form.category, orderCode: form.orderCode || undefined, name: form.name, description: form.description || undefined, brand: form.brand || undefined, costPrice: parseFloat(form.costPrice), sellPrice: parseFloat(form.sellPrice) })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
+              <Button className="w-full" disabled={!form.name || !form.costPrice || !form.sellPrice || createMutation.isPending} onClick={() => createMutation.mutate({ category: form.category, orderCode: form.orderCode || undefined, name: form.name, description: form.description || undefined, brand: form.brand || undefined, costPrice: parseFloat(form.costPrice), sellPrice: parseFloat(form.sellPrice), priceUnit: form.priceUnit || undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -289,7 +293,7 @@ function ProductOptionsTab() {
                 <TableCell className="font-mono text-sm">{opt.orderCode || "—"}</TableCell>
                 <TableCell className="font-medium">{opt.name}</TableCell>
                 <TableCell>{opt.brand || "—"}</TableCell>
-                <TableCell><Badge variant="outline">{OPTION_CATEGORIES.find((c) => c.value === opt.category)?.label || opt.category}</Badge></TableCell>
+                <TableCell><Badge variant="outline">{blindOptionCategoryLabel(opt.category)}</Badge></TableCell>
                 <TableCell className="font-mono">${cost.toFixed(2)}</TableCell>
                 <TableCell className="font-mono">${sell.toFixed(2)}</TableCell>
                 <TableCell className="font-mono text-green-600">{margin}%</TableCell>
@@ -332,26 +336,35 @@ function FabricInfillTab() {
           <DialogContent>
             <DialogHeader><DialogTitle>Add Fabric Infill</DialogTitle></DialogHeader>
             <div className="space-y-4">
-              <div><Label>Fabric Type</Label><Input value={form.glassType} onChange={(e) => setForm({ ...form, glassType: e.target.value })} placeholder="e.g. 6.38mm Laminated Clear" /></div>
+              <div><Label>Fabric Range Name</Label><Input value={form.glassType} onChange={(e) => setForm({ ...form, glassType: e.target.value })} placeholder="e.g. Ombra 6% Fabric" /></div>
+              <div><Label>Fabric Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select></div>
+              <div className="grid grid-cols-3 gap-4">
+                <div><Label>Brand</Label><Input value={form.fabricBrand} onChange={(e) => setForm({ ...form, fabricBrand: e.target.value })} placeholder="e.g. Cotewood" /></div>
+                <div><Label>Fabric Type</Label><Input value={form.fabricType} onChange={(e) => setForm({ ...form, fabricType: e.target.value })} placeholder="e.g. PVC Mesh" /></div>
+                <div><Label>Width</Label><Input value={form.fabricWidth} onChange={(e) => setForm({ ...form, fabricWidth: e.target.value })} placeholder="e.g. 3200 mm" /></div>
+              </div>
               <div><Label>Description (optional)</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
               <div className="grid grid-cols-2 gap-4">
                 <div><Label>Cost ($)</Label><Input type="number" step="0.01" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} /></div>
                 <div><Label>UOM</Label><Input value={form.uom} onChange={(e) => setForm({ ...form, uom: e.target.value })} placeholder="e.g. m2, ea" /></div>
               </div>
-              <Button className="w-full" disabled={!form.glassType || !form.cost || createMutation.isPending} onClick={() => createMutation.mutate({ glassType: form.glassType, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
+              <Button className="w-full" disabled={!form.glassType || !form.cost || createMutation.isPending} onClick={() => createMutation.mutate({ glassType: form.glassType, category: form.category, fabricBrand: form.fabricBrand || undefined, fabricType: form.fabricType || undefined, fabricWidth: form.fabricWidth || undefined, description: form.description || undefined, cost: parseFloat(form.cost), uom: form.uom })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
             </div>
           </DialogContent>
         </Dialog>
       </div>
       <Table>
-        <TableHeader><TableRow><TableHead>Fabric Type</TableHead><TableHead>Description</TableHead><TableHead>Cost</TableHead><TableHead>UOM</TableHead><TableHead className="w-16"></TableHead></TableRow></TableHeader>
+        <TableHeader><TableRow><TableHead>Fabric Range</TableHead><TableHead>Category</TableHead><TableHead>Brand</TableHead><TableHead>Type</TableHead><TableHead>Width</TableHead><TableHead>Cost</TableHead><TableHead>UOM</TableHead><TableHead className="w-16"></TableHead></TableRow></TableHeader>
         <TableBody>
-          {isLoading ? <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">Loading...</TableCell></TableRow>
-          : fabrics.length === 0 ? <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No fabric types configured</TableCell></TableRow>
+          {isLoading ? <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground">Loading...</TableCell></TableRow>
+          : fabrics.length === 0 ? <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground">No fabric types configured</TableCell></TableRow>
           : fabrics.map((g: any) => (
             <TableRow key={g.id}>
               <TableCell className="font-medium">{g.glassType}</TableCell>
-              <TableCell className="text-muted-foreground">{g.description || "—"}</TableCell>
+              <TableCell><Badge variant="outline">{g.categoryName || (g.categoryNumber ? `Category ${g.categoryNumber}` : "—")}</Badge></TableCell>
+              <TableCell>{g.fabricBrand || "—"}</TableCell>
+              <TableCell className="text-muted-foreground">{g.fabricType || g.description || "—"}</TableCell>
+              <TableCell>{g.fabricWidth || "—"}</TableCell>
               <TableCell className="font-mono">${parseFloat(g.cost).toFixed(2)}</TableCell>
               <TableCell>{g.uom}</TableCell>
               <TableCell><Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate({ id: g.id })}><Trash2 className="h-4 w-4 text-destructive" /></Button></TableCell>
@@ -430,13 +443,13 @@ function ColoursTab() {
 
 function PricingMatrixTab() {
   const utils = trpc.useUtils();
-  const [brand, setBrand] = useState<string>("standard");
-  const [productType, setProductType] = useState<string>("roller_blind");
+  const [brand, setBrand] = useState<string>("category1");
+  const [productType, setProductType] = useState<string>("zipguideawnings");
   const { data: matrix = [], isLoading } = trpc.blinds.getMatrix.useQuery({ brand, productType });
   const importMutation = trpc.blinds.importMatrixCsv.useMutation({
     onSuccess: (result) => {
       utils.blinds.getMatrix.invalidate({ brand, productType });
-      toast.success(`Imported ${result.imported} pricing rows`);
+      toast.success(`Imported ${result.imported} pricing rows${result.combinations && result.combinations > 1 ? ` across ${result.combinations} combinations` : ""}`);
     },
     onError: (e) => toast.error(e.message),
   });
@@ -465,8 +478,8 @@ function PricingMatrixTab() {
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Pricing Matrix (Read-Only)</h3>
         <div className="flex gap-2">
-          <Select value={brand} onValueChange={setBrand}><SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="premium">Premium</SelectItem></SelectContent></Select>
-          <Select value={productType} onValueChange={setProductType}><SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="roller_blind">Roller Blind</SelectItem><SelectItem value="vertical_blind">Vertical Blind</SelectItem><SelectItem value="venetian_blind">Venetian Blind</SelectItem></SelectContent></Select>
+          <Select value={brand} onValueChange={setBrand}><SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent></Select>
+          <Select value={productType} onValueChange={setProductType}><SelectTrigger className="w-[220px]"><SelectValue /></SelectTrigger><SelectContent>{BLIND_PRODUCT_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}</SelectContent></Select>
           <Label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border bg-background px-3 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground">
             <Upload className="h-4 w-4" />
             {importMutation.isPending ? "Importing..." : "Import CSV"}
@@ -483,6 +496,9 @@ function PricingMatrixTab() {
           </Label>
         </div>
       </div>
+      <p className="text-sm text-muted-foreground">
+        Showing {blindProductTypeLabel(productType)} pricing for {blindFabricCategoryLabel(brand)}. CSV imports can include multiple fabric categories for one blind type.
+      </p>
       {isLoading ? <p className="text-center text-muted-foreground py-8">Loading matrix...</p>
       : matrix.length === 0 ? <p className="text-center text-muted-foreground py-8">No pricing data</p>
       : (

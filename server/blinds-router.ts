@@ -5,6 +5,7 @@ import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { normalizeUserRole } from "../shared/const";
+import { blindFabricCategoryLabel, blindFabricCategoryNumber, blindFabricCategoryValue, blindProductTypeValue } from "../shared/blinds";
 import {
   crmLeads,
   masterData,
@@ -24,9 +25,16 @@ import {
 import { storagePut } from "./storage";
 
 type ParsedMatrixRow = {
+  brand: string;
+  productType: string;
+  fabricCategory: string;
+  fabricCategoryNumber: string;
+  categoryFabrics: string | null;
   widthMm: number;
   heightMm: number;
   priceIncGst: number;
+  discountedCost: number | null;
+  supplierListPrice: number | null;
 };
 
 async function requireDb() {
@@ -309,17 +317,11 @@ async function resolveScreenColour(db: any, tenantId: number, selection: unknown
 }
 
 function canonicalBrand(value: string) {
-  const key = compactKey(value);
-  if (key.includes("invisi")) return "invisigard";
-  if (key.includes("alu")) return "alugard";
-  return key;
+  return blindFabricCategoryValue(value);
 }
 
 function canonicalProductType(value: string) {
-  const key = compactKey(value);
-  if (key.includes("door")) return "door";
-  if (key.includes("window") || key.includes("screen")) return "window";
-  return key;
+  return blindProductTypeValue(value);
 }
 
 function compactSql(column: any) {
@@ -394,22 +396,43 @@ function parsePricingMatrixCsv(csv: string, brand: string, productType: string):
     return headers.findIndex((header) => keys.includes(header));
   };
 
-  const brandIndex = findHeader("brand");
-  const productTypeIndex = findHeader("productType", "type", "product");
+  const brandIndex = findHeader("brand", "fabricCategory", "fabricCategoryNumber", "category");
+  const fabricCategoryIndex = findHeader("fabricCategory", "fabricCategoryNumber", "category");
+  const fabricCategoryLabelIndex = findHeader("fabricCategory", "category");
+  const categoryFabricsIndex = findHeader("categoryFabrics", "fabrics");
+  const productTypeIndex = findHeader("productType", "type", "product", "blindType");
   const heightIndex = findHeader("heightMm", "height", "h");
   const widthIndex = findHeader("widthMm", "width", "w");
-  const priceIndex = findHeader("priceIncGst", "price", "incGst", "priceGst", "sellPrice");
+  const priceIndex = findHeader("priceIncGst", "sellPriceIncGst", "price", "incGst", "priceGst", "sellPrice");
+  const discountedCostIndex = findHeader("discountedCost", "unitCost", "cost");
+  const supplierListPriceIndex = findHeader("supplierListPrice", "listPrice");
 
   if (heightIndex >= 0 && widthIndex >= 0 && priceIndex >= 0) {
     return dataRows.flatMap((row) => {
-      if (brandIndex >= 0 && canonicalBrand(row[brandIndex] || "") !== canonicalBrand(brand)) return [];
-      if (productTypeIndex >= 0 && canonicalProductType(row[productTypeIndex] || "") !== canonicalProductType(productType)) return [];
+      const rowBrand = brandIndex >= 0 ? canonicalBrand(row[brandIndex] || brand) : canonicalBrand(brand);
+      const rowProductType = productTypeIndex >= 0 ? canonicalProductType(row[productTypeIndex] || productType) : canonicalProductType(productType);
+      if (brandIndex < 0 && rowBrand !== canonicalBrand(brand)) return [];
+      if (productTypeIndex < 0 && rowProductType !== canonicalProductType(productType)) return [];
 
       const heightMm = numberFromCell(row[heightIndex]);
       const widthMm = numberFromCell(row[widthIndex]);
       const priceIncGst = numberFromCell(row[priceIndex]);
       if (!heightMm || !widthMm || !priceIncGst) return [];
-      return [{ heightMm: Math.round(heightMm), widthMm: Math.round(widthMm), priceIncGst }];
+      const rawCategory = fabricCategoryIndex >= 0 ? row[fabricCategoryIndex] : rowBrand;
+      const categoryValue = blindFabricCategoryValue(rawCategory || rowBrand);
+      const categoryNumber = blindFabricCategoryNumber(categoryValue);
+      return [{
+        brand: categoryValue,
+        productType: rowProductType,
+        fabricCategory: fabricCategoryLabelIndex >= 0 ? (row[fabricCategoryLabelIndex] || blindFabricCategoryLabel(categoryValue)) : blindFabricCategoryLabel(categoryValue),
+        fabricCategoryNumber: categoryNumber,
+        categoryFabrics: categoryFabricsIndex >= 0 ? (row[categoryFabricsIndex] || null) : null,
+        heightMm: Math.round(heightMm),
+        widthMm: Math.round(widthMm),
+        priceIncGst,
+        discountedCost: discountedCostIndex >= 0 ? numberFromCell(row[discountedCostIndex]) : null,
+        supplierListPrice: supplierListPriceIndex >= 0 ? numberFromCell(row[supplierListPriceIndex]) : null,
+      }];
     });
   }
 
@@ -426,7 +449,19 @@ function parsePricingMatrixCsv(csv: string, brand: string, productType: string):
     return pivotWidthIndexes.flatMap(({ index, width }) => {
       const priceIncGst = numberFromCell(row[index]);
       if (!priceIncGst) return [];
-      return [{ heightMm: Math.round(heightMm), widthMm: Math.round(width), priceIncGst }];
+      const categoryValue = canonicalBrand(brand);
+      return [{
+        brand: categoryValue,
+        productType: canonicalProductType(productType),
+        fabricCategory: blindFabricCategoryLabel(categoryValue),
+        fabricCategoryNumber: blindFabricCategoryNumber(categoryValue),
+        categoryFabrics: null,
+        heightMm: Math.round(heightMm),
+        widthMm: Math.round(width),
+        priceIncGst,
+        discountedCost: null,
+        supplierListPrice: null,
+      }];
     });
   });
 }
@@ -759,7 +794,8 @@ export const blindsRouter = router({
       return db
         .select()
         .from(blindPricingMatrix)
-        .where(and(scope(blindPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(input.brand, input.productType)));
+        .where(and(scope(blindPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(input.brand, input.productType)))
+        .orderBy(asc(blindPricingMatrix.heightMm), asc(blindPricingMatrix.widthMm));
     }),
 
   importMatrixCsv: tenantAdminProcedure
@@ -780,27 +816,39 @@ export const blindsRouter = router({
         });
       }
 
-      const brand = canonicalBrand(input.brand);
-      const productType = canonicalProductType(input.productType);
+      const importedCombos = Array.from(
+        new Set(rows.map((row) => `${row.brand}\t${row.productType}`)),
+        (key) => {
+          const [brand, productType] = key.split("\t");
+          return { brand: brand || canonicalBrand(input.brand), productType: productType || canonicalProductType(input.productType) };
+        },
+      );
 
-      await db
-        .delete(blindPricingMatrix)
-        .where(and(scope(blindPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(brand, productType)));
+      for (const combo of importedCombos) {
+        await db
+          .delete(blindPricingMatrix)
+          .where(and(scope(blindPricingMatrix.tenantId, tenantId), pricingMatrixIdentity(combo.brand, combo.productType)));
+      }
 
       const chunkSize = 500;
       for (let i = 0; i < rows.length; i += chunkSize) {
         const chunk = rows.slice(i, i + chunkSize);
         await db.insert(blindPricingMatrix).values(chunk.map((row) => ({
           tenantId,
-          brand,
-          productType,
+          brand: row.brand,
+          productType: row.productType,
+          fabricCategory: row.fabricCategory,
+          fabricCategoryNumber: row.fabricCategoryNumber,
+          categoryFabrics: row.categoryFabrics,
           heightMm: row.heightMm,
           widthMm: row.widthMm,
+          discountedCost: row.discountedCost == null ? null : row.discountedCost.toFixed(2),
+          supplierListPrice: row.supplierListPrice == null ? null : row.supplierListPrice.toFixed(2),
           priceIncGst: row.priceIncGst.toFixed(2),
         })));
       }
 
-      return { imported: rows.length, brand, productType };
+      return { imported: rows.length, brand: importedCombos[0]?.brand, productType: importedCombos[0]?.productType, combinations: importedCombos.length };
     }),
 
   calculatePrice: tenantProcedure
@@ -914,7 +962,16 @@ export const blindsRouter = router({
         return db.select().from(blindProductOptions).where(and(...conditions)).orderBy(asc(blindProductOptions.category), asc(blindProductOptions.name));
       }),
     create: tenantAdminProcedure
-      .input(z.object({ category: z.string(), orderCode: z.string().optional(), name: z.string(), description: z.string().optional(), brand: z.string().optional(), costPrice: z.number(), sellPrice: z.number() }))
+      .input(z.object({
+        category: z.string(),
+        orderCode: z.string().optional(),
+        name: z.string(),
+        description: z.string().optional(),
+        brand: z.string().optional(),
+        costPrice: z.number(),
+        sellPrice: z.number(),
+        priceUnit: z.string().optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
@@ -927,6 +984,7 @@ export const blindsRouter = router({
           brand: input.brand || null,
           costPrice: input.costPrice.toFixed(2),
           sellPrice: input.sellPrice.toFixed(2),
+          priceUnit: input.priceUnit || null,
         });
         return { success: true };
       }),
@@ -941,17 +999,47 @@ export const blindsRouter = router({
   }),
 
   glassInfill: router({
-    list: tenantProcedure.query(async ({ ctx }) => {
-      const db = await requireDb();
-      const tenantId = tenantIdForContext(ctx);
-      return db.select().from(blindGlassInfill).where(and(scope(blindGlassInfill.tenantId, tenantId), eq(blindGlassInfill.isActive, true))).orderBy(asc(blindGlassInfill.glassType));
-    }),
+    list: tenantProcedure
+      .input(z.object({ category: z.string().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const conditions = [scope(blindGlassInfill.tenantId, tenantId), eq(blindGlassInfill.isActive, true)];
+        const categoryNumber = input?.category ? blindFabricCategoryNumber(input.category) : "";
+        if (categoryNumber) conditions.push(eq(blindGlassInfill.categoryNumber, categoryNumber));
+        return db
+          .select()
+          .from(blindGlassInfill)
+          .where(and(...conditions))
+          .orderBy(asc(blindGlassInfill.categoryNumber), asc(blindGlassInfill.glassType));
+      }),
     create: tenantAdminProcedure
-      .input(z.object({ glassType: z.string(), description: z.string().optional(), cost: z.number(), uom: z.string() }))
+      .input(z.object({
+        glassType: z.string(),
+        description: z.string().optional(),
+        cost: z.number(),
+        uom: z.string(),
+        category: z.string().optional(),
+        fabricBrand: z.string().optional(),
+        fabricType: z.string().optional(),
+        fabricWidth: z.string().optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        await db.insert(blindGlassInfill).values({ tenantId, glassType: input.glassType, description: input.description || null, cost: input.cost.toFixed(2), uom: input.uom });
+        const categoryValue = input.category ? blindFabricCategoryValue(input.category) : "";
+        await db.insert(blindGlassInfill).values({
+          tenantId,
+          glassType: input.glassType,
+          categoryName: categoryValue ? blindFabricCategoryLabel(categoryValue) : null,
+          categoryNumber: categoryValue ? blindFabricCategoryNumber(categoryValue) : null,
+          fabricBrand: input.fabricBrand || null,
+          fabricType: input.fabricType || null,
+          fabricWidth: input.fabricWidth || null,
+          description: input.description || null,
+          cost: input.cost.toFixed(2),
+          uom: input.uom,
+        });
         return { success: true };
       }),
     delete: tenantAdminProcedure
@@ -1290,7 +1378,9 @@ export const blindsRouter = router({
         await ensureSsQuoteItemDetailColumns(db);
         const existingItems = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId)));
         const itemNumber = existingItems.length + 1;
-        const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
+        const brand = canonicalBrand(input.brand);
+        const productType = canonicalProductType(input.productType);
+        const price = await interpolatePrice(db, tenantId, brand, productType, input.widthMm, input.heightMm);
         if (!price) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -1333,8 +1423,8 @@ export const blindsRouter = router({
           tenantId,
           quoteId: input.quoteId,
           itemNumber,
-          brand: input.brand,
-          productType: input.productType,
+          brand,
+          productType,
           widthMm: input.widthMm,
           heightMm: input.heightMm,
           quantity: input.quantity,
@@ -1406,7 +1496,9 @@ export const blindsRouter = router({
           .limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
 
-        const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
+        const brand = canonicalBrand(input.brand);
+        const productType = canonicalProductType(input.productType);
+        const price = await interpolatePrice(db, tenantId, brand, productType, input.widthMm, input.heightMm);
         if (!price) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -1446,8 +1538,8 @@ export const blindsRouter = router({
         const lineTotalExGst = (basePriceExGst + optionsTotal) * input.quantity;
 
         await db.update(blindQuoteItems).set({
-          brand: input.brand,
-          productType: input.productType,
+          brand,
+          productType,
           widthMm: input.widthMm,
           heightMm: input.heightMm,
           quantity: input.quantity,

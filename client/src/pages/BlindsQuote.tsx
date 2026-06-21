@@ -13,6 +13,14 @@ import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileTex
 import { toast } from "sonner";
 import { Link, useParams, useLocation } from "wouter";
 import { loadCompanyDetails, loadCustomLogo } from "@/lib/proposalStore";
+import {
+  BLIND_FABRIC_CATEGORIES,
+  BLIND_PRODUCT_TYPES,
+  blindFabricCategoryLabel,
+  blindFabricCategoryNumber,
+  blindOptionCategoryLabel,
+  blindProductTypeLabel,
+} from "@shared/blinds";
 
 const DEFAULT_BLIND_QUOTE_FORM = {
   clientName: "",
@@ -132,7 +140,7 @@ function blindQuotePrintHtml(quote: any) {
     <tr>
       <td>${escapeHtml(item.itemNumber)}</td>
       <td>
-        <strong>${escapeHtml(item.brand)} ${escapeHtml(item.productType)}</strong>
+        <strong>${escapeHtml(blindFabricCategoryLabel(item.brand))} ${escapeHtml(blindProductTypeLabel(item.productType))}</strong>
         ${item.handleSide ? `<div class="muted">Handle ${escapeHtml(item.handleSide)} | Hinge ${escapeHtml(item.hingeSide)} | Opens ${escapeHtml(item.openingDirection)}</div>` : ""}
         ${item.notes ? `<div class="muted">${escapeHtml(item.notes)}</div>` : ""}
       </td>
@@ -327,7 +335,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   const utils = trpc.useUtils();
   const { data: colours = [] } = trpc.blinds.colours.list.useQuery();
   const { data: productOptions = [] } = trpc.blinds.productOptions.list.useQuery();
-  const { data: fabricOptions = [] } = trpc.blinds.glassInfill.list.useQuery();
+  const { data: allFabricOptions = [] } = trpc.blinds.glassInfill.list.useQuery();
   const isEditing = Boolean(item?.id);
 
   const addItemMutation = trpc.blinds.quotes.addItem.useMutation({
@@ -349,8 +357,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   });
 
   const [form, setForm] = useState({
-    brand: "standard",
-    productType: "roller_blind",
+    brand: "category1",
+    productType: "zipguideawnings",
     widthMm: "",
     heightMm: "",
     quantity: "1",
@@ -366,7 +374,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
 
-  const resetForm = () => setForm({ brand: "standard", productType: "roller_blind", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", notes: "", selectedOptions: [] });
+  const resetForm = () => setForm({ brand: "category1", productType: "zipguideawnings", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", notes: "", selectedOptions: [] });
 
   useEffect(() => {
     if (!open) return;
@@ -377,8 +385,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     }
     setPhotoPreviewUrl(item.photoUrl || null);
     setForm({
-      brand: item.brand || "standard",
-      productType: item.productType || "roller_blind",
+      brand: item.brand || "category1",
+      productType: item.productType || "zipguideawnings",
       widthMm: item.widthMm ? String(item.widthMm) : "",
       heightMm: item.heightMm ? String(item.heightMm) : "",
       quantity: item.quantity ? String(item.quantity) : "1",
@@ -405,6 +413,11 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   );
 
   const selectedColour = colours.find((c: any) => blindColourValue(c) === form.colourId || String(c.id) === form.colourId);
+  const selectedFabricCategoryNumber = blindFabricCategoryNumber(form.brand);
+  const fabricOptions = allFabricOptions.filter((fabric: any) => {
+    const rowCategory = String(fabric.categoryNumber || "");
+    return !selectedFabricCategoryNumber || !rowCategory || rowCategory === selectedFabricCategoryNumber;
+  });
 
   const handleDialogPhotoUpload = (file: File | undefined) => {
     if (!file) return;
@@ -450,8 +463,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
           {/* Left column - Product & Size */}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              <div><Label>Brand</Label><Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="premium">Premium</SelectItem></SelectContent></Select></div>
-              <div><Label>Product Type</Label><Select value={form.productType} onValueChange={(v) => setForm({ ...form, productType: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="roller_blind">Roller Blind</SelectItem><SelectItem value="vertical_blind">Vertical Blind</SelectItem><SelectItem value="venetian_blind">Venetian Blind</SelectItem></SelectContent></Select></div>
+              <div><Label>Fabric Category</Label><Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v, glassInfillId: "" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>Blind Type</Label><Select value={form.productType} onValueChange={(v) => setForm({ ...form, productType: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_PRODUCT_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}</SelectContent></Select></div>
             </div>
 
             <div className="grid grid-cols-3 gap-4">
@@ -521,7 +534,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
                 <SelectTrigger><SelectValue placeholder="No fabric infill" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No fabric infill</SelectItem>
-                  {fabricOptions.map((g: any) => <SelectItem key={g.id} value={String(g.id)}>{g.glassType} — ${parseFloat(g.cost).toFixed(2)}/{g.uom}</SelectItem>)}
+                  {fabricOptions.map((g: any) => <SelectItem key={g.id} value={String(g.id)}>{g.glassType}{g.fabricBrand ? ` — ${g.fabricBrand}` : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -562,9 +575,9 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
                         <input type="checkbox" checked={isSelected} onChange={() => toggleOption(opt.id)} className="rounded" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{opt.name}</p>
-                          <p className="text-xs text-muted-foreground">{opt.brand ? `${opt.brand} — ` : ""}${parseFloat(opt.sellPrice).toFixed(2)}</p>
+                          <p className="text-xs text-muted-foreground">{opt.brand ? `${opt.brand} — ` : ""}${parseFloat(opt.sellPrice).toFixed(2)}{opt.priceUnit ? `/${opt.priceUnit}` : ""}</p>
                         </div>
-                        <Badge variant="outline" className="text-[10px]">{opt.category.replace("_", " ")}</Badge>
+                        <Badge variant="outline" className="text-[10px]">{blindOptionCategoryLabel(opt.category)}</Badge>
                       </label>
                     );
                   })}
@@ -825,7 +838,7 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
                 <TableRow key={item.id}>
                   <TableCell className="font-mono">{item.itemNumber}</TableCell>
                   <TableCell>
-                    <div><span className="font-medium capitalize">{item.brand}</span> <Badge variant="outline" className="text-xs">{item.productType}</Badge></div>
+                    <div><span className="font-medium">{blindFabricCategoryLabel(item.brand)}</span> <Badge variant="outline" className="text-xs">{blindProductTypeLabel(item.productType)}</Badge></div>
                     {item.handleSide && <p className="text-xs text-muted-foreground mt-0.5">Handle: {item.handleSide}, Hinge: {item.hingeSide}, Opens: {item.openingDirection}</p>}
                   </TableCell>
                   <TableCell className="font-mono">{item.widthMm}×{item.heightMm}</TableCell>
