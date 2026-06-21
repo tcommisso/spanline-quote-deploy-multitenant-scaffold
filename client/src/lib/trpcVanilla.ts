@@ -5,6 +5,7 @@
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import superjson from "superjson";
 import type { AppRouter } from "../../../server/routers";
+import { getSelectedTenantHeader } from "./tenantSelection";
 
 export const trpcVanilla = createTRPCClient<AppRouter>({
   links: [
@@ -20,6 +21,10 @@ export const trpcVanilla = createTRPCClient<AppRouter>({
         const tradePortalToken = localStorage.getItem("trade_portal_session_token");
         if (tradePortalToken) {
           headers["x-trade-portal-session"] = tradePortalToken;
+        }
+        const selectedTenantId = getSelectedTenantHeader();
+        if (selectedTenantId) {
+          headers["x-tenant-id"] = selectedTenantId;
         }
         return headers;
       },

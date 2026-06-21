@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
 import { getLoginUrl } from "./const";
+import { getSelectedTenantHeader } from "./lib/tenantSelection";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -67,6 +68,10 @@ const trpcClient = trpc.createClient({
         const tradePortalToken = localStorage.getItem("trade_portal_session_token");
         if (tradePortalToken) {
           headers["x-trade-portal-session"] = tradePortalToken;
+        }
+        const selectedTenantId = getSelectedTenantHeader();
+        if (selectedTenantId) {
+          headers["x-tenant-id"] = selectedTenantId;
         }
         return headers;
       },

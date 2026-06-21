@@ -5,6 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -137,6 +138,7 @@ import { QuickCompose } from "@/components/QuickCompose";
 import { useUnreadNotification } from "@/hooks/useUnreadNotification";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { getSelectedTenantId, setSelectedTenantId } from "@/lib/tenantSelection";
 
 // ─── Menu item type ───────────────────────────────────────────────────────────────
 type MenuItem = { icon: LucideIcon; label: string; path: string; badge?: number };
@@ -567,6 +569,36 @@ function DashboardLayoutContent({
   const isAdmin = isAdminRole(user?.role || "");
   const isOfficeOrAdmin = isAdmin || user?.role === "office_user";
   const weather = useWeather();
+  const { data: tenantOptions = [] } = trpc.tenants.myTenants.useQuery(undefined, {
+    enabled: Boolean(user),
+    staleTime: 60_000,
+  });
+  const [selectedTenantId, setSelectedTenantIdState] = useState<number | null>(() => getSelectedTenantId());
+  const currentTenant = useMemo(() => {
+    if (!tenantOptions.length) return null;
+    return (
+      tenantOptions.find(tenant => tenant.tenantId === selectedTenantId) ??
+      tenantOptions.find(tenant => tenant.isDefault) ??
+      tenantOptions[0]
+    );
+  }, [selectedTenantId, tenantOptions]);
+  const showTenantSwitcher = tenantOptions.length > 1;
+
+  useEffect(() => {
+    if (!tenantOptions.length || !selectedTenantId) return;
+    if (tenantOptions.some(tenant => tenant.tenantId === selectedTenantId)) return;
+
+    setSelectedTenantId(null);
+    setSelectedTenantIdState(null);
+  }, [selectedTenantId, tenantOptions]);
+
+  const switchTenant = useCallback((tenantId: number) => {
+    if (tenantId === selectedTenantId) return;
+
+    setSelectedTenantId(tenantId);
+    setSelectedTenantIdState(tenantId);
+    window.location.reload();
+  }, [selectedTenantId]);
 
   // ─── Close mobile sidebar on route change (with brief delay for slide-out animation) ──
   const { setOpenMobile, openMobile } = useSidebar();
@@ -1464,6 +1496,47 @@ function DashboardLayoutContent({
             <GlobalSearch />
           </div>
           <div className="flex items-center gap-1">
+            {showTenantSwitcher && currentTenant && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-9 max-w-[44px] px-2 sm:max-w-[180px] sm:px-3"
+                    title={`Tenant: ${currentTenant.name}`}
+                  >
+                    <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="hidden truncate text-xs font-medium sm:inline">
+                      {currentTenant.name}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <DropdownMenuLabel className="text-xs text-muted-foreground">
+                    Tenant
+                  </DropdownMenuLabel>
+                  {tenantOptions.map(tenant => (
+                    <DropdownMenuItem
+                      key={tenant.tenantId}
+                      onSelect={() => switchTenant(tenant.tenantId)}
+                      className="flex items-start justify-between gap-3"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{tenant.name}</span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {tenant.slug}
+                          {tenant.isDefault ? " · Default" : ""}
+                        </span>
+                      </span>
+                      {tenant.tenantId === currentTenant.tenantId && (
+                        <span className="mt-0.5 text-xs font-semibold text-primary">Active</span>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             {/* Messages icon with unread badge */}
             <button
               onClick={() => setLocation("/inbox")}
