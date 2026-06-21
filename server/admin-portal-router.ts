@@ -3,7 +3,7 @@ import { tenantAdminProcedure as adminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import { eq, desc, and, or } from "drizzle-orm";
 import {
-  portalAccess, portalDocuments, portalDefects, portalMaintenanceRequests,
+  portalAccess, portalSessions, portalDocuments, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, portalContacts, portalVariations,
   cpcPlans, cpcSubscriptions, cpcServiceHistory, constructionJobs,
   portalPhotoComments, quotes, crmLeads,
@@ -13,6 +13,7 @@ import crypto from "crypto";
 import { triggerPushDocumentUploaded, triggerPushVariationCreated, triggerPushClientNewsPublished } from "./push-triggers";
 import { sendNotificationEmail } from "./email";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { buildTrustedAppUrlForTenant } from "./_core/url";
 
 function generateToken(length = 64): string {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
@@ -113,6 +114,65 @@ export const adminPortalRouter = router({
       await db.update(portalAccess)
         .set({ isActive: true })
         .where(and(...conditions));
+      return { success: true };
+    }),
+
+  sendPortalMagicLink: adminProcedure
+    .input(z.object({ id: z.number(), origin: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const conditions = [eq(portalAccess.id, input.id)];
+      appendTenantScope(conditions, portalAccess.tenantId, tenantIdFromContext(ctx));
+      const [access] = await db.select()
+        .from(portalAccess)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!access) throw new TRPCError({ code: "NOT_FOUND", message: "Client portal access not found" });
+
+      const magicLinkToken = generateToken(32);
+      const sessionToken = generateToken(64);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+      await db.insert(portalSessions).values({
+        portalAccessId: access.id,
+        sessionToken,
+        magicLinkToken,
+        magicLinkExpiresAt: expiresAt,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+
+      const magicLinkUrl = await buildTrustedAppUrlForTenant(
+        ctx.req,
+        access.tenantId ?? ctx.tenant?.id ?? null,
+        `/portal/login?magic=${encodeURIComponent(magicLinkToken)}`,
+        input.origin,
+      );
+
+      const emailResult = await sendNotificationEmail({
+        tenantId: access.tenantId ?? ctx.tenant?.id ?? null,
+        to: access.clientEmail,
+        subject: "Your Altaspan Client Portal Login Link",
+        htmlBody: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a1a1a;">Altaspan Client Portal</h2>
+            <p>Hi ${access.clientName || "there"},</p>
+            <p>A new login link has been generated for your client portal access.</p>
+            <a href="${magicLinkUrl}" style="display: inline-block; background: #0d9488; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 16px 0;">
+              Access Client Portal
+            </a>
+            <p style="color: #666; font-size: 14px;">This link expires in 30 minutes.</p>
+          </div>
+        `,
+        module: "admin",
+      });
+
+      if (!emailResult.success) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: emailResult.error || "Client portal email could not be sent" });
+      }
+
       return { success: true };
     }),
 

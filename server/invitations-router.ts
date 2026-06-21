@@ -1,15 +1,16 @@
 import { z } from "zod";
 import { protectedProcedure, tenantAdminProcedure as adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { constructionInstallers, invitations, tenantMemberships, tradePortalAccess, tradePortalSessions, users } from "../drizzle/schema";
+import { constructionInstallers, constructionJobs, invitations, portalAccess, portalSessions, tenantMemberships, tradePortalAccess, tradePortalSessions, users } from "../drizzle/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { sendNotificationEmail } from "./email";
 import { randomBytes } from "crypto";
 import { buildTrustedAppUrl, buildTrustedAppUrlForTenant } from "./_core/url";
 
 const APP_INVITE_ROLES = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"] as const;
-const INVITE_ROLES = [...APP_INVITE_ROLES, "trade"] as const;
+const INVITE_ROLES = [...APP_INVITE_ROLES, "trade", "client"] as const;
 type AppInviteRole = typeof APP_INVITE_ROLES[number];
+const TRADE_INVITE_TYPES = ["installer", "electrician", "plumber", "roofer", "carpenter", "concreter", "painter", "tiler", "fencer", "labourer", "other"] as const;
 
 function generateToken(): string {
   return randomBytes(32).toString("hex");
@@ -29,7 +30,7 @@ function assertEmailSent(result: { success: boolean; error?: string }) {
   }
 }
 
-async function sendTradePortalInvitation(ctx: any, input: { email: string; name: string; origin?: string }) {
+async function sendTradePortalInvitation(ctx: any, input: { email: string; name: string; tradeType?: typeof TRADE_INVITE_TYPES[number]; origin?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -50,6 +51,7 @@ async function sendTradePortalInvitation(ctx: any, input: { email: string; name:
     const updates: Record<string, unknown> = {};
     if (!existingInstaller.active) updates.active = true;
     if (!existingInstaller.name && name) updates.name = name;
+    if (input.tradeType && existingInstaller.tradeType !== input.tradeType) updates.tradeType = input.tradeType;
     if (Object.keys(updates).length > 0) {
       await db.update(constructionInstallers)
         .set(updates)
@@ -63,7 +65,7 @@ async function sendTradePortalInvitation(ctx: any, input: { email: string; name:
       tenantId,
       name,
       email,
-      tradeType: "installer",
+      tradeType: input.tradeType || "installer",
       active: true,
     }).$returningId();
     installerId = inserted.id;
@@ -149,6 +151,104 @@ async function sendTradePortalInvitation(ctx: any, input: { email: string; name:
   return { success: true, type: "trade" as const, installerId, accessId };
 }
 
+async function sendClientPortalInvitation(ctx: any, input: { email: string; name: string; constructionJobId?: number; origin?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  if (!input.constructionJobId) throw new Error("Select a construction job for client portal access");
+
+  const tenantId = ctx.tenant!.id;
+  const email = normaliseEmail(input.email);
+  const [job] = await db.select()
+    .from(constructionJobs)
+    .where(and(
+      eq(constructionJobs.tenantId, tenantId),
+      eq(constructionJobs.id, input.constructionJobId),
+    ))
+    .limit(1);
+
+  if (!job) throw new Error("Construction job not found for this tenant");
+
+  const clientName = input.name.trim() || job.clientName || "Client";
+  const token = generateLongToken(64);
+  const [existingAccess] = await db.select()
+    .from(portalAccess)
+    .where(and(
+      eq(portalAccess.tenantId, tenantId),
+      eq(portalAccess.constructionJobId, job.id),
+      eq(portalAccess.clientEmail, email),
+    ))
+    .limit(1);
+
+  let accessId = existingAccess?.id;
+  if (existingAccess) {
+    await db.update(portalAccess)
+      .set({ clientName, clientEmail: email, token, isActive: true })
+      .where(and(
+        eq(portalAccess.tenantId, tenantId),
+        eq(portalAccess.id, existingAccess.id),
+      ));
+  } else {
+    const [insertedAccess] = await db.insert(portalAccess).values({
+      tenantId,
+      constructionJobId: job.id,
+      clientName,
+      clientEmail: email,
+      token,
+      isActive: true,
+    }).$returningId();
+    accessId = insertedAccess.id;
+  }
+
+  if (!accessId) throw new Error("Could not create client portal access");
+
+  const sessionToken = generateLongToken(64);
+  const magicLinkToken = generateLongToken(32);
+  const magicLinkExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  await db.insert(portalSessions).values({
+    portalAccessId: accessId,
+    sessionToken,
+    magicLinkToken,
+    magicLinkExpiresAt,
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  });
+
+  const magicLinkUrl = await buildTrustedAppUrlForTenant(
+    ctx.req,
+    tenantId,
+    `/portal/login?magic=${encodeURIComponent(magicLinkToken)}`,
+    input.origin,
+  );
+
+  const emailResult = await sendNotificationEmail({
+    tenantId,
+    to: email,
+    subject: "Your Altaspan Client Portal Login Link",
+    htmlBody: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #1e293b;">Hi ${clientName || "there"},</h2>
+        <p style="color: #334155; line-height: 1.6;">
+          ${ctx.user!.name || "An administrator"} has invited you to use the <strong>Altaspan Client Portal</strong>.
+        </p>
+        <p style="color: #334155; line-height: 1.6;">
+          Click the button below to access your project documents, updates, invoices, and messages.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${magicLinkUrl}" style="background-color: #0d9488; color: white; padding: 12px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
+            Access Client Portal
+          </a>
+        </div>
+        <p style="color: #64748b; font-size: 14px; line-height: 1.5;">
+          This login link expires in 30 minutes. If it expires, use the Client Portal login page to request a fresh link.
+        </p>
+      </div>
+    `,
+    module: "admin",
+  });
+  assertEmailSent(emailResult);
+
+  return { success: true, type: "client" as const, accessId, constructionJobId: job.id };
+}
+
 export const invitationsRouter = router({
   // ─── Create Invitation (Admin) ─────────────────────────────────────────────
   create: adminProcedure
@@ -156,6 +256,8 @@ export const invitationsRouter = router({
       email: z.string().email("Valid email is required"),
       name: z.string().min(1, "Name is required").max(255),
       role: z.enum(INVITE_ROLES),
+      tradeType: z.enum(TRADE_INVITE_TYPES).optional(),
+      constructionJobId: z.number().optional(),
       origin: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -164,6 +266,9 @@ export const invitationsRouter = router({
 
       if (input.role === "trade") {
         return sendTradePortalInvitation(ctx, input);
+      }
+      if (input.role === "client") {
+        return sendClientPortalInvitation(ctx, input);
       }
 
       // Check if there's already a pending invitation for this email
@@ -336,6 +441,8 @@ export const invitationsRouter = router({
         email: z.string().email(),
         name: z.string().min(1).max(255),
         role: z.enum(INVITE_ROLES),
+        tradeType: z.enum(TRADE_INVITE_TYPES).optional(),
+        constructionJobId: z.number().optional(),
       })).min(1).max(100),
       origin: z.string().optional(),
     }))
@@ -349,6 +456,11 @@ export const invitationsRouter = router({
         try {
           if (invite.role === "trade") {
             await sendTradePortalInvitation(ctx, { ...invite, origin: input.origin });
+            results.push({ email: invite.email, success: true });
+            continue;
+          }
+          if (invite.role === "client") {
+            await sendClientPortalInvitation(ctx, { ...invite, origin: input.origin });
             results.push({ email: invite.email, success: true });
             continue;
           }

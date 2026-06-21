@@ -1607,19 +1607,28 @@ function InvitationsManager() {
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [showBulkDialog, setShowBulkDialog] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "user" as string });
-  const [bulkInvites, setBulkInvites] = useState<{email:string;name:string;role:string}[]>([]);
+  const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "user" as string, tradeType: "installer", constructionJobId: "" });
+  const [bulkInvites, setBulkInvites] = useState<{email:string;name:string;role:string;tradeType?:string;constructionJobId?:number}[]>([]);
   const [bulkError, setBulkError] = useState<string>("");
+  const utils = trpc.useUtils();
 
   const invitationsQuery = trpc.invitations.list.useQuery(
     statusFilter === "all" ? undefined : { status: statusFilter as any }
   );
+  const clientPortalAccessQuery = trpc.adminPortal.listPortalAccess.useQuery();
+  const tradePortalAccessQuery = trpc.adminTradePortal.listAccess.useQuery();
+  const jobsQuery = trpc.adminPortal.listJobs.useQuery(undefined, { enabled: showInviteDialog && inviteForm.role === "client" });
   const createMutation = trpc.invitations.create.useMutation({
-    onSuccess: () => {
-      toast.success("Invitation sent successfully");
+    onSuccess: (data: any) => {
+      toast.success(data?.type === "client" || data?.type === "trade" ? "Portal login link sent" : "Invitation sent successfully");
       invitationsQuery.refetch();
+      utils.adminPortal.listPortalAccess.invalidate();
+      utils.adminTradePortal.listAccess.invalidate();
+      utils.adminTradePortal.tradesWithoutAccess.invalidate();
+      utils.people.search.invalidate();
+      utils.people.counts.invalidate();
       setShowInviteDialog(false);
-      setInviteForm({ email: "", name: "", role: "user" });
+      setInviteForm({ email: "", name: "", role: "user", tradeType: "installer", constructionJobId: "" });
     },
     onError: (err) => toast.error(err.message),
   });
@@ -1631,10 +1640,22 @@ function InvitationsManager() {
     onSuccess: () => toast.success("Invitation resent"),
     onError: (err) => toast.error(err.message),
   });
+  const resendClientPortalMutation = trpc.adminPortal.sendPortalMagicLink.useMutation({
+    onSuccess: () => toast.success("Client portal login link sent"),
+    onError: (err) => toast.error(err.message),
+  });
+  const resendTradePortalMutation = trpc.adminTradePortal.regenerateToken.useMutation({
+    onSuccess: () => toast.success("Trade portal login link sent"),
+    onError: (err) => toast.error(err.message),
+  });
   const bulkCreateMutation = trpc.invitations.bulkCreate.useMutation({
     onSuccess: (data) => {
       toast.success(`${data.successCount} of ${data.totalCount} invitations sent`);
       invitationsQuery.refetch();
+      utils.adminPortal.listPortalAccess.invalidate();
+      utils.adminTradePortal.listAccess.invalidate();
+      utils.people.search.invalidate();
+      utils.people.counts.invalidate();
       setShowBulkDialog(false);
       setBulkInvites([]);
     },
@@ -1651,17 +1672,27 @@ function InvitationsManager() {
       const lines = text.split(/\r?\n/).filter(l => l.trim());
       // Skip header if it looks like one
       const startIdx = lines[0]?.toLowerCase().includes("email") ? 1 : 0;
-      const validRoles = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse", "trade"];
-      const parsed: {email:string;name:string;role:string}[] = [];
+      const validRoles = ["user", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse", "trade", "client"];
+      const parsed: {email:string;name:string;role:string;tradeType?:string;constructionJobId?:number}[] = [];
       const errors: string[] = [];
       for (let i = startIdx; i < lines.length; i++) {
         const cols = lines[i].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
         if (cols.length < 2) { errors.push(`Row ${i+1}: needs at least email and name`); continue; }
-        const [email, name, role] = cols;
+        const [email, name, role, extra] = cols;
         if (!email || !email.includes("@")) { errors.push(`Row ${i+1}: invalid email "${email}"`); continue; }
         if (!name) { errors.push(`Row ${i+1}: name is required`); continue; }
         const finalRole = role && validRoles.includes(role) ? role : "user";
-        parsed.push({ email, name, role: finalRole });
+        if (finalRole === "client" && (!extra || Number.isNaN(Number(extra)))) {
+          errors.push(`Row ${i+1}: client portal invites need construction job id in column 4`);
+          continue;
+        }
+        parsed.push({
+          email,
+          name,
+          role: finalRole,
+          tradeType: finalRole === "trade" ? extra || "installer" : undefined,
+          constructionJobId: finalRole === "client" ? Number(extra) : undefined,
+        });
       }
       if (errors.length > 0) setBulkError(errors.slice(0, 5).join("; "));
       setBulkInvites(parsed);
@@ -1679,6 +1710,7 @@ function InvitationsManager() {
     { value: "driver", label: "Driver" },
     { value: "warehouse", label: "Warehouse" },
     { value: "trade", label: "Trade Portal" },
+    { value: "client", label: "Client Portal" },
   ];
 
   function getStatusBadge(status: string) {
@@ -1690,6 +1722,33 @@ function InvitationsManager() {
       default: return <Badge variant="outline">{status}</Badge>;
     }
   }
+
+  const isPortalInvite = inviteForm.role === "trade" || inviteForm.role === "client";
+  const canSendInvite = Boolean(inviteForm.email.trim() && inviteForm.name.trim() && (inviteForm.role !== "client" || inviteForm.constructionJobId));
+  const portalAccessRows = [
+    ...(tradePortalAccessQuery.data || []).map((access: any) => ({
+      id: `trade-${access.id}`,
+      rawId: access.id,
+      type: "trade" as const,
+      name: access.installerName || `Trade #${access.installerId}`,
+      email: access.email,
+      detail: getTradeTypeLabel(access.installerTradeType || "installer"),
+      isActive: access.isActive,
+      lastAccessedAt: access.lastAccessedAt,
+      createdAt: access.createdAt,
+    })),
+    ...(clientPortalAccessQuery.data || []).map((access: any) => ({
+      id: `client-${access.id}`,
+      rawId: access.id,
+      type: "client" as const,
+      name: access.clientName || "Client",
+      email: access.clientEmail,
+      detail: `Job #${access.constructionJobId}`,
+      isActive: access.isActive,
+      lastAccessedAt: access.lastAccessedAt,
+      createdAt: access.createdAt,
+    })),
+  ].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
   return (
     <div className="space-y-4">
@@ -1713,7 +1772,7 @@ function InvitationsManager() {
             <Upload className="h-4 w-4 mr-1" /> Bulk CSV
           </Button>
           <Button onClick={() => setShowInviteDialog(true)}>
-            <Plus className="h-4 w-4 mr-1" /> Invite User
+            <Plus className="h-4 w-4 mr-1" /> Invite Access
           </Button>
         </div>
       </div>
@@ -1727,7 +1786,7 @@ function InvitationsManager() {
           <CardContent className="py-8 text-center text-muted-foreground">
             <Link2 className="h-8 w-8 mx-auto mb-2 opacity-50" />
             <p>No invitations found</p>
-            <p className="text-sm">Click "Invite User" to send your first invitation</p>
+            <p className="text-sm">Click "Invite Access" to invite staff, trades, or clients</p>
           </CardContent>
         </Card>
       ) : (
@@ -1791,6 +1850,68 @@ function InvitationsManager() {
         </div>
       )}
 
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Portal Access Links</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Trades and clients use secure portal login links. They can also request a fresh link from their portal login page.
+          </p>
+        </CardHeader>
+        <CardContent>
+          {clientPortalAccessQuery.isLoading || tradePortalAccessQuery.isLoading ? (
+            <div className="space-y-2">
+              {[1,2].map(i => <Skeleton key={i} className="h-16 w-full" />)}
+            </div>
+          ) : portalAccessRows.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              No trade or client portal access has been granted yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {portalAccessRows.map((access) => (
+                <div key={access.id} className="rounded-lg border p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className={access.type === "trade" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-teal-50 text-teal-700 border-teal-200"}>
+                          {access.type === "trade" ? "Trade Portal" : "Client Portal"}
+                        </Badge>
+                        <span className="font-medium">{access.name}</span>
+                        {access.isActive ? (
+                          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">Active</Badge>
+                        ) : (
+                          <Badge variant="outline" className="bg-gray-50 text-gray-500 border-gray-200">Disabled</Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate text-sm text-muted-foreground">{access.email}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {access.detail}
+                        {access.lastAccessedAt ? ` - Last login ${formatRelativeTime(access.lastAccessedAt)}` : " - Not logged in yet"}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      disabled={resendClientPortalMutation.isPending || resendTradePortalMutation.isPending || !access.isActive}
+                      onClick={() => {
+                        if (access.type === "trade") {
+                          resendTradePortalMutation.mutate({ id: access.rawId, origin: window.location.origin });
+                        } else {
+                          resendClientPortalMutation.mutate({ id: access.rawId, origin: window.location.origin });
+                        }
+                      }}
+                    >
+                      Resend Login Link
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Bulk CSV Dialog */}
       <Dialog open={showBulkDialog} onOpenChange={setShowBulkDialog}>
         <DialogContent className="max-w-lg">
@@ -1799,8 +1920,8 @@ function InvitationsManager() {
           </DialogHeader>
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Upload a CSV file with columns: <strong>email, name, role</strong> (role is optional, defaults to "user").
-              Valid roles: user, admin, design_adviser, office_user, construction_user, driver, warehouse, trade.
+              Upload a CSV file with columns: <strong>email, name, role, extra</strong> (role is optional, defaults to "user").
+              For trade portal invites, extra can be the trade type. For client portal invites, extra must be the construction job id.
             </p>
             <Input type="file" accept=".csv" onChange={handleCsvUpload} />
             {bulkError && <p className="text-sm text-destructive">{bulkError}</p>}
@@ -1812,6 +1933,7 @@ function InvitationsManager() {
                       <th className="text-left p-2">Email</th>
                       <th className="text-left p-2">Name</th>
                       <th className="text-left p-2">Role</th>
+                      <th className="text-left p-2">Extra</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1820,6 +1942,7 @@ function InvitationsManager() {
                         <td className="p-2">{inv.email}</td>
                         <td className="p-2">{inv.name}</td>
                         <td className="p-2">{inv.role}</td>
+                        <td className="p-2">{inv.constructionJobId || inv.tradeType || "-"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1846,7 +1969,7 @@ function InvitationsManager() {
       <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Invite User</DialogTitle>
+            <DialogTitle>Invite Access</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
@@ -1867,8 +1990,8 @@ function InvitationsManager() {
               />
             </div>
             <div>
-              <Label>Role</Label>
-              <Select value={inviteForm.role} onValueChange={(v) => setInviteForm(f => ({ ...f, role: v }))}>
+              <Label>Access Type</Label>
+              <Select value={inviteForm.role} onValueChange={(v) => setInviteForm(f => ({ ...f, role: v, constructionJobId: v === "client" ? f.constructionJobId : "" }))}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -1879,9 +2002,52 @@ function InvitationsManager() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">
-                System users receive an app invitation. Trade Portal users receive a secure login link and can request a fresh link from the Trade Portal login page.
+                Staff receive an app invitation. Trades and clients receive secure portal login links and can request a fresh link from the relevant portal login page.
               </p>
             </div>
+            {inviteForm.role === "trade" && (
+              <div>
+                <Label>Trade Type</Label>
+                <Select value={inviteForm.tradeType} onValueChange={(v) => setInviteForm(f => ({ ...f, tradeType: v }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TRADE_TYPE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  This creates or updates the trade record and sends a Trade Portal login link. No Entra guest setup is required.
+                </p>
+              </div>
+            )}
+            {inviteForm.role === "client" && (
+              <div>
+                <Label>Construction Job *</Label>
+                <Select value={inviteForm.constructionJobId} onValueChange={(v) => setInviteForm(f => ({ ...f, constructionJobId: v }))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select the client's job" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {jobsQuery.data?.map((job: any) => (
+                      <SelectItem key={job.id} value={String(job.id)}>
+                        {job.quoteNumber || `Job #${job.id}`} - {job.clientName || "Client"} ({job.status})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Client portal access is limited to the selected job, including documents, updates, invoices, and messages for that job.
+                </p>
+              </div>
+            )}
+            {isPortalInvite && (
+              <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                Portal users are not system users. They cannot access the admin app, and their portal session remains scoped to their trade record or selected client job.
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowInviteDialog(false)}>Cancel</Button>
@@ -1890,11 +2056,13 @@ function InvitationsManager() {
                 email: inviteForm.email,
                 name: inviteForm.name,
                 role: inviteForm.role as any,
+                tradeType: inviteForm.role === "trade" ? inviteForm.tradeType as any : undefined,
+                constructionJobId: inviteForm.role === "client" ? Number(inviteForm.constructionJobId) : undefined,
                 origin: window.location.origin,
               })}
-              disabled={!inviteForm.email.trim() || !inviteForm.name.trim() || createMutation.isPending}
+              disabled={!canSendInvite || createMutation.isPending}
             >
-              {createMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Sending...</> : "Send Invitation"}
+              {createMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Sending...</> : isPortalInvite ? "Send Portal Link" : "Send Invitation"}
             </Button>
           </DialogFooter>
         </DialogContent>
