@@ -1049,11 +1049,11 @@ function AccessManagementTab() {
         <h3 className="text-lg font-semibold">Access Management</h3>
         <Dialog open={showCreate} onOpenChange={(open) => { if (!open) resetForm(); else setShowCreate(true); }}>
           <DialogTrigger asChild>
-            <Button size="sm"><Plus className="w-4 h-4 mr-1" /> Grant Access</Button>
+            <Button size="sm"><Plus className="w-4 h-4 mr-1" /> Invite Access</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Grant Trade Portal Access</DialogTitle>
+              <DialogTitle>Invite Trade Portal Access</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div>
@@ -1083,7 +1083,7 @@ function AccessManagementTab() {
                   })}
                   disabled={createMutation.isPending || !selectedTradeId}
                 >
-                  Grant Access
+                  Send Invitation
                 </Button>
                 <Button variant="outline" onClick={resetForm}>Cancel</Button>
               </div>

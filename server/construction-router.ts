@@ -1924,29 +1924,36 @@ export const constructionRouter = router({
       }),
     smsTemplates: protectedProcedure
       .input(z.object({ category: z.string().optional() }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) return [];
         const cat = input?.category;
+        const conditions: any[] = [];
+        appendTenantScope(conditions, smsTemplates.tenantId, tenantIdFromContext(ctx));
+        if (cat) conditions.push(like(smsTemplates.category, `${cat}%`));
         if (cat) {
           return db.select().from(smsTemplates)
-            .where(like(smsTemplates.category, `${cat}%`))
+            .where(and(...conditions))
             .orderBy(smsTemplates.category, smsTemplates.sortOrder);
         }
         return db.select().from(smsTemplates)
+          .where(conditions.length ? and(...conditions) : undefined)
           .orderBy(smsTemplates.category, smsTemplates.sortOrder);
       }),
     emailTemplates: protectedProcedure
       .input(z.object({ category: z.string().optional() }).optional())
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) return [];
         const cat = input?.category;
+        const conditions: any[] = [];
+        appendTenantScope(conditions, emailTemplates.tenantId, tenantIdFromContext(ctx));
+        if (cat) conditions.push(eq(emailTemplates.category, cat));
         if (cat) {
           return db.select().from(emailTemplates)
-            .where(eq(emailTemplates.category, cat));
+            .where(and(...conditions));
         }
-        return db.select().from(emailTemplates);
+        return db.select().from(emailTemplates).where(conditions.length ? and(...conditions) : undefined);
       }),
   }),
 

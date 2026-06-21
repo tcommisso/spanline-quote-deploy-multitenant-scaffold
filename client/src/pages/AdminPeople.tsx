@@ -386,11 +386,8 @@ export default function AdminPeople() {
               <Button variant="ghost" size="sm" onClick={() => setSelectedTradeIds([])}>Clear</Button>
             </>
           )}
-          <Button size="sm" onClick={() => { setAddType("staff"); setAddDialogOpen(true); }}>
-            <Plus className="h-4 w-4 mr-1" /> Add Staff
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => { setAddType("trade"); setAddDialogOpen(true); }}>
-            <Plus className="h-4 w-4 mr-1" /> Add Trade
+          <Button size="sm" onClick={() => { setActiveTab("invitations"); setSelectedTradeIds([]); }}>
+            <Plus className="h-4 w-4 mr-1" /> Invite Access
           </Button>
           {isSuperAdmin && (
             <Button size="sm" variant="outline" onClick={() => setMergeDialog(true)}>

@@ -35,7 +35,7 @@ function PortalAccessTab() {
 
   const createMutation = trpc.adminPortal.createPortalAccess.useMutation({
     onSuccess: (data) => {
-      toast.success("Portal access created");
+      toast.success("Portal access invitation created");
       utils.adminPortal.listPortalAccess.invalidate();
       setShowCreate(false);
       setJobId("");
@@ -69,11 +69,11 @@ function PortalAccessTab() {
         <h3 className="text-lg font-semibold">Client Portal Access</h3>
         <Dialog open={showCreate} onOpenChange={setShowCreate}>
           <DialogTrigger asChild>
-            <Button size="sm"><Plus className="w-4 h-4 mr-1" /> Grant Access</Button>
+            <Button size="sm"><Plus className="w-4 h-4 mr-1" /> Invite Access</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Create Portal Access</DialogTitle>
+              <DialogTitle>Invite Client Portal Access</DialogTitle>
             </DialogHeader>
             <form onSubmit={(e) => {
               e.preventDefault();
@@ -101,7 +101,7 @@ function PortalAccessTab() {
                 <Input type="email" value={clientEmail} onChange={(e) => setClientEmail(e.target.value)} required />
               </div>
               <Button type="submit" className="w-full" disabled={createMutation.isPending}>
-                {createMutation.isPending ? "Creating..." : "Create & Copy Link"}
+                {createMutation.isPending ? "Creating..." : "Create Invitation & Copy Link"}
               </Button>
             </form>
           </DialogContent>
@@ -111,7 +111,7 @@ function PortalAccessTab() {
       {accessQuery.isLoading ? (
         <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full" />)}</div>
       ) : !accessQuery.data?.length ? (
-        <Card><CardContent className="py-8 text-center text-muted-foreground">No portal access granted yet</CardContent></Card>
+        <Card><CardContent className="py-8 text-center text-muted-foreground">No portal access invitations yet</CardContent></Card>
       ) : (
         <div className="space-y-2">
           {accessQuery.data.map((access) => (
