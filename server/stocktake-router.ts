@@ -83,6 +83,10 @@ function normalizeVariantDecimal(value: unknown): string | null {
   return numeric == null ? null : numeric.toFixed(2);
 }
 
+function stockItemBaseColour(item: typeof inventoryStockItems.$inferSelect) {
+  return normalizeVariantText(item.description?.match(/Colour:\s*([^\n]+)/i)?.[1] || null);
+}
+
 function variantFieldChanged(lineValue: unknown, itemValue: unknown) {
   return normalizeVariantText(lineValue)?.toLowerCase() !== normalizeVariantText(itemValue)?.toLowerCase();
 }
@@ -92,8 +96,10 @@ function variantDecimalChanged(lineValue: unknown, itemValue: unknown) {
 }
 
 function stocktakeLineNeedsVariant(line: typeof stocktakeLines.$inferSelect, item: typeof inventoryStockItems.$inferSelect) {
+  const itemColour = stockItemBaseColour(item);
+  const lineColour = normalizeVariantText(line.colour) || itemColour;
   return variantFieldChanged(line.conditionIndicator || "new", item.conditionIndicator || "new")
-    || variantFieldChanged(line.colour, item.description?.match(/Colour:\s*([^\n]+)/i)?.[1] || null)
+    || variantFieldChanged(lineColour, itemColour)
     || variantDecimalChanged(line.actualSize, item.actualSize)
     || variantDecimalChanged(line.sourceFullLength, item.sourceFullLength);
 }
@@ -140,9 +146,11 @@ function lineUnitCost(line: typeof stocktakeLines.$inferSelect, item: typeof inv
 }
 
 function stocktakeVariantDescription(item: typeof inventoryStockItems.$inferSelect, line: typeof stocktakeLines.$inferSelect) {
+  const itemColour = stockItemBaseColour(item);
+  const lineColour = normalizeVariantText(line.colour);
   const details = [
     normalizeVariantText(item.description),
-    line.colour ? `Colour: ${line.colour}` : "",
+    lineColour && lineColour.toLowerCase() !== itemColour?.toLowerCase() ? `Colour: ${lineColour}` : "",
     line.conditionIndicator ? `Condition: ${line.conditionIndicator.replace("_", " ")}` : "",
     line.actualSize ? `Actual size: ${line.actualSize}m` : "",
     line.sourceFullLength ? `Source length: ${line.sourceFullLength}m` : "",
@@ -362,6 +370,7 @@ export const stocktakeRouter = router({
     const lineData: Array<{
       stockItemId: number;
       conditionIndicator: "new" | "damaged" | "off_cut";
+      colour: string | null;
       actualSize: string | null;
       sourceFullLength: string | null;
       systemQty: string;
@@ -381,6 +390,7 @@ export const stocktakeRouter = router({
       lineData.push({
         stockItemId: item.id,
         conditionIndicator: item.conditionIndicator || "new",
+        colour: stockItemBaseColour(item),
         actualSize: item.actualSize || null,
         sourceFullLength: item.sourceFullLength || null,
         systemQty: String(onHand),
@@ -408,6 +418,7 @@ export const stocktakeRouter = router({
         stocktakeId,
         stockItemId: l.stockItemId,
         conditionIndicator: l.conditionIndicator,
+        colour: l.colour,
         actualSize: l.actualSize,
         sourceFullLength: l.sourceFullLength,
         systemQty: l.systemQty,

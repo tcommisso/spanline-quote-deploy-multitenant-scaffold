@@ -37,6 +37,9 @@ export default function QuoteList() {
   const searchParams = useSearch();
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role || "");
+  const { data: tenantContext } = trpc.tenants.current.useQuery();
+  const tenantRole = String(tenantContext?.membership?.role || "").toLowerCase();
+  const canViewTeamQuotes = isAdmin || tenantRole === "owner" || tenantRole === "admin";
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [advisorFilter, setAdvisorFilter] = useState("all");
@@ -151,7 +154,7 @@ export default function QuoteList() {
             <HelpLink section="quotes-costing" tooltip="Help: Quotes & Costing" />
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1 truncate">
-            {isAdmin ? "All structure quotes across the team" : "Your structure quotes"}
+            {canViewTeamQuotes ? "All structure quotes across the team" : "Your structure quotes"}
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)} variant="brand" size="sm" className="gap-2 shrink-0">
@@ -254,7 +257,7 @@ export default function QuoteList() {
             <SelectItem value="lost">Lost</SelectItem>
           </SelectContent>
         </Select>
-        {isAdmin && (
+        {canViewTeamQuotes && (
           <Select value={advisorFilter} onValueChange={setAdvisorFilter}>
             <SelectTrigger className="w-44 h-9 text-sm">
               <SelectValue placeholder="All Advisors" />
@@ -265,7 +268,7 @@ export default function QuoteList() {
             </SelectContent>
           </Select>
         )}
-        {isAdmin && branchesList && branchesList.length > 0 && (
+        {canViewTeamQuotes && branchesList && branchesList.length > 0 && (
           <Select value={branchFilter} onValueChange={setBranchFilter}>
             <SelectTrigger className="w-40 h-9 text-sm">
               <Building2 className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />

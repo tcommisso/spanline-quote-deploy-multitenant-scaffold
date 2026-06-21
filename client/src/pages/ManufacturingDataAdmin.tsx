@@ -122,12 +122,12 @@ function buildColourOptions(masterColours: Array<{ key?: string | null; value?: 
   const options: ColourOption[] = [];
 
   for (const colour of masterColours) {
-    const name = String(colour.key || "").trim();
+    const name = String(colour.value || colour.key || "").trim();
     if (!name) continue;
     const normalized = name.toLowerCase();
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    const detail = String(colour.value || "").trim();
+    const detail = String(colour.key || "").trim();
     options.push({
       value: name,
       detail: detail && detail.toLowerCase() !== normalized ? detail : "",
@@ -545,7 +545,7 @@ function ProductForm({
 }) {
   const [form, setForm] = useState({ ...BLANK_PRODUCT, ...initial });
   const availableColours = useMemo(() => buildColourOptions(
-    colourOptions.map((colour) => ({ key: colour.value, value: colour.detail, metadata: colour.hex ? { hex: colour.hex } : undefined })),
+    colourOptions.map((colour) => ({ key: colour.detail, value: colour.value, metadata: colour.hex ? { hex: colour.hex } : undefined })),
     form.colour,
   ), [colourOptions, form.colour]);
   const selectedColour = availableColours.find((colour) => colour.value === form.colour);

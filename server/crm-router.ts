@@ -410,6 +410,27 @@ export const crmRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const { id, ...data } = input;
       const tenantId = tenantIdFromContext(ctx);
+      if (
+        data.contactAddress !== undefined ||
+        data.suburb !== undefined ||
+        data.state !== undefined ||
+        data.postcode !== undefined
+      ) {
+        const contactAddress = data.contactAddress !== undefined
+          ? cleanLeadToken(data.contactAddress)
+          : undefined;
+        const inferredAddress = inferLeadAddressParts(contactAddress);
+        if (data.contactAddress !== undefined) data.contactAddress = contactAddress;
+        if (data.suburb !== undefined || contactAddress) {
+          data.suburb = cleanLeadToken(data.suburb) || inferredAddress.suburb;
+        }
+        if (data.postcode !== undefined || contactAddress) {
+          data.postcode = cleanLeadToken(data.postcode) || inferredAddress.postcode;
+        }
+        if (data.state !== undefined || contactAddress) {
+          data.state = normaliseLeadState(data.state || inferredAddress.state);
+        }
+      }
 
       // Auto-create construction job when status changes to 'contract'
       if (data.status === "contract") {

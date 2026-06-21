@@ -233,6 +233,9 @@ export default function InboxPage() {
   const totalPages = Math.ceil(total / pageSize);
 
   const isAdmin = isAdminRole(user?.role || "");
+  const { data: tenantContext } = trpc.tenants.current.useQuery();
+  const tenantRole = String(tenantContext?.membership?.role || "").toLowerCase();
+  const canManageInbox = isAdmin || tenantRole === "owner" || tenantRole === "admin";
   const allPageIds = useMemo(() => messages.map((m: any) => m.id), [messages]);
   const selectedThreadIds = useMemo(() => {
     const selected = messages
@@ -450,7 +453,7 @@ export default function InboxPage() {
               ))}
             </SelectContent>
           </Select>
-          {isAdmin && (
+          {canManageInbox && (
             <Button
               variant="outline"
               size="sm"

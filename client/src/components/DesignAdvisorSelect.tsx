@@ -13,8 +13,15 @@ export default function DesignAdvisorSelect({ value, onChange, placeholder = "Se
   // The backend scopes and syncs this list from tenant users; do not re-filter
   // by local role here because legacy adviser rows may not have been normalised yet.
   const designAdvisers = advisors?.filter((a) => !a.archived) || [];
+  const seenValues = new Set<string>();
+  const designAdviserOptions = designAdvisers.flatMap((a) => {
+    const value = a.name || a.email || `Design Adviser #${a.id}`;
+    if (seenValues.has(value)) return [];
+    seenValues.add(value);
+    return [{ id: a.id, value }];
+  });
   const currentValue = value || "__none__";
-  const currentIsListed = !value || designAdvisers.some((a) => (a.name || a.email || `Design Adviser #${a.id}`) === value);
+  const currentIsListed = !value || designAdviserOptions.some((a) => a.value === value);
 
   return (
     <Select value={currentValue} onValueChange={(next) => onChange(next === "__none__" ? "" : next)}>
@@ -26,12 +33,12 @@ export default function DesignAdvisorSelect({ value, onChange, placeholder = "Se
         {value && !currentIsListed && (
           <SelectItem value={value}>{value}</SelectItem>
         )}
-        {designAdvisers.map((a) => (
-          <SelectItem key={a.id} value={a.name || a.email || `Design Adviser #${a.id}`}>
-            {a.name || a.email || `Design Adviser #${a.id}`}
+        {designAdviserOptions.map((a) => (
+          <SelectItem key={a.id} value={a.value}>
+            {a.value}
           </SelectItem>
         ))}
-        {designAdvisers.length === 0 && (
+        {designAdviserOptions.length === 0 && (
           <SelectItem value="__no_advisers__" disabled>No design advisers configured</SelectItem>
         )}
       </SelectContent>

@@ -204,25 +204,18 @@ export default function StocktakeDetail() {
   const isPendingApproval = data.status === "pending_approval";
 
   const handleSaveCounts = () => {
-    const entries = Object.entries(counts).filter(([, v]) =>
-      v.qty !== "" ||
-      v.notes !== "" ||
-      v.conditionIndicator !== "new" ||
-      v.colour !== "" ||
-      v.actualSize !== "" ||
-      v.sourceFullLength !== ""
-    );
+    const entries = Object.entries(counts);
     if (!entries.length) return;
     updateCountsMutation.mutate({
       stocktakeId,
       counts: entries.map(([lineId, v]) => ({
         lineId: Number(lineId),
         countedQty: v.qty || undefined,
-        notes: v.notes || undefined,
+        notes: v.notes,
         conditionIndicator: v.conditionIndicator,
-        colour: v.colour || undefined,
-        actualSize: v.actualSize || undefined,
-        sourceFullLength: v.sourceFullLength || undefined,
+        colour: v.colour || null,
+        actualSize: v.actualSize || null,
+        sourceFullLength: v.sourceFullLength || null,
       })),
     });
   };

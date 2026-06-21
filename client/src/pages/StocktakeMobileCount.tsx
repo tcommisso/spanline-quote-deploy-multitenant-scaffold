@@ -37,6 +37,8 @@ type StocktakeLineView = {
     code?: string | null;
     name?: string | null;
     category?: string | null;
+    catalogueCategory?: string | null;
+    catalogueSubGroup?: string | null;
     unit?: string | null;
     unitType?: string | null;
     conditionIndicator?: CountCondition | null;
@@ -128,13 +130,33 @@ export default function StocktakeMobileCount() {
     return (line.conditionIndicator || line.stockItem?.conditionIndicator || "new") as CountCondition;
   }, []);
 
+  const lineCategory = useCallback((line: StocktakeLineView) => {
+    return line.stockItem?.catalogueCategory || line.stockItem?.category || "Uncategorised";
+  }, []);
+
+  const lineSubGroup = useCallback((line: StocktakeLineView) => {
+    return line.stockItem?.catalogueSubGroup || "";
+  }, []);
+
+  const lineColour = useCallback((line: StocktakeLineView) => {
+    return line.colour || line.stockItem?.catalogueColour || "";
+  }, []);
+
+  const lineActualSize = useCallback((line: StocktakeLineView) => {
+    return numberText(line.actualSize ?? line.stockItem?.actualSize);
+  }, []);
+
+  const lineSourceFullLength = useCallback((line: StocktakeLineView) => {
+    return numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength);
+  }, []);
+
   const defaultAttributeDraft = useCallback((line: StocktakeLineView): LineAttributeDraft => ({
     conditionIndicator: lineCondition(line),
-    colour: line.colour || line.stockItem?.catalogueColour || "",
-    actualSize: numberText(line.actualSize ?? line.stockItem?.actualSize),
-    sourceFullLength: numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength),
+    colour: lineColour(line),
+    actualSize: lineActualSize(line),
+    sourceFullLength: lineSourceFullLength(line),
     notes: line.notes || "",
-  }), [lineCondition]);
+  }), [lineActualSize, lineColour, lineCondition, lineSourceFullLength]);
 
   const getAttributeDraft = useCallback((line: StocktakeLineView) => {
     return attributeDrafts[line.id] || defaultAttributeDraft(line);
@@ -153,11 +175,11 @@ export default function StocktakeMobileCount() {
 
   const lineHasAttributes = useCallback((line: StocktakeLineView) => {
     return lineCondition(line) !== "new"
-      || Boolean(line.colour)
-      || Boolean(line.actualSize)
-      || Boolean(line.sourceFullLength)
+      || Boolean(lineColour(line))
+      || Boolean(lineActualSize(line))
+      || Boolean(lineSourceFullLength(line))
       || Boolean(line.notes);
-  }, [lineCondition]);
+  }, [lineActualSize, lineColour, lineCondition, lineSourceFullLength]);
 
   const getDraftOrCount = useCallback((line: StocktakeLineView) => {
     if (draftCounts[line.id] !== undefined) return draftCounts[line.id];
@@ -192,12 +214,14 @@ export default function StocktakeMobileCount() {
     return lines.filter((line) => {
       const code = line.stockItem?.code || "";
       const name = line.stockItem?.name || "";
-      const category = line.stockItem?.category || "";
+      const category = lineCategory(line);
+      const subGroup = lineSubGroup(line);
       const attributes = getAttributeDraft(line);
       const matchesSearch = !query
         || code.toLowerCase().includes(query)
         || name.toLowerCase().includes(query)
         || category.toLowerCase().includes(query)
+        || subGroup.toLowerCase().includes(query)
         || String(line.notes || "").toLowerCase().includes(query)
         || String(attributes.colour || "").toLowerCase().includes(query)
         || String(attributes.conditionIndicator || "").replace(/_/g, " ").toLowerCase().includes(query)
@@ -214,7 +238,7 @@ export default function StocktakeMobileCount() {
       }
       return true;
     });
-  }, [draftCounts, filter, getAttributeDraft, lineHasPersistedCount, lines, predictedVariance, search]);
+  }, [draftCounts, filter, getAttributeDraft, lineCategory, lineHasPersistedCount, lineSubGroup, lines, predictedVariance, search]);
 
   const stopScanner = useCallback(() => {
     if (animationFrameRef.current !== null) {
@@ -584,6 +608,8 @@ export default function StocktakeMobileCount() {
           const selected = selectedLineId === line.id;
           const itemCode = line.stockItem?.code || "-";
           const itemName = line.stockItem?.name || "Unknown item";
+          const itemCategory = lineCategory(line);
+          const itemSubGroup = lineSubGroup(line);
           const unit = line.stockItem?.unit || line.stockItem?.unitType || "unit";
           const attributes = getAttributeDraft(line);
           const conditionLabel = conditionOptions.find((option) => option.value === attributes.conditionIndicator)?.label || "Full / new";
@@ -600,10 +626,12 @@ export default function StocktakeMobileCount() {
                   <div className="min-w-0">
                     <div className="font-mono text-xs text-muted-foreground">{itemCode}</div>
                     <div className="mt-0.5 line-clamp-2 font-medium leading-snug">{itemName}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{line.stockItem?.category || "Uncategorised"}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {[itemCategory, itemSubGroup].filter(Boolean).join(" · ")}
+                    </div>
                     {lineHasAttributes(line) && (
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {[conditionLabel, line.colour, line.actualSize ? `${line.actualSize}m actual` : "", line.sourceFullLength ? `${line.sourceFullLength}m source` : ""].filter(Boolean).join(" · ")}
+                        {[conditionLabel, attributes.colour, attributes.actualSize ? `${attributes.actualSize}m actual` : "", attributes.sourceFullLength ? `${attributes.sourceFullLength}m source` : ""].filter(Boolean).join(" · ")}
                       </div>
                     )}
                   </div>

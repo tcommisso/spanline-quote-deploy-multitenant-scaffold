@@ -228,6 +228,8 @@ export async function sendEmail(params: SendEmailParams): Promise<void> {
         contentType: "HTML",
         content: htmlBody,
       },
+      toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
+      ccRecipients: (cc || []).map(addr => ({ emailAddress: { address: addr } })),
     }, params.tenantId);
     await sendDraft(mailbox, draft.id, params.tenantId);
     return;
