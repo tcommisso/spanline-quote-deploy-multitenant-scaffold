@@ -284,10 +284,21 @@ const adminGroups: AdminGroup[] = [
       { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
       { icon: ShieldCheck, label: "Security Screen Data", path: "/admin/security-screens" },
       { icon: Layers, label: "Blinds Data", path: "/admin/blinds" },
-      { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: History, label: "Import History", path: "/admin/import-history" },
-      { icon: Files, label: "Templates & Documents", path: "/admin/master-data/general/descriptions-of-work" },
       { icon: Settings, label: "General", path: "/admin/master-data/general/colour" },
+    ],
+  },
+  {
+    label: "Templates & Documents",
+    icon: Files,
+    items: [
+      { icon: Files, label: "Descriptions of Work", path: "/admin/master-data/general/descriptions-of-work" },
+      { icon: LayoutGrid, label: "Section Templates", path: "/admin/section-templates" },
+      { icon: Mail, label: "Email Templates", path: "/admin/email-templates" },
+      { icon: Send, label: "SMS Templates", path: "/admin/master-data/general/sms-templates" },
+      { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
+      { icon: ClipboardList, label: "Project Plan Templates", path: "/admin/project-plan-templates" },
+      { icon: FileText, label: "Text Blocks", path: "/admin/text-blocks" },
     ],
   },
   {
