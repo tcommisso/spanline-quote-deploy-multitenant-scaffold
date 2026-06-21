@@ -3213,6 +3213,7 @@ export interface DownpipesChecklist {
 // ─── Technical Library Documents ────────────────────────────────────────────
 export const techLibraryDocuments = mysqlTable("tech_library_documents", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "set null" }),
   title: varchar("title", { length: 255 }).notNull(),
   code: varchar("code", { length: 64 }).notNull(),
   description: text("description"),
@@ -3278,6 +3279,7 @@ export type InsertPracticalCompletionNotice = typeof practicalCompletionNotices.
 // ─── WH&S SWMS Documents ──────────────────────────────────────────────────
 export const swmsDocuments = mysqlTable("swms_documents", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "set null" }),
   title: varchar("title", { length: 255 }).notNull(),
   description: text("description"),
   fileUrl: text("fileUrl").notNull(),

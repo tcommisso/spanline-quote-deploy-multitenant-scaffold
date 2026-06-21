@@ -2233,11 +2233,11 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
 
   // ─── Technical Library ──────────────────────────────────────────────────────
   techLibrary: router({
-    listAll: adminProcedure.query(async () => {
-      return db.getTechLibraryDocuments();
+    listAll: adminProcedure.query(async ({ ctx }) => {
+      return db.getTechLibraryDocuments(tenantIdFromContext(ctx));
     }),
-    listActive: publicProcedure.query(async () => {
-      return db.getActiveTechLibraryDocuments();
+    listActive: publicProcedure.query(async ({ ctx }) => {
+      return db.getActiveTechLibraryDocuments(tenantIdFromContext(ctx));
     }),
     create: adminProcedure
       .input(z.object({
@@ -2248,8 +2248,9 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         updatedLabel: z.string().optional(),
         knowledgeSummary: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         return db.createTechLibraryDocument({
+          tenantId: tenantIdFromContext(ctx),
           title: input.title,
           code: input.code,
           description: input.description ?? null,
@@ -2270,24 +2271,25 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         active: z.boolean().optional(),
         knowledgeSummary: z.string().nullable().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const { id, ...updates } = input;
-        await db.updateTechLibraryDocument(id, updates);
+        await db.updateTechLibraryDocument(id, updates, tenantIdFromContext(ctx));
         return { success: true };
       }),
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await db.deleteTechLibraryDocument(input.id);
+      .mutation(async ({ ctx, input }) => {
+        await db.deleteTechLibraryDocument(input.id, tenantIdFromContext(ctx));
         return { success: true };
       }),
     updateKnowledge: adminProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        const doc = await db.getTechLibraryDocumentById(input.id);
+      .mutation(async ({ ctx, input }) => {
+        const tenantId = tenantIdFromContext(ctx);
+        const doc = await db.getTechLibraryDocumentById(input.id, tenantId);
         if (!doc) throw new Error("Document not found");
         // Mark as pending
-        await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "pending", knowledgeError: null });
+        await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "pending", knowledgeError: null }, tenantId);
         // Download the PDF from S3 and convert to base64 for inline LLM processing
         let pdfBase64: string | null = null;
         try {
@@ -2298,7 +2300,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
         } catch (e: any) {
           const errMsg = `PDF download failed: ${e?.message || String(e)}`;
           console.error(`[TechLibrary] Failed to download PDF for doc ${doc.id}:`, e);
-          await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "failed", knowledgeError: errMsg });
+          await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "failed", knowledgeError: errMsg }, tenantId);
           throw new Error(errMsg);
         }
         try {
@@ -2317,22 +2319,23 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
           });
           const summary = typeof result.choices[0]?.message?.content === "string"
             ? result.choices[0].message.content : "Unable to generate summary.";
-          await db.updateTechLibraryDocument(input.id, { knowledgeSummary: summary, knowledgeStatus: "success", knowledgeError: null });
+          await db.updateTechLibraryDocument(input.id, { knowledgeSummary: summary, knowledgeStatus: "success", knowledgeError: null }, tenantId);
           return { success: true, summary };
         } catch (e: any) {
           const errMsg = `LLM processing failed: ${e?.message || String(e)}`;
-          await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "failed", knowledgeError: errMsg });
+          await db.updateTechLibraryDocument(input.id, { knowledgeStatus: "failed", knowledgeError: errMsg }, tenantId);
           throw new Error(errMsg);
         }
       }),
     updateAllKnowledge: adminProcedure
-      .mutation(async () => {
-        const docs = await db.getActiveTechLibraryDocuments();
+      .mutation(async ({ ctx }) => {
+        const tenantId = tenantIdFromContext(ctx);
+        const docs = await db.getActiveTechLibraryDocuments(tenantId);
         let updated = 0;
         const errors: { docId: number; title: string; error: string }[] = [];
         for (const doc of docs) {
           // Mark as pending
-          await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "pending", knowledgeError: null });
+          await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "pending", knowledgeError: null }, tenantId);
           try {
             // Download PDF from S3 and convert to base64
             let pdfBase64: string | null = null;
@@ -2344,7 +2347,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
             } catch (e: any) {
               const errMsg = `PDF download failed: ${e?.message || String(e)}`;
               console.error(`[TechLibrary] Failed to download PDF for doc ${doc.id}:`, e);
-              await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "failed", knowledgeError: errMsg });
+              await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "failed", knowledgeError: errMsg }, tenantId);
               errors.push({ docId: doc.id, title: doc.title, error: errMsg });
               continue; // Skip to next doc — can't process without PDF
             }
@@ -2362,11 +2365,11 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
             });
             const summary = typeof result.choices[0]?.message?.content === "string"
               ? result.choices[0].message.content : "Unable to generate summary.";
-            await db.updateTechLibraryDocument(doc.id, { knowledgeSummary: summary, knowledgeStatus: "success", knowledgeError: null });
+            await db.updateTechLibraryDocument(doc.id, { knowledgeSummary: summary, knowledgeStatus: "success", knowledgeError: null }, tenantId);
             updated++;
           } catch (e: any) {
             const errMsg = e instanceof Error ? e.message : String(e);
-            await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "failed", knowledgeError: errMsg });
+            await db.updateTechLibraryDocument(doc.id, { knowledgeStatus: "failed", knowledgeError: errMsg }, tenantId);
             errors.push({ docId: doc.id, title: doc.title, error: errMsg });
             console.error(`Failed to update knowledge for doc ${doc.id}:`, e);
           }
@@ -2380,14 +2383,14 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
     get: tenantProcedure.query(async ({ ctx }) => {
       const userSettings = await db.getUserSettings(ctx.user.id);
       const tenantBranding = await db.getTenantBrandingSettings(ctx.tenant?.id ?? null);
-      if (!tenantBranding) return userSettings;
+      if (!ctx.tenant?.id && !tenantBranding) return userSettings;
       return {
         ...(userSettings ?? {}),
-        companyDetails: tenantBranding.companyDetails ?? userSettings?.companyDetails ?? null,
-        customLogoUrl: tenantBranding.customLogoUrl ?? userSettings?.customLogoUrl ?? null,
-        appIconUrl: tenantBranding.appIconUrl ?? userSettings?.appIconUrl ?? null,
-        faviconUrl: tenantBranding.faviconUrl ?? userSettings?.faviconUrl ?? null,
-        companyTheme: tenantBranding.companyTheme ?? userSettings?.companyTheme ?? null,
+        companyDetails: tenantBranding?.companyDetails ?? (!ctx.tenant?.id ? userSettings?.companyDetails : null) ?? null,
+        customLogoUrl: tenantBranding?.customLogoUrl ?? (!ctx.tenant?.id ? userSettings?.customLogoUrl : null) ?? null,
+        appIconUrl: tenantBranding?.appIconUrl ?? (!ctx.tenant?.id ? userSettings?.appIconUrl : null) ?? null,
+        faviconUrl: tenantBranding?.faviconUrl ?? (!ctx.tenant?.id ? userSettings?.faviconUrl : null) ?? null,
+        companyTheme: tenantBranding?.companyTheme ?? (!ctx.tenant?.id ? userSettings?.companyTheme : null) ?? db.DEFAULT_ALTASPAN_COMPANY_THEME,
       };
     }),
     save: tenantProcedure

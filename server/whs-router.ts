@@ -10,11 +10,12 @@ import {
   deleteSwmsDocument,
 } from "./db";
 import { storagePut } from "./storage";
+import { tenantIdFromContext } from "./_core/tenant-scope";
 
 export const whsRouter = router({
   // Admin: list all SWMS documents
-  listAll: protectedProcedure.query(async () => {
-    return getAllSwmsDocuments();
+  listAll: protectedProcedure.query(async ({ ctx }) => {
+    return getAllSwmsDocuments(tenantIdFromContext(ctx));
   }),
 
   // Admin: create a new SWMS document
@@ -38,10 +39,12 @@ export const whsRouter = router({
       // Upload file to S3
       const buffer = Buffer.from(input.fileBase64, "base64");
       const suffix = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-      const fileKey = `whs/swms/${suffix}-${input.fileName}`;
+      const tenantId = tenantIdFromContext(ctx);
+      const fileKey = `${tenantId ? `tenant-${tenantId}/` : ""}whs/swms/${suffix}-${input.fileName}`;
       const { url } = await storagePut(fileKey, buffer, input.contentType);
 
       const id = await createSwmsDocument({
+        tenantId,
         title: input.title,
         description: input.description,
         fileUrl: url,
@@ -72,7 +75,7 @@ export const whsRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
       const { id, ...data } = input;
-      await updateSwmsDocument(id, data);
+      await updateSwmsDocument(id, data, tenantIdFromContext(ctx));
       return { success: true };
     }),
 
@@ -92,10 +95,11 @@ export const whsRouter = router({
       }
       const buffer = Buffer.from(input.fileBase64, "base64");
       const suffix = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-      const fileKey = `whs/swms/${suffix}-${input.fileName}`;
+      const tenantId = tenantIdFromContext(ctx);
+      const fileKey = `${tenantId ? `tenant-${tenantId}/` : ""}whs/swms/${suffix}-${input.fileName}`;
       const { url } = await storagePut(fileKey, buffer, input.contentType);
 
-      await updateSwmsDocument(input.id, { fileUrl: url, fileName: input.fileName });
+      await updateSwmsDocument(input.id, { fileUrl: url, fileName: input.fileName }, tenantId);
       return { fileUrl: url };
     }),
 
@@ -106,17 +110,17 @@ export const whsRouter = router({
       if (!isAdminRole(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin only" });
       }
-      await deleteSwmsDocument(input.id);
+      await deleteSwmsDocument(input.id, tenantIdFromContext(ctx));
       return { success: true };
     }),
 
   // Portal: get active SWMS documents for trade portal
-  tradePortalDocs: publicProcedure.query(async () => {
-    return getActiveSwmsDocuments("trade");
+  tradePortalDocs: publicProcedure.query(async ({ ctx }) => {
+    return getActiveSwmsDocuments("trade", tenantIdFromContext(ctx));
   }),
 
   // Portal: get active SWMS documents for client portal
-  clientPortalDocs: publicProcedure.query(async () => {
-    return getActiveSwmsDocuments("client");
+  clientPortalDocs: publicProcedure.query(async ({ ctx }) => {
+    return getActiveSwmsDocuments("client", tenantIdFromContext(ctx));
   }),
 });

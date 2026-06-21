@@ -1632,6 +1632,12 @@ type TenantBrandingRecord = {
   branding?: Record<string, any>;
 };
 
+export const DEFAULT_ALTASPAN_COMPANY_THEME = {
+  preset: "altaspan",
+  customEnabled: false,
+  customColors: { primary: "#06162D", accent: "#C9AB57", sidebar: "#102544" },
+};
+
 function objectRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 }
@@ -1653,10 +1659,56 @@ function legacyBrandingFromUserSettings(row: typeof userSettings.$inferSelect | 
   };
 }
 
-async function getLegacyBrandingFallback(): Promise<TenantBrandingRecord | null> {
+function getDefaultTenantBranding(): TenantBrandingRecord {
+  return {
+    companyDetails: null,
+    customLogoUrl: null,
+    appIconUrl: null,
+    faviconUrl: null,
+    companyTheme: DEFAULT_ALTASPAN_COMPANY_THEME,
+    branding: {
+      companyTheme: DEFAULT_ALTASPAN_COMPANY_THEME,
+    },
+  };
+}
+
+async function isPrimaryTenantId(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tenantId: number | null | undefined) {
+  if (!tenantId) return false;
+  const [tenant] = await db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .orderBy(sql`(${tenants.status} = 'active') desc`, tenants.id)
+    .limit(1);
+  return tenant?.id === tenantId;
+}
+
+async function canReadLegacyTenantRows(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tenantId: number | null | undefined) {
+  if (ENV.tenancyMode === "multi") return false;
+  if (!tenantId) return true;
+  return isPrimaryTenantId(db, tenantId);
+}
+
+async function privateTenantScope(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  column: any,
+  tenantId: number | null | undefined,
+) {
+  if (!tenantId) {
+    if (isMultiTenancyMode()) return sql`1 = 0`;
+    const defaultTenantId = await getDefaultTenantId();
+    return defaultTenantId ? or(eq(column, defaultTenantId), isNull(column)) : sql`1 = 0`;
+  }
+  if (isMultiTenancyMode()) return eq(column, tenantId);
+  return await canReadLegacyTenantRows(db, tenantId)
+    ? or(eq(column, tenantId), isNull(column))
+    : eq(column, tenantId);
+}
+
+async function getLegacyBrandingFallback(tenantId?: number | null): Promise<TenantBrandingRecord | null> {
   if (ENV.tenancyMode === "multi") return null;
   const db = await getDb();
   if (!db) return null;
+  if (!await canReadLegacyTenantRows(db, tenantId)) return null;
 
   const legacyRows = await db.select().from(userSettings).limit(10);
   const legacy = legacyRows.find((row) =>
@@ -1678,14 +1730,12 @@ export async function getTenantBrandingSettings(tenantId?: number | null): Promi
     const rows = await db.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
     tenantRow = rows[0];
   } else {
-    if (ENV.tenancyMode === "multi") return null;
-    const rows = await db.select().from(tenantSettings).limit(1);
-    tenantRow = rows[0];
+    return getDefaultTenantBranding();
   }
 
   if (tenantRow) {
     const branding = objectRecord(tenantRow.branding);
-    const legacy = await getLegacyBrandingFallback();
+    const legacy = await getLegacyBrandingFallback(tenantId);
     const mergedBranding = { ...(legacy?.branding ?? {}), ...branding };
     const fieldOrFallback = <T = unknown>(key: string, fallback: T | null | undefined): T | null => {
       if (Object.prototype.hasOwnProperty.call(branding, key)) {
@@ -1699,12 +1749,12 @@ export async function getTenantBrandingSettings(tenantId?: number | null): Promi
       customLogoUrl: fieldOrFallback<string>("customLogoUrl", legacy?.customLogoUrl),
       appIconUrl: fieldOrFallback<string>("appIconUrl", legacy?.appIconUrl),
       faviconUrl: fieldOrFallback<string>("faviconUrl", legacy?.faviconUrl),
-      companyTheme: fieldOrFallback("companyTheme", legacy?.companyTheme),
+      companyTheme: fieldOrFallback("companyTheme", legacy?.companyTheme ?? DEFAULT_ALTASPAN_COMPANY_THEME),
       branding: mergedBranding,
     };
   }
 
-  return getLegacyBrandingFallback();
+  return await getLegacyBrandingFallback(tenantId) ?? getDefaultTenantBranding();
 }
 
 export async function upsertTenantBrandingSettings(
@@ -1749,7 +1799,8 @@ export async function getCompanyTheme(tenantId?: number | null) {
   if (tenantBranding?.companyTheme && typeof tenantBranding.companyTheme === "object") {
     return tenantBranding.companyTheme as Record<string, unknown>;
   }
-  if (ENV.tenancyMode === "multi") return null;
+  if (ENV.tenancyMode === "multi") return DEFAULT_ALTASPAN_COMPANY_THEME;
+  if (!await canReadLegacyTenantRows(db, tenantId)) return DEFAULT_ALTASPAN_COMPANY_THEME;
   // Get the first user_settings row that has companyTheme set
   const rows = await db.select({ companyTheme: userSettings.companyTheme }).from(userSettings).limit(5);
   for (const row of rows) {
@@ -1757,20 +1808,25 @@ export async function getCompanyTheme(tenantId?: number | null) {
       return row.companyTheme as Record<string, unknown>;
     }
   }
-  return null;
+  return DEFAULT_ALTASPAN_COMPANY_THEME;
 }
 
 // ─── Technical Library Documents ────────────────────────────────────────────
-export async function getTechLibraryDocuments() {
+export async function getTechLibraryDocuments(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(techLibraryDocuments).orderBy(desc(techLibraryDocuments.createdAt));
+  const scope = await privateTenantScope(db, techLibraryDocuments.tenantId, tenantId);
+  const query = db.select().from(techLibraryDocuments);
+  return (scope ? query.where(scope) : query).orderBy(desc(techLibraryDocuments.createdAt));
 }
 
-export async function getActiveTechLibraryDocuments() {
+export async function getActiveTechLibraryDocuments(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(techLibraryDocuments).where(eq(techLibraryDocuments.active, true)).orderBy(desc(techLibraryDocuments.createdAt));
+  const conditions = [eq(techLibraryDocuments.active, true)];
+  const scope = await privateTenantScope(db, techLibraryDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  return db.select().from(techLibraryDocuments).where(and(...conditions)).orderBy(desc(techLibraryDocuments.createdAt));
 }
 
 export async function createTechLibraryDocument(doc: Omit<InsertTechLibraryDocument, "id" | "createdAt" | "updatedAt">) {
@@ -1780,22 +1836,31 @@ export async function createTechLibraryDocument(doc: Omit<InsertTechLibraryDocum
   return { id: Number(result[0].insertId) };
 }
 
-export async function updateTechLibraryDocument(id: number, updates: Partial<Omit<InsertTechLibraryDocument, "id" | "createdAt" | "updatedAt">>) {
+export async function updateTechLibraryDocument(id: number, updates: Partial<Omit<InsertTechLibraryDocument, "id" | "createdAt" | "updatedAt">>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.update(techLibraryDocuments).set(updates).where(eq(techLibraryDocuments.id, id));
+  const conditions = [eq(techLibraryDocuments.id, id)];
+  const scope = await privateTenantScope(db, techLibraryDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  await db.update(techLibraryDocuments).set(updates).where(and(...conditions));
 }
 
-export async function deleteTechLibraryDocument(id: number) {
+export async function deleteTechLibraryDocument(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.delete(techLibraryDocuments).where(eq(techLibraryDocuments.id, id));
+  const conditions = [eq(techLibraryDocuments.id, id)];
+  const scope = await privateTenantScope(db, techLibraryDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  await db.delete(techLibraryDocuments).where(and(...conditions));
 }
 
-export async function getTechLibraryDocumentById(id: number) {
+export async function getTechLibraryDocumentById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
-  const rows = await db.select().from(techLibraryDocuments).where(eq(techLibraryDocuments.id, id)).limit(1);
+  const conditions = [eq(techLibraryDocuments.id, id)];
+  const scope = await privateTenantScope(db, techLibraryDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  const rows = await db.select().from(techLibraryDocuments).where(and(...conditions)).limit(1);
   return rows[0] ?? null;
 }
 
@@ -1924,31 +1989,41 @@ export async function createSwmsDocument(data: InsertSwmsDocument) {
   return result.insertId;
 }
 
-export async function getAllSwmsDocuments() {
+export async function getAllSwmsDocuments(tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(swmsDocuments).orderBy(swmsDocuments.sortOrder, desc(swmsDocuments.createdAt));
+  const scope = await privateTenantScope(db, swmsDocuments.tenantId, tenantId);
+  const query = db.select().from(swmsDocuments);
+  return (scope ? query.where(scope) : query).orderBy(swmsDocuments.sortOrder, desc(swmsDocuments.createdAt));
 }
 
-export async function getActiveSwmsDocuments(portal: "trade" | "client") {
+export async function getActiveSwmsDocuments(portal: "trade" | "client", tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
-  const condition = portal === "trade"
-    ? and(eq(swmsDocuments.isActive, true), eq(swmsDocuments.showOnTradePortal, true))
-    : and(eq(swmsDocuments.isActive, true), eq(swmsDocuments.showOnClientPortal, true));
-  return db.select().from(swmsDocuments).where(condition).orderBy(swmsDocuments.sortOrder);
+  const conditions = portal === "trade"
+    ? [eq(swmsDocuments.isActive, true), eq(swmsDocuments.showOnTradePortal, true)]
+    : [eq(swmsDocuments.isActive, true), eq(swmsDocuments.showOnClientPortal, true)];
+  const scope = await privateTenantScope(db, swmsDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  return db.select().from(swmsDocuments).where(and(...conditions)).orderBy(swmsDocuments.sortOrder);
 }
 
-export async function updateSwmsDocument(id: number, data: Partial<InsertSwmsDocument>) {
+export async function updateSwmsDocument(id: number, data: Partial<InsertSwmsDocument>, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.update(swmsDocuments).set(data).where(eq(swmsDocuments.id, id));
+  const conditions = [eq(swmsDocuments.id, id)];
+  const scope = await privateTenantScope(db, swmsDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  await db.update(swmsDocuments).set(data).where(and(...conditions));
 }
 
-export async function deleteSwmsDocument(id: number) {
+export async function deleteSwmsDocument(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  await db.delete(swmsDocuments).where(eq(swmsDocuments.id, id));
+  const conditions = [eq(swmsDocuments.id, id)];
+  const scope = await privateTenantScope(db, swmsDocuments.tenantId, tenantId);
+  if (scope) conditions.push(scope);
+  await db.delete(swmsDocuments).where(and(...conditions));
 }
 
 

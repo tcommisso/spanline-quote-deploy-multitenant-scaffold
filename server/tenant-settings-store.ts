@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { globalSettings, tenants, tenantSettings } from "../drizzle/schema";
-import { getDb } from "./db";
+import { getDb, getDefaultTenantId } from "./db";
 import { ENV } from "./_core/env";
 
 function asRecord(value: unknown): Record<string, any> {
@@ -27,13 +27,20 @@ async function upsertLegacyGlobalSetting(key: string, value: unknown) {
     .onDuplicateKeyUpdate({ set: { value } });
 }
 
+async function canReadLegacyGlobalSetting(tenantId: number | null | undefined) {
+  if (ENV.tenancyMode === "multi") return false;
+  if (!tenantId) return true;
+  const primaryTenantId = await getDefaultTenantId();
+  return primaryTenantId === tenantId;
+}
+
 export async function getTenantAppSetting<T = unknown>(
   tenantId: number | null | undefined,
   key: string,
   options: { fallbackToGlobal?: boolean } = {},
 ): Promise<T | null> {
   const db = await getDb();
-  const fallbackToGlobal = (options.fallbackToGlobal ?? true) && ENV.tenancyMode !== "multi";
+  const fallbackToGlobal = options.fallbackToGlobal ?? true;
   if (!db) return null;
 
   if (tenantId) {
@@ -52,7 +59,9 @@ export async function getTenantAppSetting<T = unknown>(
     }
   }
 
-  return fallbackToGlobal ? getLegacyGlobalSetting<T>(key) : null;
+  return fallbackToGlobal && await canReadLegacyGlobalSetting(tenantId)
+    ? getLegacyGlobalSetting<T>(key)
+    : null;
 }
 
 export async function getPrimaryTenantAppSetting<T = unknown>(key: string): Promise<T | null> {

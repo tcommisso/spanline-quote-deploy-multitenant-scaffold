@@ -434,6 +434,7 @@ const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
+const DEFAULT_ALTASPAN_ICON = "/icons/icon-192.png";
 
 export default function DashboardLayout({
   children,
@@ -466,7 +467,6 @@ export default function DashboardLayout({
   if (loading) return <DashboardLayoutSkeleton />;
 
   if (!user) {
-    const appLogo = import.meta.env.VITE_APP_LOGO;
     const bgUrl = loginBg?.url || "/manus-storage/altaspan-login-bg_c3c1a799.jpg";
     return (
       <div className="flex min-h-screen relative animate-[fadeIn_0.6s_ease-out]">
@@ -496,19 +496,12 @@ export default function DashboardLayout({
         <div className="flex-1 flex items-center justify-center bg-[#06162D] lg:bg-[#06162D] bg-transparent relative z-10 p-8">
           <div className="flex flex-col items-center gap-8 max-w-sm w-full animate-[fadeInUp_0.8s_ease-out_0.2s_both]">
             <div className="flex flex-col items-center gap-4">
-              {appLogo ? (
-                <img src={appLogo} alt="Altaspan" className="h-16 w-auto object-contain mb-2" />
-              ) : (
-                <div className="flex flex-col items-center gap-2">
-                  <div className="h-14 w-14 rounded-xl bg-[#C9AB57]/10 flex items-center justify-center mb-1">
-                    <svg viewBox="0 0 40 40" className="h-8 w-8" fill="none">
-                      <path d="M20 4L4 36h8l8-18 8 18h8L20 4z" fill="#C9AB57" />
-                      <path d="M20 14l-6 14h12l-6-14z" fill="#06162D" />
-                    </svg>
-                  </div>
-                  <span className="text-2xl font-semibold text-white tracking-wide">ALTASPAN</span>
+              <div className="flex flex-col items-center gap-2">
+                <div className="h-14 w-14 rounded-xl bg-[#C9AB57]/10 flex items-center justify-center mb-1">
+                  <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
                 </div>
-              )}
+                <span className="text-2xl font-semibold text-white tracking-wide">ALTASPAN</span>
+              </div>
               <p className="text-sm text-[#F2EDE6]/60 text-center">
                 {tagSignInPrompt}
               </p>
@@ -1062,10 +1055,8 @@ function DashboardLayoutContent({
                         <img src={appIconData.dataUrl} alt="App Logo" className="h-8 w-8 object-contain rounded" />
                       ) : logo ? (
                         <img src={logo.dataUrl} alt="Logo" className="h-8 w-8 object-contain rounded" />
-                      ) : import.meta.env.VITE_APP_LOGO ? (
-                        <img src={import.meta.env.VITE_APP_LOGO} alt="Altaspan" className="h-8 w-8 object-contain rounded" />
                       ) : (
-                        <LayoutGrid className="h-4 w-4 text-sidebar-foreground/60" />
+                        <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-8 w-8 object-contain rounded" />
                       )}
                     </button>
                   );
@@ -1080,10 +1071,11 @@ function DashboardLayoutContent({
                       <img src={appIconData.dataUrl} alt="App Logo" className="h-12 w-auto max-w-[180px] object-contain" />
                     ) : logo ? (
                       <img src={logo.dataUrl} alt="Logo" className="h-12 w-auto max-w-[180px] object-contain" />
-                    ) : import.meta.env.VITE_APP_LOGO ? (
-                      <img src={import.meta.env.VITE_APP_LOGO} alt="Altaspan" className="h-12 w-auto max-w-[180px] object-contain" />
                     ) : (
-                      <LayoutGrid className="h-5 w-5 text-sidebar-foreground/60" />
+                      <div className="flex items-center gap-2">
+                        <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
+                        <span className="text-xl font-semibold tracking-wide text-sidebar-foreground">Altaspan</span>
+                      </div>
                     )}
                   </button>
                 );

@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import { Mail, Loader2, CheckCircle } from "lucide-react";
+import { Loader2, CheckCircle } from "lucide-react";
+
+const DEFAULT_ALTASPAN_ICON = "/icons/icon-192.png";
 
 export default function PortalLogin() {
   const [email, setEmail] = useState("");
@@ -89,13 +91,12 @@ export default function PortalLogin() {
     <div className="min-h-screen bg-gradient-to-br from-primary/5 via-primary/10 to-accent/5 flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          {import.meta.env.VITE_APP_LOGO ? (
-            <img src={import.meta.env.VITE_APP_LOGO} alt="Altaspan" className="mx-auto mb-4 h-14 w-auto object-contain" />
-          ) : (
-            <div className="mx-auto mb-4 w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
-              <Mail className="w-8 h-8 text-primary" />
+          <div className="mx-auto mb-4 flex flex-col items-center gap-2">
+            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
+              <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
             </div>
-          )}
+            <span className="text-lg font-semibold tracking-wide text-primary">Altaspan</span>
+          </div>
           <CardTitle className="text-2xl">Client Portal</CardTitle>
           <CardDescription>
             Access your project status, documents, invoices and more

@@ -35,6 +35,9 @@ export function useSettingsSync() {
   });
   const saveMutation = trpc.userSettings.save.useMutation();
   const hasApplied = useRef(false);
+  const hasServerField = useCallback((key: string) => (
+    !!serverSettings && Object.prototype.hasOwnProperty.call(serverSettings, key)
+  ), [serverSettings]);
 
   // Apply server settings on first load
   useEffect(() => {
@@ -52,7 +55,9 @@ export function useSettingsSync() {
     }
 
     // Sync app icon URL — if server has one, apply it
-    if (serverSettings.appIconUrl) {
+    if (hasServerField("appIconUrl") && !serverSettings.appIconUrl) {
+      clearAppIcon();
+    } else if (serverSettings.appIconUrl) {
       const currentIcon = loadAppIcon();
       if (!currentIcon || currentIcon.dataUrl !== serverSettings.appIconUrl) {
         saveAppIcon({
@@ -65,7 +70,9 @@ export function useSettingsSync() {
     }
 
     // Sync custom logo URL
-    if (serverSettings.customLogoUrl) {
+    if (hasServerField("customLogoUrl") && !serverSettings.customLogoUrl) {
+      clearCustomLogo();
+    } else if (serverSettings.customLogoUrl) {
       const currentLogo = loadCustomLogo();
       if (!currentLogo || currentLogo.dataUrl !== serverSettings.customLogoUrl) {
         saveCustomLogo({
@@ -78,7 +85,9 @@ export function useSettingsSync() {
     }
 
     // Sync favicon URL
-    if ((serverSettings as any).faviconUrl) {
+    if (hasServerField("faviconUrl") && !(serverSettings as any).faviconUrl) {
+      clearFavicon();
+    } else if ((serverSettings as any).faviconUrl) {
       const currentFavicon = loadFavicon();
       if (!currentFavicon || currentFavicon.dataUrl !== (serverSettings as any).faviconUrl) {
         saveFavicon({
@@ -89,7 +98,7 @@ export function useSettingsSync() {
         });
       }
     }
-  }, [isSuccess, serverSettings]);
+  }, [hasServerField, isSuccess, serverSettings]);
 
   // Save company details to server
   const syncCompanyDetails = useCallback((details: CompanyDetails) => {
