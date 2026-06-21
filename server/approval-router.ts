@@ -37,6 +37,10 @@ function hbcfFlagForValue(value?: string | null) {
   return {};
 }
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 function isCommencementCertificateType(certificateType: string) {
   return /^(CC|CDC|BA|CCC)$/i.test(certificateType) ||
     /construction certificate|construction commencement|commencement certificate|complying development|building approval/i.test(certificateType);
@@ -1248,7 +1252,7 @@ export const approvalRouter = router({
           }
           if (input.quoteId) {
             const quoteConditions: any[] = [eq(quotes.id, input.quoteId)];
-            appendTenantScope(quoteConditions, quotes.tenantId, ctx.tenant!.id);
+            appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, ctx.tenant!.id);
             const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(...quoteConditions)).limit(1);
             if (!quote) throw new Error("Quote not found");
           }

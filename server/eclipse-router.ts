@@ -66,10 +66,8 @@ function canViewAllTenantEclipseQuotes(ctx: { tenantMembership?: { role?: string
   return tenantRole === "owner" || tenantRole === "admin";
 }
 
-function eclipseScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }) {
-  return normalizeUserRole(ctx.user?.role) === "super_admin"
-    ? { includeAllTenants: true }
-    : undefined;
+function eclipseScopeOptionsForContext(_ctx: { user?: { role?: string | null } | null }) {
+  return undefined;
 }
 
 function eclipseListUserForContext(ctx: {

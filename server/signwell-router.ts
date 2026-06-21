@@ -33,11 +33,8 @@ export const signwellRouter = router({
       renderImageUrl: z.string().url().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
-      if (quote.tenantId != null && quote.tenantId !== ctx.tenant.id) {
-        throw new Error("Access denied");
-      }
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");
       }
@@ -168,7 +165,7 @@ export const signwellRouter = router({
         signwellDocumentId: doc.id,
         signwellStatus: "pending",
         signwellSentAt: new Date(),
-      });
+      }, ctx.tenant.id);
 
       // Log audit event
       const drizzleDb = await getDb();
@@ -198,11 +195,8 @@ export const signwellRouter = router({
   getStatus: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
-      if (quote.tenantId != null && quote.tenantId !== ctx.tenant.id) {
-        throw new Error("Access denied");
-      }
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");
       }
@@ -222,7 +216,7 @@ export const signwellRouter = router({
           if (newStatus === "completed" && !quote.signwellCompletedAt) {
             updateData.signwellCompletedAt = new Date();
           }
-          await db.updateQuote(input.quoteId, updateData);
+          await db.updateQuote(input.quoteId, updateData, ctx.tenant.id);
         }
 
         return {
@@ -256,11 +250,8 @@ export const signwellRouter = router({
   downloadSignedPdf: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
-      if (quote.tenantId != null && quote.tenantId !== ctx.tenant.id) {
-        throw new Error("Access denied");
-      }
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");
       }
@@ -283,7 +274,7 @@ export const signwellRouter = router({
         signedPdfUrl: url,
         signwellStatus: "completed",
         signwellCompletedAt: quote.signwellCompletedAt || new Date(),
-      });
+      }, ctx.tenant.id);
 
       return { url };
     }),
@@ -294,11 +285,8 @@ export const signwellRouter = router({
   sendReminder: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
-      if (quote.tenantId != null && quote.tenantId !== ctx.tenant.id) {
-        throw new Error("Access denied");
-      }
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");
       }
@@ -325,11 +313,8 @@ export const signwellRouter = router({
   cancel: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
-      if (quote.tenantId != null && quote.tenantId !== ctx.tenant.id) {
-        throw new Error("Access denied");
-      }
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");
       }
@@ -338,7 +323,7 @@ export const signwellRouter = router({
       await signwell.cancelDocument(quote.signwellDocumentId, ctx.tenant.id);
       await db.updateQuote(input.quoteId, {
         signwellStatus: "cancelled",
-      });
+      }, ctx.tenant.id);
 
       return { success: true };
     }),
@@ -381,7 +366,7 @@ export const signwellRouter = router({
         const signerInfo = doc.recipients?.find(r => r.status === "signed" || r.signed_at);
         try {
           const pdfBuffer = await signwell.downloadSignedPdf(doc.id, Number.isInteger(tenantId) ? tenantId : undefined);
-          const quote = await db.getQuoteById(quoteId);
+          const quote = await db.getQuoteById(quoteId, Number.isInteger(tenantId) ? tenantId : null);
           const fileKey = `signed-proposals/${quote?.quoteNumber || `Q-${quoteId}`}-signed-${Date.now()}.pdf`;
           const { url } = await storagePut(fileKey, pdfBuffer, "application/pdf");
 
@@ -390,7 +375,7 @@ export const signwellRouter = router({
             signwellCompletedAt: new Date(),
             signedPdfUrl: url,
             status: "accepted",
-          });
+          }, Number.isInteger(tenantId) ? tenantId : null);
 
           await notifyOwner({
             title: "Proposal Signed!",
@@ -402,7 +387,7 @@ export const signwellRouter = router({
             signwellStatus: "completed",
             signwellCompletedAt: new Date(),
             status: "accepted",
-          });
+          }, Number.isInteger(tenantId) ? tenantId : null);
         }
         await drizzleDbWh.insert(signatureAuditLog).values({
           quoteId,
@@ -412,8 +397,8 @@ export const signwellRouter = router({
           metadata: JSON.stringify({ documentId: doc.id, signedAt: signerInfo?.signed_at }),
         });
       } else if (eventType === "document_declined") {
-        await db.updateQuote(quoteId, { signwellStatus: "declined" });
-        const quote = await db.getQuoteById(quoteId);
+        await db.updateQuote(quoteId, { signwellStatus: "declined" }, Number.isInteger(tenantId) ? tenantId : null);
+        const quote = await db.getQuoteById(quoteId, Number.isInteger(tenantId) ? tenantId : null);
         await notifyOwner({
           title: "Proposal Declined",
           content: `${quote?.clientName} has declined to sign the proposal for ${quote?.quoteNumber}.`,
@@ -426,7 +411,7 @@ export const signwellRouter = router({
           metadata: JSON.stringify({ documentId: doc.id }),
         });
       } else if (eventType === "document_expired") {
-        await db.updateQuote(quoteId, { signwellStatus: "expired" });
+        await db.updateQuote(quoteId, { signwellStatus: "expired" }, Number.isInteger(tenantId) ? tenantId : null);
         await drizzleDbWh.insert(signatureAuditLog).values({
           quoteId,
           event: "expired",
@@ -453,7 +438,7 @@ export const signwellRouter = router({
   getAuditTrail: tenantProcedure
     .input(z.object({ quoteId: z.number() }))
     .query(async ({ ctx, input }) => {
-      const quote = await db.getQuoteById(input.quoteId);
+      const quote = await db.getQuoteById(input.quoteId, ctx.tenant.id);
       if (!quote) throw new Error("Quote not found");
       if (!isAdminRole(ctx.user.role) && quote.userId !== ctx.user.id) {
         throw new Error("Access denied");

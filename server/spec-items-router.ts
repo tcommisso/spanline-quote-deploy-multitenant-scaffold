@@ -2,7 +2,6 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getQuoteById } from "./db";
-import { normalizeUserRole } from "../shared/const";
 import {
   listSpecMappings,
   getActiveSpecMappings,
@@ -37,11 +36,8 @@ function extractSpecValues(quote: Record<string, any>): SpecValues {
   return specValues;
 }
 
-async function assertQuoteAccess(quoteId: number, tenantId: number, user?: { role?: string | null } | null) {
-  const quoteScopeOptions = normalizeUserRole(user?.role) === "super_admin"
-    ? { includeAllTenants: true }
-    : undefined;
-  const quote = await getQuoteById(quoteId, tenantId, quoteScopeOptions);
+async function assertQuoteAccess(quoteId: number, tenantId: number, _user?: { role?: string | null } | null) {
+  const quote = await getQuoteById(quoteId, tenantId);
   if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
   return quote;
 }

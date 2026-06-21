@@ -1,4 +1,4 @@
-import { COOKIE_NAME, isAdminRole, normalizeUserRole } from "@shared/const";
+import { COOKIE_NAME, isAdminRole } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
@@ -143,24 +143,19 @@ function canAccessTenantRecord(
   tenant: { id: number } | null,
   record: { tenantId?: number | null }
 ): boolean {
-  if (!tenant) return true;
-  // Null tenantId is allowed during the legacy backfill window.
-  return record.tenantId == null || record.tenantId === tenant.id;
+  if (!tenant) return false;
+  return record.tenantId === tenant.id;
 }
 
-function canBypassQuoteTenantScope(ctx: { user?: { role?: string | null } | null }) {
-  return normalizeUserRole(ctx.user?.role) === "super_admin";
-}
-
-function quoteScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }) {
-  return canBypassQuoteTenantScope(ctx) ? { includeAllTenants: true } : undefined;
+function quoteScopeOptionsForContext(_ctx: { user?: { role?: string | null } | null }) {
+  return undefined;
 }
 
 function canAccessQuoteTenantRecord(
   ctx: { tenant?: { id: number } | null; user?: { role?: string | null } | null },
   record: { tenantId?: number | null },
 ) {
-  return canBypassQuoteTenantScope(ctx) || canAccessTenantRecord(ctx.tenant ?? null, record);
+  return canAccessTenantRecord(ctx.tenant ?? null, record);
 }
 
 type BrandingAssetKind = "customLogoUrl" | "appIconUrl" | "faviconUrl";
@@ -326,7 +321,7 @@ export const appRouter = router({
         };
       }),
 
-    create: protectedProcedure
+    create: tenantProcedure
       .input(z.object({
         clientId: z.number().optional(),
         clientName: z.string().min(1),
@@ -346,7 +341,7 @@ export const appRouter = router({
         const id = await db.createQuote({
           ...input,
           designAdvisor,
-          tenantId: ctx.tenant?.id ?? null,
+          tenantId: ctx.tenant.id,
           userId: ctx.user.id,
           quoteNumber,
           status: "draft",
@@ -356,9 +351,9 @@ export const appRouter = router({
         if (input.clientId) {
           try {
             const { updateLead, getLead } = await import("./crm-db");
-            const lead = await getLead(input.clientId, ctx.tenant?.id ?? null);
+            const lead = await getLead(input.clientId, ctx.tenant.id);
             if (lead && lead.archived) {
-              await updateLead(input.clientId, { archived: false } as any, ctx.tenant?.id ?? null);
+              await updateLead(input.clientId, { archived: false } as any, ctx.tenant.id);
               leadUnarchived = true;
             }
           } catch (e) { /* non-blocking */ }
@@ -2502,10 +2497,10 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   nswDa: nswDaRouter,
   aiLearning: aiLearningRouter,
   // ─── Global Search ─────────────────────────────────────────────────────────────────────
-  globalSearch: protectedProcedure
+  globalSearch: tenantProcedure
     .input(z.object({ query: z.string().min(2) }))
-    .query(async ({ input }) => {
-      return db.globalSearch(input.query);
+    .query(async ({ ctx, input }) => {
+      return db.globalSearch(input.query, ctx.tenant.id);
     }),
 });
 

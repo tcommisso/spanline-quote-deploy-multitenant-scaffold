@@ -12,6 +12,10 @@ import { generateWorkOrderPdf } from "./construction-pdf";
 import { triggerPushSharedFileUploaded } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 // Auto-archive plans when job is completed
 async function autoArchiveJobPlans(db: any, jobId: number) {
   const plans = await db
@@ -296,7 +300,7 @@ export const constructionRouter = router({
         if (!db) throw new Error("Database unavailable");
         const tenantId = tenantIdFromContext(ctx);
         const quoteConditions = [eq(quotes.id, input.quoteId)];
-        appendTenantScope(quoteConditions, quotes.tenantId, tenantId);
+        appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantId);
         const [quote] = await db.select().from(quotes).where(and(...quoteConditions));
         if (!quote) throw new Error("Quote not found");
 

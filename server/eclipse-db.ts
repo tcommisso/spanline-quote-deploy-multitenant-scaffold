@@ -1,11 +1,10 @@
 // Eclipse Opening Roof System - Database Helpers
-import { eq, desc, like, or, and } from "drizzle-orm";
+import { eq, desc, like, or, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { eclipseQuotes, eclipsePricing } from "../drizzle/schema";
 import type { InsertEclipseQuote, InsertEclipsePricing } from "../drizzle/schema";
 import { isAdminRole } from "../shared/const";
-import { appendTenantScope, isMultiTenancyMode } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
@@ -17,10 +16,13 @@ type EclipseTenantScopeOptions = {
 function appendEclipseTenantScope(
   conditions: any[],
   tenantId: number | null | undefined,
-  options?: EclipseTenantScopeOptions,
+  _options?: EclipseTenantScopeOptions,
 ) {
-  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  if (!tenantId) {
+    conditions.push(sql`1 = 0`);
+    return;
+  }
+  conditions.push(eq(eclipseQuotes.tenantId, tenantId));
 }
 
 // ─── Eclipse Quotes ──────────────────────────────────────────────────────────
