@@ -435,6 +435,7 @@ const DEFAULT_WIDTH = 260;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
 const DEFAULT_ALTASPAN_ICON = "/icons/icon-192.png";
+const DEFAULT_ALTASPAN_LOGO = "/altaspan-logo.png";
 
 export default function DashboardLayout({
   children,
@@ -497,10 +498,7 @@ export default function DashboardLayout({
           <div className="flex flex-col items-center gap-8 max-w-sm w-full animate-[fadeInUp_0.8s_ease-out_0.2s_both]">
             <div className="flex flex-col items-center gap-4">
               <div className="flex flex-col items-center gap-2">
-                <div className="h-14 w-14 rounded-xl bg-[#C9AB57]/10 flex items-center justify-center mb-1">
-                  <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
-                </div>
-                <span className="text-2xl font-semibold text-white tracking-wide">ALTASPAN</span>
+                <img src={DEFAULT_ALTASPAN_LOGO} alt="Altaspan" className="h-24 w-auto object-contain rounded" />
               </div>
               <p className="text-sm text-[#F2EDE6]/60 text-center">
                 {tagSignInPrompt}
@@ -1073,8 +1071,7 @@ function DashboardLayoutContent({
                       <img src={logo.dataUrl} alt="Logo" className="h-12 w-auto max-w-[180px] object-contain" />
                     ) : (
                       <div className="flex items-center gap-2">
-                        <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
-                        <span className="text-xl font-semibold tracking-wide text-sidebar-foreground">Altaspan</span>
+                        <img src={DEFAULT_ALTASPAN_LOGO} alt="Altaspan" className="h-12 w-auto max-w-[180px] object-contain rounded" />
                       </div>
                     )}
                   </button>

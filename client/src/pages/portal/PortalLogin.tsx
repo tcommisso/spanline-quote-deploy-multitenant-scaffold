@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { toast } from "sonner";
 import { Loader2, CheckCircle } from "lucide-react";
 
-const DEFAULT_ALTASPAN_ICON = "/icons/icon-192.png";
+const DEFAULT_ALTASPAN_LOGO = "/altaspan-logo.png";
 
 export default function PortalLogin() {
   const [email, setEmail] = useState("");
@@ -92,10 +92,7 @@ export default function PortalLogin() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="mx-auto mb-4 flex flex-col items-center gap-2">
-            <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center">
-              <img src={DEFAULT_ALTASPAN_ICON} alt="Altaspan" className="h-10 w-10 object-contain rounded" />
-            </div>
-            <span className="text-lg font-semibold tracking-wide text-primary">Altaspan</span>
+            <img src={DEFAULT_ALTASPAN_LOGO} alt="Altaspan" className="h-20 w-auto object-contain rounded" />
           </div>
           <CardTitle className="text-2xl">Client Portal</CardTitle>
           <CardDescription>
