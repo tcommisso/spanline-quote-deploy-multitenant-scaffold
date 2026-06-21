@@ -1,4 +1,4 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import {
   deckProducts,
@@ -16,7 +16,17 @@ import {
   type InsertDeckQuote,
   type InsertDeckAddonOverrideHistory,
 } from "../drizzle/schema";
-import { appendTenantScope } from "./_core/tenant-scope";
+
+function appendDeckQuoteTenantScope(
+  conditions: any[],
+  tenantId: number | null | undefined,
+) {
+  if (!tenantId) {
+    conditions.push(sql`1 = 0`);
+    return;
+  }
+  conditions.push(eq(deckQuotes.tenantId, tenantId));
+}
 
 // ─── Deck Products ──────────────────────────────────────────────────────────
 
@@ -212,7 +222,7 @@ export async function getDeckQuotes(userId?: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [];
-  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  appendDeckQuoteTenantScope(conditions, tenantId);
   if (userId) {
     conditions.push(eq(deckQuotes.userId, userId));
   }
@@ -224,7 +234,7 @@ export async function getDeckQuoteById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const conditions: any[] = [eq(deckQuotes.id, id)];
-  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  appendDeckQuoteTenantScope(conditions, tenantId);
   const rows = await db.select().from(deckQuotes).where(and(...conditions));
   return rows[0] || null;
 }
@@ -240,7 +250,7 @@ export async function updateDeckQuote(id: number, data: Partial<Omit<InsertDeckQ
   const db = await getDb();
   if (!db) return null;
   const conditions: any[] = [eq(deckQuotes.id, id)];
-  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  appendDeckQuoteTenantScope(conditions, tenantId);
   await db.update(deckQuotes).set(data).where(and(...conditions));
   return getDeckQuoteById(id, tenantId);
 }
@@ -277,7 +287,7 @@ export async function deleteDeckQuote(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const conditions: any[] = [eq(deckQuotes.id, id)];
-  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  appendDeckQuoteTenantScope(conditions, tenantId);
   await db.delete(deckQuotes).where(and(...conditions));
 }
 
@@ -304,7 +314,7 @@ export async function getLastOverridePerQuote(tenantId?: number | null): Promise
   const db = await getDb();
   if (!db) return [];
   const quoteConditions: any[] = [];
-  appendTenantScope(quoteConditions, deckQuotes.tenantId, tenantId);
+  appendDeckQuoteTenantScope(quoteConditions, tenantId);
   const visibleQuotes = await db.select({ id: deckQuotes.id }).from(deckQuotes)
     .where(quoteConditions.length ? and(...quoteConditions) : undefined);
   const visibleQuoteIds = new Set(visibleQuotes.map(q => q.id));

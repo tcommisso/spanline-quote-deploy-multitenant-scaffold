@@ -33,6 +33,10 @@ const DEFAULT_WIDGETS = [
   { id: "your_tasks", visible: true, order: 8 },
 ];
 
+function quoteTenantScope(column: any, tenantId: number | null | undefined) {
+  return tenantId ? eq(column, tenantId) : sql`1 = 0`;
+}
+
 export const appCentralRouter = router({
   // ─── Get user's widget config ─────────────────────────────────────────────
   getWidgetConfig: protectedProcedure.query(async ({ ctx }) => {
@@ -110,7 +114,7 @@ export const appCentralRouter = router({
         .from(quotes)
         .where(and(
           gte(quotes.createdAt, startOfMonth),
-          tenantScoped(quotes.tenantId, ctx.tenant.id),
+          quoteTenantScope(quotes.tenantId, ctx.tenant.id),
         ));
       quotesCount = quotesThisMonth?.count || 0;
 
@@ -123,7 +127,7 @@ export const appCentralRouter = router({
         .from(quotes)
         .where(and(
           sql`status != 'draft'`,
-          tenantScoped(quotes.tenantId, ctx.tenant.id),
+          quoteTenantScope(quotes.tenantId, ctx.tenant.id),
         ));
       conversionRate =
         conversionData.total > 0
@@ -285,7 +289,7 @@ export const appCentralRouter = router({
       .from(quotes)
       .where(and(
         eq(quotes.userId, ctx.user.id),
-        tenantScoped(quotes.tenantId, ctx.tenant.id),
+        quoteTenantScope(quotes.tenantId, ctx.tenant.id),
       ))
       .orderBy(desc(quotes.updatedAt))
       .limit(8);

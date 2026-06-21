@@ -17,9 +17,8 @@ import { logRenderCost } from "./render-cost-router";
 import { getDb, getTenantBrandingSettings } from "./db";
 import { getDeckProductById } from "./deck-db";
 import { deckQuotes, eclipseQuotes } from "../drizzle/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { getCompanyName } from "./company-name";
-import { appendTenantScope } from "./_core/tenant-scope";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +45,10 @@ function parseRenderHistory(raw: unknown): RenderHistoryEntry[] {
 
 // ─── Deck helpers ───────────────────────────────────────────────────────────
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 async function getDeckQuote(quoteId: number, userId: number, userRole?: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
@@ -54,7 +57,7 @@ async function getDeckQuote(quoteId: number, userId: number, userRole?: string, 
   const conditions = isAdmin
     ? [eq(deckQuotes.id, quoteId)]
     : [eq(deckQuotes.id, quoteId), eq(deckQuotes.userId, userId)];
-  appendTenantScope(conditions, deckQuotes.tenantId, tenantId);
+  appendExactQuoteTenantScope(conditions, deckQuotes.tenantId, tenantId);
   const [row] = await db.select().from(deckQuotes).where(and(...conditions)).limit(1);
   return row ?? null;
 }
@@ -120,7 +123,7 @@ async function getEclipseQuote(quoteId: number, userId: number, userRole?: strin
   const conditions = isAdmin
     ? [eq(eclipseQuotes.id, quoteId)]
     : [eq(eclipseQuotes.id, quoteId), eq(eclipseQuotes.userId, userId)];
-  appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
+  appendExactQuoteTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
   const [row] = await db.select().from(eclipseQuotes).where(and(...conditions)).limit(1);
   return row ?? null;
 }

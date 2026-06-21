@@ -23,6 +23,10 @@ async function assertAppointmentAccess(ctx: any, appointmentId: number) {
   return appointment;
 }
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 async function assertQuoteAccess(ctx: any, quoteId: number, quoteType: string) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -37,7 +41,7 @@ async function assertQuoteAccess(ctx: any, quoteId: number, quoteType: string) {
   if (!table) throw new Error("Quote type not supported");
 
   const conditions: any[] = [eq(table.id, quoteId)];
-  appendTenantScope(conditions, table.tenantId, tenantId);
+  appendExactQuoteTenantScope(conditions, table.tenantId, tenantId);
   const [quote] = await db.select({ id: table.id }).from(table).where(and(...conditions)).limit(1);
   if (!quote) throw new Error("Quote not found");
   return quote;
@@ -445,7 +449,7 @@ export const crmRouter = router({
             if (existingJobs.length === 0) {
               // Find the quote linked to this lead (via clientId)
               const quoteConditions = [eq(quotes.clientId, id)];
-              appendTenantScope(quoteConditions, quotes.tenantId, tenantId);
+              appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantId);
               const linkedQuotes = await db.select().from(quotes).where(and(...quoteConditions));
               const latestQuote = linkedQuotes.length > 0 ? linkedQuotes[linkedQuotes.length - 1] : null;
 

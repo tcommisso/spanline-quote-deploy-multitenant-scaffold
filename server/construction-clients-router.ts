@@ -29,6 +29,10 @@ function installerTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 async function requireJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select()
     .from(constructionJobs)
@@ -529,7 +533,7 @@ export const constructionClientsRouter = router({
       let quoteData = null;
       if (job.quoteId) {
         const quoteConditions = [eq(quotes.id, job.quoteId)];
-        appendTenantScope(quoteConditions, quotes.tenantId, tenantIdFromContext(ctx));
+        appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantIdFromContext(ctx));
         const [q] = await db.select({
           id: quotes.id,
           quoteNumber: quotes.quoteNumber,

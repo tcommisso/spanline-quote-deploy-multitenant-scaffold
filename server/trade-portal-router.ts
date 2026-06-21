@@ -37,6 +37,10 @@ async function requireDb() {
   return db;
 }
 
+function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
+  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
+}
+
 function tradePortalAccessConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, tradePortalAccess.tenantId, tenantIdFromContext(ctx));
@@ -1359,7 +1363,7 @@ export const tradePortalRouter = router({
       let clientEmail: string | null = null;
       if (job.quoteId) {
         const quoteConditions = [eq(quotes.id, job.quoteId)];
-        appendTenantScope(quoteConditions, quotes.tenantId, tenantIdFromContext(ctx));
+        appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantIdFromContext(ctx));
         const [q] = await db.select({
           clientPhone: quotes.clientPhone,
           clientEmail: quotes.clientEmail,

@@ -3,8 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { isMultiTenancyMode, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
-import { normalizeUserRole } from "../shared/const";
+import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { blindFabricCategoryLabel, blindFabricCategoryNumber, blindFabricCategoryValue, blindProductTypeValue } from "../shared/blinds";
 import {
   crmLeads,
@@ -54,24 +53,25 @@ function scope(column: any, tenantId: number) {
   return tenantScoped(column, tenantId)!;
 }
 
+function quoteScope(column: any, tenantId: number) {
+  return eq(column, tenantId);
+}
+
 type ScreenQuoteScopeOptions = {
   includeAllTenants?: boolean;
 };
 
-function screenQuoteScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }): ScreenQuoteScopeOptions | undefined {
-  return normalizeUserRole(ctx.user?.role) === "super_admin"
-    ? { includeAllTenants: true }
-    : undefined;
+function screenQuoteScopeOptionsForContext(_ctx: { user?: { role?: string | null } | null }): ScreenQuoteScopeOptions | undefined {
+  return undefined;
 }
 
 function addScreenQuoteTenantScope(
   conditions: any[],
   column: any,
   tenantId: number,
-  options?: ScreenQuoteScopeOptions,
+  _options?: ScreenQuoteScopeOptions,
 ) {
-  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
-  conditions.push(scope(column, tenantId));
+  conditions.push(quoteScope(column, tenantId));
 }
 
 function insertIdFromResult(result: any): number | null {
@@ -137,7 +137,7 @@ async function quoteIdFromInsertResult(db: any, tenantId: number, insertResult: 
   const [quote] = await db
     .select({ id: blindQuotes.id })
     .from(blindQuotes)
-    .where(and(eq(blindQuotes.quoteNumber, quoteNumber), scope(blindQuotes.tenantId, tenantId)))
+    .where(and(eq(blindQuotes.quoteNumber, quoteNumber), quoteScope(blindQuotes.tenantId, tenantId)))
     .limit(1);
 
   const quoteId = Number(quote?.id);
@@ -165,7 +165,7 @@ async function quoteItemIdFromInsertResult(
     .where(and(
       eq(blindQuoteItems.quoteId, quoteId),
       eq(blindQuoteItems.itemNumber, itemNumber),
-      scope(blindQuoteItems.tenantId, tenantId),
+      quoteScope(blindQuoteItems.tenantId, tenantId),
     ))
     .orderBy(desc(blindQuoteItems.id))
     .limit(1);
@@ -664,7 +664,7 @@ async function requireQuote(db: any, tenantId: number, quoteId: number) {
   const [quote] = await db
     .select()
     .from(blindQuotes)
-    .where(and(eq(blindQuotes.id, quoteId), scope(blindQuotes.tenantId, tenantId)))
+    .where(and(eq(blindQuotes.id, quoteId), quoteScope(blindQuotes.tenantId, tenantId)))
     .limit(1);
   if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Blind quote not found" });
   return quote;
@@ -675,11 +675,11 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
   const items = await db
     .select()
     .from(blindQuoteItems)
-    .where(and(eq(blindQuoteItems.quoteId, quoteId), scope(blindQuoteItems.tenantId, tenantId)));
+    .where(and(eq(blindQuoteItems.quoteId, quoteId), quoteScope(blindQuoteItems.tenantId, tenantId)));
   const costs = await db
     .select()
     .from(blindQuoteCostAdditions)
-    .where(and(eq(blindQuoteCostAdditions.quoteId, quoteId), scope(blindQuoteCostAdditions.tenantId, tenantId)));
+    .where(and(eq(blindQuoteCostAdditions.quoteId, quoteId), quoteScope(blindQuoteCostAdditions.tenantId, tenantId)));
 
   const subtotalExGst = [...items, ...costs].reduce((sum, row: any) => {
     return sum + Number(row.lineTotalExGst ?? row.lineTotal ?? 0);
@@ -691,7 +691,7 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
     subtotalExGst: subtotalExGst.toFixed(2),
     gstAmount: gstAmount.toFixed(2),
     totalIncGst: totalIncGst.toFixed(2),
-  }).where(and(eq(blindQuotes.id, quoteId), scope(blindQuotes.tenantId, tenantId)));
+  }).where(and(eq(blindQuotes.id, quoteId), quoteScope(blindQuotes.tenantId, tenantId)));
 }
 
 const statusInput = z.enum(["draft", "sent", "accepted", "declined", "expired"]);
@@ -1403,7 +1403,7 @@ export const blindsRouter = router({
         });
         const newQuoteId = await quoteIdFromInsertResult(db, tenantId, quoteResult, quoteNumber);
         await ensureSsQuoteItemDetailColumns(db);
-        const items = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.quoteId, input.id), scope(blindQuoteItems.tenantId, tenantId))).orderBy(asc(blindQuoteItems.itemNumber));
+        const items = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.quoteId, input.id), quoteScope(blindQuoteItems.tenantId, tenantId))).orderBy(asc(blindQuoteItems.itemNumber));
         const itemIdMap = new Map<number, number>();
         for (const item of items) {
           const [itemResult] = await db.insert(blindQuoteItems).values({
@@ -1435,7 +1435,7 @@ export const blindsRouter = router({
           const newItemId = await quoteItemIdFromInsertResult(db, tenantId, itemResult, newQuoteId, Number(item.itemNumber));
           itemIdMap.set(item.id, newItemId);
         }
-        const originalOptions = await db.select().from(blindQuoteItemOptions).where(scope(blindQuoteItemOptions.tenantId, tenantId));
+        const originalOptions = await db.select().from(blindQuoteItemOptions).where(quoteScope(blindQuoteItemOptions.tenantId, tenantId));
         for (const option of originalOptions) {
           const newItemId = itemIdMap.get(option.quoteItemId);
           if (!newItemId) continue;
@@ -1448,7 +1448,7 @@ export const blindsRouter = router({
             lineTotal: option.lineTotal,
           });
         }
-        const costs = await db.select().from(blindQuoteCostAdditions).where(and(eq(blindQuoteCostAdditions.quoteId, input.id), scope(blindQuoteCostAdditions.tenantId, tenantId)));
+        const costs = await db.select().from(blindQuoteCostAdditions).where(and(eq(blindQuoteCostAdditions.quoteId, input.id), quoteScope(blindQuoteCostAdditions.tenantId, tenantId)));
         for (const cost of costs) {
           await db.insert(blindQuoteCostAdditions).values({
             tenantId,
@@ -1490,7 +1490,7 @@ export const blindsRouter = router({
         const tenantId = tenantIdForContext(ctx);
         const quote = await requireQuote(db, tenantId, input.quoteId);
         await ensureSsQuoteItemDetailColumns(db);
-        const existingItems = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId)));
+        const existingItems = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.quoteId, input.quoteId), quoteScope(blindQuoteItems.tenantId, tenantId)));
         const itemNumber = existingItems.length + 1;
         const brand = canonicalBrand(input.brand);
         const productType = canonicalProductType(input.productType);
@@ -1611,7 +1611,7 @@ export const blindsRouter = router({
         const [item] = await db
           .select()
           .from(blindQuoteItems)
-          .where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId)))
+          .where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), quoteScope(blindQuoteItems.tenantId, tenantId)))
           .limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
 
@@ -1678,9 +1678,9 @@ export const blindsRouter = router({
           adjustedPrice: basePriceExGst.toFixed(2),
           optionsTotal: optionsTotal.toFixed(2),
           lineTotalExGst: lineTotalExGst.toFixed(2),
-        }).where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId)));
+        }).where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), quoteScope(blindQuoteItems.tenantId, tenantId)));
 
-        await db.delete(blindQuoteItemOptions).where(and(eq(blindQuoteItemOptions.quoteItemId, input.itemId), scope(blindQuoteItemOptions.tenantId, tenantId)));
+        await db.delete(blindQuoteItemOptions).where(and(eq(blindQuoteItemOptions.quoteItemId, input.itemId), quoteScope(blindQuoteItemOptions.tenantId, tenantId)));
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(blindProductOptions).where(and(eq(blindProductOptions.id, selected.productOptionId), scope(blindProductOptions.tenantId, tenantId))).limit(1);
           if (!productOption) continue;
@@ -1705,8 +1705,8 @@ export const blindsRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
-        await db.delete(blindQuoteItemOptions).where(and(eq(blindQuoteItemOptions.quoteItemId, input.itemId), scope(blindQuoteItemOptions.tenantId, tenantId)));
-        await db.delete(blindQuoteItems).where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId)));
+        await db.delete(blindQuoteItemOptions).where(and(eq(blindQuoteItemOptions.quoteItemId, input.itemId), quoteScope(blindQuoteItemOptions.tenantId, tenantId)));
+        await db.delete(blindQuoteItems).where(and(eq(blindQuoteItems.id, input.itemId), eq(blindQuoteItems.quoteId, input.quoteId), quoteScope(blindQuoteItems.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1743,7 +1743,7 @@ export const blindsRouter = router({
           quantity: input.quantity.toFixed(2),
           unitCost: input.unitCost.toFixed(2),
           lineTotal: lineTotal.toFixed(2),
-        }).where(and(eq(blindQuoteCostAdditions.id, input.id), eq(blindQuoteCostAdditions.quoteId, input.quoteId), scope(blindQuoteCostAdditions.tenantId, tenantId)));
+        }).where(and(eq(blindQuoteCostAdditions.id, input.id), eq(blindQuoteCostAdditions.quoteId, input.quoteId), quoteScope(blindQuoteCostAdditions.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1754,7 +1754,7 @@ export const blindsRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
-        await db.delete(blindQuoteCostAdditions).where(and(eq(blindQuoteCostAdditions.id, input.id), eq(blindQuoteCostAdditions.quoteId, input.quoteId), scope(blindQuoteCostAdditions.tenantId, tenantId)));
+        await db.delete(blindQuoteCostAdditions).where(and(eq(blindQuoteCostAdditions.id, input.id), eq(blindQuoteCostAdditions.quoteId, input.quoteId), quoteScope(blindQuoteCostAdditions.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1764,7 +1764,7 @@ export const blindsRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        await db.update(blindQuotes).set({ status: input.status }).where(and(eq(blindQuotes.id, input.id), scope(blindQuotes.tenantId, tenantId)));
+        await db.update(blindQuotes).set({ status: input.status }).where(and(eq(blindQuotes.id, input.id), quoteScope(blindQuotes.tenantId, tenantId)));
         return { success: true };
       }),
 
@@ -1775,13 +1775,13 @@ export const blindsRouter = router({
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
         await ensureSsQuoteItemDetailColumns(db);
-        const [item] = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.id, input.quoteItemId), eq(blindQuoteItems.quoteId, input.quoteId), scope(blindQuoteItems.tenantId, tenantId))).limit(1);
+        const [item] = await db.select().from(blindQuoteItems).where(and(eq(blindQuoteItems.id, input.quoteItemId), eq(blindQuoteItems.quoteId, input.quoteId), quoteScope(blindQuoteItems.tenantId, tenantId))).limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
         const buffer = Buffer.from(input.base64, "base64");
         const ext = input.filename.split(".").pop() || "jpg";
         const key = `ss-photos/${tenantId}/${input.quoteId}/${input.quoteItemId}-${Date.now()}.${ext}`;
         const { url } = await storagePut(key, buffer, `image/${ext === "png" ? "png" : "jpeg"}`);
-        await db.update(blindQuoteItems).set({ photoUrl: url }).where(and(eq(blindQuoteItems.id, input.quoteItemId), scope(blindQuoteItems.tenantId, tenantId)));
+        await db.update(blindQuoteItems).set({ photoUrl: url }).where(and(eq(blindQuoteItems.id, input.quoteItemId), quoteScope(blindQuoteItems.tenantId, tenantId)));
         return { url };
       }),
 

@@ -20,10 +20,13 @@ function appendQuoteTenantScope(
   conditions: any[],
   column: any,
   tenantId: number | null | undefined,
-  options?: QuoteTenantScopeOptions,
+  _options?: QuoteTenantScopeOptions,
 ) {
-  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
-  appendTenantScope(conditions, column, tenantId);
+  if (!tenantId) {
+    conditions.push(sql`1 = 0`);
+    return;
+  }
+  conditions.push(eq(column, tenantId));
 }
 
 export async function getDb() {
@@ -1351,9 +1354,10 @@ export async function cleanupOrphanedColourGroupMembers(tenantId?: TenantScope):
 
 
 // ─── Global Search ──────────────────────────────────────────────────────────
-export async function globalSearch(query: string) {
+export async function globalSearch(query: string, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return { quotes: [], deckQuotes: [], eclipseQuotes: [], leads: [] };
+  if (!tenantId) return { quotes: [], deckQuotes: [], eclipseQuotes: [], leads: [] };
   const pattern = `%${query}%`;
 
   // Search structure quotes
@@ -1364,12 +1368,15 @@ export async function globalSearch(query: string) {
     status: quotes.status,
     siteAddress: quotes.siteAddress,
   }).from(quotes).where(
-    or(
-      like(quotes.clientName, pattern),
-      like(quotes.quoteNumber, pattern),
-      like(quotes.clientEmail, pattern),
-      like(quotes.clientPhone, pattern),
-      like(quotes.siteAddress, pattern),
+    and(
+      eq(quotes.tenantId, tenantId),
+      or(
+        like(quotes.clientName, pattern),
+        like(quotes.quoteNumber, pattern),
+        like(quotes.clientEmail, pattern),
+        like(quotes.clientPhone, pattern),
+        like(quotes.siteAddress, pattern),
+      ),
     )
   ).orderBy(desc(quotes.updatedAt)).limit(10);
 
@@ -1381,12 +1388,15 @@ export async function globalSearch(query: string) {
     status: deckQuotes.status,
     siteAddress: deckQuotes.siteAddress,
   }).from(deckQuotes).where(
-    or(
-      like(deckQuotes.clientName, pattern),
-      like(deckQuotes.quoteNumber, pattern),
-      like(deckQuotes.clientEmail, pattern),
-      like(deckQuotes.clientPhone, pattern),
-      like(deckQuotes.siteAddress, pattern),
+    and(
+      eq(deckQuotes.tenantId, tenantId),
+      or(
+        like(deckQuotes.clientName, pattern),
+        like(deckQuotes.quoteNumber, pattern),
+        like(deckQuotes.clientEmail, pattern),
+        like(deckQuotes.clientPhone, pattern),
+        like(deckQuotes.siteAddress, pattern),
+      ),
     )
   ).orderBy(desc(deckQuotes.updatedAt)).limit(10);
 
@@ -1398,12 +1408,15 @@ export async function globalSearch(query: string) {
     status: eclipseQuotes.status,
     clientAddress: eclipseQuotes.clientAddress,
   }).from(eclipseQuotes).where(
-    or(
-      like(eclipseQuotes.clientName, pattern),
-      like(eclipseQuotes.quoteNumber, pattern),
-      like(eclipseQuotes.clientEmail, pattern),
-      like(eclipseQuotes.clientPhone, pattern),
-      like(eclipseQuotes.clientAddress, pattern),
+    and(
+      eq(eclipseQuotes.tenantId, tenantId),
+      or(
+        like(eclipseQuotes.clientName, pattern),
+        like(eclipseQuotes.quoteNumber, pattern),
+        like(eclipseQuotes.clientEmail, pattern),
+        like(eclipseQuotes.clientPhone, pattern),
+        like(eclipseQuotes.clientAddress, pattern),
+      ),
     )
   ).orderBy(desc(eclipseQuotes.updatedAt)).limit(10);
 
@@ -1417,13 +1430,16 @@ export async function globalSearch(query: string) {
     contactEmail: crmLeads.contactEmail,
     status: crmLeads.status,
   }).from(crmLeads).where(
-    or(
-      like(crmLeads.contactFirstName, pattern),
-      like(crmLeads.contactLastName, pattern),
-      like(crmLeads.contactEmail, pattern),
-      like(crmLeads.contactPhone, pattern),
-      like(crmLeads.company, pattern),
-      like(crmLeads.leadNumber, pattern),
+    and(
+      eq(crmLeads.tenantId, tenantId),
+      or(
+        like(crmLeads.contactFirstName, pattern),
+        like(crmLeads.contactLastName, pattern),
+        like(crmLeads.contactEmail, pattern),
+        like(crmLeads.contactPhone, pattern),
+        like(crmLeads.company, pattern),
+        like(crmLeads.leadNumber, pattern),
+      ),
     )
   ).orderBy(desc(crmLeads.createdAt)).limit(10);
 
@@ -2205,6 +2221,6 @@ export async function getQuoteItems(quoteId: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return [];
   const conditions: any[] = [eq(quoteItems.quoteId, quoteId)];
-  appendTenantScope(conditions, quoteItems.tenantId, tenantId);
+  appendQuoteTenantScope(conditions, quoteItems.tenantId, tenantId);
   return db.select().from(quoteItems).where(and(...conditions)).orderBy(quoteItems.sortOrder);
 }

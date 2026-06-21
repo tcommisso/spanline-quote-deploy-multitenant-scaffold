@@ -3,8 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { isMultiTenancyMode, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
-import { normalizeUserRole } from "../shared/const";
+import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import {
   crmLeads,
   masterData,
@@ -45,24 +44,25 @@ function scope(column: any, tenantId: number) {
   return tenantScoped(column, tenantId)!;
 }
 
+function quoteScope(column: any, tenantId: number) {
+  return eq(column, tenantId);
+}
+
 type ScreenQuoteScopeOptions = {
   includeAllTenants?: boolean;
 };
 
-function screenQuoteScopeOptionsForContext(ctx: { user?: { role?: string | null } | null }): ScreenQuoteScopeOptions | undefined {
-  return normalizeUserRole(ctx.user?.role) === "super_admin"
-    ? { includeAllTenants: true }
-    : undefined;
+function screenQuoteScopeOptionsForContext(_ctx: { user?: { role?: string | null } | null }): ScreenQuoteScopeOptions | undefined {
+  return undefined;
 }
 
 function addScreenQuoteTenantScope(
   conditions: any[],
   column: any,
   tenantId: number,
-  options?: ScreenQuoteScopeOptions,
+  _options?: ScreenQuoteScopeOptions,
 ) {
-  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
-  conditions.push(scope(column, tenantId));
+  conditions.push(quoteScope(column, tenantId));
 }
 
 function insertIdFromResult(result: any): number | null {
@@ -126,7 +126,7 @@ async function quoteIdFromInsertResult(db: any, tenantId: number, insertResult: 
   const [quote] = await db
     .select({ id: ssQuotes.id })
     .from(ssQuotes)
-    .where(and(eq(ssQuotes.quoteNumber, quoteNumber), scope(ssQuotes.tenantId, tenantId)))
+    .where(and(eq(ssQuotes.quoteNumber, quoteNumber), quoteScope(ssQuotes.tenantId, tenantId)))
     .limit(1);
 
   const quoteId = Number(quote?.id);
@@ -154,7 +154,7 @@ async function quoteItemIdFromInsertResult(
     .where(and(
       eq(ssQuoteItems.quoteId, quoteId),
       eq(ssQuoteItems.itemNumber, itemNumber),
-      scope(ssQuoteItems.tenantId, tenantId),
+      quoteScope(ssQuoteItems.tenantId, tenantId),
     ))
     .orderBy(desc(ssQuoteItems.id))
     .limit(1);
@@ -591,7 +591,7 @@ async function requireQuote(db: any, tenantId: number, quoteId: number) {
   const [quote] = await db
     .select()
     .from(ssQuotes)
-    .where(and(eq(ssQuotes.id, quoteId), scope(ssQuotes.tenantId, tenantId)))
+    .where(and(eq(ssQuotes.id, quoteId), quoteScope(ssQuotes.tenantId, tenantId)))
     .limit(1);
   if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Security screen quote not found" });
   return quote;
@@ -602,11 +602,11 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
   const items = await db
     .select()
     .from(ssQuoteItems)
-    .where(and(eq(ssQuoteItems.quoteId, quoteId), scope(ssQuoteItems.tenantId, tenantId)));
+    .where(and(eq(ssQuoteItems.quoteId, quoteId), quoteScope(ssQuoteItems.tenantId, tenantId)));
   const costs = await db
     .select()
     .from(ssQuoteCostAdditions)
-    .where(and(eq(ssQuoteCostAdditions.quoteId, quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+    .where(and(eq(ssQuoteCostAdditions.quoteId, quoteId), quoteScope(ssQuoteCostAdditions.tenantId, tenantId)));
 
   const subtotalExGst = [...items, ...costs].reduce((sum, row: any) => {
     return sum + Number(row.lineTotalExGst ?? row.lineTotal ?? 0);
@@ -618,7 +618,7 @@ async function recalculateQuoteTotals(db: any, tenantId: number, quoteId: number
     subtotalExGst: subtotalExGst.toFixed(2),
     gstAmount: gstAmount.toFixed(2),
     totalIncGst: totalIncGst.toFixed(2),
-  }).where(and(eq(ssQuotes.id, quoteId), scope(ssQuotes.tenantId, tenantId)));
+  }).where(and(eq(ssQuotes.id, quoteId), quoteScope(ssQuotes.tenantId, tenantId)));
 }
 
 const statusInput = z.enum(["draft", "sent", "accepted", "declined", "expired"]);
@@ -1205,7 +1205,7 @@ export const securityScreensRouter = router({
         });
         const newQuoteId = await quoteIdFromInsertResult(db, tenantId, quoteResult, quoteNumber);
         await ensureSsQuoteItemDetailColumns(db);
-        const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), scope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
+        const items = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.id), quoteScope(ssQuoteItems.tenantId, tenantId))).orderBy(asc(ssQuoteItems.itemNumber));
         const itemIdMap = new Map<number, number>();
         for (const item of items) {
           const [itemResult] = await db.insert(ssQuoteItems).values({
@@ -1235,7 +1235,7 @@ export const securityScreensRouter = router({
           const newItemId = await quoteItemIdFromInsertResult(db, tenantId, itemResult, newQuoteId, Number(item.itemNumber));
           itemIdMap.set(item.id, newItemId);
         }
-        const originalOptions = await db.select().from(ssQuoteItemOptions).where(scope(ssQuoteItemOptions.tenantId, tenantId));
+        const originalOptions = await db.select().from(ssQuoteItemOptions).where(quoteScope(ssQuoteItemOptions.tenantId, tenantId));
         for (const option of originalOptions) {
           const newItemId = itemIdMap.get(option.quoteItemId);
           if (!newItemId) continue;
@@ -1248,7 +1248,7 @@ export const securityScreensRouter = router({
             lineTotal: option.lineTotal,
           });
         }
-        const costs = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, input.id), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+        const costs = await db.select().from(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.quoteId, input.id), quoteScope(ssQuoteCostAdditions.tenantId, tenantId)));
         for (const cost of costs) {
           await db.insert(ssQuoteCostAdditions).values({
             tenantId,
@@ -1288,7 +1288,7 @@ export const securityScreensRouter = router({
         const tenantId = tenantIdForContext(ctx);
         const quote = await requireQuote(db, tenantId, input.quoteId);
         await ensureSsQuoteItemDetailColumns(db);
-        const existingItems = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
+        const existingItems = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.quoteId, input.quoteId), quoteScope(ssQuoteItems.tenantId, tenantId)));
         const itemNumber = existingItems.length + 1;
         const price = await interpolatePrice(db, tenantId, input.brand, input.productType, input.widthMm, input.heightMm);
         if (!price) {
@@ -1402,7 +1402,7 @@ export const securityScreensRouter = router({
         const [item] = await db
           .select()
           .from(ssQuoteItems)
-          .where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)))
+          .where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), quoteScope(ssQuoteItems.tenantId, tenantId)))
           .limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
 
@@ -1464,9 +1464,9 @@ export const securityScreensRouter = router({
           adjustedPrice: basePriceExGst.toFixed(2),
           optionsTotal: optionsTotal.toFixed(2),
           lineTotalExGst: lineTotalExGst.toFixed(2),
-        }).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
+        }).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), quoteScope(ssQuoteItems.tenantId, tenantId)));
 
-        await db.delete(ssQuoteItemOptions).where(and(eq(ssQuoteItemOptions.quoteItemId, input.itemId), scope(ssQuoteItemOptions.tenantId, tenantId)));
+        await db.delete(ssQuoteItemOptions).where(and(eq(ssQuoteItemOptions.quoteItemId, input.itemId), quoteScope(ssQuoteItemOptions.tenantId, tenantId)));
         for (const selected of selectedOptions) {
           const [productOption] = await db.select().from(ssProductOptions).where(and(eq(ssProductOptions.id, selected.productOptionId), scope(ssProductOptions.tenantId, tenantId))).limit(1);
           if (!productOption) continue;
@@ -1491,8 +1491,8 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
-        await db.delete(ssQuoteItemOptions).where(and(eq(ssQuoteItemOptions.quoteItemId, input.itemId), scope(ssQuoteItemOptions.tenantId, tenantId)));
-        await db.delete(ssQuoteItems).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId)));
+        await db.delete(ssQuoteItemOptions).where(and(eq(ssQuoteItemOptions.quoteItemId, input.itemId), quoteScope(ssQuoteItemOptions.tenantId, tenantId)));
+        await db.delete(ssQuoteItems).where(and(eq(ssQuoteItems.id, input.itemId), eq(ssQuoteItems.quoteId, input.quoteId), quoteScope(ssQuoteItems.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1529,7 +1529,7 @@ export const securityScreensRouter = router({
           quantity: input.quantity.toFixed(2),
           unitCost: input.unitCost.toFixed(2),
           lineTotal: lineTotal.toFixed(2),
-        }).where(and(eq(ssQuoteCostAdditions.id, input.id), eq(ssQuoteCostAdditions.quoteId, input.quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+        }).where(and(eq(ssQuoteCostAdditions.id, input.id), eq(ssQuoteCostAdditions.quoteId, input.quoteId), quoteScope(ssQuoteCostAdditions.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1540,7 +1540,7 @@ export const securityScreensRouter = router({
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
-        await db.delete(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.id, input.id), eq(ssQuoteCostAdditions.quoteId, input.quoteId), scope(ssQuoteCostAdditions.tenantId, tenantId)));
+        await db.delete(ssQuoteCostAdditions).where(and(eq(ssQuoteCostAdditions.id, input.id), eq(ssQuoteCostAdditions.quoteId, input.quoteId), quoteScope(ssQuoteCostAdditions.tenantId, tenantId)));
         await recalculateQuoteTotals(db, tenantId, input.quoteId);
         return { success: true };
       }),
@@ -1550,7 +1550,7 @@ export const securityScreensRouter = router({
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
         const tenantId = tenantIdForContext(ctx);
-        await db.update(ssQuotes).set({ status: input.status }).where(and(eq(ssQuotes.id, input.id), scope(ssQuotes.tenantId, tenantId)));
+        await db.update(ssQuotes).set({ status: input.status }).where(and(eq(ssQuotes.id, input.id), quoteScope(ssQuotes.tenantId, tenantId)));
         return { success: true };
       }),
 
@@ -1561,13 +1561,13 @@ export const securityScreensRouter = router({
         const tenantId = tenantIdForContext(ctx);
         await requireQuote(db, tenantId, input.quoteId);
         await ensureSsQuoteItemDetailColumns(db);
-        const [item] = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.id, input.quoteItemId), eq(ssQuoteItems.quoteId, input.quoteId), scope(ssQuoteItems.tenantId, tenantId))).limit(1);
+        const [item] = await db.select().from(ssQuoteItems).where(and(eq(ssQuoteItems.id, input.quoteItemId), eq(ssQuoteItems.quoteId, input.quoteId), quoteScope(ssQuoteItems.tenantId, tenantId))).limit(1);
         if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Quote item not found" });
         const buffer = Buffer.from(input.base64, "base64");
         const ext = input.filename.split(".").pop() || "jpg";
         const key = `ss-photos/${tenantId}/${input.quoteId}/${input.quoteItemId}-${Date.now()}.${ext}`;
         const { url } = await storagePut(key, buffer, `image/${ext === "png" ? "png" : "jpeg"}`);
-        await db.update(ssQuoteItems).set({ photoUrl: url }).where(and(eq(ssQuoteItems.id, input.quoteItemId), scope(ssQuoteItems.tenantId, tenantId)));
+        await db.update(ssQuoteItems).set({ photoUrl: url }).where(and(eq(ssQuoteItems.id, input.quoteItemId), quoteScope(ssQuoteItems.tenantId, tenantId)));
         return { url };
       }),
 
