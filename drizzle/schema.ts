@@ -4161,6 +4161,25 @@ export const blindColours = mysqlTable("blind_colours", {
 export type BlindColour = typeof blindColours.$inferSelect;
 export type InsertBlindColour = typeof blindColours.$inferInsert;
 
+export const blindFabricColours = mysqlTable("blind_fabric_colours", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  fabricRangeId: int("fabricRangeId").references(() => blindGlassInfill.id, { onDelete: "set null" }),
+  fabricRangeName: varchar("fabricRangeName", { length: 128 }),
+  categoryNumber: varchar("categoryNumber", { length: 16 }),
+  name: varchar("name", { length: 128 }).notNull(),
+  hexCode: varchar("hexCode", { length: 16 }),
+  isActive: boolean("isActive").default(true).notNull(),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_blind_fabric_colours_tenant_category").on(table.tenantId, table.categoryNumber),
+  index("idx_blind_fabric_colours_tenant_range").on(table.tenantId, table.fabricRangeId),
+  uniqueIndex("uq_blind_fabric_colours_tenant_range_name").on(table.tenantId, table.fabricRangeId, table.name),
+]);
+export type BlindFabricColour = typeof blindFabricColours.$inferSelect;
+export type InsertBlindFabricColour = typeof blindFabricColours.$inferInsert;
+
 export const blindQuotes = mysqlTable("blind_quotes", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
@@ -4205,6 +4224,8 @@ export const blindQuoteItems = mysqlTable("blind_quote_items", {
   hingePosition: varchar("hingePosition", { length: 32 }),
   glassInfillId: int("glassInfillId").references(() => blindGlassInfill.id, { onDelete: "set null" }),
   glassInfillQuantity: decimal("glassInfillQuantity", { precision: 10, scale: 2 }).default("1.00").notNull(),
+  fabricColourId: int("fabricColourId").references(() => blindFabricColours.id, { onDelete: "set null" }),
+  fabricColourName: varchar("fabricColourName", { length: 128 }),
   photoUrl: text("photoUrl"),
   notes: text("notes"),
   basePriceIncGst: decimal("basePriceIncGst", { precision: 12, scale: 2 }).default("0.00").notNull(),

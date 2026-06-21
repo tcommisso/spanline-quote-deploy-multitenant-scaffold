@@ -145,7 +145,11 @@ function blindQuotePrintHtml(quote: any) {
         ${item.notes ? `<div class="muted">${escapeHtml(item.notes)}</div>` : ""}
       </td>
       <td>${escapeHtml(item.widthMm)} x ${escapeHtml(item.heightMm)}</td>
-      <td>${escapeHtml(item.colourName || "-")}</td>
+      <td>
+        ${item.colourName ? `<div>Frame: ${escapeHtml(item.colourName)}</div>` : ""}
+        ${item.fabricColourName ? `<div class="muted">Fabric: ${escapeHtml(item.fabricColourName)}</div>` : ""}
+        ${!item.colourName && !item.fabricColourName ? "-" : ""}
+      </td>
       <td>${escapeHtml(item.quantity)}</td>
       <td class="money">${money(item.adjustedPrice)}</td>
       <td class="money">${money(item.optionsTotal)}</td>
@@ -336,6 +340,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   const { data: colours = [] } = trpc.blinds.colours.list.useQuery();
   const { data: productOptions = [] } = trpc.blinds.productOptions.list.useQuery();
   const { data: allFabricOptions = [] } = trpc.blinds.glassInfill.list.useQuery();
+  const { data: allFabricColours = [] } = trpc.blinds.fabricColours.list.useQuery();
   const isEditing = Boolean(item?.id);
 
   const addItemMutation = trpc.blinds.quotes.addItem.useMutation({
@@ -368,13 +373,15 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     openingDirection: "",
     hingePosition: "",
     glassInfillId: "",
+    fabricColourId: "none",
+    fabricColourName: "",
     notes: "",
     selectedOptions: [] as { productOptionId: number; quantity: number }[],
   });
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
 
-  const resetForm = () => setForm({ brand: "category1", productType: "zipguideawnings", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", notes: "", selectedOptions: [] });
+  const resetForm = () => setForm({ brand: "category1", productType: "zipguideawnings", widthMm: "", heightMm: "", quantity: "1", colourId: "", handleSide: "", hingeSide: "", openingDirection: "", hingePosition: "", glassInfillId: "", fabricColourId: "none", fabricColourName: "", notes: "", selectedOptions: [] });
 
   useEffect(() => {
     if (!open) return;
@@ -396,6 +403,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
       openingDirection: item.openingDirection || "",
       hingePosition: item.hingePosition || "",
       glassInfillId: item.glassInfillId ? String(item.glassInfillId) : "",
+      fabricColourId: item.fabricColourId ? String(item.fabricColourId) : (item.fabricColourName ? "custom" : "none"),
+      fabricColourName: item.fabricColourName || "",
       notes: item.notes || "",
       selectedOptions: (item.options || [])
         .filter((option: any) => option.productOptionId)
@@ -418,6 +427,18 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     const rowCategory = String(fabric.categoryNumber || "");
     return !selectedFabricCategoryNumber || !rowCategory || rowCategory === selectedFabricCategoryNumber;
   });
+  const selectedFabricRangeId = form.glassInfillId && form.glassInfillId !== "none" ? Number(form.glassInfillId) : null;
+  const selectedFabricColour = allFabricColours.find((colour: any) => String(colour.id) === form.fabricColourId);
+  const fabricColourOptions = allFabricColours.filter((colour: any) => {
+    const rowCategory = String(colour.categoryNumber || "");
+    const rowRangeId = Number(colour.fabricRangeId || 0);
+    const categoryMatches = !selectedFabricCategoryNumber || !rowCategory || rowCategory === selectedFabricCategoryNumber;
+    const rangeMatches = !selectedFabricRangeId || !rowRangeId || rowRangeId === selectedFabricRangeId;
+    return categoryMatches && rangeMatches;
+  });
+  const visibleFabricColours = selectedFabricColour && !fabricColourOptions.some((colour: any) => colour.id === selectedFabricColour.id)
+    ? [...fabricColourOptions, selectedFabricColour]
+    : fabricColourOptions;
 
   const handleDialogPhotoUpload = (file: File | undefined) => {
     if (!file) return;
@@ -463,7 +484,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
           {/* Left column - Product & Size */}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              <div><Label>Fabric Category</Label><Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v, glassInfillId: "" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent></Select></div>
+              <div><Label>Fabric Category</Label><Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v, glassInfillId: "", fabricColourId: "none", fabricColourName: "" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent></Select></div>
               <div><Label>Blind Type</Label><Select value={form.productType} onValueChange={(v) => setForm({ ...form, productType: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_PRODUCT_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}</SelectContent></Select></div>
             </div>
 
@@ -530,13 +551,48 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
             {/* Fabric infill */}
             <div>
               <Label>Fabric / Material (optional)</Label>
-              <Select value={form.glassInfillId} onValueChange={(v) => setForm({ ...form, glassInfillId: v })}>
+              <Select value={form.glassInfillId} onValueChange={(v) => setForm({ ...form, glassInfillId: v, fabricColourId: "none", fabricColourName: "" })}>
                 <SelectTrigger><SelectValue placeholder="No fabric infill" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No fabric infill</SelectItem>
                   {fabricOptions.map((g: any) => <SelectItem key={g.id} value={String(g.id)}>{g.glassType}{g.fabricBrand ? ` — ${g.fabricBrand}` : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div>
+              <Label>Fabric Colour (optional)</Label>
+              <Select
+                value={form.fabricColourId}
+                onValueChange={(v) => {
+                  const nextColour = allFabricColours.find((colour: any) => String(colour.id) === v);
+                  setForm({
+                    ...form,
+                    fabricColourId: v,
+                    fabricColourName: v === "custom" ? form.fabricColourName : nextColour?.name || "",
+                  });
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="No fabric colour" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No fabric colour</SelectItem>
+                  {visibleFabricColours.map((colour: any) => <SelectItem key={colour.id} value={String(colour.id)}>{colour.name}{colour.fabricRangeName ? ` — ${colour.fabricRangeName}` : ""}</SelectItem>)}
+                  <SelectItem value="custom">Custom fabric colour</SelectItem>
+                </SelectContent>
+              </Select>
+              {form.fabricColourId === "custom" ? (
+                <Input
+                  className="mt-2"
+                  value={form.fabricColourName}
+                  onChange={(event) => setForm({ ...form, fabricColourName: event.target.value })}
+                  placeholder="Enter fabric colour"
+                />
+              ) : selectedFabricColour ? (
+                <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="h-4 w-4 rounded border" style={{ backgroundColor: selectedFabricColour.hexCode || "#f8fafc" }} />
+                  <span>{selectedFabricColour.fabricRangeName || "Fabric colour option"}</span>
+                </div>
+              ) : null}
             </div>
 
             <div><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Additional notes for this item..." rows={2} /></div>
@@ -653,6 +709,8 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
               openingDirection: form.openingDirection || undefined,
               hingePosition: form.hingePosition || undefined,
               glassInfillId: form.glassInfillId && form.glassInfillId !== "none" ? parseInt(form.glassInfillId) : undefined,
+              fabricColourId: selectedFabricColour ? Number(selectedFabricColour.id) : (/^\d+$/.test(form.fabricColourId) ? Number(form.fabricColourId) : undefined),
+              fabricColourName: form.fabricColourId === "custom" ? (form.fabricColourName || undefined) : (selectedFabricColour?.name || form.fabricColourName || undefined),
               notes: form.notes || undefined,
               selectedOptions: form.selectedOptions.length > 0 ? form.selectedOptions : undefined,
               };
@@ -843,9 +901,10 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
                   </TableCell>
                   <TableCell className="font-mono">{item.widthMm}×{item.heightMm}</TableCell>
                   <TableCell>
-                    {item.colourName ? (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-sm">{item.colourName}</span>
+                    {item.colourName || item.fabricColourName ? (
+                      <div className="space-y-0.5">
+                        {item.colourName ? <p className="text-sm">Frame: {item.colourName}</p> : null}
+                        {item.fabricColourName ? <p className="text-xs text-muted-foreground">Fabric: {item.fabricColourName}</p> : null}
                       </div>
                     ) : "—"}
                   </TableCell>

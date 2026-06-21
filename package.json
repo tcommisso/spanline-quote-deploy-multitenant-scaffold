@@ -13,7 +13,7 @@
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "db:migrate:sql": "node scripts/apply-sql-migration.mjs drizzle/migrations/0001_multi_tenant_scaffold.sql",
     "db:migrate:screen-quotes": "node scripts/apply-sql-migration.mjs drizzle/migrations/0043_security_screen_quote_item_detail_columns.sql",
-    "db:migrate:blinds": "node scripts/apply-sql-migration.mjs drizzle/migrations/0047_blinds_quotes.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0048_blinds_supplier_csv_data.sql",
+    "db:migrate:blinds": "node scripts/apply-sql-migration.mjs drizzle/migrations/0047_blinds_quotes.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0048_blinds_supplier_csv_data.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0049_blinds_fabric_colours.sql",
     "db:migrate:inbox": "node scripts/apply-sql-migration.mjs drizzle/migrations/0035_inbox_tickets.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0036_inbox_ticket_column_compat.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0037_inbox_address_module_varchar.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0044_inbox_ticket_lifecycle_notes.sql && node scripts/apply-sql-migration.mjs drizzle/migrations/0045_inbox_sla_templates_presence_threading.sql",
     "db:migrate:saas": "node scripts/apply-sql-migration.mjs drizzle/migrations/0046_saas_billing_foundation.sql",
     "scheduled:dispatch": "node scripts/scheduled-dispatcher.mjs",

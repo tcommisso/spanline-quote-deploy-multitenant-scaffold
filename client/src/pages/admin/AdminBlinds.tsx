@@ -27,6 +27,7 @@ const DEFAULT_COST_FORM = { category: "per_uom", name: "", description: "", cost
 const DEFAULT_OPTION_FORM = { category: "accessory_crankoperation", orderCode: "", name: "", description: "", brand: "", costPrice: "", sellPrice: "", priceUnit: "Each" };
 const DEFAULT_FABRIC_FORM = { glassType: "", category: "category1", fabricBrand: "", fabricType: "", fabricWidth: "", description: "", cost: "0", uom: "m2" };
 const DEFAULT_COLOUR_FORM = { name: "", hexCode: "#000000", colorbondName: "", surchargePercent: "0" };
+const DEFAULT_FABRIC_COLOUR_FORM = { name: "", hexCode: "#ffffff", category: "category1", fabricRangeId: "none" };
 
 function PricingSettingsTab() {
   const utils = trpc.useUtils();
@@ -376,6 +377,75 @@ function FabricInfillTab() {
   );
 }
 
+// ─── Fabric Colours Tab ─────────────────────────────────────────────────────
+
+function FabricColoursTab() {
+  const utils = trpc.useUtils();
+  const { data: fabricColours = [], isLoading } = trpc.blinds.fabricColours.list.useQuery();
+  const { data: fabrics = [] } = trpc.blinds.glassInfill.list.useQuery();
+  const createMutation = trpc.blinds.fabricColours.create.useMutation({
+    onSuccess: () => { utils.blinds.fabricColours.list.invalidate(); setForm(DEFAULT_FABRIC_COLOUR_FORM); setOpen(false); toast.success("Fabric colour added"); },
+    onError: (e) => toast.error(e.message),
+  });
+  const deleteMutation = trpc.blinds.fabricColours.delete.useMutation({
+    onSuccess: () => { utils.blinds.fabricColours.list.invalidate(); toast.success("Fabric colour removed"); },
+    onError: (e) => toast.error(e.message),
+  });
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(DEFAULT_FABRIC_COLOUR_FORM);
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setForm(DEFAULT_FABRIC_COLOUR_FORM);
+    setOpen(nextOpen);
+  };
+
+  const categoryLabelForNumber = (categoryNumber: unknown) => {
+    const number = String(categoryNumber || "");
+    return BLIND_FABRIC_CATEGORIES.find((category) => category.number === number)?.label || (number ? `Category ${number}` : "All categories");
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div><h3 className="text-lg font-semibold">Fabric Colours</h3><p className="text-sm text-muted-foreground">Fabric colour choices linked to a fabric category or range</p></div>
+        <Dialog open={open} onOpenChange={handleOpenChange}>
+          <DialogTrigger asChild><Button size="sm" className="w-full sm:w-auto"><Plus className="h-4 w-4 mr-1" /> Add Fabric Colour</Button></DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add Fabric Colour</DialogTitle></DialogHeader>
+            <div className="space-y-4">
+              <div><Label>Colour Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Charcoal" /></div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div><Label>Fabric Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent></Select></div>
+                <div><Label>Fabric Range (optional)</Label><Select value={form.fabricRangeId} onValueChange={(v) => setForm({ ...form, fabricRangeId: v })}><SelectTrigger><SelectValue placeholder="All ranges" /></SelectTrigger><SelectContent><SelectItem value="none">All ranges in category</SelectItem>{fabrics.map((fabric: any) => <SelectItem key={fabric.id} value={String(fabric.id)}>{fabric.glassType}{fabric.categoryNumber ? ` — ${categoryLabelForNumber(fabric.categoryNumber)}` : ""}</SelectItem>)}</SelectContent></Select></div>
+              </div>
+              <div><Label>Swatch</Label><div className="flex items-center gap-2"><input type="color" value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="h-10 w-12 cursor-pointer rounded border" /><Input value={form.hexCode} onChange={(e) => setForm({ ...form, hexCode: e.target.value })} className="font-mono" /></div></div>
+              <Button className="w-full" disabled={!form.name.trim() || createMutation.isPending} onClick={() => createMutation.mutate({ name: form.name.trim(), hexCode: form.hexCode, category: form.category, fabricRangeId: form.fabricRangeId !== "none" ? Number(form.fabricRangeId) : undefined })}>{createMutation.isPending ? "Saving..." : "Save"}</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {isLoading ? <p className="text-muted-foreground col-span-full text-center">Loading...</p>
+        : fabricColours.length === 0 ? <p className="text-muted-foreground col-span-full text-center">No fabric colours configured</p>
+        : fabricColours.map((colour: any) => (
+          <Card key={colour.id} className="relative group">
+            <CardContent className="p-3">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 flex-shrink-0 rounded-md border shadow-sm" style={{ backgroundColor: colour.hexCode || "#f8fafc" }} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{colour.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">{colour.fabricRangeName || categoryLabelForNumber(colour.categoryNumber)}</p>
+                  {colour.hexCode ? <p className="text-xs text-muted-foreground font-mono">{colour.hexCode}</p> : null}
+                </div>
+                <Button variant="ghost" size="icon" className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity" onClick={() => deleteMutation.mutate({ id: colour.id })}><Trash2 className="h-3 w-3 text-destructive" /></Button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Colours Tab ────────────────────────────────────────────────────────────
 
 function ColoursTab() {
@@ -399,7 +469,7 @@ function ColoursTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div><h3 className="text-lg font-semibold">Colours</h3><p className="text-sm text-muted-foreground">Available colour options with optional surcharge percentage</p></div>
+        <div><h3 className="text-lg font-semibold">Frame Colours</h3><p className="text-sm text-muted-foreground">Frame and Colorbond colour options with optional surcharge percentage</p></div>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild><Button size="sm"><Plus className="h-4 w-4 mr-1" /> Add Colour</Button></DialogTrigger>
           <DialogContent>
@@ -523,20 +593,22 @@ export default function AdminBlinds() {
         <p className="text-muted-foreground">Manage pricing, costs, options, and colours for blinds quotes</p>
       </div>
       <Tabs defaultValue="settings" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-7">
-          <TabsTrigger value="settings" className="flex items-center gap-1"><Percent className="h-3 w-3" /> Settings</TabsTrigger>
-          <TabsTrigger value="adjustments" className="flex items-center gap-1"><Percent className="h-3 w-3" /> Adjustments</TabsTrigger>
-          <TabsTrigger value="costs" className="flex items-center gap-1"><DollarSign className="h-3 w-3" /> Costs</TabsTrigger>
-          <TabsTrigger value="options" className="flex items-center gap-1"><Shield className="h-3 w-3" /> Options</TabsTrigger>
-          <TabsTrigger value="fabric" className="flex items-center gap-1"><Palette className="h-3 w-3" /> Fabric</TabsTrigger>
-          <TabsTrigger value="colours" className="flex items-center gap-1"><Palette className="h-3 w-3" /> Colours</TabsTrigger>
-          <TabsTrigger value="matrix">Matrix</TabsTrigger>
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:grid-cols-4 xl:grid-cols-8">
+          <TabsTrigger value="settings" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Percent className="h-3 w-3" /> Settings</TabsTrigger>
+          <TabsTrigger value="adjustments" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Percent className="h-3 w-3" /> Adjustments</TabsTrigger>
+          <TabsTrigger value="costs" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><DollarSign className="h-3 w-3" /> Costs</TabsTrigger>
+          <TabsTrigger value="options" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Shield className="h-3 w-3" /> Options</TabsTrigger>
+          <TabsTrigger value="fabric" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Palette className="h-3 w-3" /> Fabric</TabsTrigger>
+          <TabsTrigger value="fabricColours" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Palette className="h-3 w-3" /> Fabric Colours</TabsTrigger>
+          <TabsTrigger value="colours" className="min-h-9 justify-start gap-1 whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm"><Palette className="h-3 w-3" /> Frame Colours</TabsTrigger>
+          <TabsTrigger value="matrix" className="min-h-9 justify-start whitespace-nowrap px-2 text-xs sm:justify-center sm:text-sm">Matrix</TabsTrigger>
         </TabsList>
         <TabsContent value="settings"><PricingSettingsTab /></TabsContent>
         <TabsContent value="adjustments"><PriceAdjustmentsTab /></TabsContent>
         <TabsContent value="costs"><CostAdditionsTab /></TabsContent>
         <TabsContent value="options"><ProductOptionsTab /></TabsContent>
         <TabsContent value="fabric"><FabricInfillTab /></TabsContent>
+        <TabsContent value="fabricColours"><FabricColoursTab /></TabsContent>
         <TabsContent value="colours"><ColoursTab /></TabsContent>
         <TabsContent value="matrix"><PricingMatrixTab /></TabsContent>
       </Tabs>

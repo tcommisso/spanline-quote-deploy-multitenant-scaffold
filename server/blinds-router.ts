@@ -11,6 +11,7 @@ import {
   masterData,
   blindColours,
   blindCostAdditions,
+  blindFabricColours,
   blindGlassInfill,
   blindPriceAdjustments,
   blindPricingMatrix,
@@ -106,6 +107,8 @@ const ssQuoteItemDetailColumns = [
   { name: "hingePosition", definition: "`hingePosition` varchar(32) NULL AFTER `openingDirection`" },
   { name: "glassInfillId", definition: "`glassInfillId` int NULL AFTER `hingePosition`" },
   { name: "glassInfillQuantity", definition: "`glassInfillQuantity` decimal(10,2) NOT NULL DEFAULT '1.00' AFTER `glassInfillId`" },
+  { name: "fabricColourId", definition: "`fabricColourId` int NULL AFTER `glassInfillQuantity`" },
+  { name: "fabricColourName", definition: "`fabricColourName` varchar(128) NULL AFTER `fabricColourId`" },
 ];
 
 let ssQuoteItemDetailColumnsPromise: Promise<void> | null = null;
@@ -314,6 +317,41 @@ async function resolveScreenColour(db: any, tenantId: number, selection: unknown
   }
 
   return { validColourId: null as number | null, colourName: requestedName || null, surchargePercent: 0 };
+}
+
+async function resolveBlindFabricColour(db: any, tenantId: number, selection: unknown, fallbackName?: string | null) {
+  const raw = String(selection ?? "").trim();
+  const requestedName = String(fallbackName || raw || "").trim();
+  const customId = typeof selection === "number" ? selection : (/^\d+$/.test(raw) ? Number(raw) : null);
+
+  if (customId) {
+    const [fabricColour] = await db
+      .select()
+      .from(blindFabricColours)
+      .where(and(eq(blindFabricColours.id, customId), scope(blindFabricColours.tenantId, tenantId), eq(blindFabricColours.isActive, true)))
+      .limit(1);
+    if (fabricColour) {
+      return {
+        validFabricColourId: fabricColour.id,
+        fabricColourName: fabricColour.name,
+      };
+    }
+  }
+
+  if (!requestedName) {
+    return { validFabricColourId: null as number | null, fabricColourName: null as string | null };
+  }
+
+  const [fabricColour] = await db
+    .select()
+    .from(blindFabricColours)
+    .where(and(eq(blindFabricColours.name, requestedName), scope(blindFabricColours.tenantId, tenantId), eq(blindFabricColours.isActive, true)))
+    .limit(1);
+
+  return {
+    validFabricColourId: fabricColour?.id ?? null,
+    fabricColourName: fabricColour?.name || requestedName,
+  };
 }
 
 function canonicalBrand(value: string) {
@@ -1052,6 +1090,76 @@ export const blindsRouter = router({
       }),
   }),
 
+  fabricColours: router({
+    list: tenantProcedure
+      .input(z.object({ category: z.string().optional(), fabricRangeId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const conditions = [scope(blindFabricColours.tenantId, tenantId), eq(blindFabricColours.isActive, true)];
+        const categoryNumber = input?.category ? blindFabricCategoryNumber(input.category) : "";
+        if (categoryNumber) conditions.push(eq(blindFabricColours.categoryNumber, categoryNumber));
+        if (input?.fabricRangeId) conditions.push(eq(blindFabricColours.fabricRangeId, input.fabricRangeId));
+        return db
+          .select()
+          .from(blindFabricColours)
+          .where(and(...conditions))
+          .orderBy(asc(blindFabricColours.categoryNumber), asc(blindFabricColours.fabricRangeName), asc(blindFabricColours.sortOrder), asc(blindFabricColours.name));
+      }),
+    create: tenantAdminProcedure
+      .input(z.object({
+        name: z.string().trim().min(1, "Fabric colour name is required"),
+        hexCode: z.string().optional(),
+        fabricRangeId: z.number().optional(),
+        category: z.string().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        const hexCode = input.hexCode?.trim() ? validHex(input.hexCode) : null;
+        if (input.hexCode?.trim() && !hexCode) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Fabric colour hex code must be a valid #RRGGBB value." });
+        }
+
+        let fabricRangeName: string | null = null;
+        let categoryNumber: string | null = input.category ? blindFabricCategoryNumber(input.category) || null : null;
+        let fabricRangeId: number | null = null;
+
+        if (input.fabricRangeId) {
+          const [fabricRange] = await db
+            .select()
+            .from(blindGlassInfill)
+            .where(and(eq(blindGlassInfill.id, input.fabricRangeId), scope(blindGlassInfill.tenantId, tenantId)))
+            .limit(1);
+          if (!fabricRange) throw new TRPCError({ code: "NOT_FOUND", message: "Fabric range not found" });
+          fabricRangeId = fabricRange.id;
+          fabricRangeName = fabricRange.glassType;
+          categoryNumber = fabricRange.categoryNumber || categoryNumber;
+        }
+
+        await db.insert(blindFabricColours).values({
+          tenantId,
+          fabricRangeId,
+          fabricRangeName,
+          categoryNumber,
+          name: input.name.trim(),
+          hexCode,
+        });
+        return { success: true };
+      }),
+    delete: tenantAdminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdForContext(ctx);
+        await db
+          .update(blindFabricColours)
+          .set({ isActive: false })
+          .where(and(eq(blindFabricColours.id, input.id), scope(blindFabricColours.tenantId, tenantId)));
+        return { success: true };
+      }),
+  }),
+
   colours: router({
     list: tenantProcedure
       .input(z.object({ includeHidden: z.boolean().optional() }).optional())
@@ -1313,6 +1421,8 @@ export const blindsRouter = router({
             hingePosition: item.hingePosition,
             glassInfillId: item.glassInfillId,
             glassInfillQuantity: item.glassInfillQuantity ?? "1.00",
+            fabricColourId: item.fabricColourId,
+            fabricColourName: item.fabricColourName,
             photoUrl: item.photoUrl,
             notes: item.notes,
             basePriceIncGst: item.basePriceIncGst,
@@ -1367,6 +1477,8 @@ export const blindsRouter = router({
         hingePosition: z.string().optional(),
         glassInfillId: z.number().optional(),
         glassInfillQuantity: z.number().optional(),
+        fabricColourId: z.union([z.number(), z.string()]).optional(),
+        fabricColourName: z.string().optional(),
         photoUrl: z.string().optional(),
         notes: z.string().optional(),
         selectedOptions: z.array(z.object({ productOptionId: z.number(), quantity: z.number().default(1) })).optional(),
@@ -1399,6 +1511,7 @@ export const blindsRouter = router({
         if (colourResolution.surchargePercent) {
           colourSurchargeExGst = adjustedPriceExGst * (colourResolution.surchargePercent / 100);
         }
+        const fabricColourResolution = await resolveBlindFabricColour(db, tenantId, input.fabricColourId, input.fabricColourName || null);
         const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
@@ -1436,6 +1549,8 @@ export const blindsRouter = router({
           hingePosition: input.hingePosition || null,
           glassInfillId: input.glassInfillId || null,
           glassInfillQuantity: glassInfillQuantity.toFixed(2),
+          fabricColourId: fabricColourResolution.validFabricColourId,
+          fabricColourName: fabricColourResolution.fabricColourName,
           photoUrl: input.photoUrl || null,
           notes: input.notes || null,
           basePriceIncGst: matrixPriceIncGst.toFixed(2),
@@ -1481,6 +1596,8 @@ export const blindsRouter = router({
         hingePosition: z.string().optional(),
         glassInfillId: z.number().optional(),
         glassInfillQuantity: z.number().optional(),
+        fabricColourId: z.union([z.number(), z.string()]).optional(),
+        fabricColourName: z.string().optional(),
         notes: z.string().optional(),
         selectedOptions: z.array(z.object({ productOptionId: z.number(), quantity: z.number().default(1) })).optional(),
       }))
@@ -1517,6 +1634,7 @@ export const blindsRouter = router({
         if (colourResolution.surchargePercent) {
           colourSurchargeExGst = adjustedPriceExGst * (colourResolution.surchargePercent / 100);
         }
+        const fabricColourResolution = await resolveBlindFabricColour(db, tenantId, input.fabricColourId, input.fabricColourName || null);
         const adjustedPriceWithColourExGst = adjustedPriceExGst + colourSurchargeExGst;
 
         let optionsTotal = 0;
@@ -1551,6 +1669,8 @@ export const blindsRouter = router({
           hingePosition: input.hingePosition || null,
           glassInfillId: input.glassInfillId || null,
           glassInfillQuantity: glassInfillQuantity.toFixed(2),
+          fabricColourId: fabricColourResolution.validFabricColourId,
+          fabricColourName: fabricColourResolution.fabricColourName,
           notes: input.notes || null,
           basePriceIncGst: matrixPriceIncGst.toFixed(2),
           adjustedPrice: basePriceExGst.toFixed(2),
