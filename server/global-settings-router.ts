@@ -98,7 +98,7 @@ export const globalSettingsRouter = router({
 
       const suffix = crypto.randomBytes(4).toString("hex");
       const ext = input.fileName.split(".").pop() || "jpg";
-      const key = `company/login-background-${suffix}.${ext}`;
+      const key = `company/login-background/tenant-${ctx.tenant!.id}/login-background-${suffix}.${ext}`;
       const storageResult = isStorageConfigured()
         ? await storagePut(key, fileBuffer, input.mimeType)
         : { key, url: loginBackgroundDataUrl(input.mimeType, input.fileBase64) };

@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { inboxMessages } from "../drizzle/schema";
 import { getDb } from "./db";
+import { appendTenantScope } from "./_core/tenant-scope";
 
 type Db = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -85,7 +86,7 @@ export function appendInboxThreadMarkerHtml(html: string, threadId: string): str
 
 async function existingThreadId(db: Db, threadId: string, tenantId?: number | null): Promise<string | null> {
   const conditions: any[] = [eq(inboxMessages.threadId, threadId)];
-  if (tenantId != null) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   const [row] = await db
     .select({ threadId: inboxMessages.threadId })
     .from(inboxMessages)
@@ -121,7 +122,7 @@ export async function resolveInboxThreadIdForMessage(args: {
 
   if (args.graphConversationId) {
     const graphConditions: any[] = [eq(inboxMessages.graphConversationId, args.graphConversationId)];
-    if (args.tenantId != null) graphConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+    appendTenantScope(graphConditions, inboxMessages.tenantId, args.tenantId);
     const [graphMatch] = await db
       .select({ threadId: inboxMessages.threadId })
       .from(inboxMessages)
@@ -134,7 +135,7 @@ export async function resolveInboxThreadIdForMessage(args: {
   const referencedIds = collectReferencedMessageIds(args.inReplyToHeader, args.referencesHeader);
   if (referencedIds.length > 0) {
     const directConditions: any[] = [inArray(inboxMessages.messageId, referencedIds)];
-    if (args.tenantId != null) directConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+    appendTenantScope(directConditions, inboxMessages.tenantId, args.tenantId);
     const [directMatch] = await db
       .select({ threadId: inboxMessages.threadId })
       .from(inboxMessages)
@@ -155,7 +156,7 @@ export async function resolveInboxThreadIdForMessage(args: {
     .map(normalizeEmailAddress)
     .filter(Boolean);
   const candidateConditions: any[] = [eq(inboxMessages.direction, "outbound")];
-  if (args.tenantId != null) candidateConditions.push(eq(inboxMessages.tenantId, args.tenantId));
+  appendTenantScope(candidateConditions, inboxMessages.tenantId, args.tenantId);
 
   const candidates = await db
     .select({

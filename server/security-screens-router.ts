@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { router, tenantAdminProcedure, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
+import { isMultiTenancyMode, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { normalizeUserRole } from "../shared/const";
 import {
   crmLeads,
@@ -61,7 +61,7 @@ function addScreenQuoteTenantScope(
   tenantId: number,
   options?: ScreenQuoteScopeOptions,
 ) {
-  if (options?.includeAllTenants) return;
+  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
   conditions.push(scope(column, tenantId));
 }
 

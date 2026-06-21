@@ -5,7 +5,7 @@ import mysql from "mysql2/promise";
 import { eclipseQuotes, eclipsePricing } from "../drizzle/schema";
 import type { InsertEclipseQuote, InsertEclipsePricing } from "../drizzle/schema";
 import { isAdminRole } from "../shared/const";
-import { appendTenantScope } from "./_core/tenant-scope";
+import { appendTenantScope, isMultiTenancyMode } from "./_core/tenant-scope";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
@@ -19,7 +19,7 @@ function appendEclipseTenantScope(
   tenantId: number | null | undefined,
   options?: EclipseTenantScopeOptions,
 ) {
-  if (options?.includeAllTenants) return;
+  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
   appendTenantScope(conditions, eclipseQuotes.tenantId, tenantId);
 }
 

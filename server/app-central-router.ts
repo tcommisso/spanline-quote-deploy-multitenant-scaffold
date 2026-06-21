@@ -310,6 +310,7 @@ export const appCentralRouter = router({
         .where(
           and(
             eq(inboxMessages.assignedToId, ctx.user.id),
+            tenantScoped(inboxMessages.tenantId, ctx.tenant.id),
             sql`${inboxMessages.status} IN ('open', 'pending')`
           )
         )
@@ -431,7 +432,8 @@ export const appCentralRouter = router({
             .where(
               and(
                 eq(inboxMessages.id, input.taskId),
-                eq(inboxMessages.assignedToId, ctx.user.id)
+                eq(inboxMessages.assignedToId, ctx.user.id),
+                tenantScoped(inboxMessages.tenantId, ctx.tenant.id)
               )
             );
           break;

@@ -593,7 +593,7 @@ export async function getInboxMessageById(id: number, tenantId?: number | null) 
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxMessages.id, id)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   const [msg] = await db.select().from(inboxMessages).where(and(...conditions)).limit(1);
   return msg || null;
 }
@@ -1049,10 +1049,9 @@ export async function markThreadsAsRead(threadIds: string[], tenantId?: number |
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return;
-  await db.update(inboxMessages).set({ isRead: true }).where(and(...[
-    inArray(inboxMessages.threadId, threadIds),
-    ...(tenantId ? [eq(inboxMessages.tenantId, tenantId)] : []),
-  ]));
+  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  await db.update(inboxMessages).set({ isRead: true }).where(and(...conditions));
   await syncTicketsForThreads(threadIds, tenantId);
 }
 
@@ -1060,10 +1059,9 @@ export async function markThreadsAsUnread(threadIds: string[], tenantId?: number
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return;
-  await db.update(inboxMessages).set({ isRead: false }).where(and(...[
-    inArray(inboxMessages.threadId, threadIds),
-    ...(tenantId ? [eq(inboxMessages.tenantId, tenantId)] : []),
-  ]));
+  const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
+  await db.update(inboxMessages).set({ isRead: false }).where(and(...conditions));
   await syncTicketsForThreads(threadIds, tenantId);
 }
 
@@ -1150,7 +1148,7 @@ export async function matchEmailToClient(fromEmail: string, tenantId?: number | 
 
   // 1. Check portal_access (active clients with portal)
   const portalConditions: any[] = [eq(portalAccess.clientEmail, email), eq(portalAccess.isActive, true)];
-  if (tenantId) portalConditions.push(eq(portalAccess.tenantId, tenantId));
+  appendTenantScope(portalConditions, portalAccess.tenantId, tenantId);
   const [portalMatch] = await db
     .select({
       jobId: portalAccess.constructionJobId,
@@ -1164,7 +1162,7 @@ export async function matchEmailToClient(fromEmail: string, tenantId?: number | 
   if (portalMatch) {
     // Find the lead linked to this job
     const jobConditions: any[] = [eq(constructionJobs.id, portalMatch.jobId)];
-    if (tenantId) jobConditions.push(eq(constructionJobs.tenantId, tenantId));
+    appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
     const [job] = await db
       .select({ leadId: constructionJobs.leadId })
       .from(constructionJobs)
@@ -1180,7 +1178,7 @@ export async function matchEmailToClient(fromEmail: string, tenantId?: number | 
 
   // 2. Check crm_leads by contactEmail
   const leadConditions: any[] = [eq(crmLeads.contactEmail, email)];
-  if (tenantId) leadConditions.push(eq(crmLeads.tenantId, tenantId));
+  appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
   const [leadMatch] = await db
     .select({
       id: crmLeads.id,
@@ -1197,7 +1195,7 @@ export async function matchEmailToClient(fromEmail: string, tenantId?: number | 
   if (leadMatch) {
     // Try to find a construction job linked to this lead
     const jobConditions: any[] = [eq(constructionJobs.leadId, leadMatch.id)];
-    if (tenantId) jobConditions.push(eq(constructionJobs.tenantId, tenantId));
+    appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
     const [job] = await db
       .select({ id: constructionJobs.id })
       .from(constructionJobs)
@@ -1695,7 +1693,7 @@ export async function listInboxAddresses(activeOnly = true, tenantId?: number | 
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   if (activeOnly) conditions.push(eq(inboxAddresses.active, true));
   return db
     .select()
@@ -1709,7 +1707,7 @@ export async function getInboxAddressByEmail(email: string, tenantId?: number | 
   if (!db) return null;
   const normalized = email.toLowerCase().trim();
   const conditions: any[] = [eq(inboxAddresses.address, normalized)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   const [row] = await db
     .select()
     .from(inboxAddresses)
@@ -1730,7 +1728,7 @@ export async function updateInboxAddress(id: number, data: Partial<InsertInboxAd
   if (!db) throw new Error("Database unavailable");
   if (data.address) data.address = data.address.toLowerCase().trim();
   const conditions: any[] = [eq(inboxAddresses.id, id)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   await db.update(inboxAddresses).set(data).where(and(...conditions));
 }
 
@@ -1738,7 +1736,7 @@ export async function deleteInboxAddress(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [eq(inboxAddresses.id, id)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   await db.delete(inboxAddresses).where(and(...conditions));
 }
 
@@ -1751,7 +1749,7 @@ export async function matchReceivingAddress(toAddresses: string[], tenantId?: nu
   if (!db) return null;
 
   const conditions: any[] = [eq(inboxAddresses.active, true)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   const activeAddresses = await db
     .select()
     .from(inboxAddresses)
@@ -1780,7 +1778,7 @@ export async function bulkDeleteMessages(ids: number[], tenantId?: number | null
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const messageConditions: any[] = [inArray(inboxMessages.id, ids)];
-  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
   const ownedMessages = await db.select({ id: inboxMessages.id, threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...messageConditions));
   const ownedIds = ownedMessages.map(row => row.id);
   if (ownedIds.length === 0) return;
@@ -1796,7 +1794,7 @@ export async function bulkDeleteThreads(threadIds: string[], tenantId?: number |
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return 0;
   const messageConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
   const ownedMessages = await db
     .select({ id: inboxMessages.id, threadId: inboxMessages.threadId })
     .from(inboxMessages)
@@ -1834,7 +1832,7 @@ export async function bulkAssignMessages(ids: number[], assignedToId: number | n
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const conditions: any[] = [inArray(inboxMessages.id, ids)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   const messages = await db.select({ threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...conditions));
   await db.update(inboxMessages).set({
     assignedToId,
@@ -1849,7 +1847,7 @@ export async function bulkAssignThreads(threadIds: string[], assignedToId: numbe
   if (!db) throw new Error("Database unavailable");
   if (threadIds.length === 0) return 0;
   const conditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (tenantId) conditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(conditions, inboxMessages.tenantId, tenantId);
   await db.update(inboxMessages).set({
     assignedToId,
     assignedToName,
@@ -1892,7 +1890,7 @@ export async function bulkAddTag(ids: number[], tagId: number, tenantId?: number
   if (!visibleTag) throw new Error("Tag not found");
 
   const messageConditions: any[] = [inArray(inboxMessages.id, ids)];
-  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
   const ownedMessages = await db.select({ id: inboxMessages.id, threadId: inboxMessages.threadId }).from(inboxMessages).where(and(...messageConditions));
   for (const { id: messageId } of ownedMessages) {
     const [existing] = await db
@@ -1918,7 +1916,7 @@ export async function bulkAddTagToThreads(threadIds: string[], tagId: number, te
   if (!visibleTag) throw new Error("Tag not found");
 
   const messageConditions: any[] = [inArray(inboxMessages.threadId, threadIds)];
-  if (tenantId) messageConditions.push(eq(inboxMessages.tenantId, tenantId));
+  appendTenantScope(messageConditions, inboxMessages.tenantId, tenantId);
   const ownedMessages = await db
     .select({ id: inboxMessages.id, threadId: inboxMessages.threadId })
     .from(inboxMessages)

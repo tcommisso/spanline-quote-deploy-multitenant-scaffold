@@ -9,6 +9,7 @@ import { eq, and } from "drizzle-orm";
 import { logNotification, isNotificationEnabled } from "../notification-gateway";
 import { ENV } from "../_core/env";
 import { getTenantEmailConfig } from "../tenant-integrations";
+import { appendTenantScope, isMultiTenancyMode } from "../_core/tenant-scope";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -78,13 +79,14 @@ async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: 
 
   // If explicit address provided, look it up
   if (fromAddress) {
+    const conditions: any[] = [
+      eq(inboxAddresses.address, fromAddress.toLowerCase()),
+      eq(inboxAddresses.active, true),
+    ];
+    appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
     const [addr] = await db.select()
       .from(inboxAddresses)
-      .where(and(
-        eq(inboxAddresses.address, fromAddress.toLowerCase()),
-        eq(inboxAddresses.active, true),
-        ...(tenantId ? [eq(inboxAddresses.tenantId, tenantId)] : []),
-      ));
+      .where(and(...conditions));
     if (addr) {
       return {
         address: addr.address,
@@ -96,13 +98,14 @@ async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: 
 
   // If module provided, find matching mailbox
   if (module) {
+    const conditions: any[] = [
+      eq((inboxAddresses as any).module, module),
+      eq(inboxAddresses.active, true),
+    ];
+    appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
     const [addr] = await db.select()
       .from(inboxAddresses)
-      .where(and(
-        eq((inboxAddresses as any).module, module),
-        eq(inboxAddresses.active, true),
-        ...(tenantId ? [eq(inboxAddresses.tenantId, tenantId)] : []),
-      ));
+      .where(and(...conditions));
     if (addr) {
       return {
         address: addr.address,
@@ -115,13 +118,14 @@ async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: 
   // Prefer the configured tenant/env sender before falling back to any mailbox.
   // This avoids stale module mappings taking precedence after mailbox/domain changes.
   if (fallbackSenderAddress) {
+    const conditions: any[] = [
+      eq(inboxAddresses.address, fallbackSenderAddress),
+      eq(inboxAddresses.active, true),
+    ];
+    appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
     const [addr] = await db.select()
       .from(inboxAddresses)
-      .where(and(
-        eq(inboxAddresses.address, fallbackSenderAddress),
-        eq(inboxAddresses.active, true),
-        ...(tenantId ? [eq(inboxAddresses.tenantId, tenantId)] : []),
-      ));
+      .where(and(...conditions));
     if (addr) {
       return {
         address: addr.address,
@@ -132,11 +136,11 @@ async function resolveMailbox(fromAddress?: string, module?: string, tenantId?: 
   }
 
   // Fallback: first active O365 mailbox, then tenant/env sender address.
+  const allAddressConditions: any[] = [eq(inboxAddresses.active, true)];
+  appendTenantScope(allAddressConditions, inboxAddresses.tenantId, tenantId);
   const allAddresses = await db.select()
     .from(inboxAddresses)
-    .where(tenantId
-      ? and(eq(inboxAddresses.tenantId, tenantId), eq(inboxAddresses.active, true))
-      : eq(inboxAddresses.active, true));
+    .where(and(...allAddressConditions));
 
   const graphAddr = allAddresses.find(a => (a as any).provider === "msgraph");
   if (graphAddr) {
@@ -196,6 +200,10 @@ async function sendViaMsGraph(params: UnifiedSendParams, mailbox: ResolvedMailbo
  * Automatically resolves the correct mailbox and provider.
  */
 export async function sendUnifiedEmail(params: UnifiedSendParams): Promise<SendResult> {
+  if (isMultiTenancyMode() && !params.tenantId) {
+    return { success: false, provider: "none", error: "Tenant context is required to send email in multi-tenant mode" };
+  }
+
   // Check notification suppression
   if (params.settingKey) {
     const enabled = await isNotificationEnabled(params.settingKey, params.tenantId);

@@ -8,7 +8,7 @@ import type { InsertTechLibraryDocument } from "../drizzle/schema";
 import type { InsertQuoteRevision, InsertSmsDeliveryLog } from "../drizzle/schema";
 import type { InsertQuote, InsertQuoteComponent, InsertSkyluxEntry, InsertEclipseEntry, InsertMasterData, InsertSkyluxMatrix, InsertProduct, InsertColourGroup, InsertColourGroupMember } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { appendTenantScope, tenantScoped } from "./_core/tenant-scope";
+import { appendTenantScope, isMultiTenancyMode, tenantScoped } from "./_core/tenant-scope";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -22,7 +22,7 @@ function appendQuoteTenantScope(
   tenantId: number | null | undefined,
   options?: QuoteTenantScopeOptions,
 ) {
-  if (options?.includeAllTenants) return;
+  if (options?.includeAllTenants && !isMultiTenancyMode()) return;
   appendTenantScope(conditions, column, tenantId);
 }
 
@@ -1654,6 +1654,7 @@ function legacyBrandingFromUserSettings(row: typeof userSettings.$inferSelect | 
 }
 
 async function getLegacyBrandingFallback(): Promise<TenantBrandingRecord | null> {
+  if (ENV.tenancyMode === "multi") return null;
   const db = await getDb();
   if (!db) return null;
 
@@ -1677,6 +1678,7 @@ export async function getTenantBrandingSettings(tenantId?: number | null): Promi
     const rows = await db.select().from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId)).limit(1);
     tenantRow = rows[0];
   } else {
+    if (ENV.tenancyMode === "multi") return null;
     const rows = await db.select().from(tenantSettings).limit(1);
     tenantRow = rows[0];
   }
@@ -1747,6 +1749,7 @@ export async function getCompanyTheme(tenantId?: number | null) {
   if (tenantBranding?.companyTheme && typeof tenantBranding.companyTheme === "object") {
     return tenantBranding.companyTheme as Record<string, unknown>;
   }
+  if (ENV.tenancyMode === "multi") return null;
   // Get the first user_settings row that has companyTheme set
   const rows = await db.select({ companyTheme: userSettings.companyTheme }).from(userSettings).limit(5);
   for (const row of rows) {

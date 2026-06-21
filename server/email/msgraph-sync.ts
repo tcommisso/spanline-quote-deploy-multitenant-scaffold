@@ -10,6 +10,7 @@ import { inboxAddresses, inboxMessages } from "../../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { storagePut } from "../storage";
 import { getTenantEmailConfig } from "../tenant-integrations";
+import { appendTenantScope, isMultiTenancyMode } from "../_core/tenant-scope";
 import {
   normalizeEmailAddress,
   resolveInboxThreadIdForMessage,
@@ -114,12 +115,14 @@ async function syncMailbox(address: {
     // Update delta link and last sync time for configured inbox addresses.
     const db = await getDb();
     if (db && address.id) {
+      const conditions: any[] = [eq(inboxAddresses.id, address.id)];
+      appendTenantScope(conditions, inboxAddresses.tenantId, address.tenantId);
       await db.update(inboxAddresses)
         .set({
           deltaLink: newDeltaLink,
           lastSyncAt: new Date(),
         } as any)
-        .where(eq(inboxAddresses.id, address.id));
+        .where(and(...conditions));
     }
   } catch (err: any) {
     result.errors.push(`Sync failed: ${err.message}`);
@@ -150,7 +153,7 @@ async function processGraphMessage(
   if (!db) throw new Error("Database unavailable");
 
   const existingConditions: any[] = [eq(inboxMessages.graphMessageId, msg.id)];
-  if (address.tenantId) existingConditions.push(eq(inboxMessages.tenantId, address.tenantId));
+  appendTenantScope(existingConditions, inboxMessages.tenantId, address.tenantId);
   const [existing] = await db
     .select({ id: inboxMessages.id })
     .from(inboxMessages)
@@ -202,7 +205,8 @@ async function processGraphMessage(
         if (att.contentBytes && !att.isInline) {
           const buffer = Buffer.from(att.contentBytes, "base64");
           const suffix = crypto.randomUUID().slice(0, 8);
-          const key = `inbox-attachments/graph/${msg.id}/${suffix}-${att.name}`;
+          const tenantSegment = address.tenantId ? `tenant-${address.tenantId}` : "tenant-unassigned";
+          const key = `${tenantSegment}/inbox-attachments/graph/${msg.id}/${suffix}-${att.name}`;
           const { url } = await storagePut(key, buffer, att.contentType || "application/octet-stream");
           processed.push({
             id: att.id,
@@ -309,6 +313,10 @@ export async function syncAllMailboxes(): Promise<SyncResult[]> {
   const results: SyncResult[] = [];
 
   for (const addr of addresses) {
+    if (isMultiTenancyMode() && !addr.tenantId) {
+      console.warn(`[MSGraph Sync] Skipping unassigned mailbox ${addr.address} in multi-tenant mode`);
+      continue;
+    }
     const result = await syncMailbox(addr as any);
     results.push(result);
     if (result.newMessages > 0) {
@@ -329,12 +337,13 @@ export async function syncAllMailboxes(): Promise<SyncResult[]> {
 export async function syncTenantMailboxes(tenantId: number | null): Promise<SyncResult[]> {
   const db = await getDb();
   if (!db) return [];
+  if (isMultiTenancyMode() && !tenantId) return [];
 
   const conditions: any[] = [
     eq(inboxAddresses.active, true),
     eq(inboxAddresses.provider as any, "msgraph"),
   ];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
 
   const addresses = await db.select()
     .from(inboxAddresses)
@@ -372,7 +381,7 @@ export async function syncMailboxById(addressId: number, tenantId?: number | nul
   if (!db) throw new Error("Database unavailable");
 
   const conditions: any[] = [eq(inboxAddresses.id, addressId)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   const [addr] = await db.select()
     .from(inboxAddresses)
     .where(and(...conditions));
@@ -391,7 +400,7 @@ export async function resetMailboxSync(addressId: number, tenantId?: number | nu
   if (!db) throw new Error("Database unavailable");
 
   const conditions: any[] = [eq(inboxAddresses.id, addressId)];
-  if (tenantId) conditions.push(eq(inboxAddresses.tenantId, tenantId));
+  appendTenantScope(conditions, inboxAddresses.tenantId, tenantId);
   await db.update(inboxAddresses)
     .set({ deltaLink: null, lastSyncAt: null } as any)
     .where(and(...conditions));

@@ -6,6 +6,7 @@
  */
 import { getDb, getTenantBrandingSettings } from "./db";
 import { userSettings } from "../drizzle/schema";
+import { ENV } from "./_core/env";
 
 const DEFAULT_COMPANY_NAME = "Altaspan";
 const DEFAULT_TRADING_AS = "";
@@ -34,6 +35,10 @@ export async function getCompanyName(tenantId?: number | null): Promise<CompanyN
       const tradingAs = (details.tradingAs as string) || "";
       const displayName = tradingAs || companyName;
       return { companyName, tradingAs, displayName };
+    }
+
+    if (ENV.tenancyMode === "multi") {
+      return { companyName: DEFAULT_COMPANY_NAME, tradingAs: DEFAULT_TRADING_AS, displayName: DEFAULT_COMPANY_NAME };
     }
 
     // Get the first user settings row that has companyDetails set

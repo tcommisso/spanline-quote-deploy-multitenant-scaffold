@@ -33,7 +33,7 @@ export async function getTenantAppSetting<T = unknown>(
   options: { fallbackToGlobal?: boolean } = {},
 ): Promise<T | null> {
   const db = await getDb();
-  const fallbackToGlobal = (options.fallbackToGlobal ?? true) && (ENV.tenancyMode !== "multi" || !tenantId);
+  const fallbackToGlobal = (options.fallbackToGlobal ?? true) && ENV.tenancyMode !== "multi";
   if (!db) return null;
 
   if (tenantId) {
@@ -75,6 +75,9 @@ export async function setTenantAppSetting(
   if (!db) throw new Error("Database unavailable");
 
   if (!tenantId) {
+    if (ENV.tenancyMode === "multi") {
+      throw new Error("Tenant context is required for settings updates in multi-tenant mode");
+    }
     await upsertLegacyGlobalSetting(key, value);
     return { success: true };
   }
@@ -112,6 +115,9 @@ export async function removeTenantAppSetting(
   if (!db) throw new Error("Database unavailable");
 
   if (!tenantId) {
+    if (ENV.tenancyMode === "multi") {
+      throw new Error("Tenant context is required for settings updates in multi-tenant mode");
+    }
     await db.delete(globalSettings).where(eq(globalSettings.key, key));
     return { success: true };
   }
