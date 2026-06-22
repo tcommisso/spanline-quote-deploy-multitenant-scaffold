@@ -188,10 +188,11 @@ function diagnosticSelectSql(columnSet: Set<string>) {
   ].join(", ");
 }
 
-function diagnosticJoinSql(columnSet: Set<string>) {
+function diagnosticJoinSql(columnSet: Set<string>, options: { forcePrimary?: boolean } = {}) {
   const userJoin = columnSet.has("userId") ? "u.`id` = q.`userId`" : "1 = 0";
   const tenantJoin = columnSet.has("tenantId") ? "t.`id` = q.`tenantId`" : "1 = 0";
-  return `FROM \`eclipse_quotes\` q
+  const indexHint = options.forcePrimary && columnSet.has("id") ? " FORCE INDEX (PRIMARY)" : "";
+  return `FROM \`eclipse_quotes\` q${indexHint}
     LEFT JOIN \`users\` u ON ${userJoin}
     LEFT JOIN \`tenants\` t ON ${tenantJoin}`;
 }
@@ -245,12 +246,12 @@ async function queryDiagnosticRows(
   params: any[],
   limit: number,
 ) {
-  const orderColumn = columnSet.has("updatedAt") ? "updatedAt" : "id";
+  const orderClause = columnSet.has("id") ? "ORDER BY q.`id` DESC" : "";
   const [rows] = await pool.execute<any[]>(
     `SELECT ${diagnosticSelectSql(columnSet)}
-     ${diagnosticJoinSql(columnSet)}
+     ${diagnosticJoinSql(columnSet, { forcePrimary: true })}
      WHERE ${whereSql}
-     ORDER BY q.${quoteIdent(orderColumn)} DESC
+     ${orderClause}
      LIMIT ${limit}`,
     params,
   );
