@@ -73,7 +73,7 @@ type XeroAccountingDocument = {
   DueDateString?: string;
   DueDate?: string;
   CurrencyCode?: string;
-  Contact?: { ContactID?: string; Name?: string };
+  Contact?: { ContactID?: string; Name?: string; AccountNumber?: string };
   LineItems?: XeroLineItem[];
   [key: string]: unknown;
 };
@@ -308,6 +308,7 @@ function findMappingForLine(
     document.InvoiceNumber,
     document.BankTransactionNumber,
     document.CreditNoteNumber,
+    document.Contact?.AccountNumber,
     document.Contact?.Name,
   ].filter(Boolean).join(" "));
   const referenceCompact = compact(referenceText);
@@ -682,24 +683,22 @@ export async function syncXeroAccountingTransactionsForMappings(
   const maxPages = options.maxPages || 50;
   const modifiedSince = options.modifiedSince || null;
   const fetchErrors: string[] = [];
-  const [accrecInvoices, accpayBills, spendTransactions, creditNotes] = await Promise.all([
-    fetchInvoices("ACCREC", auth, maxPages, modifiedSince).catch((err: any) => {
-      fetchErrors.push(`invoices: ${err.message}`);
+  const fetchSource = async (
+    label: string,
+    fetcher: () => Promise<XeroAccountingDocument[]>,
+  ) => {
+    try {
+      return await fetcher();
+    } catch (err: any) {
+      fetchErrors.push(`${label}: ${err.message}`);
       return [] as XeroAccountingDocument[];
-    }),
-    fetchInvoices("ACCPAY", auth, maxPages, modifiedSince).catch((err: any) => {
-      fetchErrors.push(`bills: ${err.message}`);
-      return [] as XeroAccountingDocument[];
-    }),
-    fetchSpendBankTransactions(auth, maxPages, modifiedSince).catch((err: any) => {
-      fetchErrors.push(`bank transactions: ${err.message}`);
-      return [] as XeroAccountingDocument[];
-    }),
-    fetchCreditNotes(auth, maxPages, modifiedSince).catch((err: any) => {
-      fetchErrors.push(`credit notes: ${err.message}`);
-      return [] as XeroAccountingDocument[];
-    }),
-  ]);
+    }
+  };
+
+  const accrecInvoices = await fetchSource("invoices", () => fetchInvoices("ACCREC", auth, maxPages, modifiedSince));
+  const accpayBills = await fetchSource("bills", () => fetchInvoices("ACCPAY", auth, maxPages, modifiedSince));
+  const spendTransactions = await fetchSource("bank transactions", () => fetchSpendBankTransactions(auth, maxPages, modifiedSince));
+  const creditNotes = await fetchSource("credit notes", () => fetchCreditNotes(auth, maxPages, modifiedSince));
   const fetched = {
     invoices: accrecInvoices.length,
     bills: accpayBills.length,

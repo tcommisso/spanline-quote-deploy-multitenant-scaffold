@@ -517,7 +517,7 @@ export default function ConstructionClientDetail() {
             loading={updateFinancials.isPending}
           />
           {/* Xero Integration Panel */}
-          <XeroJobPanel jobId={jobId} clientName={job.clientName || "Unknown"} />
+          <XeroJobPanel jobId={jobId} clientName={job.clientName || "Unknown"} financials={financials} />
         </TabsContent>
 
         {/* Tasks Tab */}

@@ -416,7 +416,7 @@ export const xeroAccountingRouter = router({
         });
 
         const warning = result.fetched.total > 0 && result.affectedMappings === 0
-          ? `Fetched ${result.fetched.total} Xero documents but none matched this job.`
+          ? `Fetched ${result.fetched.total} Xero documents but no line-level Accounting API rows matched this job's account/project identifiers. KPI totals may still be using imported/project-level Xero values.`
           : result.fetchErrors.length
             ? result.fetchErrors.join("; ")
             : null;

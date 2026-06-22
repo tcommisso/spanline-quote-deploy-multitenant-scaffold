@@ -343,6 +343,19 @@ interface XeroApiOptions {
 
 type XeroRequestRoutingOptions = Pick<XeroApiOptions, "connectionId" | "appTenantId" | "moduleKey" | "timeoutMs">;
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(value: string | null) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const timestamp = Date.parse(value);
+  if (Number.isFinite(timestamp)) return Math.max(0, timestamp - Date.now());
+  return null;
+}
+
 export async function xeroApiRequest<T = any>(
   endpoint: string,
   options: XeroApiOptions = {}
@@ -392,16 +405,18 @@ export async function xeroApiRequest<T = any>(
     }
     clearTimeout(timeoutId);
 
-    // Handle rate limiting (429) with exponential backoff (max 1 retry for rate limits)
-    if (response.status === 429 && attempt < 1) {
+    if (response.status === 429) {
       const retryAfter = response.headers.get("Retry-After");
-      const rawWait = retryAfter
-        ? parseInt(retryAfter, 10) * 1000
-        : Math.min(1000 * Math.pow(2, attempt + 1), 60000); // 2s, 4s, 8s max 60s
-      const waitMs = Math.min(rawWait, 5000); // Cap at 5s for rate limit retries to avoid blocking batched requests
-      console.log(`[Xero] Rate limited (429) on ${method} ${endpoint}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-      continue;
+      const retryAfterMs = parseRetryAfterMs(retryAfter);
+      if (attempt < maxRetries) {
+        const fallbackWaitMs = Math.min(2000 * Math.pow(2, attempt), 30000);
+        const waitMs = Math.min(retryAfterMs ?? fallbackWaitMs, 60000);
+        console.log(`[Xero] Rate limited (429) on ${method} ${endpoint}, retrying in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await sleep(waitMs);
+        continue;
+      }
+      const waitHint = retryAfterMs != null ? ` Retry after ${Math.ceil(retryAfterMs / 1000)}s.` : "";
+      throw new Error(`Xero API rate limited (429) on ${method} ${endpoint} after ${maxRetries} retries.${waitHint}`);
     }
 
     if ((response.status === 401 || response.status === 403) && attempt < maxRetries) {

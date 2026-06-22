@@ -29,9 +29,10 @@ const STATUS_COLORS: Record<string, string> = {
 interface XeroJobPanelProps {
   jobId: number;
   clientName: string;
+  financials?: any;
 }
 
-export default function XeroJobPanel({ jobId, clientName }: XeroJobPanelProps) {
+export default function XeroJobPanel({ jobId, clientName, financials }: XeroJobPanelProps) {
   const connectionStatus = trpc.xero.connectionStatus.useQuery();
   const contactMapping = trpc.xero.getContactMapping.useQuery(
     { localType: "client", localId: jobId },
@@ -117,6 +118,8 @@ export default function XeroJobPanel({ jobId, clientName }: XeroJobPanelProps) {
   );
   const totalActualCostsIncGst = accountingSummary.data?.totalCost || 0;
   const costsBySupplier = Array.from(new Set<string>(xeroCostRows.map((row: any) => row.contactName || "Unknown")));
+  const fallbackActualCostIncGst = parseFloat(String(financials?.xeroTotalCost || "0"));
+  const hasFallbackActualCost = xeroCostRows.length === 0 && fallbackActualCostIncGst > 0;
 
   return (
     <div className="space-y-4">
@@ -168,7 +171,9 @@ export default function XeroJobPanel({ jobId, clientName }: XeroJobPanelProps) {
           <div className="flex items-center justify-between gap-3">
             <CardTitle className="text-base flex items-center gap-2">
               <FileText className="h-4 w-4" /> Actual Costs
-              <Badge variant="outline" className="text-[10px] ml-1">Synced from Xero</Badge>
+              <Badge variant="outline" className="text-[10px] ml-1">
+                {hasFallbackActualCost ? "Imported fallback" : "Synced from Xero"}
+              </Badge>
             </CardTitle>
             <Button
               variant="outline"
@@ -186,6 +191,28 @@ export default function XeroJobPanel({ jobId, clientName }: XeroJobPanelProps) {
             <div className="text-center py-4">
               <Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
               <p className="text-sm text-muted-foreground mt-2">Loading costs...</p>
+            </div>
+          ) : hasFallbackActualCost ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-3 dark:border-blue-900/60 dark:bg-blue-950/20">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">Stored/imported Xero actual cost total</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      No line-level Accounting API cost transactions have matched this job yet.
+                    </p>
+                  </div>
+                  <span className="font-semibold text-red-600">
+                    ${fallbackActualCostIncGst.toLocaleString("en-AU", { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                <span>
+                  KPI totals are using imported/project-level Xero values. Use the unmatched Xero transactions review if you need individual bill or spend-money lines attached to this job.
+                </span>
+              </div>
             </div>
           ) : xeroCostRows.length === 0 ? (
             <div className="text-center py-4">

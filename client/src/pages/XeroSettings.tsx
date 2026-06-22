@@ -13,7 +13,7 @@ import {
   Link2, Unlink, RefreshCw, CheckCircle2, AlertCircle, ExternalLink,
   Download, Upload, ArrowUpDown, Clock, Loader2, FolderSync, Users,
   DollarSign, Activity, UserPlus, AlertTriangle, Building2, XCircle,
-  Route, Plus, Trash2, Pencil, PlayCircle, Search,
+  Route, Plus, Trash2, Pencil, PlayCircle, Search, ChevronsLeft, ChevronsRight,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -558,7 +558,18 @@ function UnmatchedXeroTransactionsPanel() {
               <span className="text-muted-foreground">
                 Page {Math.min(page + 1, totalPages)} of {totalPages}
               </span>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 sm:justify-end">
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  onClick={() => setPage(0)}
+                  disabled={page === 0 || isFetching}
+                  aria-label="Go to first page"
+                  title="Go to first page"
+                >
+                  <ChevronsLeft className="h-4 w-4" />
+                  <span className="sr-only">Go to first page</span>
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -574,6 +585,17 @@ function UnmatchedXeroTransactionsPanel() {
                   disabled={page >= totalPages - 1 || isFetching}
                 >
                   Next
+                </Button>
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  onClick={() => setPage(totalPages - 1)}
+                  disabled={page >= totalPages - 1 || isFetching}
+                  aria-label="Go to last page"
+                  title="Go to last page"
+                >
+                  <ChevronsRight className="h-4 w-4" />
+                  <span className="sr-only">Go to last page</span>
                 </Button>
               </div>
             </div>
