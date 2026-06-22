@@ -1,4 +1,5 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import * as XLSX from "xlsx";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -10,10 +11,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Save, RotateCcw, Mail, Eye, Plus, Pencil, Trash2, Wrench, ShoppingBag } from "lucide-react";
+import { AlertCircle, FileSpreadsheet, Save, RotateCcw, Mail, Eye, Plus, Pencil, Trash2, Upload, Wrench, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import { isAdminRole } from "@shared/const";
 const RichTextEditor = lazy(() => import("@/components/RichTextEditor"));
+
+type ImportedTemplateRow = {
+  templateId: string;
+  category: string;
+  channel: string;
+  status: string;
+  subject: string;
+  body: string;
+  autoTrigger: string;
+  rowNumber: number;
+};
+
+type SkippedImportRow = {
+  rowNumber: number;
+  templateId?: string;
+  reason: string;
+};
 
 // ─── CRM Letter Types ────────────────────────────────────────────────────────
 const LETTER_TYPES = [
@@ -61,9 +79,80 @@ const TEMPLATE_CATEGORIES = [
   { value: "Client", label: "Client" },
   { value: "Trade", label: "Trade" },
   { value: "Sales", label: "Sales" },
+  { value: "Pre-Construction", label: "Pre-Construction" },
+  { value: "Construction", label: "Construction" },
+  { value: "Warranty", label: "Warranty" },
+  { value: "Accounts", label: "Accounts" },
   { value: "Rain Day", label: "Rain Day" },
   { value: "General", label: "General" },
 ] as const;
+
+function cellText(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function normalizeMergeFields(value: string) {
+  return value.replace(/(?<!\{)\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}(?!\})/g, "{{$1}}");
+}
+
+function formatTemplateLabel(letterType: string) {
+  return letterType
+    .replace(/^(sales_|construction_)/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+async function parseTemplateWorkbook(file: File) {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const worksheet = workbook.Sheets.Templates || workbook.Sheets[workbook.SheetNames[0]];
+  if (!worksheet) throw new Error("No worksheet found");
+
+  const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: "" });
+  const rows: ImportedTemplateRow[] = [];
+  const skipped: SkippedImportRow[] = [];
+  const seen = new Set<string>();
+
+  rawRows.forEach((raw, index) => {
+    const rowNumber = index + 2;
+    const templateId = cellText(raw["Template ID"]);
+    const channel = cellText(raw.Channel) || "Email";
+    const subject = normalizeMergeFields(cellText(raw.Subject));
+    const body = normalizeMergeFields(String(raw.Body ?? "").replace(/\r\n/g, "\n").trim());
+    const category = cellText(raw.Category) || "General";
+
+    if (!templateId) {
+      skipped.push({ rowNumber, reason: "Missing Template ID" });
+      return;
+    }
+    if (seen.has(templateId)) {
+      skipped.push({ rowNumber, templateId, reason: "Duplicate Template ID" });
+      return;
+    }
+    seen.add(templateId);
+    if (channel.toLowerCase() !== "email") {
+      skipped.push({ rowNumber, templateId, reason: `Unsupported channel: ${channel}` });
+      return;
+    }
+    if (!subject || !body) {
+      skipped.push({ rowNumber, templateId, reason: "Missing subject or body" });
+      return;
+    }
+
+    rows.push({
+      templateId,
+      category,
+      channel,
+      status: cellText(raw.Status),
+      subject,
+      body,
+      autoTrigger: cellText(raw["Auto Trigger"]),
+      rowNumber,
+    });
+  });
+
+  return { rows, skipped, sheetName: worksheet === workbook.Sheets.Templates ? "Templates" : workbook.SheetNames[0] };
+}
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 export default function AdminEmailTemplates() {
@@ -83,13 +172,15 @@ export default function AdminEmailTemplates() {
         </p>
       </div>
 
+      <TemplateSpreadsheetImport />
+
       <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as any)}>
         <TabsList>
           <TabsTrigger value="crm" className="gap-1.5">
             <Mail className="h-4 w-4" /> CRM Letters
           </TabsTrigger>
           <TabsTrigger value="construction" className="gap-1.5">
-            <Wrench className="h-4 w-4" /> Construction Templates
+            <Wrench className="h-4 w-4" /> Lifecycle Templates
           </TabsTrigger>
           <TabsTrigger value="sales" className="gap-1.5">
             <ShoppingBag className="h-4 w-4" /> Sales Templates
@@ -109,6 +200,172 @@ export default function AdminEmailTemplates() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function TemplateSpreadsheetImport() {
+  const utils = trpc.useUtils();
+  const { data: allTemplates } = trpc.crm.emailTemplates.list.useQuery();
+  const importMut = trpc.crm.emailTemplates.importRows.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Imported ${result.created + result.updated} template${result.created + result.updated === 1 ? "" : "s"}`);
+      utils.crm.emailTemplates.list.invalidate();
+      setImportResult(result);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [fileName, setFileName] = useState("");
+  const [sheetName, setSheetName] = useState("");
+  const [rows, setRows] = useState<ImportedTemplateRow[]>([]);
+  const [skippedRows, setSkippedRows] = useState<SkippedImportRow[]>([]);
+  const [importResult, setImportResult] = useState<any>(null);
+
+  const existingLetterTypes = useMemo(
+    () => new Set((allTemplates || []).map((template: any) => template.letterType)),
+    [allTemplates],
+  );
+
+  const previewRows = useMemo(() => rows.map((row) => ({
+    ...row,
+    action: existingLetterTypes.has(row.templateId) ? "Update" : "Create",
+  })), [existingLetterTypes, rows]);
+
+  const previewCounts = useMemo(() => previewRows.reduce((counts, row) => {
+    if (row.action === "Update") counts.update++;
+    else counts.create++;
+    return counts;
+  }, { create: 0, update: 0 }), [previewRows]);
+
+  async function handleFileChange(file?: File) {
+    setImportResult(null);
+    if (!file) return;
+    try {
+      const parsed = await parseTemplateWorkbook(file);
+      setFileName(file.name);
+      setSheetName(parsed.sheetName);
+      setRows(parsed.rows);
+      setSkippedRows(parsed.skipped);
+      if (!parsed.rows.length) {
+        toast.error("No importable email templates found");
+      } else {
+        toast.success(`Parsed ${parsed.rows.length} email template${parsed.rows.length === 1 ? "" : "s"}`);
+      }
+    } catch (err: any) {
+      setRows([]);
+      setSkippedRows([]);
+      setFileName(file.name);
+      setSheetName("");
+      toast.error(err?.message || "Unable to read spreadsheet");
+    }
+  }
+
+  function handleImport() {
+    if (!rows.length) {
+      toast.error("Select a spreadsheet first");
+      return;
+    }
+    importMut.mutate({ rows });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <FileSpreadsheet className="h-5 w-5" />
+              Import Communication Templates
+            </CardTitle>
+            <CardDescription>
+              Upload the Templates sheet to create or update tenant-owned email templates.
+            </CardDescription>
+          </div>
+          <div className="flex flex-col gap-2 sm:items-end">
+            <Input
+              type="file"
+              accept=".xlsx,.xls"
+              className="max-w-full sm:w-[280px]"
+              onChange={(event) => handleFileChange(event.target.files?.[0])}
+            />
+            <Button onClick={handleImport} disabled={!rows.length || importMut.isPending} className="w-full sm:w-auto">
+              <Upload className="h-4 w-4 mr-1" />
+              {importMut.isPending ? "Importing..." : "Import Templates"}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      {(fileName || rows.length > 0 || skippedRows.length > 0 || importResult) && (
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {fileName && <Badge variant="outline">{fileName}</Badge>}
+            {sheetName && <Badge variant="outline">Sheet: {sheetName}</Badge>}
+            <Badge variant="secondary">{rows.length} ready</Badge>
+            <Badge variant="secondary">{previewCounts.create} create</Badge>
+            <Badge variant="secondary">{previewCounts.update} update</Badge>
+            {skippedRows.length > 0 && <Badge variant="destructive">{skippedRows.length} skipped</Badge>}
+            {importResult && (
+              <Badge variant="outline">
+                Applied: {importResult.created} created, {importResult.updated} updated
+              </Badge>
+            )}
+          </div>
+
+          {skippedRows.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertCircle className="h-4 w-4" />
+                Skipped rows
+              </div>
+              <div className="mt-2 grid gap-1">
+                {skippedRows.slice(0, 5).map((row) => (
+                  <div key={`${row.rowNumber}-${row.templateId || row.reason}`}>
+                    Row {row.rowNumber}{row.templateId ? ` (${row.templateId})` : ""}: {row.reason}
+                  </div>
+                ))}
+                {skippedRows.length > 5 && <div>{skippedRows.length - 5} more skipped rows</div>}
+              </div>
+            </div>
+          )}
+
+          {previewRows.length > 0 && (
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-muted/60 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Row</th>
+                    <th className="px-3 py-2 text-left font-medium">Template ID</th>
+                    <th className="px-3 py-2 text-left font-medium">Category</th>
+                    <th className="px-3 py-2 text-left font-medium">Trigger</th>
+                    <th className="px-3 py-2 text-left font-medium">Action</th>
+                    <th className="px-3 py-2 text-left font-medium">Subject</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.slice(0, 12).map((row) => (
+                    <tr key={`${row.rowNumber}-${row.templateId}`} className="border-t">
+                      <td className="px-3 py-2 text-muted-foreground">{row.rowNumber}</td>
+                      <td className="px-3 py-2 font-medium">{row.templateId}</td>
+                      <td className="px-3 py-2">{row.category}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{row.autoTrigger || row.status || "-"}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={row.action === "Create" ? "default" : "secondary"}>{row.action}</Badge>
+                      </td>
+                      <td className="px-3 py-2">{row.subject}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {previewRows.length > 12 && (
+                <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+                  Showing 12 of {previewRows.length} templates.
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }
 
@@ -316,7 +573,7 @@ function CrmLettersTab() {
   );
 }
 
-// ─── Construction Templates Tab ──────────────────────────────────────────────
+// ─── Lifecycle Templates Tab ─────────────────────────────────────────────────
 function ConstructionTemplatesTab() {
   const utils = trpc.useUtils();
   const { data: allTemplates, isLoading } = trpc.crm.emailTemplates.list.useQuery();
@@ -340,9 +597,12 @@ function ConstructionTemplatesTab() {
   const [form, setForm] = useState({ name: "", subject: "", body: "", category: "Client" });
   const [filterCategory, setFilterCategory] = useState<string>("all");
 
-  // Filter out CRM letter types — construction templates are those NOT in LETTER_TYPES
   const crmKeys: string[] = LETTER_TYPES.map(l => l.key);
-  const constructionTemplates = (allTemplates || []).filter(t => !crmKeys.includes(t.letterType));
+  const constructionTemplates = (allTemplates || []).filter(t => !crmKeys.includes(t.letterType) && t.category !== "Sales");
+  const categoryOptions = Array.from(new Set([
+    ...TEMPLATE_CATEGORIES.map(c => c.value),
+    ...constructionTemplates.map(t => t.category || "General"),
+  ])).filter((category) => category !== "Sales");
 
   const filteredTemplates = filterCategory === "all"
     ? constructionTemplates
@@ -401,9 +661,11 @@ function ConstructionTemplatesTab() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Categories</SelectItem>
-              <SelectItem value="Client">Client</SelectItem>
-              <SelectItem value="Trade">Trade</SelectItem>
-              <SelectItem value="General">General</SelectItem>
+              {categoryOptions.map(category => (
+                <SelectItem key={category} value={category}>
+                  {TEMPLATE_CATEGORIES.find(c => c.value === category)?.label || category}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <span className="text-sm text-muted-foreground">{filteredTemplates.length} template{filteredTemplates.length !== 1 ? "s" : ""}</span>
@@ -415,7 +677,7 @@ function ConstructionTemplatesTab() {
 
       {filteredTemplates.length === 0 && (
         <Card className="p-8 text-center">
-          <p className="text-muted-foreground">No construction templates yet. Create one to get started.</p>
+          <p className="text-muted-foreground">No lifecycle templates yet. Create one to get started.</p>
         </Card>
       )}
 
@@ -425,10 +687,15 @@ function ConstructionTemplatesTab() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium truncate">{template.letterType.replace(/^construction_/, "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</span>
+                  <span className="font-medium truncate">{formatTemplateLabel(template.letterType)}</span>
                   <Badge variant="outline" className="text-xs shrink-0">
                     {template.category || "General"}
                   </Badge>
+                  {template.triggerKey && (
+                    <Badge variant="secondary" className="text-xs shrink-0">
+                      {template.triggerKey}
+                    </Badge>
+                  )}
                 </div>
                 <p className="text-sm text-muted-foreground truncate">Subject: {template.subject}</p>
                 <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{template.body.replace(/<[^>]*>/g, "").slice(0, 120)}...</p>
@@ -450,7 +717,7 @@ function ConstructionTemplatesTab() {
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingTemplate ? "Edit Template" : "New Construction Template"}</DialogTitle>
+            <DialogTitle>{editingTemplate ? "Edit Template" : "New Lifecycle Template"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -470,8 +737,10 @@ function ConstructionTemplatesTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TEMPLATE_CATEGORIES.map(c => (
-                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                  {categoryOptions.map(category => (
+                    <SelectItem key={category} value={category}>
+                      {TEMPLATE_CATEGORIES.find(c => c.value === category)?.label || category}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -578,7 +847,7 @@ function SalesTemplatesTab() {
   }
 
   function handleDelete(template: any) {
-    if (!confirm(`Delete template "${template.letterType.replace(/^sales_/, "").replace(/_/g, " ")}"?`)) return;
+    if (!confirm(`Delete template "${formatTemplateLabel(template.letterType)}"?`)) return;
     deleteMut.mutate({ id: template.id });
   }
 
@@ -608,8 +877,13 @@ function SalesTemplatesTab() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium truncate">{template.letterType.replace(/^sales_/, "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</span>
+                  <span className="font-medium truncate">{formatTemplateLabel(template.letterType)}</span>
                   <Badge variant="outline" className="text-xs shrink-0">Sales</Badge>
+                  {template.triggerKey && (
+                    <Badge variant="secondary" className="text-xs shrink-0">
+                      {template.triggerKey}
+                    </Badge>
+                  )}
                 </div>
                 <p className="text-sm text-muted-foreground truncate">Subject: {template.subject}</p>
                 <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{template.body.replace(/<[^>]*>/g, "").slice(0, 120)}...</p>

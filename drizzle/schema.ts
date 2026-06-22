@@ -1135,9 +1135,11 @@ export const emailTemplates = mysqlTable("email_templates", {
   attachmentUrl: text("attachmentUrl"),
   attachmentName: varchar("attachmentName", { length: 255 }),
   category: varchar("category", { length: 64 }).default("general").notNull(),
+  triggerKey: varchar("triggerKey", { length: 128 }),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => [
   index("idx_email_templates_tenant").on(table.tenantId),
+  index("idx_email_templates_tenant_trigger").on(table.tenantId, table.triggerKey),
   uniqueIndex("uq_email_templates_tenant_letter_type").on(table.tenantId, table.letterType),
 ]);
 export type EmailTemplate = typeof emailTemplates.$inferSelect;

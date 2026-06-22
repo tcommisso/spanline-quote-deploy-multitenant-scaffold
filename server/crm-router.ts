@@ -1590,15 +1590,34 @@ export const crmRouter = router({
     }),
 
     upsert: protectedProcedure.input(z.object({
-      letterType: z.string(),
+      letterType: z.string().min(1).max(64),
       subject: z.string().min(1),
       body: z.string().min(1),
-      category: z.string().optional(),
+      category: z.string().max(64).optional(),
+      triggerKey: z.string().max(128).nullable().optional(),
       attachmentUrl: z.string().nullable().optional(),
       attachmentName: z.string().nullable().optional(),
     })).mutation(async ({ ctx, input }) => {
       if (!isAdminRole(ctx.user.role)) throw new Error("Admin only");
       return emailTemplatesDb.upsertTemplate(input, tenantIdFromContext(ctx));
+    }),
+
+    importRows: protectedProcedure.input(z.object({
+      rows: z.array(z.object({
+        templateId: z.string().max(64),
+        category: z.string().max(64).optional().default("General"),
+        channel: z.string().max(32).nullable().optional(),
+        status: z.string().max(128).nullable().optional(),
+        subject: z.string().max(500),
+        body: z.string(),
+        autoTrigger: z.string().max(128).nullable().optional(),
+        rowNumber: z.number().int().positive().optional(),
+      })).min(1).max(500),
+    })).mutation(async ({ ctx, input }) => {
+      if (!isAdminRole(ctx.user.role)) throw new Error("Admin only");
+      const tenantId = tenantIdFromContext(ctx);
+      if (!tenantId) throw new Error("Tenant context required for template import");
+      return emailTemplatesDb.importEmailTemplates(input.rows, tenantId);
     }),
 
     listByCategory: protectedProcedure.input(z.object({ category: z.string() })).query(async ({ ctx, input }) => {
