@@ -301,6 +301,16 @@ export default function EclipseQuoteDiagnostics() {
             </AlertDescription>
           </Alert>
 
+          {data.summary.missingDiagnosticColumns?.length > 0 && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Production Schema Note</AlertTitle>
+              <AlertDescription>
+                The diagnostic skipped missing optional Eclipse columns: {data.summary.missingDiagnosticColumns.join(", ")}.
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             <StatCard label="Normal List Rows" value={data.summary.serverListCount} hint="Rows returned by the same server list path" />
             <StatCard label="Diagnostic Matches" value={data.summary.currentTenantMatchCount} hint="Rows shown below for this tenant" />

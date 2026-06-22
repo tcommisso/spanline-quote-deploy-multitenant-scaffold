@@ -1,5 +1,5 @@
 // Eclipse Opening Roof System - Database Helpers
-import { eq, desc, like, or, and, sql, ne, isNull } from "drizzle-orm";
+import { eq, desc, or, and, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { eclipseQuotes, eclipsePricing, tenants, users } from "../drizzle/schema";
@@ -115,17 +115,156 @@ type EclipseDiagnosticOptions = {
   includeGlobal?: boolean;
 };
 
-function diagnosticSearchCondition(search: string) {
-  const pattern = `%${search}%`;
-  const numericId = Number(search);
-  return or(
-    like(eclipseQuotes.quoteNumber, pattern),
-    like(eclipseQuotes.clientName, pattern),
-    like(eclipseQuotes.clientEmail, pattern),
-    like(eclipseQuotes.clientPhone, pattern),
-    like(eclipseQuotes.clientAddress, pattern),
-    Number.isInteger(numericId) ? eq(eclipseQuotes.id, numericId) : sql`1 = 0`,
+type DiagnosticQuoteRow = Record<string, any>;
+type DiagnosticQuoteColumn = {
+  alias: string;
+  column: string;
+  fallback?: string;
+};
+
+const diagnosticQuoteColumns: DiagnosticQuoteColumn[] = [
+  { alias: "id", column: "id" },
+  { alias: "tenantId", column: "tenantId" },
+  { alias: "userId", column: "userId" },
+  { alias: "quoteNumber", column: "quoteNumber" },
+  { alias: "status", column: "status" },
+  { alias: "archived", column: "archived", fallback: "FALSE" },
+  { alias: "clientId", column: "clientId" },
+  { alias: "clientName", column: "clientName" },
+  { alias: "clientPhone", column: "clientPhone" },
+  { alias: "clientEmail", column: "clientEmail" },
+  { alias: "clientAddress", column: "clientAddress" },
+  { alias: "designAdvisor", column: "designAdvisor" },
+  { alias: "totalSqm", column: "totalSqm" },
+  { alias: "totalSellPriceEx", column: "totalSellPriceEx" },
+  { alias: "totalGST", column: "totalGST" },
+  { alias: "totalRRPInc", column: "totalRRPInc" },
+  { alias: "units", column: "units" },
+  { alias: "specData", column: "specData" },
+  { alias: "checklistSelections", column: "eclipseChecklistSelections" },
+  { alias: "proposalSentAt", column: "proposalSentAt" },
+  { alias: "proposalSentTo", column: "proposalSentTo" },
+  { alias: "createdAt", column: "createdAt" },
+  { alias: "updatedAt", column: "updatedAt" },
+] as const satisfies DiagnosticQuoteColumn[];
+
+const diagnosticSearchColumns = [
+  "quoteNumber",
+  "clientName",
+  "clientEmail",
+  "clientPhone",
+  "clientAddress",
+] as const;
+
+function quoteIdent(identifier: string) {
+  if (!/^[A-Za-z0-9_]+$/.test(identifier)) {
+    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  }
+  return `\`${identifier}\``;
+}
+
+function selectDiagnosticColumn(columnSet: Set<string>, alias: string, column: string, fallback = "NULL") {
+  if (columnSet.has(column)) {
+    return `q.${quoteIdent(column)} AS ${quoteIdent(alias)}`;
+  }
+  return `${fallback} AS ${quoteIdent(alias)}`;
+}
+
+async function getEclipseQuoteColumnSet() {
+  const [rows] = await pool.query<any[]>("SHOW COLUMNS FROM `eclipse_quotes`");
+  return new Set(rows.map((row) => String(row.Field)));
+}
+
+function diagnosticSelectSql(columnSet: Set<string>) {
+  const quoteColumns = diagnosticQuoteColumns.map((field) =>
+    selectDiagnosticColumn(columnSet, field.alias, field.column, field.fallback),
   );
+  return [
+    ...quoteColumns,
+    "t.`name` AS `tenantName`",
+    "t.`slug` AS `tenantSlug`",
+    "u.`name` AS `creatorName`",
+    "u.`email` AS `creatorEmail`",
+  ].join(", ");
+}
+
+function diagnosticJoinSql(columnSet: Set<string>) {
+  const userJoin = columnSet.has("userId") ? "u.`id` = q.`userId`" : "1 = 0";
+  const tenantJoin = columnSet.has("tenantId") ? "t.`id` = q.`tenantId`" : "1 = 0";
+  return `FROM \`eclipse_quotes\` q
+    LEFT JOIN \`users\` u ON ${userJoin}
+    LEFT JOIN \`tenants\` t ON ${tenantJoin}`;
+}
+
+function appendSearchSql(columnSet: Set<string>, search: string, params: any[]) {
+  const trimmed = search.trim();
+  if (!trimmed) return "";
+
+  const clauses: string[] = [];
+  const pattern = `%${trimmed}%`;
+  for (const column of diagnosticSearchColumns) {
+    if (columnSet.has(column)) {
+      clauses.push(`q.${quoteIdent(column)} LIKE ?`);
+      params.push(pattern);
+    }
+  }
+
+  const numericId = Number(trimmed);
+  if (Number.isInteger(numericId) && columnSet.has("id")) {
+    clauses.push("q.`id` = ?");
+    params.push(numericId);
+  }
+
+  return clauses.length ? ` AND (${clauses.join(" OR ")})` : "";
+}
+
+function appendAccessSql(columnSet: Set<string>, user: EclipseDiagnosticUser, params: any[]) {
+  if (isAdminRole(user.role) || user.canViewAllQuotes) return "";
+  if (!columnSet.has("userId")) return " AND 1 = 0";
+
+  if (user.role === "design_adviser" && user.name && columnSet.has("designAdvisor")) {
+    params.push(user.name, user.id);
+    return " AND (q.`designAdvisor` = ? OR q.`userId` = ?)";
+  }
+
+  params.push(user.id);
+  return " AND q.`userId` = ?";
+}
+
+function isDiagnosticRowListVisible(row: DiagnosticQuoteRow, user: EclipseDiagnosticUser, tenantId: number) {
+  if (Number(row.tenantId) !== tenantId) return false;
+  if (isAdminRole(user.role) || user.canViewAllQuotes) return true;
+  if (Number(row.userId) === user.id) return true;
+  if (user.role === "design_adviser" && user.name && row.designAdvisor === user.name) return true;
+  return false;
+}
+
+async function queryDiagnosticRows(
+  columnSet: Set<string>,
+  whereSql: string,
+  params: any[],
+  limit: number,
+) {
+  const orderColumn = columnSet.has("updatedAt") ? "updatedAt" : "id";
+  const [rows] = await pool.execute<any[]>(
+    `SELECT ${diagnosticSelectSql(columnSet)}
+     ${diagnosticJoinSql(columnSet)}
+     WHERE ${whereSql}
+     ORDER BY q.${quoteIdent(orderColumn)} DESC
+     LIMIT ${limit}`,
+    params,
+  );
+  return rows as DiagnosticQuoteRow[];
+}
+
+async function countDiagnosticRows(columnSet: Set<string>, whereSql: string, params: any[]) {
+  const [rows] = await pool.execute<any[]>(
+    `SELECT COUNT(*) AS count
+     ${diagnosticJoinSql(columnSet)}
+     WHERE ${whereSql}`,
+    params,
+  );
+  return Number(rows[0]?.count || 0);
 }
 
 function jsonArrayLength(value: unknown): number | null {
@@ -149,38 +288,8 @@ function hasJsonPayload(value: unknown): boolean {
   return true;
 }
 
-const diagnosticQuoteSelect = {
-  id: eclipseQuotes.id,
-  tenantId: eclipseQuotes.tenantId,
-  tenantName: tenants.name,
-  tenantSlug: tenants.slug,
-  userId: eclipseQuotes.userId,
-  creatorName: users.name,
-  creatorEmail: users.email,
-  quoteNumber: eclipseQuotes.quoteNumber,
-  status: eclipseQuotes.status,
-  archived: eclipseQuotes.archived,
-  clientId: eclipseQuotes.clientId,
-  clientName: eclipseQuotes.clientName,
-  clientPhone: eclipseQuotes.clientPhone,
-  clientEmail: eclipseQuotes.clientEmail,
-  clientAddress: eclipseQuotes.clientAddress,
-  designAdvisor: eclipseQuotes.designAdvisor,
-  totalSqm: eclipseQuotes.totalSqm,
-  totalSellPriceEx: eclipseQuotes.totalSellPriceEx,
-  totalGST: eclipseQuotes.totalGST,
-  totalRRPInc: eclipseQuotes.totalRRPInc,
-  units: eclipseQuotes.units,
-  specData: eclipseQuotes.specData,
-  checklistSelections: eclipseQuotes.checklistSelections,
-  proposalSentAt: eclipseQuotes.proposalSentAt,
-  proposalSentTo: eclipseQuotes.proposalSentTo,
-  createdAt: eclipseQuotes.createdAt,
-  updatedAt: eclipseQuotes.updatedAt,
-};
-
 function summarizeDiagnosticQuote(
-  row: typeof diagnosticQuoteSelect extends Record<string, any> ? any : never,
+  row: DiagnosticQuoteRow,
   visibleQuoteIds: Set<number>,
   tenantId: number,
 ) {
@@ -240,69 +349,93 @@ function summarizeDiagnosticQuote(
 export async function getEclipseQuoteDiagnostics(options: EclipseDiagnosticOptions) {
   const limit = Math.min(Math.max(options.limit ?? 25, 5), 100);
   const search = String(options.search || "").trim();
-  const searchCondition = search ? diagnosticSearchCondition(search) : undefined;
+  const columnSet = await getEclipseQuoteColumnSet();
+  const missingDiagnosticColumns = diagnosticQuoteColumns
+    .filter((field) => !columnSet.has(field.column))
+    .map((field) => field.column);
 
-  const tenantConditions: any[] = [eq(eclipseQuotes.tenantId, options.tenantId)];
-  if (searchCondition) tenantConditions.push(searchCondition);
+  const tenantParams: any[] = [];
+  const tenantWhere = columnSet.has("tenantId")
+    ? (tenantParams.push(options.tenantId), "q.`tenantId` = ?")
+    : "1 = 0";
+  const tenantRows = await queryDiagnosticRows(
+    columnSet,
+    `${tenantWhere}${appendSearchSql(columnSet, search, tenantParams)}`,
+    tenantParams,
+    limit,
+  );
 
-  const tenantRows = await db
-    .select(diagnosticQuoteSelect)
-    .from(eclipseQuotes)
-    .leftJoin(users, eq(users.id, eclipseQuotes.userId))
-    .leftJoin(tenants, eq(tenants.id, eclipseQuotes.tenantId))
-    .where(and(...tenantConditions))
-    .orderBy(desc(eclipseQuotes.updatedAt))
-    .limit(limit);
+  const visibleQuoteIds = new Set(
+    tenantRows
+      .filter((row) => isDiagnosticRowListVisible(row, options.listUser, options.tenantId))
+      .map((row) => Number(row.id)),
+  );
 
-  const listRows = await listEclipseQuotes(options.listUser, options.tenantId);
-  const visibleQuoteIds = new Set(listRows.map((quote) => quote.id));
+  const listCountParams: any[] = [];
+  const listCountWhere = columnSet.has("tenantId")
+    ? (listCountParams.push(options.tenantId), "q.`tenantId` = ?")
+    : "1 = 0";
+  const serverListCount = await countDiagnosticRows(
+    columnSet,
+    `${listCountWhere}${appendAccessSql(columnSet, options.listUser, listCountParams)}`,
+    listCountParams,
+  );
 
-  const statusCounts = await db
-    .select({
-      status: eclipseQuotes.status,
-      count: sql<number>`count(*)`,
-    })
-    .from(eclipseQuotes)
-    .where(eq(eclipseQuotes.tenantId, options.tenantId))
-    .groupBy(eclipseQuotes.status);
+  let statusCounts: Record<string, number> = {};
+  if (columnSet.has("tenantId") && columnSet.has("status")) {
+    const [rows] = await pool.execute<any[]>(
+      "SELECT q.`status` AS status, COUNT(*) AS count FROM `eclipse_quotes` q WHERE q.`tenantId` = ? GROUP BY q.`status`",
+      [options.tenantId],
+    );
+    statusCounts = Object.fromEntries(rows.map((row) => [String(row.status || "unknown"), Number(row.count || 0)]));
+  }
 
-  const archiveCounts = await db
-    .select({
-      archived: eclipseQuotes.archived,
-      count: sql<number>`count(*)`,
-    })
-    .from(eclipseQuotes)
-    .where(eq(eclipseQuotes.tenantId, options.tenantId))
-    .groupBy(eclipseQuotes.archived);
+  let archivedCount = 0;
+  let activeCount = tenantRows.length;
+  if (columnSet.has("tenantId") && columnSet.has("archived")) {
+    const [rows] = await pool.execute<any[]>(
+      "SELECT q.`archived` AS archived, COUNT(*) AS count FROM `eclipse_quotes` q WHERE q.`tenantId` = ? GROUP BY q.`archived`",
+      [options.tenantId],
+    );
+    archivedCount = Number(rows.find((row) => Boolean(row.archived))?.count || 0);
+    activeCount = Number(rows.find((row) => !row.archived)?.count || 0);
+  } else if (columnSet.has("tenantId")) {
+    activeCount = await countDiagnosticRows(columnSet, "q.`tenantId` = ?", [options.tenantId]);
+  }
 
-  const latestByCurrentUser = await db
-    .select(diagnosticQuoteSelect)
-    .from(eclipseQuotes)
-    .leftJoin(users, eq(users.id, eclipseQuotes.userId))
-    .leftJoin(tenants, eq(tenants.id, eclipseQuotes.tenantId))
-    .where(and(eq(eclipseQuotes.tenantId, options.tenantId), eq(eclipseQuotes.userId, options.user.id)))
-    .orderBy(desc(eclipseQuotes.updatedAt))
-    .limit(5);
+  const currentUserParams: any[] = [];
+  const currentUserWhere = columnSet.has("tenantId") && columnSet.has("userId")
+    ? (currentUserParams.push(options.tenantId, options.user.id), "q.`tenantId` = ? AND q.`userId` = ?")
+    : "1 = 0";
+  const latestByCurrentUser = await queryDiagnosticRows(
+    columnSet,
+    currentUserWhere,
+    currentUserParams,
+    5,
+  );
+
+  for (const row of latestByCurrentUser) {
+    if (isDiagnosticRowListVisible(row, options.listUser, options.tenantId)) {
+      visibleQuoteIds.add(Number(row.id));
+    }
+  }
 
   let outsideTenantMatches: Array<ReturnType<typeof summarizeDiagnosticQuote>> = [];
   let nullTenantCount: number | null = null;
 
   if (options.includeGlobal) {
-    const [nullTenantRow] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(eclipseQuotes)
-      .where(isNull(eclipseQuotes.tenantId));
-    nullTenantCount = Number(nullTenantRow?.count || 0);
+    if (columnSet.has("tenantId")) {
+      nullTenantCount = await countDiagnosticRows(columnSet, "q.`tenantId` IS NULL", []);
+    }
 
-    if (searchCondition) {
-      const outsideRows = await db
-        .select(diagnosticQuoteSelect)
-        .from(eclipseQuotes)
-        .leftJoin(users, eq(users.id, eclipseQuotes.userId))
-        .leftJoin(tenants, eq(tenants.id, eclipseQuotes.tenantId))
-        .where(and(or(ne(eclipseQuotes.tenantId, options.tenantId), isNull(eclipseQuotes.tenantId)), searchCondition))
-        .orderBy(desc(eclipseQuotes.updatedAt))
-        .limit(10);
+    if (search && columnSet.has("tenantId")) {
+      const outsideParams: any[] = [options.tenantId];
+      const outsideRows = await queryDiagnosticRows(
+        columnSet,
+        `(q.\`tenantId\` <> ? OR q.\`tenantId\` IS NULL)${appendSearchSql(columnSet, search, outsideParams)}`,
+        outsideParams,
+        10,
+      );
       outsideTenantMatches = outsideRows.map((row) => summarizeDiagnosticQuote(row, visibleQuoteIds, options.tenantId));
     }
   }
@@ -326,13 +459,14 @@ export async function getEclipseQuoteDiagnostics(options: EclipseDiagnosticOptio
       limit,
     },
     summary: {
-      serverListCount: listRows.length,
+      serverListCount,
       currentTenantMatchCount: tenantRows.length,
-      statusCounts: Object.fromEntries(statusCounts.map((row) => [row.status, Number(row.count || 0)])),
-      archivedCount: Number(archiveCounts.find((row) => Boolean(row.archived))?.count || 0),
-      activeCount: Number(archiveCounts.find((row) => !row.archived)?.count || 0),
+      statusCounts,
+      archivedCount,
+      activeCount,
       globalDiagnosticsAvailable: Boolean(options.includeGlobal),
       nullTenantCount,
+      missingDiagnosticColumns,
     },
     latestQuotes: tenantRows.map((row) => summarizeDiagnosticQuote(row, visibleQuoteIds, options.tenantId)),
     latestByCurrentUser: latestByCurrentUser.map((row) => summarizeDiagnosticQuote(row, visibleQuoteIds, options.tenantId)),
