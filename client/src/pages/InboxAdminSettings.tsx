@@ -52,6 +52,48 @@ const PRIORITY_OPTIONS = [
   { value: "urgent", label: "Urgent" },
 ] as const;
 
+type ReminderTargetSelection = "assigned" | "assigned_and_manager" | "manager";
+
+const REMINDER_TARGET_LABELS: Record<ReminderTargetSelection, string> = {
+  assigned: "Assigned User Only",
+  assigned_and_manager: "Assigned User + Manager",
+  manager: "Manager Only",
+};
+
+function reminderTargetsToSelection(value: string | null | undefined): ReminderTargetSelection {
+  if (value === "assigned" || value === "assigned_and_manager" || value === "manager") return value;
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (Array.isArray(parsed)) {
+      const hasAssigned = parsed.includes("assigned");
+      const hasManager = parsed.includes("manager");
+      if (hasAssigned && hasManager) return "assigned_and_manager";
+      if (hasManager) return "manager";
+    }
+  } catch {
+    // Legacy malformed values fall back to the safest user-only notification.
+  }
+  return "assigned";
+}
+
+function formatReminderTargets(value: string | null | undefined) {
+  return REMINDER_TARGET_LABELS[reminderTargetsToSelection(value)];
+}
+
+const SLA_HOUR_LIMITS = {
+  firstResponse: 720,
+  nextResponse: 720,
+  resolution: 2160,
+  warning: 720,
+  escalation: 720,
+} as const;
+
+function clampSlaHours(value: number | string, fallback: number, max: number) {
+  const parsed = typeof value === "number" ? value : parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), 1), max);
+}
+
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "general", label: "General", icon: Settings },
   { id: "addresses", label: "Addresses", icon: MailPlus },
@@ -733,15 +775,32 @@ function SlaSettings() {
     setName(rule.name);
     setQueue(rule.queue || "all");
     setPriority(rule.priority || "all");
-    setFirstResponseHours(rule.firstResponseHours || 4);
-    setNextResponseHours(rule.nextResponseHours || 24);
-    setResolutionHours(rule.resolutionHours || 72);
-    setWarningHours(rule.warningHours);
-    setEscalationHours(rule.escalationHours);
-    setReminderTargets(rule.reminderTargets);
+    setFirstResponseHours(clampSlaHours(rule.firstResponseHours, 4, SLA_HOUR_LIMITS.firstResponse));
+    setNextResponseHours(clampSlaHours(rule.nextResponseHours, 24, SLA_HOUR_LIMITS.nextResponse));
+    setResolutionHours(clampSlaHours(rule.resolutionHours, 72, SLA_HOUR_LIMITS.resolution));
+    setWarningHours(clampSlaHours(rule.warningHours, 24, SLA_HOUR_LIMITS.warning));
+    setEscalationHours(clampSlaHours(rule.escalationHours, 36, SLA_HOUR_LIMITS.escalation));
+    setReminderTargets(reminderTargetsToSelection(rule.reminderTargets));
     setManagerEmail(rule.managerEmail || "");
     setActive(rule.active);
     setDialogOpen(true);
+  }
+
+  function saveRule() {
+    upsertMut.mutate({
+      id: editId,
+      name,
+      queue: queue === "all" ? null : queue as any,
+      priority: priority === "all" ? null : priority as any,
+      firstResponseHours: clampSlaHours(firstResponseHours, 4, SLA_HOUR_LIMITS.firstResponse),
+      nextResponseHours: clampSlaHours(nextResponseHours, 24, SLA_HOUR_LIMITS.nextResponse),
+      resolutionHours: clampSlaHours(resolutionHours, 72, SLA_HOUR_LIMITS.resolution),
+      warningHours: clampSlaHours(warningHours, 24, SLA_HOUR_LIMITS.warning),
+      escalationHours: clampSlaHours(escalationHours, 36, SLA_HOUR_LIMITS.escalation),
+      reminderTargets,
+      managerEmail: managerEmail || null,
+      active,
+    });
   }
 
   return (
@@ -787,7 +846,7 @@ function SlaSettings() {
                       <AlertTriangle className="h-3 w-3 text-red-500" />
                       Escalation: {rule.escalationHours}h
                     </span>
-                    <span>Notify: {rule.reminderTargets}</span>
+                    <span>Notify: {formatReminderTargets(rule.reminderTargets)}</span>
                     {rule.managerEmail && <span>Manager: {rule.managerEmail}</span>}
                   </div>
                 </div>
@@ -850,26 +909,56 @@ function SlaSettings() {
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <Label>First Response (hours)</Label>
-                <Input type="number" value={firstResponseHours} onChange={(e) => setFirstResponseHours(parseInt(e.target.value) || 4)} min={1} />
+                <Input
+                  type="number"
+                  value={firstResponseHours}
+                  onChange={(e) => setFirstResponseHours(clampSlaHours(e.target.value, 4, SLA_HOUR_LIMITS.firstResponse))}
+                  min={1}
+                  max={SLA_HOUR_LIMITS.firstResponse}
+                />
               </div>
               <div>
                 <Label>Next Response (hours)</Label>
-                <Input type="number" value={nextResponseHours} onChange={(e) => setNextResponseHours(parseInt(e.target.value) || 24)} min={1} />
+                <Input
+                  type="number"
+                  value={nextResponseHours}
+                  onChange={(e) => setNextResponseHours(clampSlaHours(e.target.value, 24, SLA_HOUR_LIMITS.nextResponse))}
+                  min={1}
+                  max={SLA_HOUR_LIMITS.nextResponse}
+                />
               </div>
               <div>
                 <Label>Resolution (hours)</Label>
-                <Input type="number" value={resolutionHours} onChange={(e) => setResolutionHours(parseInt(e.target.value) || 72)} min={1} />
+                <Input
+                  type="number"
+                  value={resolutionHours}
+                  onChange={(e) => setResolutionHours(clampSlaHours(e.target.value, 72, SLA_HOUR_LIMITS.resolution))}
+                  min={1}
+                  max={SLA_HOUR_LIMITS.resolution}
+                />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label>Warning Threshold (hours)</Label>
-                <Input type="number" value={warningHours} onChange={(e) => setWarningHours(parseInt(e.target.value) || 24)} min={1} />
+                <Input
+                  type="number"
+                  value={warningHours}
+                  onChange={(e) => setWarningHours(clampSlaHours(e.target.value, 24, SLA_HOUR_LIMITS.warning))}
+                  min={1}
+                  max={SLA_HOUR_LIMITS.warning}
+                />
                 <p className="text-xs text-muted-foreground mt-1">Yellow highlight after this many hours</p>
               </div>
               <div>
                 <Label>Escalation Threshold (hours)</Label>
-                <Input type="number" value={escalationHours} onChange={(e) => setEscalationHours(parseInt(e.target.value) || 36)} min={1} />
+                <Input
+                  type="number"
+                  value={escalationHours}
+                  onChange={(e) => setEscalationHours(clampSlaHours(e.target.value, 36, SLA_HOUR_LIMITS.escalation))}
+                  min={1}
+                  max={SLA_HOUR_LIMITS.escalation}
+                />
                 <p className="text-xs text-muted-foreground mt-1">Red flag + reminder email after this</p>
               </div>
             </div>
@@ -904,20 +993,7 @@ function SlaSettings() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={() => upsertMut.mutate({
-              id: editId,
-              name,
-              queue: queue === "all" ? null : queue as any,
-              priority: priority === "all" ? null : priority as any,
-              firstResponseHours,
-              nextResponseHours,
-              resolutionHours,
-              warningHours,
-              escalationHours,
-              reminderTargets,
-              managerEmail: managerEmail || null,
-              active,
-            })} disabled={!name || upsertMut.isPending}>
+            <Button onClick={saveRule} disabled={!name || upsertMut.isPending}>
               {editId ? "Update" : "Create"}
             </Button>
           </DialogFooter>

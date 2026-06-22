@@ -38,7 +38,7 @@ function ContactSearchInput({
 }: {
   label: string;
   emails: string[];
-  onAdd: (email: string) => void;
+  onAdd: (email: string, name?: string) => void;
   onRemove: (email: string) => void;
   placeholder?: string;
 }) {
@@ -63,7 +63,7 @@ function ContactSearchInput({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  function addEmail(email: string) {
+  function addEmail(email: string, name?: string) {
     const trimmed = email.trim().toLowerCase();
     if (!trimmed) return;
     if (emails.includes(trimmed)) {
@@ -74,7 +74,7 @@ function ContactSearchInput({
       toast.error("Invalid email address");
       return;
     }
-    onAdd(trimmed);
+    onAdd(trimmed, name?.trim() || undefined);
     setQuery("");
     setShowDropdown(false);
   }
@@ -131,7 +131,7 @@ function ContactSearchInput({
               <button
                 key={`${c.email}-${i}`}
                 className="w-full text-left px-3 py-2 hover:bg-accent flex items-center justify-between gap-2 text-sm"
-                onClick={() => addEmail(c.email)}
+                onClick={() => addEmail(c.email, c.name)}
               >
                 <div className="min-w-0">
                   <span className="font-medium truncate block">{c.name}</span>
@@ -154,6 +154,7 @@ export default function InboxCompose() {
   const [, setLocation] = useLocation();
   const [toEmails, setToEmails] = useState<string[]>([]);
   const [ccEmails, setCcEmails] = useState<string[]>([]);
+  const [recipientNamesByEmail, setRecipientNamesByEmail] = useState<Record<string, string>>({});
   const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -192,16 +193,38 @@ export default function InboxCompose() {
     });
   }
 
+  function addRecipient(email: string, name?: string) {
+    setToEmails((prev) => [...prev, email]);
+    if (name) {
+      setRecipientNamesByEmail((prev) => ({ ...prev, [email]: name }));
+    }
+  }
+
+  function removeRecipient(email: string) {
+    setToEmails((prev) => prev.filter((item) => item !== email));
+    setRecipientNamesByEmail((prev) => {
+      const next = { ...prev };
+      delete next[email];
+      return next;
+    });
+  }
+
+  function applyTemplateVariables(value: string) {
+    const primaryEmail = toEmails[0] || "";
+    const clientName = recipientNamesByEmail[primaryEmail] || "";
+    return value
+      .replace(/\{\{\s*ticketSubject\s*\}\}/g, subject)
+      .replace(/\{\{\s*clientName\s*\}\}/g, clientName)
+      .replace(/\{\{\s*(jobNumber|branch|constructionManager)\s*\}\}/g, "");
+  }
+
   function applyTemplate(templateId: string) {
     const template = replyTemplates.find((item: any) => String(item.id) === templateId);
     if (!template) return;
     const rawBody = template.bodyText || String(template.bodyHtml || "").replace(/<[^>]+>/g, "");
-    const rendered = rawBody
-      .replace(/\{\{\s*ticketSubject\s*\}\}/g, subject)
-      .replace(/\{\{\s*clientName\s*\}\}/g, toEmails[0] || "")
-      .replace(/\{\{\s*(jobNumber|branch|constructionManager)\s*\}\}/g, "");
+    const rendered = applyTemplateVariables(rawBody);
     setBody((current) => current.trim() ? `${current.trim()}\n\n${rendered.trim()}` : rendered.trim());
-    if (!subject && template.subject) setSubject(template.subject);
+    if (!subject && template.subject) setSubject(applyTemplateVariables(template.subject));
     toast.success(`Inserted "${template.name}"`);
   }
 
@@ -243,8 +266,8 @@ export default function InboxCompose() {
           <ContactSearchInput
             label="To"
             emails={toEmails}
-            onAdd={(email) => setToEmails((prev) => [...prev, email])}
-            onRemove={(email) => setToEmails((prev) => prev.filter((e) => e !== email))}
+            onAdd={addRecipient}
+            onRemove={removeRecipient}
             placeholder="Search leads, clients, trades or type email..."
           />
 

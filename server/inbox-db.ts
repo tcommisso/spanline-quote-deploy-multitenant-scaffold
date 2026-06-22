@@ -34,6 +34,34 @@ function addHours(base: Date | string | null | undefined, hours?: number | null)
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
+type SlaReminderTarget = "assigned" | "manager";
+
+export function parseSlaReminderTargets(value: unknown): SlaReminderTarget[] {
+  let rawTargets: unknown = value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return ["assigned"];
+    if (trimmed === "assigned_and_manager") return ["assigned", "manager"];
+    if (trimmed === "assigned" || trimmed === "manager") return [trimmed];
+    try {
+      rawTargets = JSON.parse(trimmed);
+    } catch {
+      return ["assigned"];
+    }
+  }
+
+  if (!Array.isArray(rawTargets)) return ["assigned", "manager"];
+
+  const targets = rawTargets.filter((target): target is SlaReminderTarget =>
+    target === "assigned" || target === "manager"
+  );
+  return targets.length ? Array.from(new Set(targets)) : ["assigned"];
+}
+
+function normalizeSlaReminderTargets(value: unknown): string {
+  return JSON.stringify(parseSlaReminderTargets(value));
+}
+
 function normalizeTicketStatus(status: string | null | undefined): InboxTicketStatus {
   if (
     status === "new" ||
@@ -1582,14 +1610,18 @@ export async function getActiveSlaRule(
 export async function upsertSlaRule(data: Omit<InsertInboxSlaRule, "id"> & { id?: number }, tenantId?: number | null) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
-  if (data.id) {
-    const { id, ...rest } = data;
+  const normalizedData = {
+    ...data,
+    reminderTargets: normalizeSlaReminderTargets(data.reminderTargets),
+  };
+  if (normalizedData.id) {
+    const { id, ...rest } = normalizedData;
     const conditions: any[] = [eq(inboxSlaRules.id, id)];
     appendTenantScope(conditions, inboxSlaRules.tenantId, tenantId);
     await db.update(inboxSlaRules).set(rest).where(and(...conditions));
     return { id };
   }
-  const [result] = await db.insert(inboxSlaRules).values({ ...data, tenantId: tenantId ?? null });
+  const [result] = await db.insert(inboxSlaRules).values({ ...normalizedData, tenantId: tenantId ?? null });
   return { id: (result as any).insertId };
 }
 

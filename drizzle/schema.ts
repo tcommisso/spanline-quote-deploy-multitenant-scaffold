@@ -2510,7 +2510,7 @@ export const inboxSlaRules = mysqlTable("inbox_sla_rules", {
   tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 100 }).notNull(),
   queue: varchar("queue", { length: 50 }),
-  priority: mysqlEnum("slaPriority", ["low", "normal", "high", "urgent"]),
+  priority: mysqlEnum("priority", ["low", "normal", "high", "urgent"]),
   firstResponseHours: int("firstResponseHours").default(4).notNull(),
   nextResponseHours: int("nextResponseHours").default(24).notNull(),
   resolutionHours: int("resolutionHours").default(72).notNull(),

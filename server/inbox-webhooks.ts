@@ -18,6 +18,7 @@ import {
   getInboxMessageById,
   matchReceivingAddress,
   addTagToMessage,
+  parseSlaReminderTargets,
 } from "./inbox-db";
 import { sendNotificationEmail } from "./email";
 import { notifyOwner } from "./_core/notification";
@@ -492,7 +493,7 @@ export function registerInboxWebhooks(app: Express) {
         checked += breachingMessages.length;
         if (breachingMessages.length === 0) continue;
 
-        const targets: string[] = JSON.parse(rule.reminderTargets || '["assigned","manager"]');
+        const targets = parseSlaReminderTargets(rule.reminderTargets);
 
         for (const msg of breachingMessages) {
           let assignedEmail: string | null = null;

@@ -23,7 +23,7 @@ function getTileMetric(
   if (!kpiData && sectionId !== "inbox") return null;
   switch (sectionId) {
     case "inbox":
-      return totalUnread > 0 ? `${totalUnread} unread` : null;
+      return `${totalUnread} unread message${totalUnread === 1 ? "" : "s"}`;
     case "crm":
       return kpiData?.leadsThisMonth != null ? `${kpiData.leadsThisMonth} new leads` : null;
     case "sales":

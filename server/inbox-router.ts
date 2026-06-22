@@ -22,8 +22,24 @@ const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
 const inboxQueueSchema = z.enum(["sales", "construction", "approvals", "admin", "manufacturing", "support"]);
+const SLA_HOUR_LIMITS = {
+  firstResponse: 720,
+  nextResponse: 720,
+  resolution: 2160,
+  warning: 720,
+  escalation: 720,
+} as const;
 
 const EMAIL_ADDRESS_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+function boundedSlaHours(max: number) {
+  return z.preprocess((value) => {
+    if (value == null || value === "") return value;
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(numeric)) return value;
+    return Math.min(Math.max(Math.trunc(numeric), 1), max);
+  }, z.number().int().min(1).max(max));
+}
 
 function extractEmailAddresses(value: unknown): string[] {
   if (!value) return [];
@@ -1197,11 +1213,11 @@ export const inboxRouter = router({
         name: z.string().min(1).max(100),
         queue: inboxQueueSchema.nullable().optional(),
         priority: inboxTicketPrioritySchema.nullable().optional(),
-        firstResponseHours: z.number().min(1).max(720).optional(),
-        nextResponseHours: z.number().min(1).max(720).optional(),
-        resolutionHours: z.number().min(1).max(2160).optional(),
-        warningHours: z.number().min(1).max(720),
-        escalationHours: z.number().min(1).max(720),
+        firstResponseHours: boundedSlaHours(SLA_HOUR_LIMITS.firstResponse).optional(),
+        nextResponseHours: boundedSlaHours(SLA_HOUR_LIMITS.nextResponse).optional(),
+        resolutionHours: boundedSlaHours(SLA_HOUR_LIMITS.resolution).optional(),
+        warningHours: boundedSlaHours(SLA_HOUR_LIMITS.warning),
+        escalationHours: boundedSlaHours(SLA_HOUR_LIMITS.escalation),
         reminderTargets: z.string(),
         managerEmail: z.string().email().nullable().optional(),
         active: z.boolean(),
