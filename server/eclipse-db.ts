@@ -30,19 +30,23 @@ function appendEclipseTenantScope(
 export async function listEclipseQuotes(
   user: { id: number; role: string; name?: string | null; canViewAllQuotes?: boolean },
   tenantId?: number | null,
-  options?: EclipseTenantScopeOptions,
+  _options?: EclipseTenantScopeOptions,
 ) {
-  const conditions: any[] = [];
-  appendEclipseTenantScope(conditions, tenantId, options);
-  if (!isAdminRole(user.role) && !user.canViewAllQuotes) {
-    if (user.role === "design_adviser" && user.name) {
-      conditions.push(or(eq(eclipseQuotes.designAdvisor, user.name), eq(eclipseQuotes.userId, user.id)));
-    } else {
-      conditions.push(eq(eclipseQuotes.userId, user.id));
-    }
-  }
-  const where = conditions.length ? and(...conditions) : undefined;
-  return db.select().from(eclipseQuotes).where(where).orderBy(desc(eclipseQuotes.updatedAt));
+  const columnSet = await getEclipseQuoteColumnSet();
+  if (!tenantId || !columnSet.has("tenantId")) return [];
+
+  const params: any[] = [tenantId];
+  const whereSql = `q.\`tenantId\` = ?${appendAccessSql(columnSet, user, params)}`;
+  const orderSql = columnSet.has("id") ? "ORDER BY q.`id` DESC" : "";
+  const indexHint = columnSet.has("id") ? " FORCE INDEX (PRIMARY)" : "";
+  const [rows] = await pool.execute<any[]>(
+    `SELECT q.*
+     FROM \`eclipse_quotes\` q${indexHint}
+     WHERE ${whereSql}
+     ${orderSql}`,
+    params,
+  );
+  return rows;
 }
 
 export async function getEclipseQuoteById(id: number, tenantId?: number | null, options?: EclipseTenantScopeOptions) {
