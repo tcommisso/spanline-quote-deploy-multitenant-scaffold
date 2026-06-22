@@ -6,10 +6,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileText, Search, UserPlus, Pencil } from "lucide-react";
+import { AlertTriangle, Copy, Download, Plus, Trash2, Camera, ArrowLeft, FileText, Search, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { Link, useParams, useLocation } from "wouter";
 import { loadCompanyDetails, loadCustomLogo } from "@/lib/proposalStore";
@@ -1044,7 +1044,7 @@ function QuoteList() {
   const createFromLeadMutation = trpc.securityScreens.quotes.createFromLead.useMutation({
     onSuccess: (data) => {
       setLeadQuery("");
-      setLeadSearchOpen(false);
+      setCreateOpen(false);
       setLocation(quoteDetailPath(data));
       toast.success(`Quote ${data.quoteNumber} created from lead`);
       if (data.leadUnarchived) {
@@ -1063,19 +1063,16 @@ function QuoteList() {
   });
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [leadSearchOpen, setLeadSearchOpen] = useState(false);
   const [leadQuery, setLeadQuery] = useState("");
   const { data: leadResults = [] } = trpc.securityScreens.leads.search.useQuery({ query: leadQuery }, { enabled: leadQuery.length >= 2 });
   const [form, setForm] = useState(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
 
   const handleCreateOpenChange = (nextOpen: boolean) => {
-    if (nextOpen) setForm(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
+    if (nextOpen) {
+      setForm(DEFAULT_SECURITY_SCREEN_QUOTE_FORM);
+      setLeadQuery("");
+    }
     setCreateOpen(nextOpen);
-  };
-
-  const handleLeadSearchOpenChange = (nextOpen: boolean) => {
-    if (nextOpen) setLeadQuery("");
-    setLeadSearchOpen(nextOpen);
   };
 
   return (
@@ -1085,17 +1082,25 @@ function QuoteList() {
           <h1 className="text-2xl font-bold">Security Screen Quotes</h1>
           <p className="text-muted-foreground">Create and manage security screen quotations</p>
         </div>
-        <div className="flex gap-2">
-          <Dialog open={leadSearchOpen} onOpenChange={handleLeadSearchOpenChange}>
-            <Button variant="outline" onClick={() => handleLeadSearchOpenChange(true)}><UserPlus className="h-4 w-4 mr-1" /> From Lead</Button>
-            <DialogContent>
-              <DialogHeader><DialogTitle>Create Quote from CRM Lead</DialogTitle></DialogHeader>
-              <div className="space-y-4">
+        <Dialog open={createOpen} onOpenChange={handleCreateOpenChange}>
+          <DialogTrigger asChild>
+            <Button size="sm" variant="brand" className="gap-2">
+              <Plus className="h-4 w-4" />New Screen Quote
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader><DialogTitle>New Security Screen Quote</DialogTitle></DialogHeader>
+            <div className="space-y-5 py-2">
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs font-medium">Create from CRM Lead</Label>
+                  <p className="text-xs text-muted-foreground">Search for an existing lead, or enter client details manually below.</p>
+                </div>
                 <div className="relative">
                   <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input className="pl-9" placeholder="Search leads by name, email, address..." value={leadQuery} onChange={(e) => setLeadQuery(e.target.value)} />
                 </div>
-                <div className="max-h-[300px] overflow-y-auto space-y-1">
+                <div className="max-h-[220px] overflow-y-auto space-y-1">
                   {leadQuery.length < 2 ? <p className="text-center text-muted-foreground py-4 text-sm">Type at least 2 characters to search</p>
                   : leadResults.length === 0 ? <p className="text-center text-muted-foreground py-4 text-sm">No leads found</p>
                   : leadResults.map((lead: any) => (
@@ -1114,13 +1119,7 @@ function QuoteList() {
                   ))}
                 </div>
               </div>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={createOpen} onOpenChange={handleCreateOpenChange}>
-            <Button onClick={() => handleCreateOpenChange(true)}><Plus className="h-4 w-4 mr-1" /> New Quote</Button>
-          <DialogContent>
-            <DialogHeader><DialogTitle>New Security Screen Quote</DialogTitle></DialogHeader>
-            <div className="space-y-4">
+              <div className="space-y-4 border-t pt-4">
               <div><Label>Client Name *</Label><Input value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} placeholder="e.g. John Smith" /></div>
               <div className="grid grid-cols-2 gap-4">
                 <div><Label>Email</Label><Input value={form.clientEmail} onChange={(e) => setForm({ ...form, clientEmail: e.target.value })} /></div>
@@ -1140,10 +1139,10 @@ function QuoteList() {
               >
                 {createMutation.isPending ? "Creating..." : "Create Quote"}
               </Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>
-        </div>
       </div>
 
       {isLoading ? <p className="text-center text-muted-foreground py-8">Loading quotes...</p>
