@@ -63,6 +63,7 @@ export interface BatchDiagramData {
   postPositions?: string[];
   // Elevation data
   specFloorHeight?: string;
+  specRoofToFloor?: string;
   specFloorToGround?: string;
   specHouseEave?: string;
   specJobEave?: string;
@@ -834,7 +835,10 @@ function renderFrontElevationToPdf(doc: jsPDF, data: BatchDiagramData, x: number
 function renderSideElevationToPdf(doc: jsPDF, data: BatchDiagramData, x: number, y: number, w: number, h: number) {
   const roofPitch = parseFloat(data.specFall || "2");
   const projectionM = parseFloat(data.specLength || "5");
-  const heightMm = parseFloat(data.specFloorHeight || "2400");
+  const floorHeightMm = parseFloat(data.specFloorHeight || "");
+  const legacyUnderEaveToFloor = Number.isFinite(floorHeightMm) && floorHeightMm >= 1800 ? data.specFloorHeight : undefined;
+  const underEaveToFloor = data.specRoofToFloor || legacyUnderEaveToFloor || "2400";
+  const heightMm = parseFloat(underEaveToFloor);
   const roofType = data.specRoofType || "—";
   const postType = data.specPostsType || "90×90 SHS";
   const beamSize = data.specBeamSize || "—";
@@ -979,7 +983,7 @@ function renderSideElevationToPdf(doc: jsPDF, data: BatchDiagramData, x: number,
 
   // Post height label (right)
   const postHeightMm = Math.round(heightMm - roofDrop / postH * heightMm);
-  doc.text(`${data.specFloorHeight || "—"}mm`, hDimX + 4, postTopY + (floorY - postTopY) / 2, { align: "left" });
+  doc.text(`${underEaveToFloor || "—"}mm`, hDimX + 4, postTopY + (floorY - postTopY) / 2, { align: "left" });
 
   // Overall height label (left)
   doc.text(`${heightMm.toFixed(0)}mm O/A`, ohDimX - 5, beamY + (floorY - beamY) / 2, { align: "center", angle: 90 });

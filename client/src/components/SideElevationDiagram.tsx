@@ -20,7 +20,7 @@ function ParamTip({ tip }: { tip: string }) {
 interface SideElevationDiagramProps {
   /** Projection / length of the structure (mm) */
   projection: string;
-  /** Beam height at the house wall connection (mm) — this is the underside-of-beam to FFL */
+  /** Height at the house wall connection (mm) — underside of existing eave to FFL */
   beamHeight: string;
   /** Roof fall in degrees */
   roofFall: string;
@@ -57,7 +57,7 @@ function connectionLabel(code?: string): string {
  * SVG Geometry Math (all to-scale):
  * ─────────────────────────────────────────────────────────────────────
  * Given:
- *   beamHeight (mm)   = height from FFL to underside of beam at house wall (high side)
+ *   beamHeight (mm)   = height from FFL to underside of existing eave at house wall (high side)
  *   projection (mm)   = horizontal distance from house wall to post line
  *   pitch (°)         = roof fall angle in degrees
  *   jobEave (mm)      = eave overhang width beyond the post line
@@ -160,7 +160,7 @@ export default function SideElevationDiagram({
     const offsetX = padL + (drawW - usedWidth) / 2;
     const wallX = offsetX + houseWallThickM * scale;
 
-    // Beam connection at wall (high side) — underside of beam
+    // Beam connection at wall (high side) — underside of existing eave / connection height
     const eaveY = fflY - beamM * scale;
 
     // House wall top (above eave)
@@ -487,7 +487,7 @@ export default function SideElevationDiagram({
             <line x1={wallX - wallWPx - 35} y1={eaveY} x2={wallX - wallWPx - 5} y2={eaveY} stroke="black" strokeWidth="0.4" />
             <line x1={wallX - wallWPx - 35} y1={fflY} x2={wallX - wallWPx - 5} y2={fflY} stroke="black" strokeWidth="0.4" />
             <text x={wallX - wallWPx - 35} y={eaveY + (fflY - eaveY) / 2 + 4} fontSize="9" fill="#1e293b" fontFamily="sans-serif" textAnchor="end">
-              {beamHeight ? `${beamHeight}mm` : "— mm"}
+              {Math.round(beamMm)}mm
             </text>
 
             {/* ═══ DIMENSION: Post height (vertical, right of post) ═══ */}
@@ -569,6 +569,12 @@ export default function SideElevationDiagram({
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
                 <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Roof Pitch <ParamTip tip="Reference from Fall in degrees in Dimensions & Structure." /></label>
                 <span className="text-xs font-medium text-amber-900">{roofFall || "—"}°</span>
+              </div>
+
+              {/* Under Eave to Floor */}
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
+                <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Under Eave to Floor <ParamTip tip="Reference from Under Eave to Floor in Dimensions & Structure. This is not the Floor to Ground measurement." /></label>
+                <span className="text-xs font-medium text-amber-900">{Math.round(beamMm)} mm</span>
               </div>
 
               {/* Job Eave (read-only display from Roof section) */}

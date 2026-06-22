@@ -102,7 +102,7 @@ function buildDimensionsDescription(spec: Record<string, unknown>): string {
 
   const heights = list([
     floorHeight && `floor height ${floorHeight}`,
-    roofToFloor && `roof-to-floor height ${roofToFloor}`,
+    roofToFloor && `under-eave-to-floor height ${roofToFloor}`,
     floorToGround && `floor-to-ground clearance ${floorToGround}`,
     houseEave && `existing house eave ${houseEave}`,
     jobEave && `new structure eave ${jobEave}`,

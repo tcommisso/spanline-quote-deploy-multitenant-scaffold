@@ -1125,7 +1125,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     const sectionFieldPrefixes: Record<string, string[]> = {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
       siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
-      dimensions: ["specWidth", "specLength", "specFloorHeight"],
+      dimensions: ["specWidth", "specLength", "specRoofToFloor"],
       brackets: ["specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specBracketColour"],
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
@@ -1668,7 +1668,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <SelectField label="Existing Roof Type of house" value={form.specHouseRoofType || ""} onChange={(v) => update("specHouseRoofType", v)} options={HOUSE_ROOF_TYPE_OPTIONS} />
                 <SelectField label="Existing House Wall" value={form.specHouseWallType || ""} onChange={(v) => update("specHouseWallType", v)} options={EXISTING_HOUSE_WALL_OPTIONS} />
                 <Field label="Floor Height" suffix="mm" placeholder="e.g. 2400" min={0} max={5000} value={form.specFloorHeight || ""} onChange={(v) => update("specFloorHeight", v)} />
-                <Field label="Roof to Floor" suffix="mm" placeholder="e.g. 2700" min={2100} max={6000} value={form.specRoofToFloor || ""} onChange={(v) => update("specRoofToFloor", v)} />
+                <Field label="Under Eave to Floor" suffix="mm" placeholder="e.g. 2250" min={2100} max={6000} value={form.specRoofToFloor || ""} onChange={(v) => update("specRoofToFloor", v)} />
                 <Field label="Floor to Ground" suffix="mm" placeholder="e.g. 300" min={0} max={3000} value={form.specFloorToGround || ""} onChange={(v) => update("specFloorToGround", v)} />
                 <Field label="House Eave" suffix="mm" placeholder="e.g. 600" min={0} max={1500} value={form.specHouseEave || ""} onChange={(v) => update("specHouseEave", v)} />
                 <SelectField label="Cut Back Eave" value={cutBackEaveValue} onChange={(v) => update("specCutBackEave", v)} options={YES_NO_OPTIONS} />
@@ -1700,7 +1700,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 >
                   <SideElevationDiagram
                     projection={form.specLength ? String(parseFloat(form.specLength) * 1000) : ""}
-                    beamHeight={form.specFloorHeight || ""}
+                    beamHeight={form.specRoofToFloor || (parseFloat(form.specFloorHeight || "") >= 1800 ? form.specFloorHeight : "")}
                     roofFall={form.specFall || ""}
                     roofType={form.specRoofType || "Flat"}
                     postSize={form.specPostsType || ""}
@@ -2197,7 +2197,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 )}
                 <ColourField label="Roof Top Colour" value={form.specRoofTopColour || ""} onChange={(v) => update("specRoofTopColour", v)} colours={getColoursForProduct(form.specRoofType, "roof")} />
                 <ColourField label="Roof Bottom Colour" value={form.specRoofBottomColour || ""} onChange={(v) => update("specRoofBottomColour", v)} colours={getColoursForProductBottom(form.specRoofType, "roof")} />
-                <Field label="Sheet Size" suffix="mm" placeholder="e.g. 5400" value={form.specFinishSheetSize || ""} onChange={(v) => update("specFinishSheetSize", v)} />
                 <SelectField label="Ceiling Finish" value={form.specFinishType || ""} onChange={(v) => update("specFinishType", v)} options={["none", "Smooth", "Luxaline", "Micraline", "Embossed"]} />
                 <SelectField label="Fall Direction" value={form.specFallDirection || ""} onChange={(v) => update("specFallDirection", v)} options={["A-B", "B-C", "C-D", "D-A"]} />
                 <MultiSelectField label="Angle Cutting" value={form.specAngleCutting || ""} onChange={(v) => {
@@ -3940,7 +3939,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Existing Roof Type of house" value={form.specHouseRoofType} />
                 <PrintRow label="Existing House Wall" value={form.specHouseWallType} />
                 <PrintRow label="Floor Height" value={form.specFloorHeight} />
-                <PrintRow label="Roof to Floor" value={form.specRoofToFloor} />
+                <PrintRow label="Under Eave to Floor" value={form.specRoofToFloor} />
                 <PrintRow label="Floor to Ground" value={form.specFloorToGround} />
                 <PrintRow label="House Eave" value={form.specHouseEave} />
                 <PrintRow label="Cut Back Eave" value={cutBackEaveValue || form.specCutBackEave} />
@@ -4094,7 +4093,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Roof Type" value={form.specRoofType} />
                 <PrintRow label="Top Colour" value={form.specRoofTopColour} isColour />
                 <PrintRow label="Bottom Colour" value={form.specRoofBottomColour} isColour />
-                <PrintRow label="Sheet Size" value={form.specFinishSheetSize} />
                 <PrintRow label="Ceiling Finish" value={form.specFinishType} />
                 <PrintRow label="Fall Direction" value={form.specFallDirection} />
                 <PrintRow label="House Walls" value={form.specHouseWalls ? form.specHouseWalls.split(",").join(", ") : ""} />
@@ -4837,6 +4835,7 @@ function SitePlanElevationSection({ form, quoteId, siteAddress, onUpdate }: { fo
               setbackColor: form.specSetbackColor || undefined,
               postPositions: form.specPostPositions ? form.specPostPositions.split(",").filter(Boolean) : undefined,
               specFloorHeight: form.specFloorHeight,
+              specRoofToFloor: form.specRoofToFloor,
               specFloorToGround: form.specFloorToGround,
               specHouseEave: form.specHouseEave,
               specJobEave: form.specJobEave,
