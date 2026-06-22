@@ -770,7 +770,7 @@ export const specItemsRouter = router({
         "specBeamType", "specBeamSize", "specBeamColour", "specBeamEntries", "specPostsType",
         "specPostsColour", "specPostsNumber", "specPostSpacing", "specRoofOverhang",
         "specGutterType", "specGutterColour", "specGutterSides", "specDownpipes",
-        "specAttachmentMethod", "specBackChannelColour", "specIwpEntries",
+        "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specBackChannelColour", "specIwpEntries",
         "specFlooringType", "specFlooringColour", "specSubfloorM2",
         "specBalustradeType", "specBalustradeColour", "specBalustradeLm",
         "specBalustradeCompliance", "specBalustradePosts", "specBalustradePrivacy", "specBalustradeRails",

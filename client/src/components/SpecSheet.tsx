@@ -78,6 +78,54 @@ const SECTIONS = [
 const HOUSE_ROOF_TYPE_OPTIONS = ["Tile", "Metal", "Flat", "Concrete", "Slate", "Other"];
 const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered", "Weatherboard", "Hebel", "Cladding", "Concrete Block", "Other"];
 const YES_NO_OPTIONS = ["Yes", "No"];
+const ATTACHED_SIDE_OPTIONS = ["None", "1 Side", "2 Side", "3 Side", "4 Side"];
+const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["None", "Fascia brackets", "Gable brackets", "popup brackets", "wall brackets"];
+const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
+  "Fascia brackets": "specFasciaBrackets",
+  "Gable brackets": "specGableBrackets",
+  "popup brackets": "specPopupBrackets",
+  "wall brackets": "specWallFixingBracket",
+};
+const BRACKET_METHOD_QUANTITY_FIELD_KEYS = Object.values(BRACKET_METHOD_QUANTITY_FIELDS);
+
+function bracketQuantityForMethod(form: Record<string, string>, method: string) {
+  const field = BRACKET_METHOD_QUANTITY_FIELDS[method];
+  return field ? form[field] || "" : "";
+}
+
+function inferBracketAttachmentMethod(form: Record<string, string>) {
+  if (parseInt(form.specFasciaBrackets || "0") > 0) return "Fascia brackets";
+  if (parseInt(form.specGableBrackets || "0") > 0) return "Gable brackets";
+  if (parseInt(form.specPopupBrackets || "0") > 0) return "popup brackets";
+  if (parseInt(form.specWallFixingBracket || "0") > 0) return "wall brackets";
+  return "";
+}
+
+function applyBracketMethodQuantity(form: Record<string, string>, method: string, quantity: string) {
+  const next: Record<string, string> = {
+    ...form,
+    specBracketAttachmentMethod: method,
+    specNumberOfBrackets: method && method !== "None" ? quantity : "",
+  };
+  for (const field of BRACKET_METHOD_QUANTITY_FIELD_KEYS) {
+    next[field] = "";
+  }
+  const targetField = BRACKET_METHOD_QUANTITY_FIELDS[method];
+  if (targetField && quantity) {
+    next[targetField] = quantity;
+  }
+  return next;
+}
+
+function normaliseLookupKey(value?: string | null) {
+  return (value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function extractDimensionLookupKey(value?: string | null) {
+  const raw = value || "";
+  const match = raw.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+  return match ? `${match[1]}x${match[2]}`.toLowerCase() : "";
+}
 
 function normalizeCutBackEaveOption(value?: string | null): string {
   const raw = (value || "").trim();
@@ -462,6 +510,17 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     }
     return map;
   }, [colourGroupsList, allColourGroupMembers]);
+  const productColourGroupsByLookup = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const [productName, groupName] of Object.entries(productColourGroups)) {
+      if (!groupName) continue;
+      const nameKey = normaliseLookupKey(productName);
+      if (nameKey && !map[nameKey]) map[nameKey] = groupName;
+      const dimensionKey = extractDimensionLookupKey(productName);
+      if (dimensionKey && !map[dimensionKey]) map[dimensionKey] = groupName;
+    }
+    return map;
+  }, [productColourGroups]);
 
   const isMobile = useIsMobile();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -623,7 +682,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const WINDOW_WIDTHS = [600, 700, 800, 900, 1200, 1300, 1400, 1500, 1600, 1800, 2100, 2200, 2400, 2700];
 
   type DoorEntry = { style: "Sliding" | "Hinged" | "Bi-fold" | "Stacker"; height: number; width: number; qty: number; panels?: number; screen?: string };
-  type IwpEntry = { type: string; width: number; height: number; qty: number; outsideColour: string; outsideFinish: string; insideColour: string; insideFinish: string };
+  type IwpEntry = { type: string; width: number; height: number; qty: number; outsideColour: string; outsideFinish: string; insideColour: string; insideFinish: string; wallSides?: string };
   const SCREEN_OPTIONS = ["N/A", "Fly", "Pet", "Diamond", "Security", "Invis-gard"];
   const DOOR_HEIGHTS = [2100, 2400];
   const DOOR_WIDTHS = [1500, 1600, 1800, 2100, 2200, 2400, 2700, 2900, 3200, 3300, 3500, 3600, 4200, 4300, 4800];
@@ -649,6 +708,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [demolitionWorkItems, setDemolitionWorkItems] = useState<CheckItem[]>([]);
   const [windowEntries, setWindowEntries] = useState<WindowEntry[]>([]);
   const [doorEntries, setDoorEntries] = useState<DoorEntry[]>([]);
+  const beamColourLookupValue = form.specBeamSize || beamEntries.find(entry => entry.size)?.size || "";
 
   // ─── Checklist Pricing Selections ───
   type ChecklistSelection = { itemId: number; label: string; unitPrice: number; qty: number; total: number; section: string; unit: string };
@@ -678,6 +738,17 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     }
     return defaultColourGroup ? [defaultColourGroup] : [];
   }, [globalColourPalette, defaultColourGroup]);
+  const resolveColourGroupName = useCallback((groupName?: string | null) => {
+    const raw = (groupName || "").trim();
+    if (!raw) return "";
+    if (coloursByGroup[raw]) return raw;
+    const normalised = normaliseLookupKey(raw);
+    return Object.keys(coloursByGroup).find(name => normaliseLookupKey(name) === normalised) || raw;
+  }, [coloursByGroup]);
+  const getColourValuesForGroup = useCallback((groupName?: string | null) => {
+    const resolved = resolveColourGroupName(groupName);
+    return resolved ? coloursByGroup[resolved] || [] : [];
+  }, [coloursByGroup, resolveColourGroupName]);
 
   // Helper: get filtered colours for a section with group prefix labels
   const getColoursForSection = useCallback((section: string): { label: string; value: string; group: string }[] => {
@@ -686,46 +757,51 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       return allColourOptions.map(c => ({ label: c, value: c, group: "" }));
     }
     if (groups.length === 1) {
-      const g = groups[0];
-      const colours = coloursByGroup[g] || [];
+      const g = resolveColourGroupName(groups[0]);
+      const colours = getColourValuesForGroup(g);
+      if (colours.length === 0) return allColourOptions.map(c => ({ label: c, value: c, group: "" }));
       return colours.map(c => ({ label: `${g} - ${c}`, value: c, group: g }));
     }
     const result: { label: string; value: string; group: string }[] = [];
-    for (const g of groups) {
-      const colours = coloursByGroup[g] || [];
+    for (const group of groups) {
+      const g = resolveColourGroupName(group);
+      const colours = getColourValuesForGroup(g);
       for (const c of colours) {
         result.push({ label: `${g} - ${c}`, value: c, group: g });
       }
     }
-    return result;
-  }, [getColourGroupsForSection, coloursByGroup, allColourOptions]);
+    return result.length > 0 ? result : allColourOptions.map(c => ({ label: c, value: c, group: "" }));
+  }, [getColourGroupsForSection, resolveColourGroupName, getColourValuesForGroup, allColourOptions]);
 
   // Helper: get colours filtered by the selected product's colour group
   // Falls back to getColoursForSection if no product is selected or product has no colour group
   const getColoursForProduct = useCallback((productName: string | undefined, sectionFallback: string): { label: string; value: string; group: string }[] => {
-    if (productName && productColourGroups[productName]) {
-      const groupName = productColourGroups[productName];
-      const colours = coloursByGroup[groupName] || [];
+    if (productName) {
+      const groupName = productColourGroups[productName]
+        || productColourGroupsByLookup[normaliseLookupKey(productName)]
+        || productColourGroupsByLookup[extractDimensionLookupKey(productName)];
+      const resolvedGroupName = resolveColourGroupName(groupName);
+      const colours = getColourValuesForGroup(resolvedGroupName);
       if (colours.length > 0) {
-        return colours.map(c => ({ label: c, value: c, group: groupName }));
+        return colours.map(c => ({ label: c, value: c, group: resolvedGroupName }));
       }
     }
     // Fallback to section-based colour filtering
     return getColoursForSection(sectionFallback);
-  }, [productColourGroups, coloursByGroup, getColoursForSection]);
+  }, [productColourGroups, productColourGroupsByLookup, resolveColourGroupName, getColourValuesForGroup, getColoursForSection]);
 
   // Get colours for the bottom/ceiling side of a product (uses colourGroupBottom if set, otherwise falls back to colourGroup)
   const getColoursForProductBottom = useCallback((productName: string | undefined, sectionFallback: string): { label: string; value: string; group: string }[] => {
     if (productName && productColourGroupsBottom[productName]) {
-      const groupName = productColourGroupsBottom[productName];
-      const colours = coloursByGroup[groupName] || [];
+      const groupName = resolveColourGroupName(productColourGroupsBottom[productName]);
+      const colours = getColourValuesForGroup(groupName);
       if (colours.length > 0) {
         return colours.map(c => ({ label: c, value: c, group: groupName }));
       }
     }
     // Fallback to the top colour group (same as getColoursForProduct)
     return getColoursForProduct(productName, sectionFallback);
-  }, [productColourGroupsBottom, coloursByGroup, getColoursForProduct]);
+  }, [productColourGroupsBottom, resolveColourGroupName, getColourValuesForGroup, getColoursForProduct]);
 
   // Legacy: colourOptions for backward compatibility
   const colourOptions = useMemo(() => {
@@ -811,6 +887,50 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
 
   const update = useCallback((key: string, value: string) => setForm(prev => ({ ...prev, [key]: value })), []);
   const cutBackEaveValue = normalizeCutBackEaveOption(form.specCutBackEave);
+  const displayedBracketAttachmentMethod = form.specBracketAttachmentMethod || inferBracketAttachmentMethod(form);
+  const displayedNumberOfBrackets = form.specNumberOfBrackets || bracketQuantityForMethod(form, displayedBracketAttachmentMethod);
+  const updateAttachedSideCount = useCallback((value: string) => {
+    setForm(prev => {
+      if (value === "None" || value === "") {
+        return {
+          ...prev,
+          specAttachmentMethod: value,
+          specBracketAttachmentMethod: "",
+          specNumberOfBrackets: "",
+          specFasciaBrackets: "",
+          specExtendaBrackets: "",
+          specGableBrackets: "",
+          specOversizedDGutter: "",
+          specBracketCover: "",
+          specBracketColour: "",
+          specPopupBrackets: "",
+          specPopupColour: "",
+          specFreeStanding: "",
+          specWallFixingBeam: "",
+          specWallFixingBracket: "",
+          specFoamCut: "",
+        };
+      }
+      return { ...prev, specAttachmentMethod: value };
+    });
+  }, []);
+  const updateBracketAttachmentMethod = useCallback((method: string) => {
+    setForm(prev => {
+      const quantity = method && method !== "None"
+        ? (prev.specNumberOfBrackets || bracketQuantityForMethod(prev, method))
+        : "";
+      return applyBracketMethodQuantity(prev, method, quantity);
+    });
+  }, []);
+  const updateNumberOfBrackets = useCallback((quantity: string) => {
+    setForm(prev => {
+      const method = prev.specBracketAttachmentMethod || inferBracketAttachmentMethod(prev);
+      if (!method || method === "None") {
+        return { ...prev, specNumberOfBrackets: quantity };
+      }
+      return applyBracketMethodQuantity(prev, method, quantity);
+    });
+  }, []);
 
   // Auto-set Box Gutter Overflow to "Yes" when gutter type includes "box"
   useEffect(() => {
@@ -1006,7 +1126,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
       siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
       dimensions: ["specWidth", "specLength", "specFloorHeight"],
-      brackets: ["specAttachmentMethod", "specFasciaBrackets", "specBracketColour"],
+      brackets: ["specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specBracketColour"],
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
       walls: ["specWallType", "specWallColour", "specWallNotes"],
@@ -1611,23 +1731,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionTrigger className="text-sm font-medium">Attachment & Brackets</AccordionTrigger>
             <AccordionContent>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <SelectField label="Attachment Method" value={form.specAttachmentMethod || ""} onChange={(v) => {
-                  update("specAttachmentMethod", v);
-                  if (v === "None" || v === "") {
-                    update("specFasciaBrackets", "");
-                    update("specExtendaBrackets", "");
-                    update("specGableBrackets", "");
-                    update("specOversizedDGutter", "");
-                    update("specBracketCover", "");
-                    update("specBracketColour", "");
-                    update("specPopupBrackets", "");
-                    update("specPopupColour", "");
-                    update("specFreeStanding", "");
-                    update("specWallFixingBeam", "");
-                    update("specWallFixingBracket", "");
-                    update("specFoamCut", "");
-                  }
-                }} options={["None", "1 Side", "2 Side", "3 Side", "4 Side"]} />
+                <SelectField label="No. of Attached Side" value={form.specAttachmentMethod || ""} onChange={updateAttachedSideCount} options={ATTACHED_SIDE_OPTIONS} />
+                <SelectField label="Attachment Method" value={displayedBracketAttachmentMethod} onChange={updateBracketAttachmentMethod} options={BRACKET_ATTACHMENT_METHOD_OPTIONS} />
+                <Field label="Number of Brackets" value={displayedNumberOfBrackets} onChange={updateNumberOfBrackets} min={0} max={20} placeholder="0" />
                 {form.specAttachmentMethod && form.specAttachmentMethod !== "None" && (<>
                 <SelectField label="Fascia Brackets" value={form.specFasciaBrackets || ""} onChange={(v) => update("specFasciaBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
                 <SelectField label="Extenda Brackets" value={form.specExtendaBrackets || ""} onChange={(v) => update("specExtendaBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
@@ -1795,22 +1901,39 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionTrigger className="text-sm font-medium">Walls</AccordionTrigger>
             <AccordionContent>
               {/* Insulated Wall Panels - multiple entries */}
-              <div className="border-b pb-3 mb-3">
-                <div className="flex items-center justify-between mb-2">
-                  <Label className="text-xs font-medium text-muted-foreground">Insulated Wall Panels</Label>
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setIwpEntries(prev => [...prev, { type: "", width: 0, height: 0, qty: 1, outsideColour: "", outsideFinish: "", insideColour: "", insideFinish: "" }])}>
-                    <Plus className="h-3 w-3 mr-1" /> Add Wall
-                  </Button>
-                </div>
-                {iwpEntries.map((entry, idx) => (
-                  <div key={idx} className="border rounded-md p-3 mb-2 bg-muted/30">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-medium">Wall {idx + 1}</span>
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setIwpEntries(prev => prev.filter((_, i) => i !== idx))}>
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                                <div className="border-b pb-3 mb-3">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <Label className="text-xs font-medium text-muted-foreground">Insulated Wall Panels</Label>
+                                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setIwpEntries(prev => [...prev, { type: "", width: 0, height: 0, qty: 1, outsideColour: "", outsideFinish: "", insideColour: "", insideFinish: "", wallSides: "" }])}>
+                                      <Plus className="h-3 w-3 mr-1" /> Add Wall
+                                    </Button>
+                                  </div>
+                                  {iwpEntries.map((entry, idx) => (
+                                    <div key={idx} className="border rounded-md p-3 mb-2 bg-muted/30">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-medium">Wall {idx + 1}</span>
+                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setIwpEntries(prev => prev.filter((_, i) => i !== idx))}>
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                      <div className="mb-3">
+                                        <Label className="text-[11px] text-muted-foreground mb-1 block">Wall Position</Label>
+                                        <div className="overflow-x-auto">
+                                          <RoofPlanDiagram
+                                            width={form.specWidth || ""}
+                                            length={form.specLength || ""}
+                                            fallDirection=""
+                                            houseWalls={(entry.wallSides || "").split(",").filter(Boolean)}
+                                            onHouseWallsChange={(walls) => {
+                                              const next = [...iwpEntries];
+                                              next[idx] = { ...next[idx], wallSides: walls.join(",") };
+                                              setIwpEntries(next);
+                                            }}
+                                            selectedSideLabel="WALL"
+                                          />
+                                        </div>
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                       <div>
                         <Label className="text-[11px] text-muted-foreground">IWP Type</Label>
                         {wallCategories.length > 0 ? (
@@ -1931,11 +2054,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionTrigger className="text-sm font-medium">Beams, Channels & Flashings</AccordionTrigger>
             <AccordionContent>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(form.specBeamSize, "beams")} />
-                <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(form.specBeamSize, "beams")} />
-                <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(form.specBeamSize, "beams")} />
-                <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(form.specBeamSize, "beams")} />
-                <ColourField label="Twinwall Colour" value={form.specTwinwallColour || ""} onChange={(v) => update("specTwinwallColour", v)} colours={getColoursForProduct(form.specBeamSize, "beams")} />
+                <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                <ColourField label="Twinwall Colour" value={form.specTwinwallColour || ""} onChange={(v) => update("specTwinwallColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
               </div>
 
               {/* Beams - Multi-row entries */}
@@ -3825,16 +3948,18 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Wind Cat" value={form.specWindCat} />
                 <PrintRow label="Cp'n" value={form.specCpn} />
                 <PrintRow label="Fall" value={form.specFall} />
-                <PrintRow label="Attachment" value={form.specAttachmentMethod} />
+                <PrintRow label="No. of Attached Side" value={form.specAttachmentMethod} />
               </div>
             </div>
 
-            {/* Brackets - only show in print when Attachment Method is not None */}
+            {/* Brackets - only show in print when No. of Attached Side is not None */}
             {form.specAttachmentMethod && form.specAttachmentMethod !== "None" && (
             <div className="spec-section">
               <h3>Attachment & Brackets{getColourGroupsForSection("brackets").length > 0 && <span className="section-colour-group">Palette: {getColourGroupsForSection("brackets").join(", ")}</span>}</h3>
               <div className="spec-3col">
-                <PrintRow label="Attachment" value={form.specAttachmentMethod} />
+                <PrintRow label="No. of Attached Side" value={form.specAttachmentMethod} />
+                <PrintRow label="Attachment Method" value={displayedBracketAttachmentMethod} />
+                <PrintRow label="Number of Brackets" value={displayedNumberOfBrackets} />
                 <PrintRow label="Fascia Brackets" value={form.specFasciaBrackets} />
                 <PrintRow label="Extenda Brackets" value={form.specExtendaBrackets} />
                 <PrintRow label="Gable Brackets" value={form.specGableBrackets} />
@@ -3891,12 +4016,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               {iwpEntries.length > 0 && (
                 <div className="mt-2">
                   <p className="text-xs font-medium">Insulated Wall Panels:</p>
-                  {iwpEntries.map((e, i) => (
-                    <div key={i} className="text-xs ml-2 mb-1">
-                      <span className="font-medium">Wall {i + 1}:</span> {e.type} — {e.width}×{e.height}mm × {e.qty}
-                      {e.outsideColour && <> | Outside: {e.outsideColour} ({e.outsideFinish})</>}
-                      {e.insideColour && <> | Inside: {e.insideColour} ({e.insideFinish})</>}
-                    </div>
+                                    {iwpEntries.map((e, i) => (
+                                      <div key={i} className="text-xs ml-2 mb-1">
+                                        <span className="font-medium">Wall {i + 1}:</span> {e.type} — {e.width}×{e.height}mm × {e.qty}
+                                        {e.wallSides && <> | Position: {e.wallSides.split(",").join(", ")}</>}
+                                        {e.outsideColour && <> | Outside: {e.outsideColour} ({e.outsideFinish})</>}
+                                        {e.insideColour && <> | Inside: {e.insideColour} ({e.insideFinish})</>}
+                                      </div>
                   ))}
                 </div>
               )}

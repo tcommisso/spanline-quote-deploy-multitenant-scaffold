@@ -8,6 +8,7 @@ interface RoofPlanDiagramProps {
   onHouseWallsChange: (walls: string[]) => void;
   /** Comma-separated raked edges, e.g. "A-B,B-C" */
   rakedEdges?: string;
+  selectedSideLabel?: string;
 }
 
 const SIDES = ["A-B", "B-C", "C-D", "D-A"] as const;
@@ -29,6 +30,7 @@ export default function RoofPlanDiagram({
   houseWalls,
   onHouseWallsChange,
   rakedEdges = "",
+  selectedSideLabel = "HOUSE",
 }: RoofPlanDiagramProps) {
   const toggleWall = (side: Side) => {
     if (houseWalls.includes(side)) {
@@ -298,7 +300,7 @@ export default function RoofPlanDiagram({
                   fontWeight="bold"
                   className="pointer-events-none select-none"
                 >
-                  HOUSE
+                  {selectedSideLabel}
                 </text>
               )}
             </g>

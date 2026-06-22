@@ -6,6 +6,7 @@
 import { getDb } from "./db";
 import { clientDas, crmLeads, quotes, daCompetitorWatchlist } from "../drizzle/schema";
 import { eq, and, isNull, sql, inArray } from "drizzle-orm";
+import { normalizeApiAddress } from "@shared/address-normalization";
 
 const DAFINDER_LIST_URL = "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_DAFINDER_LIST_VIEW/FeatureServer/0";
 const PAGE_SIZE = 1000;
@@ -72,7 +73,7 @@ export async function searchDasByAddress(
   const conditions: string[] = [];
 
   // Normalise address for search - extract street number and name
-  const normalised = normaliseAddress(streetAddress);
+  const normalised = normaliseAddress(normalizeApiAddress(streetAddress));
   if (normalised) {
     conditions.push(`STREET_ADDRESS LIKE '%${escapeArcGIS(normalised)}%'`);
   } else {
@@ -486,7 +487,7 @@ async function queryDaFinder(where: string, limit: number): Promise<DaFinderReco
 function normaliseAddress(address: string): string | null {
   if (!address) return null;
   // Remove unit/lot prefixes FIRST (before comma stripping), then postcodes, state
-  const cleaned = address
+  const cleaned = normalizeApiAddress(address)
     .replace(/\b(unit|lot|suite|apt|apartment)\s*\d*\s*,?\s*/gi, "") // remove unit prefix + trailing comma
     .replace(/,.*$/, "") // remove everything after first comma
     .replace(/\b(ACT|NSW|VIC|QLD|SA|WA|TAS|NT)\b/gi, "")

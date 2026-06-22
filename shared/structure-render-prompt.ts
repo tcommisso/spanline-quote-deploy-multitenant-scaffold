@@ -116,7 +116,7 @@ function buildDimensionsDescription(spec: Record<string, unknown>): string {
 function buildStructureDescription(spec: Record<string, unknown>): string | undefined {
   const roofType = text(spec.specRoofType);
   const roofShape = text(spec.specRoofShape);
-  const attachment = text(spec.specAttachmentMethod);
+  const attachedSides = text(spec.specAttachmentMethod);
   const houseWalls = splitCsv(spec.specHouseWalls);
   const freeStanding = text(spec.specFreeStanding);
   const fall = text(spec.specFall);
@@ -127,7 +127,7 @@ function buildStructureDescription(spec: Record<string, unknown>): string | unde
   const parts = [
     roofShape && `${roofShape} roof shape`,
     roofType && `${roofType} roof system`,
-    attachment && attachment !== "None" ? `${attachment} attachment` : undefined,
+    attachedSides && attachedSides !== "None" ? `${attachedSides} attached` : undefined,
     freeStanding === "Yes" ? "freestanding layout" : undefined,
     houseWalls.length > 0 ? `attached along house wall side${houseWalls.length > 1 ? "s" : ""} ${houseWalls.join(", ")}` : undefined,
     fall && `roof fall ${fall}${fallDirection ? ` toward ${fallDirection}` : ""}`,
@@ -168,7 +168,11 @@ function buildMaterialsDescription(spec: Record<string, unknown>): string | unde
 }
 
 function buildAttachmentDescription(spec: Record<string, unknown>): string | undefined {
+  const bracketMethod = text(spec.specBracketAttachmentMethod);
+  const bracketCount = text(spec.specNumberOfBrackets);
   const items = [
+    bracketMethod && bracketMethod !== "None" ? `attachment method ${bracketMethod}` : undefined,
+    bracketCount && bracketMethod && bracketMethod !== "None" ? `${bracketCount} total brackets` : undefined,
     text(spec.specFasciaBrackets) && text(spec.specFasciaBrackets) !== "None" ? `${text(spec.specFasciaBrackets)} fascia brackets` : undefined,
     text(spec.specExtendaBrackets) && text(spec.specExtendaBrackets) !== "None" ? `${text(spec.specExtendaBrackets)} extenda brackets` : undefined,
     text(spec.specGableBrackets) && text(spec.specGableBrackets) !== "None" ? `${text(spec.specGableBrackets)} gable brackets` : undefined,
@@ -319,7 +323,9 @@ export function buildStructureRenderPromptQuick(input: StructureRenderInput): st
   const roofColour = text(spec.specRoofTopColour);
   const postColour = text(spec.specPostsColour);
   const beamColour = text(spec.specBeamColour);
-  const attachment = text(spec.specAttachmentMethod);
+  const attachedSides = text(spec.specAttachmentMethod);
+  const bracketMethod = text(spec.specBracketAttachmentMethod);
+  const bracketCount = text(spec.specNumberOfBrackets);
 
   let prompt = input.hasPhoto
     ? "Photorealistic edit of this residential site photo, adding the specified Altaspan/Spanline outdoor structure while preserving the existing property and surroundings. "
@@ -329,7 +335,8 @@ export function buildStructureRenderPromptQuick(input: StructureRenderInput): st
     prompt += `${width || "specified width"} x ${length || "specified projection"} footprint. `;
   }
   prompt += `${roofShape ? `${roofShape} ` : ""}${roofType}. `;
-  if (attachment && attachment !== "None") prompt += `${attachment} attachment. `;
+  if (attachedSides && attachedSides !== "None") prompt += `${attachedSides} attached. `;
+  if (bracketMethod && bracketMethod !== "None") prompt += `Attachment method ${bracketMethod}${bracketCount ? ` with ${bracketCount} brackets` : ""}. `;
   if (roofColour) prompt += `Roof colour ${roofColour}. `;
   if (beamColour) prompt += `Beam colour ${beamColour}. `;
   if (postColour) prompt += `Post colour ${postColour}. `;

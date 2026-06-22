@@ -35,7 +35,7 @@ export const tenantRouter = router({
       .from(tenantMemberships)
       .innerJoin(tenants, eq(tenants.id, tenantMemberships.tenantId))
       .where(eq(tenantMemberships.userId, ctx.user!.id))
-      .orderBy(desc(tenantMemberships.isDefault), tenants.name);
+      .orderBy(desc(tenantMemberships.isDefault), desc(tenantMemberships.createdAt), tenants.name);
   }),
 
   createTenant: sensitiveSuperAdminProcedure

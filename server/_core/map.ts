@@ -7,6 +7,7 @@
  * haversine fallback for distance matrix calculations.
  */
 
+import { normalizeApiAddress } from "@shared/address-normalization";
 import { ENV } from "./env";
 
 // ============================================================================
@@ -205,7 +206,7 @@ async function locationIqPlaceDetails(params: Record<string, unknown>) {
     result: {
       place_id: String(row.place_id ?? placeId),
       name: row.name || row.display_place || row.display_name,
-      formatted_address: row.display_name,
+	      formatted_address: normalizeApiAddress(row.display_name),
       address_components: toGoogleAddressComponents(row.address ?? {}),
       geometry: {
         location: {
@@ -228,7 +229,7 @@ async function locationIqGeocode(params: Record<string, unknown>) {
     return { status: row ? "OK" : "ZERO_RESULTS", results: row ? [toGoogleGeocodeResult(row)] : [] };
   }
 
-  const q = String(params.address ?? params.q ?? "").trim();
+	  const q = normalizeApiAddress(String(params.address ?? params.q ?? "").trim());
   if (!q) return { status: "ZERO_RESULTS", results: [] };
   const rows = await fetchLocationIq("/v1/search", {
     q,
@@ -281,7 +282,7 @@ function splitPipeList(value: unknown) {
 }
 
 async function geocodePoint(address: string): Promise<LatLng | null> {
-  const result = await locationIqGeocode({ address, limit: 1 }).catch(() => null);
+  const result = await locationIqGeocode({ address: normalizeApiAddress(address), limit: 1 }).catch(() => null);
   const first = result?.results?.[0]?.geometry?.location;
   return first && Number.isFinite(first.lat) && Number.isFinite(first.lng) ? first : null;
 }
@@ -291,7 +292,7 @@ function toGoogleGeocodeResult(row: any) {
   const lng = Number(row.lon ?? row.centroid?.coordinates?.[0]);
   return {
     place_id: String(row.place_id ?? row.osm_id ?? row.display_name),
-    formatted_address: row.display_name,
+	    formatted_address: normalizeApiAddress(row.display_name),
     address_components: toGoogleAddressComponents(row.address ?? {}),
     geometry: {
       location: { lat, lng },
@@ -566,5 +567,4 @@ export type RoadsResult = {
  * Output: Image URL (not JSON) - use directly in <img src={url} />
  * Note: Construct URL manually with getMapsConfig() for auth
  */
-
 

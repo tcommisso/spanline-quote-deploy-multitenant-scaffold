@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { isAdminRole } from "@shared/const";
+import { normalizeApiAddress } from "@shared/address-normalization";
 import * as crmDb from "./crm-db";
 import * as emailTemplatesDb from "./email-templates-db";
 import { storagePut } from "./storage";
@@ -68,6 +69,10 @@ const AU_STATE_ALIASES: Record<string, string> = {
 
 function cleanLeadToken(value?: string | null) {
   return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function cleanLeadAddress(value?: string | null) {
+  return normalizeApiAddress(cleanLeadToken(value));
 }
 
 function normaliseLeadState(value?: string | null) {
@@ -311,7 +316,7 @@ export const crmRouter = router({
 
       const tenantId = tenantIdFromContext(ctx);
       const leadNumber = await crmDb.getNextLeadNumber(tenantId);
-      const contactAddress = cleanLeadToken(input.contactAddress);
+      const contactAddress = cleanLeadAddress(input.contactAddress);
       const inferredAddress = inferLeadAddressParts(contactAddress);
       const suburb = cleanLeadToken(input.suburb) || inferredAddress.suburb;
       const postcode = cleanLeadToken(input.postcode) || inferredAddress.postcode;
@@ -429,8 +434,8 @@ export const crmRouter = router({
         data.state !== undefined ||
         data.postcode !== undefined
       ) {
-        const contactAddress = data.contactAddress !== undefined
-          ? cleanLeadToken(data.contactAddress)
+	        const contactAddress = data.contactAddress !== undefined
+	          ? cleanLeadAddress(data.contactAddress)
           : undefined;
         const inferredAddress = inferLeadAddressParts(contactAddress);
         if (data.contactAddress !== undefined) data.contactAddress = contactAddress;

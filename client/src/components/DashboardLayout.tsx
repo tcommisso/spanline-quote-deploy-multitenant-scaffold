@@ -607,11 +607,15 @@ function DashboardLayoutContent({
   const isDefaultTenant = currentTenant ? currentTenant.slug === "default" : true;
 
   useEffect(() => {
-    if (!tenantOptions.length || !selectedTenantId) return;
-    if (tenantOptions.some(tenant => tenant.tenantId === selectedTenantId)) return;
+    if (!tenantOptions.length) return;
+    if (selectedTenantId && tenantOptions.some(tenant => tenant.tenantId === selectedTenantId)) return;
 
-    setSelectedTenantId(null);
-    setSelectedTenantIdState(null);
+    const fallbackTenant = tenantOptions.find(tenant => tenant.isDefault) ?? tenantOptions[0];
+    if (!fallbackTenant) return;
+
+    setSelectedTenantId(fallbackTenant.tenantId);
+    setSelectedTenantIdState(fallbackTenant.tenantId);
+    window.location.reload();
   }, [selectedTenantId, tenantOptions]);
 
   const switchTenant = useCallback((tenantId: number) => {

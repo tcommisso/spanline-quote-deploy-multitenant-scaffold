@@ -1,4 +1,5 @@
 import { COOKIE_NAME, isAdminRole } from "@shared/const";
+import { normalizeApiAddress } from "@shared/address-normalization";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { ENV } from "./_core/env";
 import { systemRouter } from "./_core/systemRouter";
@@ -1049,10 +1050,16 @@ export const appRouter = router({
           if (types.includes("country")) country = comp.long_name;
           if (types.includes("sublocality_level_1") && !suburb) suburb = comp.long_name;
         }
-        return {
-          fullAddress: place.formatted_address || "",
-          unitNumber,
-          streetAddress: [streetNumber, route].filter(Boolean).join(" "),
+	        const streetAddress = normalizeApiAddress([streetNumber, route].filter(Boolean).join(" "));
+	        const streetWithUnit = unitNumber && streetAddress ? `${unitNumber}/${streetAddress}` : streetAddress;
+	        const suburbLine = [suburb, state, postcode].filter(Boolean).join(" ");
+	        const fullAddress = normalizeApiAddress(
+	          [streetWithUnit, suburbLine].filter(Boolean).join(", ") || place.formatted_address || ""
+	        );
+	        return {
+	          fullAddress,
+	          unitNumber,
+	          streetAddress,
           suburb,
           state,
           postcode,
@@ -1749,7 +1756,9 @@ ${quote.specRoofTopColour ? `Roof Colour: ${quote.specRoofTopColour}` : ""}
 ${quote.specPostsType ? `Posts: ${quote.specPostsType}` : ""}
 ${quote.specPostsColour ? `Post Colour: ${quote.specPostsColour}` : ""}
 ${quote.specGutterType ? `Gutter: ${quote.specGutterType}` : ""}
-${quote.specAttachmentMethod ? `Attachment: ${quote.specAttachmentMethod}` : ""}
+${quote.specAttachmentMethod ? `No. of Attached Side: ${quote.specAttachmentMethod}` : ""}
+${(quote as any).specBracketAttachmentMethod ? `Attachment Method: ${(quote as any).specBracketAttachmentMethod}` : ""}
+${(quote as any).specNumberOfBrackets ? `Number of Brackets: ${(quote as any).specNumberOfBrackets}` : ""}
 ${input.jobSummary ? `Additional context: ${input.jobSummary}` : ""}
 
 Components included:

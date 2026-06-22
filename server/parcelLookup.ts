@@ -4,6 +4,7 @@
  */
 
 import { makeRequest } from "./_core/map";
+import { normalizeApiAddress } from "@shared/address-normalization";
 
 export interface ParcelBoundary {
   /** Polygon coordinates as [lng, lat][] forming a closed ring */
@@ -147,7 +148,8 @@ export function detectState(address: string, hints?: { suburb?: string; region?:
  * Query ACTmapi for parcel boundary by address
  */
 export async function lookupACTParcel(address: string, hints?: { suburb?: string; region?: string }): Promise<ParcelBoundary | null> {
-  const parsed = parseACTAddress(address, hints);
+  const normalizedAddress = normalizeApiAddress(address);
+  const parsed = parseACTAddress(normalizedAddress, hints);
   const escapedSearchTerm = parsed.searchTerm.replace(/'/g, "''");
   const whereParts = [`ADDRESSES LIKE '%${escapedSearchTerm}%'`];
   if (parsed.suburb) {
@@ -176,7 +178,7 @@ export async function lookupACTParcel(address: string, hints?: { suburb?: string
       .sort((a, b) => b.score - a.score);
     const { feature, score } = ranked[0];
     if (score < 80) {
-      console.warn(`[ParcelLookup] ACT match rejected for "${address}" with score ${score}`);
+      console.warn(`[ParcelLookup] ACT match rejected for "${normalizedAddress}" with score ${score}`);
       return null;
     }
 
@@ -209,9 +211,10 @@ export async function lookupACTParcel(address: string, hints?: { suburb?: string
  */
 export async function lookupNSWParcel(address: string): Promise<ParcelBoundary | null> {
   try {
+    const normalizedAddress = normalizeApiAddress(address);
     // Step 1: Geocode the address using Google Maps
     const geocodeResult = await makeRequest<any>("/maps/api/geocode/json", {
-      address,
+      address: normalizedAddress,
     });
 
     if (!geocodeResult?.results?.length) return null;
@@ -276,18 +279,19 @@ export async function lookupNSWParcel(address: string): Promise<ParcelBoundary |
  * Accepts optional suburb/region hints from the quote record for better state detection.
  */
 export async function lookupParcel(address: string, hints?: { suburb?: string; region?: string }): Promise<ParcelBoundary | null> {
-  const state = detectState(address, hints);
-  console.log(`[ParcelLookup] Address: "${address}", Hints: ${JSON.stringify(hints)}, Detected state: ${state}`);
+  const normalizedAddress = normalizeApiAddress(address);
+  const state = detectState(normalizedAddress, hints);
+  console.log(`[ParcelLookup] Address: "${normalizedAddress}", Hints: ${JSON.stringify(hints)}, Detected state: ${state}`);
 
   if (state === "ACT") {
-    return lookupACTParcel(address, hints);
+    return lookupACTParcel(normalizedAddress, hints);
   } else if (state === "NSW") {
-    return lookupNSWParcel(address);
+    return lookupNSWParcel(normalizedAddress);
   } else {
     // Try ACT first, then NSW
-    const actResult = await lookupACTParcel(address, hints);
+    const actResult = await lookupACTParcel(normalizedAddress, hints);
     if (actResult) return actResult;
-    return lookupNSWParcel(address);
+    return lookupNSWParcel(normalizedAddress);
   }
 }
 

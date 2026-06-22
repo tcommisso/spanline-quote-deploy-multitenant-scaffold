@@ -60,7 +60,9 @@ const SPEC_FIELDS: SpecField[] = [
   { value: "specSiteNotes", label: "Site: Notes", type: "text", section: "Site Details" },
   // ─── Attachment & Brackets ──────────────────────────────────────────
   { value: "specBracketsType", label: "Brackets Type", type: "text", section: "Attachment & Brackets" },
-  { value: "specAttachmentMethod", label: "Attachment Method", type: "text", section: "Attachment & Brackets" },
+  { value: "specAttachmentMethod", label: "No. of Attached Side", type: "text", section: "Attachment & Brackets" },
+  { value: "specBracketAttachmentMethod", label: "Attachment Method", type: "text", section: "Attachment & Brackets" },
+  { value: "specNumberOfBrackets", label: "Number of Brackets", type: "num", section: "Attachment & Brackets" },
   { value: "specFasciaBrackets", label: "Fascia Brackets", type: "num", section: "Attachment & Brackets" },
   { value: "specExtendaBrackets", label: "Extenda Brackets", type: "num", section: "Attachment & Brackets" },
   { value: "specGableBrackets", label: "Gable Brackets", type: "num", section: "Attachment & Brackets" },
