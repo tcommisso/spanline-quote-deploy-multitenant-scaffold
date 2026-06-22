@@ -86,7 +86,7 @@ export const chatRouter = router({
   listChannels: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
 
-    // Get all system channels + job channels user is a member of
+    // Get all system channels + member-scoped team/job channels
     const systemChannels = await db
       .select()
       .from(chatChannels)
@@ -98,18 +98,25 @@ export const chatRouter = router({
       .from(chatChannelMembers)
       .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.userId, ctx.user.id))));
 
-    const jobChannelIds = memberChannelIds.map((m) => m.channelId);
-    let jobChannels: any[] = [];
-    if (jobChannelIds.length > 0) {
-      jobChannels = await db
+    const memberScopedChannelIds = memberChannelIds.map((m) => m.channelId);
+    let memberScopedChannels: any[] = [];
+    if (memberScopedChannelIds.length > 0) {
+      memberScopedChannels = await db
         .select()
         .from(chatChannels)
-        .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "job"), inArray(chatChannels.id, jobChannelIds), eq(chatChannels.isArchived, false))))
+        .where(and(
+          ...channelTenantConditions(
+            ctx,
+            inArray(chatChannels.type, ["team", "job"]),
+            inArray(chatChannels.id, memberScopedChannelIds),
+            eq(chatChannels.isArchived, false),
+          )
+        ))
         .orderBy(desc(chatChannels.updatedAt));
     }
 
     // Get unread counts for each channel
-    const allChannelIds = [...systemChannels.map((c) => c.id), ...jobChannelIds];
+    const allChannelIds = [...systemChannels.map((c) => c.id), ...memberScopedChannelIds];
     const unreadCounts: Record<number, number> = {};
 
     for (const channelId of allChannelIds) {
@@ -132,7 +139,7 @@ export const chatRouter = router({
     }
 
     // Get last message for each channel
-    const channelsWithMeta = [...systemChannels, ...jobChannels].map((ch) => ({
+    const channelsWithMeta = [...systemChannels, ...memberScopedChannels].map((ch) => ({
       ...ch,
       unreadCount: unreadCounts[ch.id] || 0,
     }));
@@ -359,6 +366,82 @@ export const chatRouter = router({
         .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId))));
 
       return members;
+    }),
+
+  // ─── Create a team channel ─────────────────────────────────────────────────
+  createTeamChannel: protectedProcedure
+    .input(z.object({
+      name: z.string().trim().min(1).max(255),
+      description: z.string().trim().max(500).optional(),
+      memberUserIds: z.array(z.number()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const name = input.name.trim();
+      const tenantId = ctx.tenant!.id;
+      const requestedMemberIds = Array.from(new Set(input.memberUserIds || []))
+        .filter((userId) => userId !== ctx.user.id);
+
+      const [existing] = await db.select({ id: chatChannels.id })
+        .from(chatChannels)
+        .where(and(
+          ...channelTenantConditions(
+            ctx,
+            eq(chatChannels.type, "team"),
+            eq(chatChannels.name, name),
+            eq(chatChannels.isArchived, false),
+          )
+        ))
+        .limit(1);
+      if (existing) {
+        throw new TRPCError({ code: "CONFLICT", message: "A team channel with this name already exists" });
+      }
+
+      if (requestedMemberIds.length > 0) {
+        const tenantMembers = await db.select({ userId: tenantMemberships.userId })
+          .from(tenantMemberships)
+          .where(and(
+            eq(tenantMemberships.tenantId, tenantId),
+            inArray(tenantMemberships.userId, requestedMemberIds),
+          ));
+        const validUserIds = new Set(tenantMembers.map((member) => member.userId));
+        const invalidUserIds = requestedMemberIds.filter((userId) => !validUserIds.has(userId));
+        if (invalidUserIds.length > 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "One or more selected users are not members of this tenant" });
+        }
+      }
+
+      const [channel] = await db.insert(chatChannels).values({
+        tenantId,
+        name,
+        type: "team",
+        description: input.description?.trim() || null,
+      }).$returningId();
+
+      await db.insert(chatChannelMembers).values({
+        tenantId,
+        channelId: channel.id,
+        userId: ctx.user.id,
+        memberType: "user",
+        memberId: ctx.user.id,
+        role: "admin",
+        lastReadAt: new Date(),
+      });
+
+      if (requestedMemberIds.length > 0) {
+        await db.insert(chatChannelMembers).values(
+          requestedMemberIds.map((userId) => ({
+            tenantId,
+            channelId: channel.id,
+            userId,
+            memberType: "user" as const,
+            memberId: userId,
+            role: "member" as const,
+          })),
+        );
+      }
+
+      return { channelId: channel.id };
     }),
 
   // ─── Create a job channel (admin/construction_user) ─────────────────────────

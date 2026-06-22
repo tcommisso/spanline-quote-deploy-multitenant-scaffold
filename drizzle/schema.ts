@@ -5276,7 +5276,7 @@ export const chatChannels = mysqlTable("chat_channels", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id),
   name: varchar("name", { length: 255 }).notNull(),
-  type: mysqlEnum("type", ["system", "job"]).notNull().default("job"),
+  type: mysqlEnum("type", ["system", "team", "job"]).notNull().default("job"),
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
   description: varchar("description", { length: 500 }),
   isArchived: boolean("isArchived").default(false).notNull(),

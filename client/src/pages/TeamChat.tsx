@@ -28,6 +28,7 @@ import {
   Settings,
   Smile,
   Archive,
+  Plus,
 } from "lucide-react";
 import {
   Sheet,
@@ -50,7 +51,7 @@ import { toast } from "sonner";
 interface ChatChannel {
   id: number;
   name: string;
-  type: "system" | "job";
+  type: "system" | "team" | "job";
   description: string | null;
   jobId: number | null;
   unreadCount: number;
@@ -89,6 +90,7 @@ function formatDateHeader(dateStr: string) {
 function getChannelIcon(type: string, name: string) {
   if (name === "Construction Team") return <HardHat className="w-4 h-4" />;
   if (name === "Trades") return <Users className="w-4 h-4" />;
+  if (type === "team") return <Users className="w-4 h-4" />;
   return <Hash className="w-4 h-4" />;
 }
 
@@ -144,6 +146,11 @@ export default function TeamChat() {
   const [pendingMentions, setPendingMentions] = useState<number[]>([]);
   const [showMembersPanel, setShowMembersPanel] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
+  const [newChannelDescription, setNewChannelDescription] = useState("");
+  const [newChannelMemberSearch, setNewChannelMemberSearch] = useState("");
+  const [newChannelMemberIds, setNewChannelMemberIds] = useState<number[]>([]);
   const [isDesktop, setIsDesktop] = useState(() => window.matchMedia("(min-width: 768px)").matches);
 
   useEffect(() => {
@@ -186,7 +193,7 @@ export default function TeamChat() {
   const uploadAttachment = trpc.chat.uploadAttachment.useMutation();
 
   const { data: allUsers } = trpc.chat.allUsers.useQuery(undefined, {
-    enabled: showMembersPanel,
+    enabled: showMembersPanel || showCreateChannel,
   });
 
   const addMember = trpc.chat.addMember.useMutation({
@@ -213,6 +220,25 @@ export default function TeamChat() {
     onSuccess: (_, vars) => {
       toast.success(`Role updated to ${vars.role}`);
       refetchMembers();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const resetCreateChannelForm = () => {
+    setNewChannelName("");
+    setNewChannelDescription("");
+    setNewChannelMemberSearch("");
+    setNewChannelMemberIds([]);
+  };
+
+  const createTeamChannel = trpc.chat.createTeamChannel.useMutation({
+    onSuccess: (result) => {
+      toast.success("Channel created");
+      setSelectedChannelId(result.channelId);
+      setShowMobileChannels(false);
+      setShowCreateChannel(false);
+      resetCreateChannelForm();
+      refetchChannels();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -435,6 +461,38 @@ export default function TeamChat() {
 
   const selectedChannel = channels?.find((c) => c.id === selectedChannelId);
   const totalUnread = channels?.reduce((sum, c) => sum + c.unreadCount, 0) || 0;
+  const systemChannels = channels?.filter((c: ChatChannel) => c.type === "system") || [];
+  const teamChannels = channels?.filter((c: ChatChannel) => c.type === "team") || [];
+  const jobChannels = channels?.filter((c: ChatChannel) => c.type === "job") || [];
+  const selectedNewChannelMembers = useMemo(
+    () => (allUsers || []).filter((u: any) => newChannelMemberIds.includes(u.id)),
+    [allUsers, newChannelMemberIds]
+  );
+  const availableNewChannelUsers = useMemo(() => {
+    const query = newChannelMemberSearch.trim().toLowerCase();
+    if (!query) return [];
+    return (allUsers || [])
+      .filter((u: any) => u.id !== user?.id)
+      .filter((u: any) => !newChannelMemberIds.includes(u.id))
+      .filter((u: any) =>
+        (u.name || "").toLowerCase().includes(query) ||
+        (u.email || "").toLowerCase().includes(query)
+      )
+      .slice(0, 8);
+  }, [allUsers, newChannelMemberIds, newChannelMemberSearch, user?.id]);
+
+  const handleCreateTeamChannel = () => {
+    const name = newChannelName.trim();
+    if (!name) {
+      toast.error("Channel name is required");
+      return;
+    }
+    createTeamChannel.mutate({
+      name,
+      description: newChannelDescription.trim() || undefined,
+      memberUserIds: newChannelMemberIds,
+    });
+  };
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -448,15 +506,24 @@ export default function TeamChat() {
         } md:flex flex-col w-full md:w-72 lg:w-80 border-r border-border bg-muted/30`}
       >
         <div className="p-4 border-b border-border">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <MessageSquare className="w-5 h-5" />
-            Team Chat
+            <h2 className="text-lg font-semibold flex-1">Team Chat</h2>
             {totalUnread > 0 && (
-              <Badge variant="destructive" className="ml-auto text-xs">
+              <Badge variant="destructive" className="text-xs">
                 {totalUnread}
               </Badge>
             )}
-          </h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="New channel"
+              onClick={() => setShowCreateChannel(true)}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         <ScrollArea className="flex-1">
@@ -465,8 +532,7 @@ export default function TeamChat() {
             <div className="px-2 py-1 text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Channels
             </div>
-            {channels
-              ?.filter((c) => c.type === "system")
+            {systemChannels
               .map((channel) => (
                 <button
                   key={channel.id}
@@ -487,14 +553,41 @@ export default function TeamChat() {
                 </button>
               ))}
 
+            {/* Team Channels */}
+            {teamChannels.length ? (
+              <>
+                <div className="px-2 py-1 mt-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Team Channels
+                </div>
+                {teamChannels.map((channel) => (
+                  <button
+                    key={channel.id}
+                    onClick={() => handleSelectChannel(channel.id)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${
+                      selectedChannelId === channel.id
+                        ? "bg-primary/10 text-primary font-medium"
+                        : "hover:bg-muted text-foreground"
+                    }`}
+                  >
+                    {getChannelIcon(channel.type, channel.name)}
+                    <span className="truncate flex-1 text-left">{channel.name}</span>
+                    {channel.unreadCount > 0 && (
+                      <Badge variant="destructive" className="text-xs h-5 min-w-[20px] flex items-center justify-center">
+                        {channel.unreadCount}
+                      </Badge>
+                    )}
+                  </button>
+                ))}
+              </>
+            ) : null}
+
             {/* Job Channels */}
-            {channels?.filter((c) => c.type === "job").length ? (
+            {jobChannels.length ? (
               <>
                 <div className="px-2 py-1 mt-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Job Channels
                 </div>
-                {channels
-                  ?.filter((c) => c.type === "job")
+                {jobChannels
                   .map((channel) => (
                     <button
                       key={channel.id}
@@ -788,6 +881,109 @@ export default function TeamChat() {
         )}
       </div>
 
+      {/* Create Team Channel */}
+      <Sheet
+        open={showCreateChannel}
+        onOpenChange={(open) => {
+          setShowCreateChannel(open);
+          if (!open) resetCreateChannelForm();
+        }}
+      >
+        <SheetContent side="right" className="w-full sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              New Channel
+            </SheetTitle>
+          </SheetHeader>
+          <div className="mt-6 space-y-4 px-1">
+            <div>
+              <label className="text-sm font-medium text-foreground">Channel Name</label>
+              <Input
+                value={newChannelName}
+                onChange={(e) => setNewChannelName(e.target.value)}
+                className="mt-1"
+                placeholder="e.g. Accounts"
+                maxLength={255}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-foreground">Description</label>
+              <Input
+                value={newChannelDescription}
+                onChange={(e) => setNewChannelDescription(e.target.value)}
+                className="mt-1"
+                placeholder="Optional"
+                maxLength={500}
+              />
+            </div>
+            <Separator />
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Members</label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
+                <Input
+                  value={newChannelMemberSearch}
+                  onChange={(e) => setNewChannelMemberSearch(e.target.value)}
+                  placeholder="Add members..."
+                  className="pl-8 h-9 text-sm"
+                />
+              </div>
+              {newChannelMemberSearch && (
+                <div className="max-h-40 overflow-y-auto border border-border rounded-md">
+                  {availableNewChannelUsers.map((member: any) => (
+                    <button
+                      key={member.id}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
+                      onClick={() => {
+                        setNewChannelMemberIds((ids) => [...ids, member.id]);
+                        setNewChannelMemberSearch("");
+                      }}
+                    >
+                      <UserPlus className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="truncate">{member.name || member.email}</span>
+                      {member.email && <span className="ml-auto truncate text-xs text-muted-foreground">{member.email}</span>}
+                    </button>
+                  ))}
+                  {availableNewChannelUsers.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No users found</p>
+                  )}
+                </div>
+              )}
+              <div className="space-y-1">
+                {selectedNewChannelMembers.map((member: any) => (
+                  <div key={member.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                    <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-xs font-medium shrink-0">
+                      {getInitials(member.name || member.email || "User")}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{member.name || member.email}</p>
+                      {member.email && <p className="truncate text-xs text-muted-foreground">{member.email}</p>}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0"
+                      onClick={() => setNewChannelMemberIds((ids) => ids.filter((id) => id !== member.id))}
+                      title="Remove member"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <Button
+              className="w-full"
+              onClick={handleCreateTeamChannel}
+              disabled={createTeamChannel.isPending || !newChannelName.trim()}
+            >
+              {createTeamChannel.isPending ? "Creating..." : "Create Channel"}
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* Members Panel - Desktop (right sidebar) */}
       {showMembersPanel && selectedChannelId && (
         <div className="hidden md:flex flex-col w-72 lg:w-80 border-l border-border bg-background">
@@ -910,7 +1106,8 @@ export default function TeamChat() {
             <div className="mt-2 max-h-32 overflow-y-auto border border-border rounded-md">
               {allUsers
                 ?.filter((u: any) =>
-                  (u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) &&
+                  ((u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                    (u.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
                   !channelMembers?.some((m: any) => m.userId === u.id)
                 )
                 .slice(0, 5)
@@ -928,7 +1125,8 @@ export default function TeamChat() {
                   </button>
                 ))}
               {allUsers?.filter((u: any) =>
-                (u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) &&
+                ((u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                  (u.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
                 !channelMembers?.some((m: any) => m.userId === u.id)
               ).length === 0 && (
                 <p className="px-3 py-2 text-xs text-muted-foreground">No users found</p>
