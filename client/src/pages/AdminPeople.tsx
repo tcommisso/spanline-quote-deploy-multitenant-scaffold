@@ -3,7 +3,7 @@
  * Consolidates Trades + User Settings + System Users into one admin page.
  * Tabs: All People | Staff | Trades | System Users | Permissions | Audit Log
  */
-import { useState, useMemo } from "react";
+import { Fragment, useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +70,122 @@ const personTypeBadge: Record<string, { label: string; className: string }> = {
   trade: { label: "Trade", className: "bg-amber-50 text-amber-700 border-amber-200" },
   system: { label: "System", className: "bg-emerald-50 text-emerald-700 border-emerald-200" },
 };
+
+type PermissionItem = {
+  key: string;
+  label: string;
+};
+
+type PermissionGroup = {
+  title: string;
+  description: string;
+  keys: PermissionKey[];
+};
+
+const PERMISSION_GROUPS: PermissionGroup[] = [
+  {
+    title: "Core",
+    description: "Common destinations and communication surfaces.",
+    keys: ["app_central", "inbox", "chat", "tasks"],
+  },
+  {
+    title: "Sales & CRM",
+    description: "Lead, quote, proposal, approval, and DA workflows.",
+    keys: ["crm", "sales", "quotes", "proposals", "approvals", "hbcf", "da_tracker"],
+  },
+  {
+    title: "Construction",
+    description: "Build section parent access and individual construction submenus.",
+    keys: [
+      "construction",
+      "construction_clients",
+      "construction_schedule",
+      "construction_calendar_availability",
+      "construction_project_plan",
+      "construction_purchase_orders",
+      "construction_weather_history",
+      "construction_rain_days",
+      "construction_invoice_review",
+      "construction_component_orders",
+      "construction_live_tracking",
+      "construction_plan_converter",
+      "construction_financials",
+      "construction_analytics",
+    ],
+  },
+  {
+    title: "Manufacturing",
+    description: "Manufacturing section parent access and individual factory submenus.",
+    keys: [
+      "manufacturing",
+      "manufacturing_orders",
+      "manufacturing_calendar",
+      "manufacturing_reports",
+      "manufacturing_kpi",
+      "manufacturing_purchase_orders",
+      "manufacturing_procurement",
+      "manufacturing_suppliers",
+      "manufacturing_dispatch",
+      "manufacturing_drivers",
+      "manufacturing_delivery_calendar",
+      "manufacturing_qr_codes",
+    ],
+  },
+  {
+    title: "Operations & Finance",
+    description: "Inventory, finance, reporting, and Xero access.",
+    keys: ["inventory", "finance", "reporting", "xero"],
+  },
+  {
+    title: "Support",
+    description: "Support section parent access and individual support menu items.",
+    keys: [
+      "support",
+      "support_help",
+      "support_process_flows",
+      "support_bug",
+      "support_suggestion",
+      "support_submissions",
+    ],
+  },
+  {
+    title: "Administration",
+    description: "Admin shell, data setup, people, and permission management.",
+    keys: ["admin", "master_data", "user_management", "permissions_admin"],
+  },
+];
+
+function groupPermissionItems(permissions: PermissionItem[]) {
+  const permissionByKey = new Map(permissions.map(permission => [permission.key, permission]));
+  const used = new Set<string>();
+  const groups = PERMISSION_GROUPS.map(group => {
+    const items = group.keys
+      .map(key => permissionByKey.get(key))
+      .filter((item): item is PermissionItem => Boolean(item));
+    items.forEach(item => used.add(item.key));
+    return { ...group, permissions: items };
+  }).filter(group => group.permissions.length > 0);
+
+  const otherPermissions = permissions.filter(permission => !used.has(permission.key));
+  if (otherPermissions.length > 0) {
+    groups.push({
+      title: "Other",
+      description: "Additional permissions not assigned to a section group.",
+      keys: otherPermissions.map(permission => permission.key as PermissionKey),
+      permissions: otherPermissions,
+    });
+  }
+
+  return groups;
+}
+
+function isSubmenuPermission(groupTitle: string, permissionKey: string) {
+  return (
+    (groupTitle === "Construction" && permissionKey !== "construction") ||
+    (groupTitle === "Manufacturing" && permissionKey !== "manufacturing") ||
+    (groupTitle === "Support" && permissionKey !== "support")
+  );
+}
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
@@ -1417,6 +1533,7 @@ function PermissionsMatrix() {
 
   const roles = matrix?.roles ?? [];
   const permissions = matrix?.permissions ?? [];
+  const permissionGroups = useMemo(() => groupPermissionItems(permissions), [permissions]);
   const effective = (matrix?.effective ?? {}) as Partial<Record<UserRole, Partial<Record<PermissionKey, boolean>>>>;
   const defaults = (matrix?.defaults ?? {}) as Partial<Record<UserRole, Partial<Record<PermissionKey, boolean>>>>;
 
@@ -1487,36 +1604,51 @@ function PermissionsMatrix() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {permissions.map(permission => (
-                <tr key={permission.key}>
-                  <td className="py-2 pr-4">
-                    <div className="font-medium">{permission.label}</div>
-                    <div className="text-[10px] text-muted-foreground">{permission.key}</div>
-                  </td>
-                  {roles.map(role => {
-                    const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
-                    const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
+              {permissionGroups.map(group => (
+                <Fragment key={group.title}>
+                  <tr key={`${group.title}-header`} className="bg-muted/45">
+                    <td colSpan={roles.length + 1} className="px-2 py-2">
+                      <div className="font-semibold">{group.title}</div>
+                      <div className="text-[10px] font-normal text-muted-foreground">{group.description}</div>
+                    </td>
+                  </tr>
+                  {group.permissions.map(permission => {
+                    const nested = isSubmenuPermission(group.title, permission.key);
                     return (
-                      <td key={`${role.role}-${permission.key}`} className="py-2 text-center">
-                        <div className="flex flex-col items-center gap-1">
-                          <Switch
-                            checked={checked}
-                            disabled={role.locked || updatePermission.isPending}
-                            onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
-                            aria-label={`${role.label}: ${permission.label}`}
-                          />
-                          {role.locked ? (
-                            <span className="text-[10px] text-muted-foreground">Locked</span>
-                          ) : isOverride ? (
-                            <span className="text-[10px] font-medium text-primary">Override</span>
-                          ) : (
-                            <span className="text-[10px] text-muted-foreground">Default</span>
-                          )}
-                        </div>
-                      </td>
+                      <tr key={permission.key}>
+                        <td className="py-2 pr-4">
+                          <div className={nested ? "border-l-2 border-muted-foreground/20 pl-4" : ""}>
+                            <div className="font-medium">{permission.label}</div>
+                            <div className="text-[10px] text-muted-foreground">{permission.key}</div>
+                          </div>
+                        </td>
+                        {roles.map(role => {
+                          const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
+                          const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
+                          return (
+                            <td key={`${role.role}-${permission.key}`} className="py-2 text-center">
+                              <div className="flex flex-col items-center gap-1">
+                                <Switch
+                                  checked={checked}
+                                  disabled={role.locked || updatePermission.isPending}
+                                  onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
+                                  aria-label={`${role.label}: ${permission.label}`}
+                                />
+                                {role.locked ? (
+                                  <span className="text-[10px] text-muted-foreground">Locked</span>
+                                ) : isOverride ? (
+                                  <span className="text-[10px] font-medium text-primary">Override</span>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground">Default</span>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
                     );
                   })}
-                </tr>
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -1532,28 +1664,39 @@ function PermissionsMatrix() {
                 </div>
                 {role.locked && <Badge variant="secondary" className="text-[10px]">Locked</Badge>}
               </div>
-              <div className="grid gap-2">
-                {permissions.map(permission => {
-                  const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
-                  const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
-                  return (
-                    <div key={`${role.role}-${permission.key}`} className="flex items-center justify-between gap-3 rounded-md bg-muted/30 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium leading-tight">{permission.label}</p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {isOverride ? "Override" : "Default"}
-                        </p>
-                      </div>
-                      <Switch
-                        className="shrink-0"
-                        checked={checked}
-                        disabled={role.locked || updatePermission.isPending}
-                        onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
-                        aria-label={`${role.label}: ${permission.label}`}
-                      />
+              <div className="space-y-3">
+                {permissionGroups.map(group => (
+                  <div key={`${role.role}-${group.title}`} className="overflow-hidden rounded-md border">
+                    <div className="bg-muted/50 px-3 py-2">
+                      <p className="text-sm font-semibold leading-tight">{group.title}</p>
+                      <p className="text-[10px] text-muted-foreground">{group.description}</p>
                     </div>
-                  );
-                })}
+                    <div className="divide-y">
+                      {group.permissions.map(permission => {
+                        const checked = Boolean(effective[role.role as UserRole]?.[permission.key as PermissionKey]);
+                        const isOverride = overrideLookup.has(`${role.role}:${permission.key}`);
+                        const nested = isSubmenuPermission(group.title, permission.key);
+                        return (
+                          <div key={`${role.role}-${permission.key}`} className="flex items-center justify-between gap-3 bg-muted/20 px-3 py-2">
+                            <div className={`min-w-0 ${nested ? "border-l-2 border-muted-foreground/20 pl-3" : ""}`}>
+                              <p className="text-sm font-medium leading-tight">{permission.label}</p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {isOverride ? "Override" : "Default"}
+                              </p>
+                            </div>
+                            <Switch
+                              className="shrink-0"
+                              checked={checked}
+                              disabled={role.locked || updatePermission.isPending}
+                              onCheckedChange={(next) => togglePermission(role.role, permission.key, next)}
+                              aria-label={`${role.label}: ${permission.label}`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
