@@ -10,6 +10,7 @@ import {
   Inbox,
   LayoutDashboard,
   MapPin,
+  MessageSquare,
   Shield,
   Wallet,
   Warehouse,
@@ -30,6 +31,7 @@ export type AppSection = {
 
 const MODULE_ACCENT_KEYS: Record<string, string> = {
   inbox: "modInbox",
+  chat: "modChat",
   crm: "modCrm",
   sales: "modSales",
   construction: "modBuild",
@@ -71,6 +73,17 @@ export const APP_SECTIONS: AppSection[] = [
     bgColor: "bg-white border-[#E5E7EB]",
     accentHex: "#C9AB57",
     allowedRoles: "all",
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    description: "Team and job messages",
+    icon: MessageSquare,
+    path: "/chat",
+    color: "text-[#2563EB]",
+    bgColor: "bg-white border-[#E5E7EB]",
+    accentHex: "#2563EB",
+    allowedRoles: ["super_admin", "admin", "design_adviser", "office_user", "construction_user", "driver", "warehouse"],
   },
   {
     id: "crm",
@@ -215,6 +228,7 @@ export function getVisibleSections(
 
 export function getSectionForPath(path: string): string | null {
   if (path.startsWith("/inbox")) return "inbox";
+  if (path.startsWith("/chat") || path.startsWith("/construction/chat")) return "chat";
   if (path.startsWith("/crm") || path.startsWith("/calls")) return "crm";
   if (path.startsWith("/proposals")) return "proposals";
   if (path.startsWith("/sales") || path === "/quotes" || path.startsWith("/quotes") || path.startsWith("/deck-quotes") || path.startsWith("/eclipse-quotes") || path.startsWith("/security-screens") || path.startsWith("/blinds") || path.startsWith("/patio-planner")) return "sales";

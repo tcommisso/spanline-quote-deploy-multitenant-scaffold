@@ -176,7 +176,6 @@ const constructionItems: MenuItem[] = [
   { icon: FileText, label: "Invoice Review", path: "/admin/invoice-review" },
   { icon: ShoppingCart, label: "Component Orders", path: "/construction/component-orders" },
   { icon: MapPin, label: "Live Tracking", path: "/construction/live-tracking" },
-  { icon: MessageSquare, label: "Team Chat", path: "/construction/chat" },
   { icon: FileText, label: "Plan Converter", path: "/plan-converter" },
 ];
 
@@ -231,6 +230,10 @@ const daTrackerItems: MenuItem[] = [
 
 const inboxItems: MenuItem[] = [
   { icon: Inbox, label: "Inbox", path: "/inbox" },
+];
+
+const chatItems: MenuItem[] = [
+  { icon: MessageSquare, label: "Team Chat", path: "/chat" },
 ];
 
 const financeItems: MenuItem[] = [
@@ -685,6 +688,7 @@ function DashboardLayoutContent({
 
    // ─── Inbox unread count for sidebar + bottom nav badge ────────────────────
   const unreadQuery = trpc.inbox.unreadCount.useQuery(undefined, {
+    enabled: canAccessPath("/inbox"),
     refetchInterval: 30000,
   });
   const unreadCount = (typeof unreadQuery.data === "number" ? unreadQuery.data : 0);
@@ -698,6 +702,7 @@ function DashboardLayoutContent({
 
   // ─── Chat unread count for sidebar badge ──────────────────────────────
   const chatUnreadQuery = trpc.chat.getUnreadTotal.useQuery(undefined, {
+    enabled: canAccessPath("/chat"),
     refetchInterval: 15000,
   });
   const chatUnreadCount = chatUnreadQuery.data?.total || 0;
@@ -738,6 +743,7 @@ function DashboardLayoutContent({
     if (manufacturingItems.some(i => pathMatches(path, i.path))) return "manufacturing";
     if (inventoryItems.some(i => pathMatches(path, i.path))) return "inventory";
     if (inboxItems.some(i => pathMatches(path, i.path))) return "communications";
+    if (chatItems.some(i => pathMatches(path, i.path)) || pathMatches(path, "/construction/chat")) return "chat";
     if (helpItems.some(i => pathMatches(path, i.path))) return "support";
     if (adminItems.some(i => pathMatches(path, i.path))) return "admin";
     return null;
@@ -834,6 +840,7 @@ function DashboardLayoutContent({
   const visibleFinanceItems = useMemo(() => filterAccessibleItems(financeItems), [filterAccessibleItems]);
   const visibleReportingItems = useMemo(() => filterAccessibleItems(reportingItems), [filterAccessibleItems]);
   const visibleInboxItems = useMemo(() => filterAccessibleItems(inboxItems), [filterAccessibleItems]);
+  const visibleChatItems = useMemo(() => filterAccessibleItems(chatItems), [filterAccessibleItems]);
   const visibleHelpItems = useMemo(() => filterAccessibleItems(helpItems), [filterAccessibleItems]);
   const visibleAdminGroups = useMemo(
     () => adminGroups
@@ -984,8 +991,9 @@ function DashboardLayoutContent({
     const badges: Record<string, number> = {};
     if (overdueCount > 0) badges["construction"] = overdueCount;
     if (unreadCount > 0) badges["communications"] = unreadCount;
+    if (chatUnreadCount > 0) badges["chat"] = chatUnreadCount;
     return badges;
-  }, [overdueCount, unreadCount]);
+  }, [chatUnreadCount, overdueCount, unreadCount]);
 
   // Render a collapsible section of menu items
   const renderCollapsibleSection = (sectionKey: string, label: string, items: MenuItem[], icon: LucideIcon) => {
@@ -1168,7 +1176,6 @@ function DashboardLayoutContent({
               <>{/* ─── Construction ─── */}
               {renderCollapsibleSection("construction", "Construction", visibleConstructionItems.map(item => {
                 if (item.path === "/construction" && overdueCount > 0) return { ...item, badge: overdueCount };
-                if (item.path === "/construction/chat" && chatUnreadCount > 0) return { ...item, badge: chatUnreadCount };
                 return item;
               }), HardHat)}
               </>
@@ -1217,6 +1224,16 @@ function DashboardLayoutContent({
                   ? { ...item, badge: unreadCount }
                   : item
               ), Mail)}
+              </>
+            )}
+
+            {visibleChatItems.length > 0 && (!scopedMode || activeSection === "chat") && (
+              <>{/* ─── Chat ─── */}
+              {renderCollapsibleSection("chat", "Chat", visibleChatItems.map(item =>
+                item.path === "/chat" && chatUnreadCount > 0
+                  ? { ...item, badge: chatUnreadCount }
+                  : item
+              ), MessageSquare)}
               </>
             )}
 
@@ -1563,7 +1580,13 @@ function DashboardLayoutContent({
             )}
             {/* Messages icon with unread badge */}
             <button
-              onClick={() => setLocation("/inbox")}
+              onClick={() => {
+                if (unreadCount > 0 && canAccessPath("/inbox")) {
+                  setLocation("/inbox");
+                  return;
+                }
+                setLocation(canAccessPath("/chat") ? "/chat" : "/");
+              }}
               className="relative h-9 w-9 flex items-center justify-center rounded-lg hover:bg-accent transition-colors"
               title="Messages"
               aria-label="Messages"
@@ -1598,8 +1621,12 @@ function DashboardLayoutContent({
             <div className="flex items-center justify-around h-14">
               {mobileBottomNavItems.map((item) => {
                 const active = pathMatches(location, item.path);
-                const inboxBadgeCount = unreadCount + chatUnreadCount;
-                const showBadge = item.path === "/inbox" && inboxBadgeCount > 0;
+                const badgeCount = item.path === "/inbox"
+                  ? unreadCount
+                  : item.path === "/chat"
+                    ? chatUnreadCount
+                    : 0;
+                const showBadge = badgeCount > 0;
                 return (
                   <Link key={item.path} href={item.path} className="flex-1 min-w-0">
                     <div className={`flex flex-col items-center gap-0.5 px-2 py-1 cursor-pointer relative transition-colors min-w-0 ${
@@ -1610,7 +1637,7 @@ function DashboardLayoutContent({
                       <span className="text-[10px] font-medium truncate max-w-[74px]">{item.label}</span>
                       {showBadge && (
                         <span className="absolute -top-0.5 right-0.5 w-4 h-4 bg-destructive text-destructive-foreground text-[9px] rounded-full flex items-center justify-center font-bold">
-                          {inboxBadgeCount > 9 ? "9+" : inboxBadgeCount}
+                          {badgeCount > 9 ? "9+" : badgeCount}
                         </span>
                       )}
                     </div>

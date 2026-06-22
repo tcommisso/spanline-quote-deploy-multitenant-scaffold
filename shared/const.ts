@@ -11,6 +11,7 @@ export type UserRole = 'user' | 'admin' | 'super_admin' | 'design_adviser' | 'of
 export type PermissionKey =
   | 'app_central'
   | 'inbox'
+  | 'chat'
   | 'crm'
   | 'sales'
   | 'quotes'
@@ -73,6 +74,7 @@ export function isAdminRole(role: string | null | undefined): boolean {
 export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   app_central: 'App Central',
   inbox: 'Inbox',
+  chat: 'Chat',
   crm: 'CRM',
   sales: 'Sales',
   quotes: 'Quotes',
@@ -108,6 +110,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   admin: {
     app_central: true,
     inbox: true,
+    chat: true,
     crm: true,
     sales: true,
     quotes: true,
@@ -138,6 +141,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   design_adviser: {
     app_central: true,
     inbox: true,
+    chat: true,
     crm: true,
     sales: true,
     quotes: true,
@@ -168,6 +172,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   office_user: {
     app_central: true,
     inbox: true,
+    chat: true,
     crm: true,
     sales: true,
     quotes: true,
@@ -198,6 +203,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   construction_user: {
     app_central: true,
     inbox: true,
+    chat: true,
     crm: false,
     sales: false,
     quotes: false,
@@ -228,6 +234,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   driver: {
     app_central: true,
     inbox: false,
+    chat: true,
     crm: false,
     sales: false,
     quotes: false,
@@ -258,6 +265,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
   warehouse: {
     app_central: true,
     inbox: true,
+    chat: true,
     crm: false,
     sales: false,
     quotes: false,
@@ -327,6 +335,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/approvals', permission: 'approvals' },
   { prefix: '/da-tracker', permission: 'da_tracker' },
   { prefix: '/tasks', permission: 'tasks' },
+  { prefix: '/chat', permission: 'chat' },
   { prefix: '/crm', permission: 'crm' },
   { prefix: '/calls', permission: 'crm' },
   { prefix: '/proposals', permission: 'proposals' },
@@ -337,6 +346,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/blinds', permission: 'quotes' },
   { prefix: '/patio-planner', permission: 'quotes' },
   { prefix: '/sales', permission: 'sales' },
+  { prefix: '/construction/chat', permission: 'chat' },
   { prefix: '/construction', permission: 'construction' },
   { prefix: '/calendar-availability', permission: 'construction' },
   { prefix: '/plan-converter', permission: 'construction' },

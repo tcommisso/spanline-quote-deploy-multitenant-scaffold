@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { eq, sql, and, desc, gt, inArray } from "drizzle-orm";
-import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
+import { tenantProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import {
   chatChannels,
@@ -10,6 +10,7 @@ import {
   constructionJobs,
   constructionInstallers,
   constructionAssignments,
+  permissionOverrides,
   tenantMemberships,
   users,
 } from "../drizzle/schema";
@@ -19,6 +20,7 @@ import crypto from "crypto";
 import { sendPushToUser } from "./push";
 import { pushToTradePortalByInstaller } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { applyPermissionOverrides, hasEffectivePermission, normalizeUserRole } from "@shared/const";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -27,6 +29,22 @@ async function requireDb() {
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
   return db;
 }
+
+const protectedProcedure = tenantProcedure.use(async ({ ctx, next }) => {
+  const db = await requireDb();
+  const role = normalizeUserRole(ctx.user.role);
+  const rows = await db.select({
+    role: permissionOverrides.role,
+    permissionKey: permissionOverrides.permissionKey,
+    allowed: permissionOverrides.allowed,
+  }).from(permissionOverrides)
+    .where(and(eq(permissionOverrides.tenantId, ctx.tenant!.id), eq(permissionOverrides.role, role)));
+  const permissions = applyPermissionOverrides(role, rows);
+  if (!hasEffectivePermission(permissions, "chat")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Chat access is not enabled for this role" });
+  }
+  return next({ ctx });
+});
 
 function channelTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
@@ -223,7 +241,7 @@ export const chatRouter = router({
           sendPushToUser(mentionedUserId, {
             title: `${senderName} mentioned you in ${channelName}`,
             body: preview,
-            url: "/construction/chat",
+            url: "/chat",
             tag: `chat-mention-${result.id}`,
           }).catch(() => {});
         }

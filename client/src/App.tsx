@@ -420,6 +420,7 @@ function MainRouter() {
         <Route path="/admin/section-templates">{() => <AdminRoute><AdminSectionTemplates /></AdminRoute>}</Route>
         <Route path="/admin/email-templates">{() => <AdminRoute><AdminEmailTemplates /></AdminRoute>}</Route>
         <Route path="/analytics" component={AnalyticsDashboard} />
+        <Route path="/chat" component={TeamChat} />
         <Route path="/construction/jobs/:jobId/check-measure" component={CheckMeasureWorkbook} />
         <Route path="/construction/schedule" component={ConstructionSchedule} />
         <Route path="/construction/project-plan" component={ConstructionProjectPlan} />
@@ -433,7 +434,7 @@ function MainRouter() {
         <Route path="/construction/rain-days" component={RainDays} />
         <Route path="/construction/purchase-orders" component={ConstructionPurchaseOrders} />
         <Route path="/construction/live-tracking" component={LiveTracking} />
-        <Route path="/construction/chat" component={TeamChat} />
+        <Route path="/construction/chat">{() => <Redirect to="/chat" />}</Route>
         {/* Calendar removed — consolidated into Work Schedule */}
         <Route path="/admin/people">{() => <AdminRoute><AdminPeople /></AdminRoute>}</Route>
         <Route path="/admin/trades">{() => <Redirect to="/admin/people" />}</Route>

@@ -9,6 +9,7 @@ import {
   Inbox,
   LayoutDashboard,
   MapPin,
+  MessageSquare,
   Shield,
   Wallet,
   Warehouse,
@@ -26,6 +27,7 @@ export type NavigationDestination = {
 export const MOBILE_NAV_DESTINATIONS: Record<MobileNavItemId, NavigationDestination> = {
   app_central: { id: "app_central", icon: LayoutDashboard, label: "App Central", path: "/" },
   inbox: { id: "inbox", icon: Inbox, label: "Inbox", path: "/inbox" },
+  chat: { id: "chat", icon: MessageSquare, label: "Chat", path: "/chat" },
   crm: { id: "crm", icon: Contact, label: "CRM", path: "/crm/leads" },
   sales: { id: "sales", icon: LayoutDashboard, label: "Sales", path: "/sales" },
   construction: { id: "construction", icon: HardHat, label: "Build", path: "/construction/clients" },

@@ -21,7 +21,7 @@ const SCREENS = [
   "Construction / Schedule",
   "Construction / Kanban",
   "Construction / Financials",
-  "Construction / Team Chat",
+  "Chat / Team Chat",
   "Manufacturing / Orders",
   "Manufacturing / Dispatch",
   "Inventory / Stock",

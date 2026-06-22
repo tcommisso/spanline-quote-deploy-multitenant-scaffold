@@ -4,6 +4,7 @@ export const NAVIGATION_SETTINGS_KEY = "navigationSettings";
 
 export const APP_CENTRAL_SECTION_IDS = [
   "inbox",
+  "chat",
   "crm",
   "sales",
   "construction",
@@ -40,9 +41,10 @@ const ALL_APP_SECTIONS = [...APP_CENTRAL_SECTION_IDS];
 const DEFAULT_APP_CENTRAL_BY_ROLE: Record<UserRole, AppCentralSectionId[]> = {
   super_admin: ALL_APP_SECTIONS,
   admin: ALL_APP_SECTIONS,
-  design_adviser: ["inbox", "crm", "sales", "proposals", "da_tracker"],
+  design_adviser: ["inbox", "chat", "crm", "sales", "proposals", "da_tracker"],
   office_user: [
     "inbox",
+    "chat",
     "crm",
     "sales",
     "construction",
@@ -54,20 +56,20 @@ const DEFAULT_APP_CENTRAL_BY_ROLE: Record<UserRole, AppCentralSectionId[]> = {
     "finance",
     "reporting",
   ],
-  construction_user: ["inbox", "construction", "approvals"],
-  driver: ["manufacturing"],
-  warehouse: ["inbox", "manufacturing", "inventory"],
+  construction_user: ["inbox", "chat", "construction", "approvals"],
+  driver: ["chat", "manufacturing"],
+  warehouse: ["inbox", "chat", "manufacturing", "inventory"],
   user: [],
 };
 
 const DEFAULT_MOBILE_NAV_BY_ROLE: Record<UserRole, MobileNavItemId[]> = {
-  super_admin: ["app_central", "sales", "construction", "admin"],
-  admin: ["app_central", "sales", "construction", "admin"],
-  design_adviser: ["app_central", "crm", "sales", "inbox"],
-  office_user: ["app_central", "crm", "construction", "inbox"],
-  construction_user: ["app_central", "construction", "approvals", "inbox"],
-  driver: ["app_central", "manufacturing"],
-  warehouse: ["app_central", "inventory", "manufacturing", "inbox"],
+  super_admin: ["app_central", "chat", "sales", "admin"],
+  admin: ["app_central", "chat", "sales", "admin"],
+  design_adviser: ["app_central", "chat", "crm", "sales"],
+  office_user: ["app_central", "chat", "crm", "construction"],
+  construction_user: ["app_central", "chat", "construction", "approvals"],
+  driver: ["app_central", "chat", "manufacturing"],
+  warehouse: ["app_central", "chat", "inventory", "manufacturing"],
   user: ["app_central", "support"],
 };
 

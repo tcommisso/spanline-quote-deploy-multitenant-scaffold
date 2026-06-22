@@ -7,7 +7,7 @@ import { trpc } from "@/lib/trpc";
 import {
   Inbox, Contact, LayoutDashboard, HardHat, Factory,
   Warehouse, ClipboardCheck, MapPin, Wallet, BarChart3, Shield,
-  Save, RotateCcw,
+  MessageSquare, Save, RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,6 +44,7 @@ type ModuleAccentDef = {
 
 const MODULE_ACCENT_DEFS: ModuleAccentDef[] = [
   { key: "modInbox", module: "Inbox", defaultHex: "#C9AB57", icon: Inbox },
+  { key: "modChat", module: "Chat", defaultHex: "#2563EB", icon: MessageSquare },
   { key: "modCrm", module: "CRM", defaultHex: "#2D5B9E", icon: Contact },
   { key: "modSales", module: "Sales", defaultHex: "#16A34A", icon: LayoutDashboard },
   { key: "modBuild", module: "Build", defaultHex: "#D97706", icon: HardHat },

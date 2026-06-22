@@ -18,12 +18,15 @@ import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
 function getTileMetric(
   sectionId: string,
   kpiData: any,
-  totalUnread: number
+  inboxUnread: number,
+  chatUnread: number
 ): string | null {
-  if (!kpiData && sectionId !== "inbox") return null;
+  if (!kpiData && sectionId !== "inbox" && sectionId !== "chat") return null;
   switch (sectionId) {
     case "inbox":
-      return `${totalUnread} unread message${totalUnread === 1 ? "" : "s"}`;
+      return `${inboxUnread} unread email${inboxUnread === 1 ? "" : "s"}`;
+    case "chat":
+      return `${chatUnread} chat message${chatUnread === 1 ? "" : "s"}`;
     case "crm":
       return kpiData?.leadsThisMonth != null ? `${kpiData.leadsThisMonth} new leads` : null;
     case "sales":
@@ -84,9 +87,17 @@ export default function AppCentral() {
   const visibleSections = getVisibleSections(role, canAccessPath, roleNavigationSettings.appCentralSectionIds);
 
   // Inbox unread count for badge
-  const { data: inboxUnread } = trpc.inbox.unreadCount.useQuery(undefined, { refetchInterval: 15000 });
-  const { data: chatUnread } = trpc.chat.getUnreadTotal.useQuery(undefined, { refetchInterval: 15000 });
-  const totalUnread = (inboxUnread || 0) + (chatUnread?.total || 0);
+  const { data: inboxUnread } = trpc.inbox.unreadCount.useQuery(undefined, {
+    enabled: canAccessPath("/inbox"),
+    refetchInterval: 15000,
+  });
+  const { data: chatUnread } = trpc.chat.getUnreadTotal.useQuery(undefined, {
+    enabled: canAccessPath("/chat"),
+    refetchInterval: 15000,
+  });
+  const inboxUnreadCount = inboxUnread || 0;
+  const chatUnreadCount = chatUnread?.total || 0;
+  const totalUnread = inboxUnreadCount + chatUnreadCount;
 
   // Widget config
   const { data: widgetConfig, refetch: refetchConfig } =
@@ -121,7 +132,7 @@ export default function AppCentral() {
                 </button>
               ) : null}
               {totalUnread > 0 ? (
-                <button onClick={() => setLocation("/inbox")} className="text-xs text-gray-300 hover:text-white transition-colors">
+                <button onClick={() => setLocation(inboxUnreadCount > 0 ? "/inbox" : "/chat")} className="text-xs text-gray-300 hover:text-white transition-colors">
                   {totalUnread} unread messages
                 </button>
               ) : null}
@@ -147,10 +158,11 @@ export default function AppCentral() {
       <div data-tour="section-grid" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3" style={{ gridAutoRows: '1fr' }}>
         {visibleSections.map((section) => {
           const isInbox = section.id === "inbox";
+          const isChat = section.id === "chat";
           const accentHex = getSectionAccentHex(section, colourScheme);
           const iconTextColor = getReadableTextColor(accentHex);
           // Get metric for this tile
-          const metric = getTileMetric(section.id, kpiData, totalUnread);
+          const metric = getTileMetric(section.id, kpiData, inboxUnreadCount, chatUnreadCount);
           const tileContent = (
             <button
               key={section.id}
@@ -164,9 +176,14 @@ export default function AppCentral() {
               <div className="flex flex-col items-center gap-3">
                 <div className="relative h-16 w-16 flex items-center justify-center group-hover:shadow-lg transition-shadow" style={{ backgroundColor: accentHex, color: iconTextColor, borderRadius: '18px', boxShadow: '0 4px 12px rgba(0,0,0,.12)' }}>
                   <section.icon className="h-7 w-7" />
-                  {isInbox && totalUnread > 0 && (
+                  {isInbox && inboxUnreadCount > 0 && (
                     <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-none shadow-sm">
-                      {totalUnread > 99 ? "99+" : totalUnread}
+                      {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
+                    </span>
+                  )}
+                  {isChat && chatUnreadCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold leading-none shadow-sm">
+                      {chatUnreadCount > 99 ? "99+" : chatUnreadCount}
                     </span>
                   )}
                 </div>
@@ -183,14 +200,14 @@ export default function AppCentral() {
             </button>
           );
 
-          if (isInbox && totalUnread > 0) {
+          if ((isInbox && inboxUnreadCount > 0) || (isChat && chatUnreadCount > 0)) {
             return (
               <Tooltip key={section.id}>
                 <TooltipTrigger asChild>{tileContent}</TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs">
                   <div className="space-y-0.5">
-                    {(inboxUnread || 0) > 0 && <p>{inboxUnread} unread email{(inboxUnread || 0) > 1 ? "s" : ""}</p>}
-                    {(chatUnread?.total || 0) > 0 && <p>{chatUnread?.total} chat message{(chatUnread?.total || 0) > 1 ? "s" : ""}</p>}
+                    {isInbox && inboxUnreadCount > 0 && <p>{inboxUnreadCount} unread email{inboxUnreadCount > 1 ? "s" : ""}</p>}
+                    {isChat && chatUnreadCount > 0 && <p>{chatUnreadCount} chat message{chatUnreadCount > 1 ? "s" : ""}</p>}
                   </div>
                 </TooltipContent>
               </Tooltip>
