@@ -28,6 +28,7 @@ const DeckQuoteList = lazy(() => import("./pages/DeckQuoteList"));
 const DeckQuoteEditor = lazy(() => import("./pages/DeckQuoteEditor"));
 const EclipseQuoteList = lazy(() => import("./pages/EclipseQuoteList"));
 const EclipseQuoteEditor = lazy(() => import("./pages/EclipseQuoteEditor"));
+const EclipseQuoteDiagnostics = lazy(() => import("./pages/EclipseQuoteDiagnostics"));
 const SecurityScreenQuote = lazy(() => import("./pages/SecurityScreenQuote"));
 const BlindsQuote = lazy(() => import("./pages/BlindsQuote"));
 const QuotePreview = lazy(() => import("./pages/QuotePreview"));
@@ -429,6 +430,7 @@ function MainRouter() {
         <Route path="/construction/ba-calendar">{() => { window.location.href = "/approvals"; return null; }}</Route>
         <Route path="/construction/financials" component={ConstructionFinancial} />
         <Route path="/admin/import-history">{() => <AdminRoute><ImportHistoryLog /></AdminRoute>}</Route>
+        <Route path="/admin/eclipse-diagnostics">{() => <AdminRoute><EclipseQuoteDiagnostics /></AdminRoute>}</Route>
         <Route path="/construction/analytics" component={ConstructionAnalytics} />
         <Route path="/construction/weather-history" component={WeatherHistory} />
         <Route path="/construction/rain-days" component={RainDays} />

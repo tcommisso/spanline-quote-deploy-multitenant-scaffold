@@ -87,6 +87,36 @@ export const eclipseRouter = router({
       return eclipseDb.listEclipseQuotes(eclipseListUserForContext(ctx), ctx.tenant.id, eclipseScopeOptionsForContext(ctx));
     }),
 
+    diagnostics: tenantAdminProcedure
+      .input(z.object({
+        search: z.string().trim().max(120).optional(),
+        limit: z.number().int().min(5).max(100).optional(),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        const tenant = ctx.tenant!;
+        const tenantMembership = ctx.tenantMembership!;
+        const user = ctx.user!;
+        const listUser = eclipseListUserForContext({ user, tenantMembership });
+
+        return eclipseDb.getEclipseQuoteDiagnostics({
+          tenantId: tenant.id,
+          tenantName: tenant.name,
+          tenantSlug: tenant.slug,
+          tenantRole: tenantMembership.role,
+          user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            canViewAllQuotes: user.canViewAllQuotes,
+          },
+          listUser,
+          search: input?.search,
+          limit: input?.limit,
+          includeGlobal: normalizeUserRole(user.role) === "super_admin",
+        });
+      }),
+
     get: tenantProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
