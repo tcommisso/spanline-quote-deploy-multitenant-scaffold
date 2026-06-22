@@ -169,6 +169,15 @@ function isLikelyEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
+function isLikelyPhoneNumber(value: unknown) {
+  const cleaned = cleanZapierText(value, { allowNumber: true });
+  if (!cleaned || isLikelyEmail(cleaned)) return false;
+  if (!/^\+?[0-9][0-9\s().-]{6,18}$/.test(cleaned)) return false;
+
+  const digits = cleaned.replace(/\D/g, "");
+  return digits.length >= 8 && digits.length <= 15;
+}
+
 function looksLikePersonName(value: string) {
   const cleaned = cleanZapierText(value);
   if (!cleaned || isLikelyEmail(cleaned) || /\d/.test(cleaned)) return false;
@@ -183,8 +192,9 @@ function splitFullName(value: string) {
 
 function looksLikeStreetAddress(value: string) {
   const cleaned = cleanZapierText(value);
-  return /^\d+[A-Za-z]?\s+/.test(cleaned)
-    || /\b(st|street|rd|road|ave|avenue|cres|crescent|lane|ln|place|pl|drive|dr|cct|circuit|court|ct|way|terrace|tce)\b/i.test(cleaned);
+  if (!cleaned || isLikelyPhoneNumber(cleaned)) return false;
+  return /\d/.test(cleaned)
+    && /\b(st|street|rd|road|ave|avenue|cres|crescent|lane|ln|place|pl|drive|dr|cct|circuit|court|ct|way|terrace|tce)\b/i.test(cleaned);
 }
 
 async function getDefaultApiTenantId() {
@@ -378,6 +388,18 @@ export function registerZapierApi(app: Express) {
       if (contactEmail && !isLikelyEmail(contactEmail)) {
         if (looksLikePersonName(contactEmail)) nameFromInvalidEmail = contactEmail;
         contactEmail = "";
+      }
+
+      // Zapier field mappings can drift, especially when webhook columns are
+      // renamed. Preserve recoverable values instead of writing swapped fields.
+      if (contactPhone && isLikelyEmail(contactPhone)) {
+        if (!contactEmail) contactEmail = contactPhone;
+        contactPhone = "";
+      }
+
+      if (contactAddress && isLikelyPhoneNumber(contactAddress)) {
+        if (!contactPhone) contactPhone = contactAddress;
+        contactAddress = "";
       }
 
       // 1. Name splitting: if firstName has a space and lastName is empty, split it
