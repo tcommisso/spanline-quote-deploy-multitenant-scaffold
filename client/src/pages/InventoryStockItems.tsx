@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6,9 +7,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Package, RefreshCw } from "lucide-react";
+import { Warehouse, Plus, Search, Pencil, AlertTriangle, Link2, Package, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { isAdminRole } from "@shared/const";
 
 function unitTypeFromUom(uom?: string) {
   return /\b(lm|linear|metre|meter|m)\b/i.test(uom || "") ? "lm" : "unit";
@@ -57,6 +69,8 @@ function inferFullLengthMetres(...values: Array<string | null | undefined>) {
 }
 
 export default function InventoryStockItems() {
+  const { user } = useAuth();
+  const canDeleteStockItems = user ? isAdminRole(user.role) : false;
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [conditionFilter, setConditionFilter] = useState("all");
@@ -65,6 +79,7 @@ export default function InventoryStockItems() {
   const [editingItem, setEditingItem] = useState<any>(null);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [linkingItem, setLinkingItem] = useState<any>(null);
+  const [pendingDeleteItem, setPendingDeleteItem] = useState<any>(null);
 
   const { data: items, isLoading } = trpc.inventory.stockItems.list.useQuery({
     search: search || undefined,
@@ -86,6 +101,18 @@ export default function InventoryStockItems() {
         utils.inventory.reports.onHandByCategory.invalidate(),
       ]);
       toast.success(`Seeded ACT/Riverina stock items: ${result.created} created, ${result.updated} refreshed, ${result.skipped} skipped.`);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const deleteStockItem = trpc.inventory.stockItems.delete.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.inventory.stockItems.list.invalidate(),
+        utils.inventory.stockItems.categories.invalidate(),
+        utils.inventory.reports.onHandByCategory.invalidate(),
+      ]);
+      setPendingDeleteItem(null);
+      toast.success("Stock item deactivated");
     },
     onError: (e) => toast.error(e.message),
   });
@@ -214,6 +241,18 @@ export default function InventoryStockItems() {
                         <Button size="icon" variant="ghost" className="h-7 w-7" title="Refresh from Manufacturing Data" onClick={() => { setLinkingItem(item); setShowLinkDialog(true); }}>
                           <Link2 className="h-3.5 w-3.5" />
                         </Button>
+                        {canDeleteStockItems && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            title="Deactivate stock item"
+                            aria-label={`Deactivate ${item.name}`}
+                            onClick={() => setPendingDeleteItem(item)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -234,6 +273,27 @@ export default function InventoryStockItems() {
         branches={branches || []}
       />
       <ManufacturingProductLinkDialog open={showLinkDialog} onOpenChange={setShowLinkDialog} stockItem={linkingItem} />
+      <AlertDialog open={!!pendingDeleteItem} onOpenChange={(open) => !open && setPendingDeleteItem(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deactivate stock item?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeleteItem
+                ? `${pendingDeleteItem.code} - ${pendingDeleteItem.name} will be hidden from active stock item lists. Existing inventory movement history is preserved.`
+                : "This stock item will be hidden from active stock item lists."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => pendingDeleteItem && deleteStockItem.mutate({ id: pendingDeleteItem.id })}
+              disabled={deleteStockItem.isPending}
+            >
+              {deleteStockItem.isPending ? "Deactivating..." : "Deactivate"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

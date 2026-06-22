@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
+import { isAdminRole } from "@shared/const";
 import { getDb } from "./db";
 import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentCatalogueProducts, branches } from "../drizzle/schema";
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
@@ -429,6 +430,9 @@ export const inventoryRouter = router({
     }),
 
     delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      if (!isAdminRole(ctx.user.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Only admins can delete stock items." });
+      }
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.id);
       await db.update(inventoryStockItems).set({ isActive: false }).where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, input.id))));
