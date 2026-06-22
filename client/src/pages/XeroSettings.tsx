@@ -467,6 +467,7 @@ function UnmatchedXeroTransactionsPanel() {
               const selected = selectedMappings[row.id] || (row.suggestions?.[0]?.id ? String(row.suggestions[0].id) : "none");
               const selectedSuggestion = row.suggestions?.find((suggestion: any) => String(suggestion.id) === selected);
               const canAssign = selected && selected !== "none";
+              const trackingLabel = row.trackingCategoryName || "Tracking";
 
               return (
                 <div key={row.id} className="border rounded-lg p-3 space-y-3">
@@ -485,7 +486,7 @@ function UnmatchedXeroTransactionsPanel() {
                       </p>
                       {(row.reference || row.trackingOptionName) && (
                         <p className="text-xs text-muted-foreground truncate">
-                          {row.reference ? `Ref: ${row.reference}` : ""}{row.reference && row.trackingOptionName ? " · " : ""}{row.trackingOptionName ? `Tracking: ${row.trackingOptionName}` : ""}
+                          {row.reference ? `Ref: ${row.reference}` : ""}{row.reference && row.trackingOptionName ? " · " : ""}{row.trackingOptionName ? `${trackingLabel}: ${row.trackingOptionName}` : ""}
                         </p>
                       )}
                     </div>
@@ -500,7 +501,7 @@ function UnmatchedXeroTransactionsPanel() {
                         <SelectContent>
                           {row.suggestions?.length ? row.suggestions.map((suggestion: any) => (
                             <SelectItem key={suggestion.id} value={String(suggestion.id)}>
-                              {suggestion.quoteNumber || `Job #${suggestion.jobId}`} · {suggestion.clientName}
+                              {suggestion.clientNumber || suggestion.quoteNumber || `Job #${suggestion.jobId}`} · {suggestion.clientName}
                             </SelectItem>
                           )) : (
                             <SelectItem value="none">No suggestion</SelectItem>

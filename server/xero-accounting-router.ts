@@ -5,6 +5,7 @@ import { router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import {
   constructionJobs,
+  crmLeads,
   xeroAccountingTransactions,
   xeroBudgetImportBatches,
   xeroProjectMappings,
@@ -46,6 +47,34 @@ function extractJobNumber(value: unknown) {
   return match?.[1] || "";
 }
 
+function extractProjectIdentifiers(...values: Array<unknown>) {
+  const identifiers = new Set<string>();
+  const pattern = /\b(?:[A-Z]{2,6}[-\s]*)?(\d{5,6})(?:[-\s][A-Z0-9]{1,10})*\b/gi;
+  for (const value of values) {
+    const text = collectSearchableStrings(value).join(" ");
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      if (!/^0+$/.test(match[1])) identifiers.add(match[1]);
+    }
+  }
+  return Array.from(identifiers);
+}
+
+function collectSearchableStrings(value: unknown, depth = 0): string[] {
+  if (value == null || depth > 4) return [];
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((item) => collectSearchableStrings(item, depth + 1));
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((item) => collectSearchableStrings(item, depth + 1));
+  }
+  return [];
+}
+
+function rawSearchText(raw: unknown) {
+  return collectSearchableStrings(raw).join(" ");
+}
+
 function textIncludesToken(text: string, compact: string, value: unknown, minLength = 4) {
   const norm = normaliseText(value);
   const cmp = compactText(value);
@@ -62,22 +91,50 @@ function scoreUnmatchedCandidate(row: any, mapping: any) {
     row.contactName,
     row.trackingOptionName,
     row.trackingCategoryName,
+    rawSearchText(row.raw),
   ].filter(Boolean).join(" ");
   const text = normaliseText(haystack);
   const compact = compactText(haystack);
+  const rowProjectIdentifiers = extractProjectIdentifiers(haystack);
+  const accountNumberIdentifiers = extractProjectIdentifiers(mapping.clientNumber);
+  const matchingAccountNumber = accountNumberIdentifiers.find((identifier) => rowProjectIdentifiers.includes(identifier));
+  const mappingProjectIdentifiers = extractProjectIdentifiers(
+    mapping.quoteNumber,
+    mapping.constructionJobNumber,
+    mapping.xeroProjectName,
+  );
+  const matchingProjectId = !matchingAccountNumber
+    ? mappingProjectIdentifiers.find((identifier) => rowProjectIdentifiers.includes(identifier))
+    : null;
   let score = 0;
   const reasons: string[] = [];
 
+  if (matchingAccountNumber) {
+    score += 100;
+    reasons.push(`account number ${matchingAccountNumber}`);
+  } else if (matchingProjectId) {
+    score += 70;
+    reasons.push(`project/reference id ${matchingProjectId}`);
+  }
   if (row.contactId && mapping.xeroContactId && row.contactId === mapping.xeroContactId) {
     score += 55;
     reasons.push("same Xero contact");
   }
   if (textIncludesToken(text, compact, mapping.quoteNumber, 4)) {
     score += 45;
-    reasons.push("quote/client number");
+    reasons.push("quote number");
   }
-  const jobNumber = extractJobNumber(mapping.quoteNumber || mapping.xeroProjectName);
-  if (jobNumber && text.includes(jobNumber)) {
+  if (textIncludesToken(text, compact, mapping.clientNumber, 4)) {
+    score += 45;
+    reasons.push("account number");
+  }
+  const jobNumbers = [
+    mapping.quoteNumber,
+    mapping.clientNumber,
+    mapping.constructionJobNumber,
+    mapping.xeroProjectName,
+  ].map(extractJobNumber).filter(Boolean);
+  if (jobNumbers.some((jobNumber) => text.includes(jobNumber))) {
     score += 40;
     reasons.push("job number");
   }
@@ -455,6 +512,7 @@ export const xeroAccountingRouter = router({
           like(xeroAccountingTransactions.description, pattern),
           like(xeroAccountingTransactions.contactName, pattern),
           like(xeroAccountingTransactions.trackingOptionName, pattern),
+          sql`CAST(${xeroAccountingTransactions.raw} AS CHAR) LIKE ${pattern}`,
         ) as any);
       }
 
@@ -488,12 +546,18 @@ export const xeroAccountingRouter = router({
         xeroProjectStatus: xeroProjectMappings.xeroProjectStatus,
         xeroContactId: xeroProjectMappings.xeroContactId,
         quoteNumber: constructionJobs.quoteNumber,
+        clientNumber: crmLeads.clientNumber,
+        constructionJobNumber: crmLeads.constructionJobNumber,
         clientName: constructionJobs.clientName,
         siteAddress: constructionJobs.siteAddress,
         jobStatus: constructionJobs.status,
       })
         .from(xeroProjectMappings)
         .innerJoin(constructionJobs, eq(xeroProjectMappings.jobId, constructionJobs.id))
+        .leftJoin(crmLeads, and(
+          eq(constructionJobs.leadId, crmLeads.id),
+          eq(crmLeads.tenantId, ctx.tenant.id),
+        ))
         .where(and(
           eq(xeroProjectMappings.xeroConnectionId, auth.xeroConnectionId),
           ...jobTenantConditions(ctx),

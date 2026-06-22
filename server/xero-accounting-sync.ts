@@ -35,9 +35,13 @@ type PreparedMapping = {
   clientNameCompact: string;
   clientNumberNorm: string;
   clientNumberCompact: string;
+  constructionJobNumberNorm: string;
+  constructionJobNumberCompact: string;
   siteAddressNorm: string;
   siteAddressCompact: string;
   jobNumber: string;
+  accountNumberIdentifiers: string[];
+  projectIdentifiers: string[];
 };
 
 type XeroLineItem = {
@@ -47,6 +51,7 @@ type XeroLineItem = {
   TaxAmount?: number;
   AccountCode?: string;
   Tracking?: Array<{ Name?: string; Option?: string }>;
+  [key: string]: unknown;
 };
 
 type XeroAccountingDocument = {
@@ -70,6 +75,7 @@ type XeroAccountingDocument = {
   CurrencyCode?: string;
   Contact?: { ContactID?: string; Name?: string };
   LineItems?: XeroLineItem[];
+  [key: string]: unknown;
 };
 
 type MatchResult = {
@@ -108,6 +114,32 @@ function extractJobNumber(projectName: string | null | undefined) {
   return match?.[1] || "";
 }
 
+function extractProjectIdentifiers(...values: Array<unknown>) {
+  const identifiers = new Set<string>();
+  const pattern = /\b(?:[A-Z]{2,6}[-\s]*)?(\d{5,6})(?:[-\s][A-Z0-9]{1,10})*\b/gi;
+  for (const value of values) {
+    const text = String(value || "");
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      if (!/^0+$/.test(match[1])) identifiers.add(match[1]);
+    }
+  }
+  return Array.from(identifiers);
+}
+
+function isBranchOnlyTrackingOption(option: string) {
+  return option.length <= 3 || ["act", "nsw", "qld", "vic", "sa", "wa", "tas", "nt"].includes(option);
+}
+
+function isProjectTrackingCategory(name: string) {
+  return /\b(project|job|client|account)\b/i.test(name);
+}
+
+function isBranchTrackingCategory(name: string) {
+  return /\b(branch|location|region|state|territory)\b/i.test(name);
+}
+
 function prepareMappings(mappings: any[]): PreparedMapping[] {
   return mappings.map((mapping) => ({
     id: mapping.id,
@@ -122,11 +154,20 @@ function prepareMappings(mappings: any[]): PreparedMapping[] {
     clientNameCompact: compact(mapping.clientName),
     clientNumberNorm: normalise(mapping.clientNumber),
     clientNumberCompact: compact(mapping.clientNumber),
+    constructionJobNumberNorm: normalise(mapping.constructionJobNumber),
+    constructionJobNumberCompact: compact(mapping.constructionJobNumber),
     siteAddressNorm: normalise(mapping.siteAddress),
     siteAddressCompact: compact(mapping.siteAddress),
     jobNumber: extractJobNumber(mapping.quoteNumber)
       || extractJobNumber(mapping.clientNumber)
+      || extractJobNumber(mapping.constructionJobNumber)
       || extractJobNumber(mapping.xeroProjectName),
+    accountNumberIdentifiers: extractProjectIdentifiers(mapping.clientNumber),
+    projectIdentifiers: extractProjectIdentifiers(
+      mapping.quoteNumber,
+      mapping.constructionJobNumber,
+      mapping.xeroProjectName,
+    ),
   }));
 }
 
@@ -155,15 +196,17 @@ async function withJobHints(db: any, mappings: any[]) {
     ? await db.select({
         id: crmLeads.id,
         clientNumber: crmLeads.clientNumber,
+        constructionJobNumber: crmLeads.constructionJobNumber,
         contactAddress: crmLeads.contactAddress,
       })
         .from(crmLeads)
         .where(inArray(crmLeads.id, leadIds))
     : [];
 
-  const leadsById = new Map<number, { clientNumber: string | null; contactAddress: string | null }>(
+  const leadsById = new Map<number, { clientNumber: string | null; constructionJobNumber: string | null; contactAddress: string | null }>(
     leadRows.map((lead: any) => [Number(lead.id), {
       clientNumber: lead.clientNumber ?? null,
+      constructionJobNumber: lead.constructionJobNumber ?? null,
       contactAddress: lead.contactAddress ?? null,
     }])
   );
@@ -172,6 +215,7 @@ async function withJobHints(db: any, mappings: any[]) {
     quoteNumber: string | null;
     clientName: string | null;
     clientNumber: string | null;
+    constructionJobNumber: string | null;
     siteAddress: string | null;
   }>(
     jobs.map((job: any) => {
@@ -180,6 +224,7 @@ async function withJobHints(db: any, mappings: any[]) {
         quoteNumber: job.quoteNumber ?? null,
         clientName: job.clientName ?? null,
         clientNumber: lead?.clientNumber ?? null,
+        constructionJobNumber: lead?.constructionJobNumber ?? null,
         siteAddress: job.siteAddress ?? lead?.contactAddress ?? null,
       }];
     })
@@ -189,6 +234,7 @@ async function withJobHints(db: any, mappings: any[]) {
     quoteNumber: mapping.quoteNumber ?? jobsById.get(Number(mapping.jobId))?.quoteNumber ?? null,
     clientName: mapping.clientName ?? jobsById.get(Number(mapping.jobId))?.clientName ?? null,
     clientNumber: mapping.clientNumber ?? jobsById.get(Number(mapping.jobId))?.clientNumber ?? null,
+    constructionJobNumber: mapping.constructionJobNumber ?? jobsById.get(Number(mapping.jobId))?.constructionJobNumber ?? null,
     siteAddress: mapping.siteAddress ?? jobsById.get(Number(mapping.jobId))?.siteAddress ?? null,
   }));
 }
@@ -217,8 +263,13 @@ function findMappingForLine(
   const textMatchesMapping = (text: string, textCompact: string, mapping: PreparedMapping) => {
     if (mapping.clientNumberNorm && text.includes(mapping.clientNumberNorm)) return true;
     if (mapping.clientNumberCompact && textCompact.includes(mapping.clientNumberCompact)) return true;
+    if (mapping.constructionJobNumberNorm && text.includes(mapping.constructionJobNumberNorm)) return true;
+    if (mapping.constructionJobNumberCompact && textCompact.includes(mapping.constructionJobNumberCompact)) return true;
     if (mapping.quoteNumberNorm && text.includes(mapping.quoteNumberNorm)) return true;
     if (mapping.quoteNumberCompact && textCompact.includes(mapping.quoteNumberCompact)) return true;
+    const textIdentifiers = extractProjectIdentifiers(text);
+    if (textIdentifiers.some((identifier) => mapping.accountNumberIdentifiers.includes(identifier))) return true;
+    if (textIdentifiers.some((identifier) => mapping.projectIdentifiers.includes(identifier))) return true;
     if (mapping.jobNumber && text.includes(mapping.jobNumber)) return true;
     if (mapping.projectNameNorm && text.includes(mapping.projectNameNorm)) return true;
     if (mapping.projectNameCompact && textCompact.includes(mapping.projectNameCompact)) return true;
@@ -228,11 +279,18 @@ function findMappingForLine(
     if (mapping.clientNameCompact && mapping.clientNameCompact.length >= 6 && textCompact.includes(mapping.clientNameCompact)) return true;
     return false;
   };
+  const findDescriptionMatch = (text: string, textCompact: string) => {
+    const matches = mappings.filter((mapping) => textMatchesMapping(text, textCompact, mapping));
+    return matches.length === 1 ? matches[0] : null;
+  };
 
   for (const track of tracking) {
     const option = normalise(track.Option);
+    const category = normalise(track.Name);
     const optionCompact = compact(track.Option);
     if (!option) continue;
+    if (isBranchTrackingCategory(category)) continue;
+    if (!isProjectTrackingCategory(category) && isBranchOnlyTrackingOption(option)) continue;
     for (const mapping of mappings) {
       if (textMatchesMapping(option, optionCompact, mapping)) {
         return {
@@ -264,10 +322,19 @@ function findMappingForLine(
     document.Reference,
   ].filter(Boolean).join(" "));
   const descriptionCompact = compact(descriptionText);
-  for (const mapping of mappings) {
-    if (textMatchesMapping(descriptionText, descriptionCompact, mapping)) {
-      return { mapping, method: "description" };
-    }
+  const lineDescriptionMatch = findDescriptionMatch(descriptionText, descriptionCompact);
+  if (lineDescriptionMatch) {
+    return { mapping: lineDescriptionMatch, method: "description" };
+  }
+
+  const documentLineText = normalise([
+    document.Reference,
+    ...(document.LineItems || []).map((documentLine) => documentLine.Description),
+  ].filter(Boolean).join(" "));
+  const documentLineCompact = compact(documentLineText);
+  const documentDescriptionMatch = findDescriptionMatch(documentLineText, documentLineCompact);
+  if (documentDescriptionMatch) {
+    return { mapping: documentDescriptionMatch, method: "description" };
   }
 
   if ((sourceType === "invoice" || sourceType === "credit_note") && document.Contact?.ContactID) {
@@ -302,6 +369,14 @@ async function fetchInvoices(
     if (pageItems.length < 100) break;
   }
   return invoices;
+}
+
+async function fetchDetailedInvoiceDocument(auth: XeroAuth, invoiceId: string): Promise<XeroAccountingDocument | null> {
+  const result = await xeroApiRequest<{ Invoices?: XeroAccountingDocument[] }>(
+    `/Invoices/${invoiceId}`,
+    { timeoutMs: 60000, connectionId: auth.xeroConnectionId },
+  );
+  return result.Invoices?.[0] || null;
 }
 
 async function fetchSpendBankTransactions(auth: XeroAuth, maxPages: number, modifiedSince?: SyncOptions["modifiedSince"]): Promise<XeroAccountingDocument[]> {
@@ -390,10 +465,30 @@ async function storeDocumentLines(
     const transactionId = document.InvoiceID || document.BankTransactionID || document.CreditNoteID;
     if (!transactionId) continue;
 
-    const lines = document.LineItems?.length ? document.LineItems : [{ Description: document.Reference || document.InvoiceNumber || document.CreditNoteNumber || "Transaction", LineAmount: document.SubTotal || document.Total || 0 }];
+    let effectiveDocument = document;
+    let lines = effectiveDocument.LineItems?.length
+      ? effectiveDocument.LineItems
+      : [{ Description: effectiveDocument.Reference || effectiveDocument.InvoiceNumber || effectiveDocument.CreditNoteNumber || "Transaction", LineAmount: effectiveDocument.SubTotal || effectiveDocument.Total || 0 }];
+
+    if (
+      sourceType === "bill" &&
+      transactionId &&
+      !lines.some((line) => findMappingForLine(sourceType, effectiveDocument, line, mappings).mapping)
+    ) {
+      try {
+        const detailedDocument = await fetchDetailedInvoiceDocument(auth, transactionId);
+        if (detailedDocument?.LineItems?.length) {
+          effectiveDocument = { ...effectiveDocument, ...detailedDocument };
+          lines = detailedDocument.LineItems;
+        }
+      } catch {
+        // Fall back to the paged invoice payload when detail fetch is unavailable.
+      }
+    }
+
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
-      const match = findMappingForLine(sourceType, document, line, mappings);
+      const match = findMappingForLine(sourceType, effectiveDocument, line, mappings);
       matchCounts[match.method] = (matchCounts[match.method] || 0) + 1;
       if (!match.mapping && !options.includeUnmatched) {
         unmatched++;
@@ -401,9 +496,9 @@ async function storeDocumentLines(
       }
 
       const lineItemId = line.LineItemID || `${transactionId}:${index}`;
-      const amounts = proportionalAmounts(document, line, index, lines.length);
-      const isSalesCredit = sourceType === "credit_note" && document.Type === "ACCRECCREDIT";
-      const isSupplierCredit = sourceType === "credit_note" && document.Type === "ACCPAYCREDIT";
+      const amounts = proportionalAmounts(effectiveDocument, line, index, lines.length);
+      const isSalesCredit = sourceType === "credit_note" && effectiveDocument.Type === "ACCRECCREDIT";
+      const isSupplierCredit = sourceType === "credit_note" && effectiveDocument.Type === "ACCPAYCREDIT";
       const amountSign = sourceType === "credit_note" ? -1 : 1;
       const isRevenue = sourceType === "invoice" || isSalesCredit;
       const isCost = sourceType === "bill" || sourceType === "bank_transaction" || isSupplierCredit;
@@ -418,13 +513,13 @@ async function storeDocumentLines(
         sourceType,
         xeroTransactionId: transactionId,
         xeroLineItemId: lineItemId,
-        transactionNumber: document.InvoiceNumber || document.BankTransactionNumber || document.CreditNoteNumber || null,
-        contactId: document.Contact?.ContactID || null,
-        contactName: document.Contact?.Name || null,
-        transactionDate: document.DateString || document.Date || null,
-        dueDate: document.DueDateString || document.DueDate || null,
-        status: document.Status || null,
-        reference: document.Reference || null,
+        transactionNumber: effectiveDocument.InvoiceNumber || effectiveDocument.BankTransactionNumber || effectiveDocument.CreditNoteNumber || null,
+        contactId: effectiveDocument.Contact?.ContactID || null,
+        contactName: effectiveDocument.Contact?.Name || null,
+        transactionDate: effectiveDocument.DateString || effectiveDocument.Date || null,
+        dueDate: effectiveDocument.DueDateString || effectiveDocument.DueDate || null,
+        status: effectiveDocument.Status || null,
+        reference: effectiveDocument.Reference || null,
         description: line.Description || null,
         accountCode: line.AccountCode || null,
         trackingCategoryName: match.trackingCategoryName || line.Tracking?.[0]?.Name || null,
@@ -436,16 +531,19 @@ async function storeDocumentLines(
         grossAmount: money(Math.abs(amounts.grossAmount) * amountSign),
         amountPaid: money(Math.abs(amounts.amountPaid) * amountSign),
         amountDue: money(Math.abs(amounts.amountDue) * amountSign),
-        currencyCode: document.CurrencyCode || null,
+        currencyCode: effectiveDocument.CurrencyCode || null,
         isCost,
         isRevenue,
         raw: {
           transaction: {
-            total: document.Total,
-            subtotal: document.SubTotal,
-            amountPaid: document.AmountPaid,
-            amountDue: document.AmountDue,
-            type: document.Type,
+            total: effectiveDocument.Total,
+            subtotal: effectiveDocument.SubTotal,
+            amountPaid: effectiveDocument.AmountPaid,
+            amountDue: effectiveDocument.AmountDue,
+            type: effectiveDocument.Type,
+            lineDescriptions: (effectiveDocument.LineItems || [])
+              .map((documentLine) => documentLine.Description)
+              .filter(Boolean),
           },
           line,
         },
