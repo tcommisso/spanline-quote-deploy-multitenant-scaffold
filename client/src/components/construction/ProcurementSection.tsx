@@ -262,11 +262,11 @@ function CreatePurchaseOrderDialog({ jobId, onSuccess }: { jobId: number; onSucc
           <Plus className="h-4 w-4 mr-1.5" /> New Purchase Order
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[760px] max-w-[calc(100vw-2rem)] sm:max-w-[90vw] max-h-[90vh] min-h-[min(520px,80vh)] resize overflow-auto flex flex-col">
         <DialogHeader>
           <DialogTitle>Create Purchase Order</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+        <div className="space-y-3 min-h-0 flex-1 overflow-y-auto pr-1">
           <div>
             <Label className="text-xs">Supplier Name *</Label>
             <Input
@@ -312,7 +312,7 @@ function CreatePurchaseOrderDialog({ jobId, onSuccess }: { jobId: number; onSucc
             </div>
             <div className="space-y-2">
               {form.lineItems.map((item, idx) => (
-                <div key={idx} className="grid grid-cols-[1fr_60px_80px_30px] gap-2 items-end">
+                <div key={idx} className="grid grid-cols-1 sm:grid-cols-[1fr_70px_100px_36px] gap-2 items-end">
                   <div>
                     {idx === 0 && <Label className="text-[10px] text-muted-foreground">Description</Label>}
                     <Input

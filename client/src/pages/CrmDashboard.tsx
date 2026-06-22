@@ -19,6 +19,7 @@ const STATUS_COLORS: Record<string, string> = {
   building_authority: "bg-teal-100 text-teal-800",
   construction: "bg-orange-100 text-orange-800",
   completed: "bg-emerald-100 text-emerald-800",
+  won: "bg-emerald-100 text-emerald-800",
   cancelled: "bg-red-100 text-red-800",
 };
 
@@ -31,6 +32,7 @@ const STATUS_LABELS: Record<string, string> = {
   building_authority: "Approvals",
   construction: "Construction",
   completed: "Completed",
+  won: "Won / Client",
   cancelled: "Cancelled",
 };
 
@@ -272,7 +274,7 @@ export default function CrmDashboard() {
         {[
           { icon: <Users className="h-4 w-4 text-blue-500" />, label: "Total Leads", value: kpis?.totalLeads || 0, sparkKey: "totalLeads", color: "#3b82f6" },
           { icon: <Clock className="h-4 w-4 text-amber-500" />, label: "Active", value: kpis?.activeLeads || 0, sparkKey: "activeLeads", color: "#f59e0b" },
-          { icon: <Target className="h-4 w-4 text-green-500" />, label: "Completed", value: kpis?.completedLeads || 0, sparkKey: "completedLeads", color: "#22c55e" },
+          { icon: <Target className="h-4 w-4 text-green-500" />, label: "Converted", value: kpis?.completedLeads || 0, sparkKey: "completedLeads", color: "#22c55e" },
           { icon: <TrendingUp className="h-4 w-4 text-purple-500" />, label: "Conversion", value: `${kpis?.conversionRate || 0}%`, sparkKey: "conversion", color: "#a855f7" },
           { icon: <FileText className="h-4 w-4 text-teal-500" />, label: "Contracts (FY)", value: kpis?.contractsThisMonth || 0, sparkKey: "contracts", color: "#14b8a6" },
           { icon: <DollarSign className="h-4 w-4 text-emerald-500" />, label: "Contracted Revenue", value: `$${Math.round(Number(kpis?.pipelineValue || 0) / 1000).toLocaleString()}k`, sparkKey: "revenue", color: "#10b981" },
@@ -282,7 +284,7 @@ export default function CrmDashboard() {
             const routes: Record<string, string> = {
               "Total Leads": "/crm/leads",
               "Active": "/crm/leads?status=assigned",
-              "Completed": "/crm/leads?status=completed",
+              "Converted": "/crm/leads",
               "Conversion": "/crm/leads",
               "Contracts (FY)": "/crm/leads?status=contract",
               "Contracted Revenue": "/crm/leads?status=contract",
@@ -312,7 +314,7 @@ export default function CrmDashboard() {
           {[
             { label: "Total Leads", current: kpis.totalLeads, prev: prevKpis.totalLeads },
             { label: "Active", current: kpis.activeLeads, prev: prevKpis.activeLeads },
-            { label: "Completed", current: kpis.completedLeads, prev: prevKpis.completedLeads },
+            { label: "Converted", current: kpis.completedLeads, prev: prevKpis.completedLeads },
             { label: "Conversion", current: kpis.conversionRate, prev: prevKpis.conversionRate },
             { label: "Contracts", current: kpis.contractsThisMonth, prev: prevKpis.contractsThisMonth },
             { label: "Revenue", current: Math.round(Number(kpis.pipelineValue) / 1000), prev: Math.round(Number(prevKpis.pipelineValue) / 1000) },
@@ -353,7 +355,7 @@ export default function CrmDashboard() {
                     <th className="text-left py-2 px-3 font-medium">Adviser</th>
                     <th className="text-right py-2 px-3 font-medium">Total</th>
                     <th className="text-right py-2 px-3 font-medium">Active</th>
-                    <th className="text-right py-2 px-3 font-medium">Won</th>
+                    <th className="text-right py-2 px-3 font-medium">Converted</th>
                     <th className="text-right py-2 px-3 font-medium">Conversion</th>
                     <th className="text-right py-2 px-3 font-medium">Revenue</th>
                     <th className="text-right py-2 px-3 font-medium">Avg Days</th>
@@ -452,7 +454,7 @@ export default function CrmDashboard() {
             </CardTitle>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">
-                {showAllContracts ? `${contractedSales?.length || 0}` : `${Math.min(contractedSales?.length || 0, 50)} of ${kpis?.completedLeads || 0}`} contracts
+                {showAllContracts ? `${contractedSales?.length || 0}` : `${Math.min(contractedSales?.length || 0, 50)} of ${kpis?.contractsThisMonth || 0}`} contracts
               </span>
               <Button
                 variant="outline"
@@ -575,7 +577,7 @@ export default function CrmDashboard() {
                     </div>
                     <div>
                       <p className="text-lg font-bold text-green-600">{branch.wonLeads}</p>
-                      <p className="text-xs text-muted-foreground">Won</p>
+                      <p className="text-xs text-muted-foreground">Converted</p>
                     </div>
                   </div>
                   <div className="mt-3">
@@ -610,7 +612,7 @@ export default function CrmDashboard() {
                     <th className="text-left py-2 px-3 font-medium">Source</th>
                     <th className="text-right py-2 px-3 font-medium">Total</th>
                     <th className="text-right py-2 px-3 font-medium">Active</th>
-                    <th className="text-right py-2 px-3 font-medium">Won</th>
+                    <th className="text-right py-2 px-3 font-medium">Converted</th>
                     <th className="text-right py-2 px-3 font-medium">Conversion</th>
                     <th className="text-right py-2 px-3 font-medium">Revenue</th>
                     <th className="py-2 px-3 font-medium w-[140px]">Share</th>
@@ -672,7 +674,7 @@ export default function CrmDashboard() {
               <TrendingUp className="h-5 w-5 text-purple-500" />
               Conversion Funnel by Source
             </CardTitle>
-            <p className="text-xs text-muted-foreground">Lead → Quoted → Contracted → Won (by lead source)</p>
+            <p className="text-xs text-muted-foreground">Lead → Quoted → Contracted → Converted (by lead source)</p>
           </CardHeader>
           <CardContent>
             <div className="h-[300px]">
@@ -683,7 +685,7 @@ export default function CrmDashboard() {
                     Leads: s.totalLeads,
                     Quoted: s.quotedLeads || 0,
                     Contracted: s.contractedLeads || 0,
-                    Won: s.wonLeads,
+                    Converted: s.wonLeads,
                   }))}
                   margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
                 >
@@ -695,11 +697,11 @@ export default function CrmDashboard() {
                   <Bar dataKey="Leads" fill="#93c5fd" radius={[2, 2, 0, 0]} />
                   <Bar dataKey="Quoted" fill="#fbbf24" radius={[2, 2, 0, 0]} />
                   <Bar dataKey="Contracted" fill="#34d399" radius={[2, 2, 0, 0]} />
-                  <Bar dataKey="Won" fill="#10b981" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="Converted" fill="#10b981" radius={[2, 2, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-[10px] text-muted-foreground mt-2 text-right">Sources with ≥5 leads shown. Funnel stages: Lead → Quoted → Contracted → Won/Completed</p>
+            <p className="text-[10px] text-muted-foreground mt-2 text-right">Sources with ≥5 leads shown. Funnel stages: Lead → Quoted → Contracted → Converted</p>
           </CardContent>
         </Card>
       )}

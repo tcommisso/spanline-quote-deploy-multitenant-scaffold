@@ -5,7 +5,7 @@ import {
   crmLeads, crmAppointments, crmContracts, crmBuildingAuthority,
   crmConstructions, crmVerifications, crmCustomerReviews,
   crmActivities, crmDocuments, leadNotes, quoteNotes, branches,
-  smsMessages, callLogs, clientActivities, googleReviews,
+  smsMessages, callLogs, clientActivities, googleReviews, constructionJobs,
   type InsertCrmLead, type InsertLeadNote
 } from "../drizzle/schema";
 import { appendTenantScope, isMultiTenancyMode } from "./_core/tenant-scope";
@@ -13,6 +13,21 @@ import { getTenantAppSetting } from "./tenant-settings-store";
 
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
+
+const POST_SALE_LEAD_STATUSES = ["contract", "building_authority", "construction", "completed", "won"] as const;
+const ACTIVE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "lost", "cancelled"] as const;
+const PIPELINE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "cancelled"] as const;
+const STALE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "cancelled"] as const;
+
+function quotedSqlList(values: readonly string[]) {
+  return values.map((value) => `'${value}'`).join(", ");
+}
+
+const POST_SALE_STATUS_SQL = quotedSqlList(POST_SALE_LEAD_STATUSES);
+const QUOTED_OR_LATER_STATUS_SQL = quotedSqlList(["quoted", ...POST_SALE_LEAD_STATUSES]);
+const ACTIVE_EXCLUDED_STATUS_SQL = quotedSqlList(ACTIVE_EXCLUDED_LEAD_STATUSES);
+const PIPELINE_EXCLUDED_STATUS_SQL = quotedSqlList(PIPELINE_EXCLUDED_LEAD_STATUSES);
+const STALE_EXCLUDED_STATUS_SQL = quotedSqlList(STALE_EXCLUDED_LEAD_STATUSES);
 
 type TenantScopedFilter = {
   tenantId?: number | null;
@@ -112,7 +127,7 @@ export async function listLeads(filters?: {
   }
 
   if (filters?.lifecycleView === "clients") {
-    conditions.push(sql`${crmLeads.status} IN ('completed', 'won')`);
+    conditions.push(sql`${crmLeads.status} IN (${sql.raw(POST_SALE_STATUS_SQL)})`);
     conditions.push(
       filters.tenantId
         ? sql`EXISTS (
@@ -128,15 +143,15 @@ export async function listLeads(filters?: {
           )`
     );
   } else if (filters?.lifecycleView === "pipeline") {
-    conditions.push(sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`);
+    conditions.push(sql`${crmLeads.status} NOT IN (${sql.raw(PIPELINE_EXCLUDED_STATUS_SQL)})`);
   }
 
   // Performance: default to active leads from past 3 months when no date/status filter is set
   // Skip this optimization when showAll is true, or when user has set explicit filters
   if (!filters?.lifecycleView && !filters?.showAll && !filters?.status && !filters?.startDate && !filters?.search && !filters?.showArchived) {
-    // Exclude completed/won/cancelled by default
+    // Exclude post-sale/cancelled leads by default
     conditions.push(
-      sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`
+      sql`${crmLeads.status} NOT IN (${sql.raw(PIPELINE_EXCLUDED_STATUS_SQL)})`
     );
     // Only load leads from the past 3 months
     const threeMonthsAgo = new Date();
@@ -243,7 +258,7 @@ export async function listLeadIds(filters?: {
     conditions.push(eq(crmLeads.archived, false));
   }
   if (filters?.lifecycleView === "clients") {
-    conditions.push(sql`${crmLeads.status} IN ('completed', 'won')`);
+    conditions.push(sql`${crmLeads.status} IN (${sql.raw(POST_SALE_STATUS_SQL)})`);
     conditions.push(
       filters.tenantId
         ? sql`EXISTS (
@@ -259,7 +274,7 @@ export async function listLeadIds(filters?: {
           )`
     );
   } else if (filters?.lifecycleView === "pipeline") {
-    conditions.push(sql`${crmLeads.status} NOT IN ('completed', 'won', 'cancelled')`);
+    conditions.push(sql`${crmLeads.status} NOT IN (${sql.raw(PIPELINE_EXCLUDED_STATUS_SQL)})`);
   }
   if (filters?.status) conditions.push(eq(crmLeads.status, filters.status as any));
   if (filters?.productType) conditions.push(eq(crmLeads.productType, filters.productType));
@@ -527,6 +542,60 @@ export async function mergeLeads(primaryId: number, duplicateIds: number[], tena
     transferred += (result as any).affectedRows ?? 0;
   }
 
+  // Construction client/job records need special handling. If the primary lead
+  // has no construction job yet, move duplicate jobs across and repair obvious
+  // placeholder names. If the primary already has a job, leave duplicate jobs
+  // linked to the duplicate lead; archiving that lead hides stale duplicate
+  // clients without collapsing potentially real construction records.
+  const constructionTenantConditions: any[] = [];
+  appendTenantScope(constructionTenantConditions, constructionJobs.tenantId, tenantId);
+  const primaryJobConditions = [eq(constructionJobs.leadId, primaryId), ...constructionTenantConditions];
+  const primaryJobs = await db.select({ id: constructionJobs.id })
+    .from(constructionJobs)
+    .where(and(...primaryJobConditions))
+    .limit(1);
+
+  let constructionJobsTransferred = 0;
+  let constructionJobsSkipped = 0;
+  if (primaryJobs.length === 0) {
+    const [primaryLead] = await db.select({
+      contactFirstName: crmLeads.contactFirstName,
+      contactLastName: crmLeads.contactLastName,
+      company: crmLeads.company,
+      clientNumber: crmLeads.clientNumber,
+    }).from(crmLeads).where(eq(crmLeads.id, primaryId)).limit(1);
+    const primaryClientName = [
+      primaryLead?.contactFirstName,
+      primaryLead?.contactLastName,
+    ].filter(Boolean).join(" ").trim() || primaryLead?.company || "";
+    const duplicateJobConditions = [inArray(constructionJobs.leadId, dupes), ...constructionTenantConditions];
+    const duplicateJobs = await db.select({
+      id: constructionJobs.id,
+      clientName: constructionJobs.clientName,
+    }).from(constructionJobs).where(and(...duplicateJobConditions));
+    for (const job of duplicateJobs) {
+      const updates: Partial<typeof constructionJobs.$inferInsert> = { leadId: primaryId };
+      const existingName = String(job.clientName || "").trim();
+      const looksLikeAccountCode = /^[A-Z]{2,4}-\d+/i.test(existingName)
+        || (!!primaryLead?.clientNumber && existingName.includes(primaryLead.clientNumber));
+      if (primaryClientName && looksLikeAccountCode) {
+        updates.clientName = primaryClientName;
+      }
+      const [result] = await db.update(constructionJobs)
+        .set(updates)
+        .where(and(eq(constructionJobs.id, job.id), ...constructionTenantConditions));
+      const affected = (result as any).affectedRows ?? 0;
+      constructionJobsTransferred += affected;
+      transferred += affected;
+    }
+  } else {
+    const duplicateJobConditions = [inArray(constructionJobs.leadId, dupes), ...constructionTenantConditions];
+    const [result] = await db.select({ count: sql<number>`COUNT(*)` })
+      .from(constructionJobs)
+      .where(and(...duplicateJobConditions));
+    constructionJobsSkipped = Number(result?.count || 0);
+  }
+
   // Archive the duplicate leads (soft-delete)
   const [archiveResult] = await db.update(crmLeads).set({ archived: true }).where(inArray(crmLeads.id, dupes));
   const archived = (archiveResult as any).affectedRows ?? dupes.length;
@@ -535,7 +604,7 @@ export async function mergeLeads(primaryId: number, duplicateIds: number[], tena
   await db.insert(crmActivities).values({
     leadId: primaryId,
     activityType: "note",
-    description: `Merged ${dupes.length} duplicate lead(s) (${dupes.map(d => `L-${d}`).join(", ")}) into this lead. ${transferred} records transferred.`,
+    description: `Merged ${dupes.length} duplicate lead(s) (${dupes.map(d => `L-${d}`).join(", ")}) into this lead. ${transferred} records transferred.${constructionJobsTransferred ? ` ${constructionJobsTransferred} construction client/job record(s) relinked.` : ""}${constructionJobsSkipped ? ` ${constructionJobsSkipped} construction client/job record(s) left on archived duplicates because this lead already has a construction job.` : ""}`,
   });
 
   return { transferred, archived };
@@ -1236,9 +1305,9 @@ export async function getCustomerSatisfactionReport(filters: { startDate?: strin
 // ─── Dashboard KPIs ─────────────────────────────────────────────────────────
 export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string, fyEnd?: string, branchId?: number, tenantId?: number | null) {
   // FY filtering strategy:
-  // - Completed/Won leads: filter by contractDate (they have contracts)
+  // - Post-sale leads: prefer contractDate, falling back to leadDate when no contract row exists
   // - Active/New leads: filter by leadDate (they don't have contracts yet)
-  // - Total leads: union of both (leads with contractDate in FY + leads with leadDate in FY)
+  // - Total leads: active + post-sale conversion counts
   const fyStartDate = fyStart ? fyStart.slice(0, 10) : null;
   const fyEndDate = fyEnd ? fyEnd.slice(0, 10) : null;
 
@@ -1270,33 +1339,36 @@ export async function getDashboardKPIs(designAdvisor?: string, fyStart?: string,
     SELECT COUNT(*) as count
     FROM (${canonicalLeadSql}) cl
     WHERE cl.rn = 1
-      AND cl.status NOT IN ('completed', 'won', 'lost', 'cancelled')
+      AND cl.status NOT IN (${ACTIVE_EXCLUDED_STATUS_SQL})
       ${activeLeadDateClause}${activeDaClause}${activeBranchClause}
   `;
   const [activeRows] = await pool.execute(activeSql, buildCanonicalParams(activeBaseParams));
   const activeLeads = (activeRows as any[])[0]?.count || 0;
 
-  // --- Completed leads: status = completed/won, filtered by contractDate in FY ---
+  // --- Post-sale converted leads: status = post-sale, filtered by contractDate where available ---
   let completedDateClause = '';
   const completedBaseParams: any[] = [];
   if (fyStartDate && fyEndDate) {
-    completedDateClause = ' AND c.contractDate >= ? AND c.contractDate <= ?';
-    completedBaseParams.push(fyStartDate, fyEndDate);
+    completedDateClause = ` AND (
+      (c.contractDate IS NOT NULL AND c.contractDate >= ? AND c.contractDate <= ?)
+      OR (c.contractDate IS NULL AND cl.leadDate >= ? AND cl.leadDate <= ?)
+    )`;
+    completedBaseParams.push(fyStartDate, fyEndDate, fyStartDate, fyEndDate);
   }
   const completedDaClause = designAdvisor ? ' AND cl.designAdvisor = ?' : '';
   const completedBranchClause = branchId ? ' AND cl.branchId = ?' : '';
   const completedSql = `
     SELECT COUNT(*) as count
     FROM (${canonicalLeadSql}) cl
-    INNER JOIN ${latestContractPerLead("c")} ON c.leadId = cl.id
+    LEFT JOIN ${latestContractPerLead("c")} ON c.leadId = cl.id
     WHERE cl.rn = 1
-      AND cl.status IN ('completed', 'won')
+      AND cl.status IN (${POST_SALE_STATUS_SQL})
       ${completedDateClause}${completedDaClause}${completedBranchClause}
   `;
   const [completedRows] = await pool.execute(completedSql, buildCanonicalParams(completedBaseParams));
   const completedLeads = (completedRows as any[])[0]?.count || 0;
 
-  // --- Total leads: active (by leadDate) + completed (by contractDate) ---
+  // --- Total leads: active + converted/post-sale ---
   const totalLeads = activeLeads + completedLeads;
 
   // --- Conversion rate ---
@@ -1653,7 +1725,7 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
   const fyEndDate = fyEnd ? fyEnd.slice(0, 10) : null;
   const tenant = tenantClause("l", tenantId);
 
-  // --- Active leads per branch: status NOT completed/won/cancelled, filtered by leadDate ---
+  // --- Active leads per branch: non post-sale/lost/cancelled, filtered by leadDate ---
   let activeDateClause = '';
   let activeDaClause = '';
   let activeBranchClause = '';
@@ -1679,13 +1751,13 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
       FROM crm_leads l
       WHERE l.branchId IS NOT NULL${activeDateClause}${activeDaClause}${activeBranchClause}${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
+    WHERE rn = 1 AND status NOT IN (${ACTIVE_EXCLUDED_STATUS_SQL})
     GROUP BY branchId`,
     activeParams
   );
   const activeByBranch = activeRows as any[];
 
-  // --- Won/completed leads per branch: status completed/won, filtered by leadDate ---
+  // --- Converted/post-sale leads per branch, filtered by leadDate ---
   let wonDateClause = '';
   let wonDaClause = '';
   let wonBranchClause = '';
@@ -1711,13 +1783,13 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
       FROM crm_leads l
       WHERE l.branchId IS NOT NULL${wonDateClause}${wonDaClause}${wonBranchClause}${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status IN ('completed', 'won')
+    WHERE rn = 1 AND status IN (${POST_SALE_STATUS_SQL})
     GROUP BY branchId`,
     wonParams
   );
   const wonByBranch = wonRows as any[];
 
-  // Get unassigned completed leads count
+  // Get unassigned converted/post-sale leads count
   const unassignedParams: any[] = [];
   let unassignedDateClause = '';
   if (fyStartDate && fyEndDate) {
@@ -1732,7 +1804,7 @@ export async function getBranchPerformance(fyStart?: string, fyEnd?: string, des
       FROM crm_leads l
       WHERE l.branchId IS NULL${unassignedDateClause}${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status IN ('completed', 'won')`,
+    WHERE rn = 1 AND status IN (${POST_SALE_STATUS_SQL})`,
     unassignedParams
   );
   const unassignedCount = (unassignedRows as any[])[0]?.count || 0;
@@ -1768,7 +1840,7 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
   const fyEndDate = fyEnd ? fyEnd.slice(0, 10) : null;
   const tenant = tenantClause("l", tenantId);
 
-  // --- Active leads per adviser: status NOT completed/won/cancelled, filtered by leadDate ---
+  // --- Active leads per adviser: non post-sale/lost/cancelled, filtered by leadDate ---
   let activeDateClause = '';
   let activeBranchClause = '';
   const activeParams: any[] = [];
@@ -1789,13 +1861,13 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
       FROM crm_leads l
       WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${activeDateClause}${activeBranchClause}${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
+    WHERE rn = 1 AND status NOT IN (${ACTIVE_EXCLUDED_STATUS_SQL})
     GROUP BY designAdvisor`,
     activeParams
   );
   const activeByAdviser = activeRows as any[];
 
-  // --- Won/completed leads per adviser: filtered by leadDate using lead.status ---
+  // --- Converted/post-sale leads per adviser: filtered by leadDate using lead.status ---
   let wonDateClause = '';
   let wonBranchClause = '';
   const wonParams: any[] = [];
@@ -1816,7 +1888,7 @@ export async function getAdviserPerformance(fyStart?: string, fyEnd?: string, br
       FROM crm_leads l
       WHERE l.designAdvisor IS NOT NULL AND l.designAdvisor != ''${wonDateClause}${wonBranchClause}${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status IN ('completed', 'won')
+    WHERE rn = 1 AND status IN (${POST_SALE_STATUS_SQL})
     GROUP BY designAdvisor`,
     wonParams
   );
@@ -1937,26 +2009,60 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
       WHERE l.leadDate >= ? AND l.leadDate <= ?${daClause}${branchClause}
         ${tenant.sql}
     ) ranked_leads
-    WHERE rn = 1 AND status NOT IN ('completed', 'won', 'lost', 'cancelled')
+    WHERE rn = 1 AND status NOT IN (${ACTIVE_EXCLUDED_STATUS_SQL})
     GROUP BY ym`,
     [months[0].start, months[11].end, ...baseParams]
   );
   const activeByMonth = new Map((activeRows as any[]).map(r => [r.ym, Number(r.cnt)]));
 
-  // Won leads by month (contractDate)
-  const wonBaseParams: any[] = [];
-  let wonDaClause = '';
-  let wonBranchClause = '';
+  // Converted/post-sale leads by month: prefer contractDate, fallback to leadDate.
+  const convertedBaseParams: any[] = [];
+  let convertedDaClause = '';
+  let convertedBranchClause = '';
   if (designAdvisor) {
-    wonDaClause = ' AND l.designAdvisor = ?';
-    wonBaseParams.push(designAdvisor);
+    convertedDaClause = ' AND l.designAdvisor = ?';
+    convertedBaseParams.push(designAdvisor);
   }
   if (branchId) {
-    wonBranchClause = ' AND l.branchId = ?';
-    wonBaseParams.push(branchId);
+    convertedBranchClause = ' AND l.branchId = ?';
+    convertedBaseParams.push(branchId);
   }
-  wonBaseParams.push(...tenant.params);
-  const [wonRows] = await pool.execute(
+  convertedBaseParams.push(...tenant.params);
+  const [convertedRows] = await pool.execute(
+    `SELECT ym, COUNT(*) as cnt
+    FROM (
+      SELECT DATE_FORMAT(COALESCE(c.contractDate, l.leadDate), '%Y-%m') as ym,
+        l.status,
+        ROW_NUMBER() OVER (
+          PARTITION BY DATE_FORMAT(COALESCE(c.contractDate, l.leadDate), '%Y-%m'), ${logicalLeadKey("l")}
+          ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
+        ) as rn
+      FROM crm_leads l LEFT JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
+      WHERE (
+        (c.contractDate IS NOT NULL AND c.contractDate >= ? AND c.contractDate <= ?)
+        OR (c.contractDate IS NULL AND l.leadDate >= ? AND l.leadDate <= ?)
+      )${convertedDaClause}${convertedBranchClause}${tenant.sql}
+    ) ranked_conversions
+    WHERE rn = 1 AND status IN (${POST_SALE_STATUS_SQL})
+    GROUP BY ym`,
+    [months[0].start, months[11].end, months[0].start, months[11].end, ...convertedBaseParams]
+  );
+  const convertedByMonth = new Map((convertedRows as any[]).map(r => [r.ym, Number(r.cnt)]));
+
+  // Contract rows by month (contractDate) for contract count and revenue.
+  const contractBaseParams: any[] = [];
+  let contractDaClause = '';
+  let contractBranchClause = '';
+  if (designAdvisor) {
+    contractDaClause = ' AND l.designAdvisor = ?';
+    contractBaseParams.push(designAdvisor);
+  }
+  if (branchId) {
+    contractBranchClause = ' AND l.branchId = ?';
+    contractBaseParams.push(branchId);
+  }
+  contractBaseParams.push(...tenant.params);
+  const [contractRows] = await pool.execute(
     `SELECT ym, COUNT(*) as cnt, COALESCE(SUM(contractValue), 0) as revenue
     FROM (
       SELECT DATE_FORMAT(c.contractDate, '%Y-%m') as ym,
@@ -1967,13 +2073,13 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
           ORDER BY c.contractDate DESC, c.id DESC, ${canonicalLeadOrder("l")}, l.updatedAt DESC, l.id DESC
         ) as rn
       FROM crm_leads l INNER JOIN ${latestContractPerLead("c")} ON c.leadId = l.id
-      WHERE c.contractDate >= ? AND c.contractDate <= ?${wonDaClause}${wonBranchClause}${tenant.sql}
+      WHERE c.contractDate >= ? AND c.contractDate <= ?${contractDaClause}${contractBranchClause}${tenant.sql}
     ) ranked_contracts
-    WHERE rn = 1 AND status IN ('completed', 'won')
+    WHERE rn = 1 AND status IN (${POST_SALE_STATUS_SQL})
     GROUP BY ym`,
-    [months[0].start, months[11].end, ...wonBaseParams]
+    [months[0].start, months[11].end, ...contractBaseParams]
   );
-  const wonByMonth = new Map((wonRows as any[]).map(r => [r.ym, { won: Number(r.cnt), revenue: Number(r.revenue) }]));
+  const contractByMonth = new Map((contractRows as any[]).map(r => [r.ym, { contracts: Number(r.cnt), revenue: Number(r.revenue) }]));
 
   // Supply jobs by month (leadDate, no contract)
   const [supplyRows] = await pool.execute(
@@ -1998,17 +2104,18 @@ export async function getMonthlyTrends(fy: number, designAdvisor?: string, branc
   const data = months.map(m => {
     const ym = m.start.slice(0, 7);
     const active = activeByMonth.get(ym) || 0;
-    const wonData = wonByMonth.get(ym) || { won: 0, revenue: 0 };
-    const total = active + wonData.won;
-    const conversion = total > 0 ? Math.round((wonData.won / total) * 100) : 0;
+    const converted = convertedByMonth.get(ym) || 0;
+    const contractData = contractByMonth.get(ym) || { contracts: 0, revenue: 0 };
+    const total = active + converted;
+    const conversion = total > 0 ? Math.round((converted / total) * 100) : 0;
     return {
       month: m.label,
       totalLeads: total,
       activeLeads: active,
-      completedLeads: wonData.won,
+      completedLeads: converted,
       conversion,
-      contracts: wonData.won,
-      revenue: wonData.revenue,
+      contracts: contractData.contracts,
+      revenue: contractData.revenue,
       supplyJobs: supplyByMonth.get(ym) || 0,
     };
   });
@@ -2096,10 +2203,10 @@ export async function getLeadSourceBreakdown(fyStart?: string, fyEnd?: string, d
     `SELECT 
       source,
       COUNT(*) as totalLeads,
-      SUM(CASE WHEN status IN ('completed', 'won') THEN 1 ELSE 0 END) as wonLeads,
-      SUM(CASE WHEN status IN ('quoted', 'contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as quotedLeads,
-      SUM(CASE WHEN status IN ('contract', 'building_authority', 'construction', 'completed', 'won') THEN 1 ELSE 0 END) as contractedLeads,
-      SUM(CASE WHEN status NOT IN ('completed', 'won', 'lost', 'cancelled') THEN 1 ELSE 0 END) as activeLeads
+      SUM(CASE WHEN status IN (${POST_SALE_STATUS_SQL}) THEN 1 ELSE 0 END) as wonLeads,
+      SUM(CASE WHEN status IN (${QUOTED_OR_LATER_STATUS_SQL}) THEN 1 ELSE 0 END) as quotedLeads,
+      SUM(CASE WHEN status IN (${POST_SALE_STATUS_SQL}) THEN 1 ELSE 0 END) as contractedLeads,
+      SUM(CASE WHEN status NOT IN (${ACTIVE_EXCLUDED_STATUS_SQL}) THEN 1 ELSE 0 END) as activeLeads
     FROM (
       SELECT COALESCE(NULLIF(l.leadSource, ''), 'Unknown') as source,
         l.status,
@@ -2226,7 +2333,7 @@ async function getFollowUpThresholds(tenantId?: number | null): Promise<Record<s
 /**
  * Returns IDs of active (non-archived) leads that have not had any activity
  * within the threshold period for their current status.
- * Excludes completed/cancelled/won leads.
+ * Excludes post-sale/cancelled leads.
  */
 export async function getStaleLeadIds(tenantId?: number | null): Promise<{ id: number; daysSinceActivity: number }[]> {
   const thresholds = await getFollowUpThresholds(tenantId);
@@ -2246,7 +2353,7 @@ export async function getStaleLeadIds(tenantId?: number | null): Promise<{ id: n
       CASE l.status ${caseParts} ELSE 14 END as threshold
     FROM crm_leads l
     WHERE l.archived = 0
-      AND l.status NOT IN ('completed', 'won', 'cancelled')
+      AND l.status NOT IN (${STALE_EXCLUDED_STATUS_SQL})
       ${staleTenant.sql}
     HAVING daysSinceActivity > threshold
     ORDER BY daysSinceActivity DESC

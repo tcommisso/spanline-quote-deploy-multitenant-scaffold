@@ -6,7 +6,7 @@ import {
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   quotes, crmLeads, crmBuildingAuthority,
 } from "../drizzle/schema";
-import { eq, desc, and, like, sql, or, inArray } from "drizzle-orm";
+import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
@@ -62,6 +62,14 @@ function appendProjectDateRange(conditions: any[], from: Date, to: Date) {
   const jobDate = constructionJobDateExpr();
   conditions.push(sql`${jobDate} >= ${from}`);
   conditions.push(sql`${jobDate} < ${to}`);
+}
+
+function visibleConstructionClientCondition() {
+  return or(
+    isNull(constructionJobs.leadId),
+    isNull(crmLeads.id),
+    eq(crmLeads.archived, false),
+  );
 }
 
 /** Get the current Australian FY start year. Before July → previous year. */
@@ -186,6 +194,7 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      conditions.push(visibleConstructionClientCondition());
       if (input?.status) {
         conditions.push(eq(constructionJobs.status, input.status));
       } else if (input?.excludeCompleted !== false) {
@@ -435,6 +444,7 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      conditions.push(visibleConstructionClientCondition());
       if (input?.fyStartYear != null) {
         const range = fyDateRange(input.fyStartYear);
         appendProjectDateRange(conditions, range.from, range.to);
@@ -459,7 +469,10 @@ export const constructionClientsRouter = router({
       const rows = await db.select({
         status: constructionJobs.status,
         count: sql<number>`count(*)`
-      }).from(constructionJobs).where(where).groupBy(constructionJobs.status);
+      }).from(constructionJobs)
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+        .where(where)
+        .groupBy(constructionJobs.status);
 
       const counts: Record<string, number> = { scheduled: 0, in_progress: 0, on_hold: 0, completed: 0, cancelled: 0 };
       let total = 0;
