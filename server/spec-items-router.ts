@@ -24,6 +24,11 @@ import {
   getAllMappingHistory,
 } from "./spec-items-db";
 import { generateItemsFromSpec, type SpecValues } from "../shared/specEngine";
+import {
+  enrichDerivedSpecValues,
+  VALID_SPEC_FIELD_VALUES,
+  VALID_SPEC_FORMULA_VARIABLES,
+} from "../shared/spec-field-catalogue";
 
 // Helper: get spec values from a quote record
 function extractSpecValues(quote: Record<string, any>): SpecValues {
@@ -281,6 +286,8 @@ export const specItemsRouter = router({
         const wasteEntry = wasteData.find((d: any) => d.key === "roof" || d.key === "default");
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }
+
+      enrichDerivedSpecValues(specValues as Record<string, any>);
 
       // Get active mappings
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
@@ -554,6 +561,8 @@ export const specItemsRouter = router({
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }
 
+      enrichDerivedSpecValues(specValues as Record<string, any>);
+
       // Get active mappings and products
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       const allProducts = await getAllProducts(ctx.tenant!.id);
@@ -613,42 +622,59 @@ export const specItemsRouter = router({
 
       const TEMPLATES = [
         // ── Roof ──
-        { name: "Roof Sheets (LM from coverage)", tabName: "roof", specField: "specRoofSheetType", condition: "!= ''", productMatch: "specRoofSheetType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength", description: null, colourField: "specRoofColourTop", uom: "LM", sortOrder: 10 },
-        { name: "Roof Sheets + Waste Factor", tabName: "roof", specField: "specRoofSheetType", condition: "!= ''", productMatch: "specRoofSheetType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength * (1 + wasteFactor / 100)", description: null, colourField: "specRoofColourTop", uom: "LM", sortOrder: 11 },
-        { name: "Ridge Capping", tabName: "roof", specField: "specRoofSheetType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specWidth", description: "Ridge Capping", colourField: "specRoofColourTop", uom: "LM", sortOrder: 20 },
-        { name: "Barge Capping", tabName: "roof", specField: "specRoofSheetType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specLength * 2", description: "Barge Capping", colourField: "specRoofColourTop", uom: "LM", sortOrder: 21 },
+        { name: "Roof Sheets (LM from coverage)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength", description: null, colourField: "specRoofTopColour", uom: "LM", sortOrder: 10 },
+        { name: "Roof Sheets + Waste Factor", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength * (1 + wasteFactor / 100)", description: null, colourField: "specRoofTopColour", uom: "LM", sortOrder: 11 },
+        { name: "Ridge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specWidth", description: "Ridge Capping", colourField: "specRoofTopColour", uom: "LM", sortOrder: 20 },
+        { name: "Barge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specLength * 2", description: "Barge Capping", colourField: "specRoofTopColour", uom: "LM", sortOrder: 21 },
         // ── Beams ──
         { name: "Beams from spec entries", tabName: "beams", specField: "specBeamEntries", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", uom: "LM", sortOrder: 30 },
         // ── Posts ──
         { name: "Posts from spec count", tabName: "posts", specField: "specPostsNumber", condition: "> 0", productMatch: "specPostsType", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", uom: "ea", sortOrder: 40 },
         // ── Gutters ──
-        { name: "Gutter (front)", tabName: "gutters", specField: "specGutterType", condition: "!= ''", productMatch: "specGutterType", qtyFormula: "specWidth", description: null, colourField: "specGutterColour", uom: "LM", sortOrder: 50 },
-        { name: "Downpipes", tabName: "gutters", specField: "specDownpipes", condition: "> 0", productMatch: null, qtyFormula: "specDownpipes", description: "Downpipes", colourField: "specGutterColour", uom: "ea", sortOrder: 51 },
+        { name: "Gutter (front)", tabName: "gutters", specField: "specBoxGutter", condition: "> 0", productMatch: "specGutterType", qtyFormula: "specBoxGutter / 1000", description: null, colourField: "specGutterColour", uom: "LM", sortOrder: 50 },
+        { name: "Downpipes", tabName: "gutters", specField: "specDownpipeType", condition: "!= ''", productMatch: "specDownpipeType", qtyFormula: "Math.max(1, specDownpipeCount)", description: null, colourField: "specDownpipeColour", uom: "ea", sortOrder: 51 },
         // ── Concrete ──
         { name: "Concrete Slab (m²)", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specArea", description: null, colourField: null, uom: "m2", sortOrder: 60 },
         { name: "Concrete Pier Holes", tabName: "concrete", specField: "specConcretePierHoles", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specConcretePierHoles", description: "Pier Holes", colourField: null, uom: "ea", sortOrder: 61 },
         // ── Electrical ──
-        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: null, colourField: null, uom: "ea", sortOrder: 70 },
-        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFans", condition: "> 0", productMatch: null, qtyFormula: "specElecFans", description: "Ceiling Fans", colourField: null, uom: "ea", sortOrder: 71 },
+        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: null, qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, uom: "ea", sortOrder: 70 },
+        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: null, qtyFormula: "specElecFan", description: "Ceiling Fans", colourField: null, uom: "ea", sortOrder: 71 },
         { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, uom: "ea", sortOrder: 72 },
         // ── Plumbing ──
         { name: "Plumbing Fitoffs", tabName: "plumbing", specField: "specPlumbFitoffs", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbFitoffs", description: "Plumbing Fitoffs", colourField: null, uom: "ea", sortOrder: 80 },
         // ── Flooring ──
-        { name: "Flooring (m²)", tabName: "flooring", specField: "specFlooringType", condition: "!= ''", productMatch: "specFlooringType", qtyFormula: "specArea", description: null, colourField: "specFlooringColour", uom: "m2", sortOrder: 90 },
+        { name: "Flooring (m²)", tabName: "flooring", specField: "specFloorFinish", condition: "!= ''", productMatch: "specFloorFinish", qtyFormula: "specArea", description: null, colourField: null, uom: "m2", sortOrder: 90 },
         { name: "Subfloor (m²)", tabName: "flooring", specField: "specSubfloorM2", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specSubfloorM2", description: "Subfloor", colourField: null, uom: "m2", sortOrder: 91 },
         // ── Balustrade ──
-        { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLm", description: null, colourField: "specBalustradeColour", uom: "LM", sortOrder: 100 },
+        { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLM", description: null, colourField: null, uom: "LM", sortOrder: 100 },
         // ── Glass / Screens ──
         { name: "Glass Screens", tabName: "glass", specField: "specGlassScreens", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGlassScreens", description: "Glass Screens", colourField: null, uom: "ea", sortOrder: 110 },
       ];
 
       // Get existing mapping names to skip duplicates
       const existing = await listSpecMappings(ctx.tenant!.id);
-      const existingNames = new Set((existing as any[]).map(m => m.name));
+      const existingByName = new Map((existing as any[]).map(m => [m.name, m]));
 
       let created = 0;
+      let updated = 0;
       for (const tmpl of TEMPLATES) {
-        if (existingNames.has(tmpl.name)) continue;
+        const existingMapping = existingByName.get(tmpl.name);
+        if (existingMapping) {
+          const updateData = { ...tmpl };
+          const hasChanged = Object.entries(updateData).some(([key, value]) => (existingMapping as any)[key] !== value);
+          if (hasChanged) {
+            await updateSpecMapping((existingMapping as any).id, updateData, ctx.tenant!.id);
+            await logMappingChange({
+              mappingId: (existingMapping as any).id,
+              userId: ctx.user!.id,
+              userName: ctx.user!.name,
+              action: "updated",
+              snapshot: { ...updateData, id: (existingMapping as any).id, source: "seed_template_refresh" },
+            }, ctx.tenant!.id);
+            updated++;
+          }
+          continue;
+        }
         const id = await createSpecMapping({ ...tmpl, active: false }, ctx.tenant!.id);
         await logMappingChange({
           mappingId: id,
@@ -660,7 +686,7 @@ export const specItemsRouter = router({
         created++;
       }
 
-      return { created, skipped: TEMPLATES.length - created, total: TEMPLATES.length };
+      return { created, updated, skipped: TEMPLATES.length - created - updated, total: TEMPLATES.length };
     }),
 
   // Preview a formula against the most recent quote's spec values
@@ -720,6 +746,8 @@ export const specItemsRouter = router({
         specValues.wasteFactor = wasteEntry ? parseFloat(String(wasteEntry.value)) || 0 : 0;
       } catch { specValues.wasteFactor = 0; }
 
+      enrichDerivedSpecValues(specValues as Record<string, any>);
+
       // Evaluate formula
       const { evaluateFormula } = await import("../shared/specEngine");
       try {
@@ -763,51 +791,8 @@ export const specItemsRouter = router({
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       const allProds = await getAllProducts(ctx.tenant!.id);
 
-      // Valid spec fields (from schema + computed)
-      const VALID_SPEC_FIELDS = new Set([
-        "specWidth", "specLength", "specHeight", "specFall", "specRoofPitch", "specRoofSheetType",
-        "specRoofColourTop", "specRoofColourBottom", "specRoofFinishTop", "specRoofFinishBottom",
-        "specBeamType", "specBeamSize", "specBeamColour", "specBeamEntries", "specPostsType",
-        "specPostsColour", "specPostsNumber", "specPostSpacing", "specRoofOverhang",
-        "specGutterType", "specGutterColour", "specGutterSides", "specDownpipes",
-        "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specBackChannelColour", "specIwpEntries",
-        "specFlooringType", "specFlooringColour", "specSubfloorM2",
-        "specBalustradeType", "specBalustradeColour", "specBalustradeLm",
-        "specBalustradeCompliance", "specBalustradePosts", "specBalustradePrivacy", "specBalustradeRails",
-        "specElecLights", "specElecFans", "specElecPowerPoints", "specElecHeaters",
-        "specElecLightType", "specElecLightTypes",
-        "specPlumbFitoffs", "specPlumbDownpipes", "specPlumbStormwater",
-        "specConcreteType", "specConcretePierHoles", "specConcreteChecks", "specConcreteExtras",
-        "specGlassScreens", "specGlassType", "specGlassColour",
-        "specWindowType", "specWindowColour", "specWindowEntries",
-        "specDoorType", "specDoorColour", "specDoorEntries",
-        "specWallType", "specWallColour", "specWallEntries",
-        "specCeilingType", "specCeilingColour",
-        "specSpanliteType", "specSpanliteColour", "specSpanliteEntries",
-        "specHouseRoofType", "specCutBackEave", "specRemoveGutterFlash",
-        "specHouseWallType", "specFallOnGround", "specGroundLevel",
-        "specDemoScope", "specDemoNotes", "specDemoItems",
-        "specSetbackFront", "specSetbackRear", "specSetbackLeft", "specSetbackRight",
-        "specAngleCutting", "specAngleCuttingMetres",
-        "specProgressPayments", "specSectionPrefs", "specSectionTemplates",
-        "specChecklistSelections", "specSpeciality",
-        // Computed
-        "specArea", "specPerimeter", "specRoofArea", "specRoofRunWidth", "specRoofSheetLength",
-        "wasteFactor",
-        // Balustrade extended
-        "specBalPostType", "specBalPostColour", "specBalPostMount",
-        "specBalRailTopStyle", "specBalRailTopColour", "specBalRailBottomStyle", "specBalRailBottomColour",
-        "specBalGlassType", "specBalGlassTint", "specBalGlassSpigots", "specBalGlassStairs",
-        "specBalWireFrame", "specBalWireFinish", "specBalWireStairs",
-        "specBalTubularVertical", "specBalTubularVertSlat", "specBalTubularHorizSlat", "specBalTubularStairs",
-        "specBalPrivacy", "specBalCertification",
-      ]);
-
-      // Valid formula variables (spec fields + computed aliases)
-      const VALID_FORMULA_VARS = new Set(Array.from(VALID_SPEC_FIELDS).concat([
-        "width", "length", "area", "perimeter",
-        "roofRunWidth", "roofSheetLength", "roofSheetLM", "productCover",
-      ]));
+      const VALID_SPEC_FIELDS = new Set(VALID_SPEC_FIELD_VALUES);
+      const VALID_FORMULA_VARS = new Set(VALID_SPEC_FORMULA_VARIABLES);
 
       type Finding = {
         mappingId: number;
