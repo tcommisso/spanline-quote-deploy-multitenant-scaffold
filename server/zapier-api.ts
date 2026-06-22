@@ -641,9 +641,12 @@ export function registerZapierApi(app: Express) {
       // ── No duplicate found — create new lead ──
       const leadNumber = await crmDb.getNextLeadNumber(tenantId);
 
-      // Accept leadDate from API body, or default to today (YYYY-MM-DD)
-      const leadDate = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.leadDate, { allowNumber: true })
-        || (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
+      // Accept leadDate from API body, but always persist YYYY-MM-DD for reporting.
+      const rawLeadDate = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.leadDate, { allowNumber: true });
+      const parsedLeadDate = rawLeadDate ? parseSourceCreatedAt(rawLeadDate) : null;
+      const leadDate = parsedLeadDate
+        ? formatDateOnly(parsedLeadDate)
+        : (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
 
       // ── Auto-allocate branch from postcode (DB-backed territory lookup) ──
       const { getBranchIdForPostcodeFromDb } = await import("./territory-router");

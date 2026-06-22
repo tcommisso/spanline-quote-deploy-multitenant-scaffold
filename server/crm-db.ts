@@ -541,6 +541,116 @@ export async function mergeLeads(primaryId: number, duplicateIds: number[], tena
   return { transferred, archived };
 }
 
+type DuplicateLeadCandidate = {
+  id: number;
+  leadNumber: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  createdAt: Date | string | null;
+};
+
+function normaliseDuplicateEmail(value?: string | null) {
+  const email = String(value || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function normaliseDuplicatePhone(value?: string | null) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 8 ? digits.slice(-8) : "";
+}
+
+function leadCreatedTime(lead: DuplicateLeadCandidate) {
+  const time = lead.createdAt ? new Date(lead.createdAt).getTime() : 0;
+  return Number.isNaN(time) ? 0 : time;
+}
+
+export async function bulkMergeDuplicateLeads(
+  tenantId?: number | null,
+  maxGroups = 100,
+): Promise<{ groupsMerged: number; archived: number; transferred: number; skippedGroups: number }> {
+  const scope = tenantClause("l", tenantId);
+  const [rows] = await pool.execute(
+    `SELECT l.id, l.leadNumber, l.contactEmail, l.contactPhone, l.createdAt
+     FROM crm_leads l
+     WHERE l.archived = 0${scope.sql}
+     ORDER BY l.createdAt DESC, l.id DESC`,
+    scope.params,
+  );
+  const candidates = rows as DuplicateLeadCandidate[];
+  if (candidates.length === 0) return { groupsMerged: 0, archived: 0, transferred: 0, skippedGroups: 0 };
+
+  const parent = new Map<number, number>();
+  const idsByKey = new Map<string, number[]>();
+
+  const find = (id: number): number => {
+    const current = parent.get(id);
+    if (current === undefined || current === id) return id;
+    const root = find(current);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (a: number, b: number) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+  const addKey = (key: string, id: number) => {
+    if (!key) return;
+    const ids = idsByKey.get(key) || [];
+    ids.push(id);
+    idsByKey.set(key, ids);
+  };
+
+  for (const lead of candidates) {
+    parent.set(lead.id, lead.id);
+    const emailKey = normaliseDuplicateEmail(lead.contactEmail);
+    const phoneKey = normaliseDuplicatePhone(lead.contactPhone);
+    if (emailKey) addKey(`email:${emailKey}`, lead.id);
+    if (phoneKey) addKey(`phone:${phoneKey}`, lead.id);
+  }
+
+  for (const ids of Array.from(idsByKey.values())) {
+    if (ids.length < 2) continue;
+    const [first, ...rest] = ids;
+    for (const id of rest) union(first, id);
+  }
+
+  const components = new Map<number, DuplicateLeadCandidate[]>();
+  for (const lead of candidates) {
+    const root = find(lead.id);
+    const group = components.get(root) || [];
+    group.push(lead);
+    components.set(root, group);
+  }
+
+  const duplicateGroups = Array.from(components.values())
+    .filter((group) => group.length > 1)
+    .sort((a, b) => Math.max(...b.map(leadCreatedTime)) - Math.max(...a.map(leadCreatedTime)));
+
+  let groupsMerged = 0;
+  let archived = 0;
+  let transferred = 0;
+  let skippedGroups = 0;
+
+  for (const group of duplicateGroups.slice(0, maxGroups)) {
+    const [primary, ...duplicates] = [...group].sort((a, b) => {
+      const byDate = leadCreatedTime(b) - leadCreatedTime(a);
+      return byDate !== 0 ? byDate : b.id - a.id;
+    });
+    const result = await mergeLeads(primary.id, duplicates.map((lead) => lead.id), tenantId);
+    if (result.archived > 0) {
+      groupsMerged += 1;
+      archived += result.archived;
+      transferred += result.transferred;
+    } else {
+      skippedGroups += 1;
+    }
+  }
+
+  skippedGroups += Math.max(0, duplicateGroups.length - maxGroups);
+  return { groupsMerged, archived, transferred, skippedGroups };
+}
+
 // ─── Find Duplicate Leads ───────────────────────────────────────────────────
 export async function findDuplicateLeads(leadId: number, tenantId?: number | null): Promise<Array<{
   id: number;

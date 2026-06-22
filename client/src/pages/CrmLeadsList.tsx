@@ -98,9 +98,43 @@ type PostConstructionStatus = {
 
 function formatShortDate(value?: string | null) {
   if (!value) return "Missing";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseFlexibleDate(value);
+  if (!date) return value;
   return date.toLocaleDateString("en-AU");
+}
+
+function parseFlexibleDate(value?: string | Date | null) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  if (isoDate) {
+    const year = Number(isoDate[1]);
+    const month = Number(isoDate[2]);
+    const day = Number(isoDate[3]);
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
+  }
+
+  const auDate = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (auDate) {
+    const day = Number(auDate[1]);
+    const month = Number(auDate[2]);
+    const year = Number(auDate[3].length === 2 ? `20${auDate[3]}` : auDate[3]);
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLeadDate(value?: string | Date | null) {
+  const date = parseFlexibleDate(value);
+  return date ? date.toLocaleDateString("en-AU") : "—";
 }
 
 function StatusChip({
@@ -220,6 +254,7 @@ export default function CrmLeadsList() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
+  const [showBulkMergeConfirm, setShowBulkMergeConfirm] = useState(false);
   const [selectAllMatchingMode, setSelectAllMatchingMode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [showAllLeads, setShowAllLeads] = useState(false);
@@ -454,6 +489,20 @@ export default function CrmLeadsList() {
     },
     onError: (err) => {
       toast.error(err.message || "Merge failed");
+    },
+  });
+
+  const bulkMergeDuplicatesMut = trpc.crm.leads.bulkMergeDuplicates.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Merged ${result.groupsMerged} duplicate group${result.groupsMerged === 1 ? "" : "s"} and archived ${result.archived} duplicate lead${result.archived === 1 ? "" : "s"}`);
+      setSelectedIds(new Set());
+      setSelectAllMatchingMode(false);
+      setShowBulkMergeConfirm(false);
+      utils.crm.leads.list.invalidate();
+      utils.crm.leads.getDuplicateIds.invalidate();
+    },
+    onError: (err) => {
+      toast.error(err.message || "Bulk duplicate merge failed");
     },
   });
 
@@ -731,6 +780,10 @@ export default function CrmLeadsList() {
     setSelectAllMatchingMode(false);
   };
 
+  const handleBulkMergeDuplicates = () => {
+    bulkMergeDuplicatesMut.mutate({ maxGroups: 100 });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -938,6 +991,17 @@ export default function CrmLeadsList() {
           <Copy className="h-4 w-4 mr-1" />
           {showDuplicatesOnly ? "Showing duplicates" : "Duplicates only"}
         </Button>
+        {isAdmin && showDuplicatesOnly && duplicateIdSet.size > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowBulkMergeConfirm(true)}
+            disabled={bulkMergeDuplicatesMut.isPending}
+          >
+            <GitMerge className="h-4 w-4 mr-1" />
+            {bulkMergeDuplicatesMut.isPending ? "Merging..." : "Bulk merge duplicates"}
+          </Button>
+        )}
         {isAdmin && (
           <Button
             variant={showArchived ? "secondary" : "ghost"}
@@ -1278,7 +1342,7 @@ export default function CrmLeadsList() {
                         })()}
                       </td>
                       <td className="py-3 px-3 text-xs text-muted-foreground hidden lg:table-cell">
-                        {lead.leadDate ? new Date(lead.leadDate).toLocaleDateString("en-AU") : "—"}
+                        {formatLeadDate(lead.leadDate)}
                       </td>
                       <td className="py-3 px-3 text-xs font-medium hidden md:table-cell">
                         {(() => {
@@ -1387,6 +1451,27 @@ export default function CrmLeadsList() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Bulk Duplicate Merge Confirmation */}
+      <AlertDialog open={showBulkMergeConfirm} onOpenChange={setShowBulkMergeConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bulk merge duplicate lead groups?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will scan active duplicate groups by matching email or phone, keep the most recently created active lead in each group as the primary, transfer related records, and archive the duplicate leads. Leads are not permanently deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkMergeDuplicatesMut.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkMergeDuplicates}
+              disabled={bulkMergeDuplicatesMut.isPending}
+            >
+              {bulkMergeDuplicatesMut.isPending ? "Merging..." : "Bulk merge duplicate groups"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Bulk Archive Confirmation */}
       <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>

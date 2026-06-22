@@ -723,6 +723,17 @@ export const crmRouter = router({
       return { success: true, ...result };
     }),
 
+    bulkMergeDuplicates: protectedProcedure.input(z.object({
+      maxGroups: z.number().int().min(1).max(100).optional(),
+    }).optional()).mutation(async ({ input, ctx }) => {
+      if (!isAdminRole(ctx.user.role)) {
+        throw new Error("Only administrators can bulk merge duplicate leads");
+      }
+      const result = await crmDb.bulkMergeDuplicateLeads(tenantIdFromContext(ctx), input?.maxGroups ?? 100);
+      console.log(`[CRM] Bulk merged duplicate leads: groups=${result.groupsMerged}, archived=${result.archived}, transferred=${result.transferred}, skipped=${result.skippedGroups} by ${ctx.user.name}`);
+      return { success: true, ...result };
+    }),
+
     findDuplicates: protectedProcedure.input(z.object({
       leadId: z.number(),
     })).query(async ({ ctx, input }) => {
