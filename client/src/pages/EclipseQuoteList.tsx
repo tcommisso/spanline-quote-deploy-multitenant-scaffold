@@ -46,7 +46,10 @@ export default function EclipseQuoteList() {
   const [newDesignAdvisor, setNewDesignAdvisor] = useState("");
 
   const utils = trpc.useUtils();
-  const { data: quotes, isLoading } = trpc.eclipseRoof.quotes.list.useQuery();
+  const { data: quotes, isLoading } = trpc.eclipseRoof.quotes.list.useQuery(undefined, {
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
   const createMutation = trpc.eclipseRoof.quotes.create.useMutation({
     onSuccess: (data: any) => {
       toast.success(`Eclipse quote ${data.quoteNumber} created`);

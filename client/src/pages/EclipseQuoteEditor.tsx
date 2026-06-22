@@ -907,6 +907,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
       }
       isAutoSaveRef.current = false;
       utils.eclipseRoof.quotes.get.invalidate({ id });
+      utils.eclipseRoof.quotes.list.invalidate();
     },
     onError: (err) => {
       if (isAutoSaveRef.current) {

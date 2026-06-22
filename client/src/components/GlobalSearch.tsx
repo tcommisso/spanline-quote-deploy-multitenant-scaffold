@@ -159,7 +159,7 @@ export function GlobalSearch() {
                     {data.eclipseQuotes.map((q) => (
                       <button
                         key={`eq-${q.id}`}
-                        onClick={() => navigate(`/eclipse/${q.id}`)}
+                        onClick={() => navigate(`/eclipse-quotes/${q.id}`)}
                         className="w-full flex items-center gap-3 px-4 py-2 hover:bg-muted/50 text-left transition-colors"
                       >
                         <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
