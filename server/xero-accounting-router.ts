@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, like, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { router, tenantProcedure } from "./_core/trpc";
 import { getDb } from "./db";
@@ -429,21 +429,57 @@ export const xeroAccountingRouter = router({
     }),
 
   getUnmatched: tenantProcedure
-    .input(z.object({ limit: z.number().min(1).max(200).default(50) }).optional())
+    .input(z.object({
+      limit: z.number().min(1).max(200).default(50),
+      offset: z.number().min(0).default(0),
+      sourceType: z.enum(["invoice", "bill", "bank_transaction", "credit_note"]).optional(),
+      search: z.string().trim().optional(),
+    }).optional())
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const auth = await getValidAccessToken({ appTenantId: ctx.tenant.id, moduleKey: "construction" });
-      if (!auth) return [];
+      if (!auth) return { rows: [], total: 0, sourceCounts: [] as any[] };
+
+      const baseConditions = [
+        eq(xeroAccountingTransactions.xeroConnectionId, auth.xeroConnectionId),
+        isNull(xeroAccountingTransactions.mappingId),
+        eq(xeroAccountingTransactions.appTenantId, ctx.tenant.id),
+        isNull(xeroAccountingTransactions.ignoredAt),
+      ];
+      const search = input?.search?.trim();
+      if (search) {
+        const pattern = `%${search}%`;
+        baseConditions.push(or(
+          like(xeroAccountingTransactions.transactionNumber, pattern),
+          like(xeroAccountingTransactions.reference, pattern),
+          like(xeroAccountingTransactions.description, pattern),
+          like(xeroAccountingTransactions.contactName, pattern),
+          like(xeroAccountingTransactions.trackingOptionName, pattern),
+        ) as any);
+      }
+
+      const sourceCounts = await db.select({
+        sourceType: xeroAccountingTransactions.sourceType,
+        count: sql<number>`COUNT(*)`,
+      })
+        .from(xeroAccountingTransactions)
+        .where(and(...baseConditions))
+        .groupBy(xeroAccountingTransactions.sourceType);
+
+      const rowConditions = [...baseConditions];
+      if (input?.sourceType) {
+        rowConditions.push(eq(xeroAccountingTransactions.sourceType, input.sourceType));
+      }
+
+      const [totalRow] = await db.select({ count: sql<number>`COUNT(*)` })
+        .from(xeroAccountingTransactions)
+        .where(and(...rowConditions));
 
       const rows = await db.select().from(xeroAccountingTransactions)
-        .where(and(
-          eq(xeroAccountingTransactions.xeroConnectionId, auth.xeroConnectionId),
-          isNull(xeroAccountingTransactions.mappingId),
-          eq(xeroAccountingTransactions.appTenantId, ctx.tenant.id),
-          isNull(xeroAccountingTransactions.ignoredAt),
-        ))
+        .where(and(...rowConditions))
         .orderBy(desc(xeroAccountingTransactions.syncedAt))
-        .limit(input?.limit || 50);
+        .limit(input?.limit || 50)
+        .offset(input?.offset || 0);
 
       const mappings = await db.select({
         id: xeroProjectMappings.id,
@@ -463,18 +499,25 @@ export const xeroAccountingRouter = router({
           ...jobTenantConditions(ctx),
         ));
 
-      return rows.map((row: any) => {
-        const suggestions = mappings
-          .map((mapping: any) => {
-            const match = scoreUnmatchedCandidate(row, mapping);
-            return { ...mapping, score: match.score, reasons: match.reasons };
-          })
-          .filter((mapping: any) => mapping.score > 0)
-          .sort((a: any, b: any) => b.score - a.score)
-          .slice(0, 5);
+      return {
+        rows: rows.map((row: any) => {
+          const suggestions = mappings
+            .map((mapping: any) => {
+              const match = scoreUnmatchedCandidate(row, mapping);
+              return { ...mapping, score: match.score, reasons: match.reasons };
+            })
+            .filter((mapping: any) => mapping.score > 0)
+            .sort((a: any, b: any) => b.score - a.score)
+            .slice(0, 5);
 
-        return { ...row, suggestions };
-      });
+          return { ...row, suggestions };
+        }),
+        total: Number(totalRow?.count || 0),
+        sourceCounts: sourceCounts.map((row: any) => ({
+          sourceType: row.sourceType,
+          count: Number(row.count || 0),
+        })),
+      };
     }),
 
   assignUnmatched: tenantProcedure

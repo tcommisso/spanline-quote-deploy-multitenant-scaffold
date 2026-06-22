@@ -36,6 +36,11 @@ const CHUNK_SIZE = 10; // Keep Railway cron requests comfortably below timeout l
 const STALE_SYNC_MS = 2 * 60 * 60 * 1000;
 const INCREMENTAL_OVERLAP_MS = 24 * 60 * 60 * 1000;
 
+function clampMarginPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-999.99, Math.min(999.99, value));
+}
+
 function hasProjectsScope(scopes?: string | null) {
   return (scopes || "")
     .split(/[\s,]+/)
@@ -714,6 +719,15 @@ async function syncSingleMapping(
   }
 
   // 6. Update constructionJobFinancials
+  const [existingFinancials] = await db
+    .select({ contractValue: constructionJobFinancials.contractValue })
+    .from(constructionJobFinancials)
+    .where(eq(constructionJobFinancials.jobId, mapping.jobId))
+    .limit(1);
+  const contractValue = parseFloat(String(existingFinancials?.contractValue || "0"));
+  const budgetMargin = contractValue - estimatedCost;
+  const budgetMarginPercent = clampMarginPercent(contractValue > 0 ? (budgetMargin / contractValue) * 100 : 0);
+
   await db
     .update(constructionJobFinancials)
     .set({
@@ -724,6 +738,11 @@ async function syncSingleMapping(
       xeroTotalCost: xeroTotalCost.toFixed(2),
       xeroPaidAmount: xeroPaidAmount.toFixed(2),
       ...(estimatedCost > 0 ? { xeroContractValue: estimatedCost.toFixed(2) } : {}),
+      ...(estimatedCost > 0 ? {
+        totalCost: estimatedCost.toFixed(2),
+        margin: budgetMargin.toFixed(2),
+        marginPercent: budgetMarginPercent.toFixed(2),
+      } : {}),
     })
     .where(eq(constructionJobFinancials.jobId, mapping.jobId));
 

@@ -13,7 +13,7 @@ import {
   Link2, Unlink, RefreshCw, CheckCircle2, AlertCircle, ExternalLink,
   Download, Upload, ArrowUpDown, Clock, Loader2, FolderSync, Users,
   DollarSign, Activity, UserPlus, AlertTriangle, Building2, XCircle,
-  Route, Plus, Trash2, Pencil, PlayCircle,
+  Route, Plus, Trash2, Pencil, PlayCircle, Search,
 } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -38,6 +38,16 @@ type RoutingRuleDraft = {
 };
 
 type XeroScopeProfile = "accounting_standard" | "accounting_read" | "sign_in_only";
+type XeroUnmatchedSource = "invoice" | "bill" | "bank_transaction" | "credit_note";
+
+const XERO_UNMATCHED_PAGE_SIZE = 50;
+const XERO_UNMATCHED_SOURCE_FILTERS: Array<{ value: "all" | XeroUnmatchedSource; label: string }> = [
+  { value: "all", label: "All source types" },
+  { value: "bill", label: "Bills" },
+  { value: "bank_transaction", label: "Spend money" },
+  { value: "invoice", label: "Invoices" },
+  { value: "credit_note", label: "Credit notes" },
+];
 
 const ROUTING_FIELD_LABELS: Record<string, string> = {
   branch: "Branch",
@@ -90,6 +100,21 @@ function formatShortDate(value: string | Date | null | undefined) {
     month: "short",
     year: "numeric",
   });
+}
+
+function formatXeroSourceType(value: string) {
+  switch (value) {
+    case "bill":
+      return "Bill";
+    case "bank_transaction":
+      return "Spend money";
+    case "invoice":
+      return "Invoice";
+    case "credit_note":
+      return "Credit note";
+    default:
+      return value.replace("_", " ");
+  }
 }
 
 function XeroClientImportSection() {
@@ -259,23 +284,35 @@ function UnmatchedXeroTransactionsPanel() {
   const utils = trpc.useUtils();
   const [selectedMappings, setSelectedMappings] = useState<Record<number, string>>({});
   const [applyToDocument, setApplyToDocument] = useState(true);
-  const { data: rows, isLoading, isError, refetch } = trpc.xeroAccounting.getUnmatched.useQuery(
-    { limit: 25 },
+  const [sourceType, setSourceType] = useState<"all" | XeroUnmatchedSource>("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const { data: unmatchedData, isLoading, isFetching, isError, refetch } = trpc.xeroAccounting.getUnmatched.useQuery(
+    {
+      limit: XERO_UNMATCHED_PAGE_SIZE,
+      offset: page * XERO_UNMATCHED_PAGE_SIZE,
+      sourceType: sourceType === "all" ? undefined : sourceType,
+      search: search.trim() || undefined,
+    },
     { refetchInterval: 60_000 }
   );
 
   useEffect(() => {
-    if (!rows?.length) return;
+    setPage(0);
+  }, [sourceType, search]);
+
+  useEffect(() => {
+    if (!unmatchedData?.rows?.length) return;
     setSelectedMappings((current) => {
       const next = { ...current };
-      for (const row of rows as any[]) {
+      for (const row of unmatchedData.rows as any[]) {
         if (!next[row.id] && row.suggestions?.[0]?.id) {
           next[row.id] = String(row.suggestions[0].id);
         }
       }
       return next;
     });
-  }, [rows]);
+  }, [unmatchedData?.rows]);
 
   const assignUnmatched = trpc.xeroAccounting.assignUnmatched.useMutation({
     onSuccess: (result) => {
@@ -294,8 +331,30 @@ function UnmatchedXeroTransactionsPanel() {
     },
     onError: (err) => toast.error(err.message || "Failed to ignore Xero transaction"),
   });
+  const syncUnmatched = trpc.xeroAccounting.syncAll.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Synced ${result.imported} Xero line${result.imported === 1 ? "" : "s"}; ${result.unmatched} unmatched.`);
+      if (result.fetchErrors?.length) {
+        toast.warning(`Some Xero endpoints returned warnings: ${result.fetchErrors.join("; ")}`);
+      }
+      refetch();
+      utils.xeroAccounting.getSyncHealth.invalidate();
+      utils.xeroProjects.getAllMappings.invalidate();
+      utils.xeroProjects.getSyncLogs.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "Failed to sync Xero transactions"),
+  });
 
-  const unmatchedRows = (rows || []) as any[];
+  const unmatchedRows = (unmatchedData?.rows || []) as any[];
+  const totalUnmatched = Number(unmatchedData?.total || 0);
+  const totalPages = Math.max(1, Math.ceil(totalUnmatched / XERO_UNMATCHED_PAGE_SIZE));
+  const sourceCounts = new Map(
+    (unmatchedData?.sourceCounts || []).map((row: any) => [row.sourceType, Number(row.count || 0)])
+  );
+  const filteredStart = totalUnmatched > 0 ? page * XERO_UNMATCHED_PAGE_SIZE + 1 : 0;
+  const filteredEnd = totalUnmatched > 0
+    ? Math.min((page + 1) * XERO_UNMATCHED_PAGE_SIZE, totalUnmatched)
+    : 0;
 
   return (
     <Card>
@@ -305,25 +364,85 @@ function UnmatchedXeroTransactionsPanel() {
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-amber-600" />
               Unmatched Xero Transactions
-              {unmatchedRows.length > 0 && <Badge variant="secondary">{unmatchedRows.length}</Badge>}
+              {totalUnmatched > 0 && <Badge variant="secondary">{totalUnmatched}</Badge>}
             </CardTitle>
             <CardDescription>
               Xero lines that were imported but could not be confidently matched to a construction client.
             </CardDescription>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 text-sm">
-              <Switch id="xero-apply-document" checked={applyToDocument} onCheckedChange={setApplyToDocument} />
-              <Label htmlFor="xero-apply-document" className="whitespace-nowrap">Assign whole document</Label>
+          <div className="flex flex-col gap-2 sm:items-end">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
+                <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isFetching ? "animate-spin" : ""}`} />
+                Reload List
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => syncUnmatched.mutate({ maxPages: 50, includeUnmatched: true, incremental: true })}
+                disabled={syncUnmatched.isPending}
+              >
+                {syncUnmatched.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                ) : (
+                  <Activity className="h-3.5 w-3.5 mr-1" />
+                )}
+                Sync Changes
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => syncUnmatched.mutate({ maxPages: 100, includeUnmatched: true, incremental: false })}
+                disabled={syncUnmatched.isPending}
+              >
+                Full Resync
+              </Button>
             </div>
-            <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isLoading}>
-              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isLoading ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
           </div>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_220px_auto] gap-2 lg:items-center">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search reference, contact, description, tracking..."
+              className="pl-8"
+            />
+          </div>
+          <Select value={sourceType} onValueChange={(value) => setSourceType(value as "all" | XeroUnmatchedSource)}>
+            <SelectTrigger>
+              <SelectValue placeholder="Source type" />
+            </SelectTrigger>
+            <SelectContent>
+              {XERO_UNMATCHED_SOURCE_FILTERS.map((filter) => {
+                const count = filter.value === "all"
+                  ? Array.from(sourceCounts.values()).reduce((sum, value) => sum + value, 0)
+                  : sourceCounts.get(filter.value) || 0;
+                return (
+                  <SelectItem key={filter.value} value={filter.value}>
+                    {filter.label} ({count})
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-2 text-sm lg:justify-end">
+            <Switch id="xero-apply-document" checked={applyToDocument} onCheckedChange={setApplyToDocument} />
+            <Label htmlFor="xero-apply-document" className="whitespace-nowrap">Assign whole document</Label>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          {XERO_UNMATCHED_SOURCE_FILTERS.filter((filter) => filter.value !== "all").map((filter) => (
+            <Badge key={filter.value} variant={sourceType === filter.value ? "default" : "outline"} className="font-normal">
+              {filter.label}: {sourceCounts.get(filter.value) || 0}
+            </Badge>
+          ))}
+        </div>
+
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading unmatched transactions...
@@ -337,10 +456,13 @@ function UnmatchedXeroTransactionsPanel() {
         ) : unmatchedRows.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
             <CheckCircle2 className="h-4 w-4 text-green-600" />
-            No unmatched Xero transaction lines in the current construction entity.
+            No unmatched Xero transaction lines match the current filters.
           </div>
         ) : (
           <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Showing {filteredStart}-{filteredEnd} of {totalUnmatched} unmatched line{totalUnmatched === 1 ? "" : "s"}.
+            </p>
             {unmatchedRows.map((row) => {
               const selected = selectedMappings[row.id] || (row.suggestions?.[0]?.id ? String(row.suggestions[0].id) : "none");
               const selectedSuggestion = row.suggestions?.find((suggestion: any) => String(suggestion.id) === selected);
@@ -351,7 +473,7 @@ function UnmatchedXeroTransactionsPanel() {
                   <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">{String(row.sourceType || "").replace("_", " ")}</Badge>
+                        <Badge variant="outline">{formatXeroSourceType(String(row.sourceType || ""))}</Badge>
                         <span className="font-medium">{row.transactionNumber || row.reference || "No reference"}</span>
                         <span className="text-sm text-muted-foreground">{formatShortDate(row.transactionDate)}</span>
                         <span className={Number(row.grossAmount || 0) < 0 ? "font-semibold text-red-600" : "font-semibold"}>
@@ -431,6 +553,29 @@ function UnmatchedXeroTransactionsPanel() {
                 </div>
               );
             })}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-t pt-3 text-sm">
+              <span className="text-muted-foreground">
+                Page {Math.min(page + 1, totalPages)} of {totalPages}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  disabled={page === 0 || isFetching}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+                  disabled={page >= totalPages - 1 || isFetching}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </CardContent>
@@ -724,6 +869,20 @@ export default function XeroSettings() {
     }
   }
 
+  async function handleRefreshStatus() {
+    await Promise.all([
+      refetch(),
+      orgInfo ? utils.xero.getOrganisation.invalidate() : Promise.resolve(),
+      refetchLogs(),
+      refetchMappings(),
+      refetchSyncHealth(),
+      utils.xeroAccounting.getUnmatched.invalidate(),
+      utils.xero.entityConfig.invalidate(),
+      utils.xero.routingRules.invalidate(),
+    ]);
+    toast.success("Xero status refreshed");
+  }
+
   function handleDeleteEntity() {
     if (!entityToDelete) return;
     deleteConnection.mutate({ connectionId: entityToDelete.id });
@@ -986,7 +1145,7 @@ export default function XeroSettings() {
                 <Button variant="ghost" onClick={() => handleConnect("sign_in_only")} disabled={isConnecting}>
                   Settings-only test
                 </Button>
-                <Button variant="outline" onClick={() => refetch()}>
+                <Button variant="outline" onClick={handleRefreshStatus}>
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Refresh Status
                 </Button>

@@ -227,6 +227,41 @@ function syncLogWhere(syncLogId: number, xeroConnectionId: number) {
   return and(eq(xeroSyncLogs.id, syncLogId), eq(xeroSyncLogs.xeroConnectionId, xeroConnectionId));
 }
 
+function clampMarginPercent(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-999.99, Math.min(999.99, value));
+}
+
+async function upsertConstructionBudgetTotal(db: any, jobId: number, budgetCostIncGst: number) {
+  const budget = Number.isFinite(budgetCostIncGst) ? budgetCostIncGst : 0;
+  const [existing] = await db
+    .select({ id: constructionJobFinancials.id, contractValue: constructionJobFinancials.contractValue })
+    .from(constructionJobFinancials)
+    .where(eq(constructionJobFinancials.jobId, jobId))
+    .limit(1);
+
+  const contractValue = parseFloat(String(existing?.contractValue || "0"));
+  const margin = contractValue - budget;
+  const marginPercent = clampMarginPercent(contractValue > 0 ? (margin / contractValue) * 100 : 0);
+
+  const values = {
+    totalCost: budget.toFixed(2),
+    margin: margin.toFixed(2),
+    marginPercent: marginPercent.toFixed(2),
+  };
+
+  if (existing) {
+    await db.update(constructionJobFinancials)
+      .set(values)
+      .where(eq(constructionJobFinancials.jobId, jobId));
+  } else {
+    await db.insert(constructionJobFinancials).values({
+      jobId,
+      ...values,
+    });
+  }
+}
+
 // ─── Router ─────────────────────────────────────────────────────────────────
 
 export const xeroProjectsRouter = router({
@@ -359,12 +394,14 @@ export const xeroProjectsRouter = router({
                   routing
                 );
                 const budgetExGst = (tasksRes.items || []).reduce((s: number, t: any) => s + (t.rate?.value || 0), 0);
+                const budgetIncGst = budgetExGst * 1.1;
                 await db.update(xeroProjectMappings)
-                  .set({ estimatedCost: (budgetExGst * 1.1).toFixed(2) })
+                  .set({ estimatedCost: budgetIncGst.toFixed(2) })
                   .where(and(
                     eq(xeroProjectMappings.id, existing[0].id),
                     eq(xeroProjectMappings.xeroConnectionId, auth.xeroConnectionId)
                   ));
+                await upsertConstructionBudgetTotal(db, existing[0].jobId, budgetIncGst);
               } catch { /* fallback - leave existing value */ }
               processed++;
               continue;
@@ -421,6 +458,9 @@ export const xeroProjectsRouter = router({
             await db.insert(constructionJobFinancials).values({
               jobId,
               contractValue: contractValue.toFixed(2),
+              totalCost: contractValue.toFixed(2),
+              margin: "0",
+              marginPercent: "0",
               materialsCost: "0",
               labourCost: "0",
               otherCost: "0",
@@ -1336,6 +1376,7 @@ async function runFullBatchSyncBackground(
             eq(xeroProjectMappings.id, mapping.id),
             eq(xeroProjectMappings.xeroConnectionId, auth.xeroConnectionId)
           ));
+        await upsertConstructionBudgetTotal(db, mapping.jobId, estimatedCost);
 
         // Recalculate actuals from automatic Accounting API transaction lines.
         const accountingRollup = await rollupXeroAccountingTransactionsForMapping(db, mapping);
