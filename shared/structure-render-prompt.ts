@@ -235,7 +235,7 @@ function buildSiteDescription(input: StructureRenderInput): string | undefined {
     text(spec.specGroundLevel) && `ground level: ${text(spec.specGroundLevel)}`,
     text(spec.specFallOnGround) && `ground fall: ${text(spec.specFallOnGround)}`,
     text(spec.specHouseRoofType) && `existing house roof: ${text(spec.specHouseRoofType)}`,
-    text(spec.specHouseWallType) && `existing house walls: ${text(spec.specHouseWallType)}`,
+    text(spec.specHouseWallType) && `existing house wall: ${text(spec.specHouseWallType)}`,
     text(spec.specSiteAccess) === "1" ? "difficult site access" : undefined,
     text(spec.specSiteRestricted) === "1" ? "restricted work area" : undefined,
     text(spec.specSiteMixed) === "1" ? "mixed-material or angled design" : undefined,
@@ -254,7 +254,7 @@ function buildExistingWorksDescription(spec: Record<string, unknown>): string | 
     demolition.length > 0 ? `demolition works: ${demolition.join(", ")}` : undefined,
     text(spec.specExistingNotes) && `existing house works: ${text(spec.specExistingNotes)}`,
     existing.length > 0 ? `existing house checks: ${existing.join(", ")}` : undefined,
-    text(spec.specCutBackEave) && `cut back eave: ${text(spec.specCutBackEave)}`,
+    text(spec.specCutBackEave) && `cut back eave required: ${text(spec.specCutBackEave)}`,
     text(spec.specRemoveGutterFlash) && `remove gutter/flashing: ${text(spec.specRemoveGutterFlash)}`,
   ].filter(Boolean);
 

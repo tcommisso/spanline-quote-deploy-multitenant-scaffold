@@ -4,6 +4,7 @@
  */
 export const SPEC_SECTIONS = [
   { id: "client", label: "Client & Job Info", category: "general" },
+  { id: "siteDetails", label: "Site Details", category: "general" },
   { id: "dimensions", label: "Dimensions & Structure", category: "structure" },
   { id: "roof", label: "Roof", category: "exterior" },
   { id: "gutter", label: "Gutter & Downpipe", category: "exterior" },

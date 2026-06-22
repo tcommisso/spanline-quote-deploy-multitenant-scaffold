@@ -9,6 +9,7 @@ const HIDDEN_SECTIONS_KEY = "specsheet_hidden_sections_v1";
 // Default section order (matches SECTIONS array)
 export const DEFAULT_SECTION_ORDER = [
   "client",
+  "siteDetails",
   "dimensions",
   "demolition",
   "existingHouse",
@@ -33,19 +34,39 @@ export const DEFAULT_SECTION_ORDER = [
 
 export type SectionId = (typeof DEFAULT_SECTION_ORDER)[number];
 
+export function ensureDefaultSections(order: readonly string[]): string[] {
+  const defaultIds = new Set<string>(DEFAULT_SECTION_ORDER);
+  const result = order.filter(id => defaultIds.has(id));
+
+  DEFAULT_SECTION_ORDER.forEach((id, index) => {
+    if (result.includes(id)) return;
+
+    const previousDefault = DEFAULT_SECTION_ORDER
+      .slice(0, index)
+      .filter(prev => result.includes(prev));
+    const previous = previousDefault[previousDefault.length - 1];
+    if (previous) {
+      result.splice(result.indexOf(previous) + 1, 0, id);
+      return;
+    }
+
+    const next = DEFAULT_SECTION_ORDER
+      .slice(index + 1)
+      .find(nextId => result.includes(nextId));
+    if (next) result.splice(result.indexOf(next), 0, id);
+    else result.push(id);
+  });
+
+  return result;
+}
+
 export function loadSectionOrder(): string[] {
   try {
     const raw = localStorage.getItem(SECTION_ORDER_KEY);
     if (!raw) return [...DEFAULT_SECTION_ORDER];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return [...DEFAULT_SECTION_ORDER];
-    // Ensure all default sections are present (in case new ones were added)
-    const existing = new Set(parsed);
-    const result = [...parsed];
-    for (const id of DEFAULT_SECTION_ORDER) {
-      if (!existing.has(id)) result.push(id);
-    }
-    return result;
+    return ensureDefaultSections(parsed);
   } catch {
     return [...DEFAULT_SECTION_ORDER];
   }

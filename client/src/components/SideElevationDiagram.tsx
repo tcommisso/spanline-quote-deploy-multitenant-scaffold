@@ -1,10 +1,7 @@
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Info, CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+import { Info } from "lucide-react";
 import { useMemo } from "react";
-import { validateBeamSize, type BeamValidationResult } from "../../../shared/beamSizeValidator";
 
 /** Inline tooltip helper for parameter labels */
 function ParamTip({ tip }: { tip: string }) {
@@ -33,33 +30,12 @@ interface SideElevationDiagramProps {
   postSize: string;
   /** Beam size */
   beamSize: string;
-  /** Gutter type */
-  gutterType: string;
-  /** Cut back eave (mm) */
+  /** Whether the existing eave needs to be cut back */
   cutBackEave: string;
-  /** House wall type */
-  houseWallType: string;
   /** Connection type code (FLY, BCH, WFX, GBL, FSS, POP) */
   connectionType?: string;
   /** Job eave overhang in mm (from Roof section) — extends the roof past the post line */
   jobEave?: string;
-  /** Wind category (N1-N4, C1-C4) for beam validation */
-  windCat?: string;
-  /** Beam span in mm (distance between posts along the beam) for validation */
-  beamSpanMm?: number;
-  /** Callbacks */
-  onProjectionChange: (v: string) => void;
-  onBeamHeightChange: (v: string) => void;
-  onRoofFallChange: (v: string) => void;
-  onPostSizeChange: (v: string) => void;
-  onBeamSizeChange: (v: string) => void;
-  onGutterTypeChange: (v: string) => void;
-  onCutBackEaveChange: (v: string) => void;
-  onHouseWallTypeChange: (v: string) => void;
-  /** Callback fired when auto-suggest beam size is accepted — used to also update costing */
-  onBeamSizeAutoSuggest?: (newSize: string) => void;
-  /** Read-only mode */
-  readOnly?: boolean;
 }
 
 /** Map connection code to a human-readable bracket label */
@@ -118,23 +94,9 @@ export default function SideElevationDiagram({
   roofType,
   postSize,
   beamSize,
-  gutterType,
   cutBackEave,
-  houseWallType,
   connectionType,
   jobEave,
-  windCat,
-  beamSpanMm,
-  onProjectionChange,
-  onBeamHeightChange,
-  onRoofFallChange,
-  onPostSizeChange,
-  onBeamSizeChange,
-  onGutterTypeChange,
-  onCutBackEaveChange,
-  onHouseWallTypeChange,
-  onBeamSizeAutoSuggest,
-  readOnly = false,
 }: SideElevationDiagramProps) {
   const geometry = useMemo(() => {
     const viewWidth = 800;
@@ -271,6 +233,11 @@ export default function SideElevationDiagram({
   } = geometry;
 
   const showConnection = !!connectionType && connectionType !== "FSS";
+  const cutBackRaw = cutBackEave.trim().toLowerCase();
+  const cutBackNumeric = Number(cutBackRaw);
+  const cutBackEnabled = ["yes", "y", "true"].includes(cutBackRaw)
+    || (!Number.isNaN(cutBackNumeric) && cutBackNumeric > 0);
+  const cutBackLabel = cutBackEave ? (cutBackEnabled ? "Yes" : "No") : "—";
 
   // Wall visual width in px
   const wallWPx = houseWallThickM * scale;
@@ -278,7 +245,7 @@ export default function SideElevationDiagram({
   return (
     <div className="w-full border rounded-lg bg-white p-3 sm:p-4 overflow-hidden">
       <Label className="text-xs font-medium text-muted-foreground mb-3 block">
-        Side Elevation Diagram {readOnly ? "(from spec sheet)" : "(fillable)"} — True Scale
+        Side Elevation Diagram (from spec sheet) — True Scale
       </Label>
 
       <div className="flex flex-col lg:flex-row gap-4">
@@ -561,11 +528,11 @@ export default function SideElevationDiagram({
             </text>
 
             {/* Cut back eave label */}
-            {cutBackEave && cutBackEave !== "0" && (
+            {cutBackEnabled && (
               <g>
                 <line x1={wallX - wallWPx} y1={eaveY - 12} x2={wallX + 15} y2={eaveY - 12} stroke="#9333ea" strokeWidth="0.8" strokeDasharray="2 2" />
                 <text x={wallX + 18} y={eaveY - 9} fontSize="7" fill="#9333ea" fontFamily="sans-serif">
-                  Cut Back: {cutBackEave}mm
+                  Cut Back: Yes
                 </text>
               </g>
             )}
@@ -592,214 +559,28 @@ export default function SideElevationDiagram({
               <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Parameters</span>
             </div>
             <div className="divide-y">
-              {/* Beam Height */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Beam Height <ParamTip tip="Height from FFL to the underside of the beam at the house wall (high side connection point)" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{beamHeight || "—"} mm</span>
-                ) : (
-                  <Input
-                    className="h-7 text-xs flex-1"
-                    value={beamHeight}
-                    onChange={(e) => onBeamHeightChange(e.target.value)}
-                    placeholder="mm"
-                  />
-                )}
-              </div>
-
               {/* Projection */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Projection <ParamTip tip="Horizontal distance from the house wall to the post line (outer edge)" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{projection || "—"} mm</span>
-                ) : (
-                  <Input
-                    className="h-7 text-xs flex-1"
-                    value={projection}
-                    onChange={(e) => onProjectionChange(e.target.value)}
-                    placeholder="mm"
-                  />
-                )}
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
+                <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Projection <ParamTip tip="Reference from Length in Dimensions & Structure." /></label>
+                <span className="text-xs font-medium text-amber-900">{projection || "—"} mm</span>
               </div>
 
               {/* Roof Pitch */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Roof Pitch <ParamTip tip="Angle of the roof slope in degrees. Determines the fall from eave to gutter." /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{roofFall || "—"}°</span>
-                ) : (
-                  <Select value={roofFall} onValueChange={onRoofFallChange}>
-                    <SelectTrigger className="h-7 text-xs flex-1">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">1°</SelectItem>
-                      <SelectItem value="2">2°</SelectItem>
-                      <SelectItem value="3">3°</SelectItem>
-                      <SelectItem value="5">5°</SelectItem>
-                      <SelectItem value="7">7°</SelectItem>
-                      <SelectItem value="10">10°</SelectItem>
-                      <SelectItem value="12">12°</SelectItem>
-                      <SelectItem value="15">15°</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
+                <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Roof Pitch <ParamTip tip="Reference from Fall in degrees in Dimensions & Structure." /></label>
+                <span className="text-xs font-medium text-amber-900">{roofFall || "—"}°</span>
               </div>
 
               {/* Job Eave (read-only display from Roof section) */}
-              <div className="flex items-center gap-2 px-3 py-2 bg-green-50">
-                <label className="text-xs text-green-700 w-24 shrink-0 flex items-center gap-1">Job Eave <ParamTip tip="Eave overhang width from the Roof section. Extends the roof past the post line. Edit in Dimensions & Structure section." /></label>
-                <span className="text-xs font-medium text-green-800">{eaveMm > 0 ? `${eaveMm}mm` : "None"}</span>
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
+                <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Job Eave <ParamTip tip="Reference from Job Eave in Dimensions & Structure." /></label>
+                <span className="text-xs font-medium text-amber-900">{eaveMm > 0 ? `${eaveMm}mm` : "None"}</span>
               </div>
 
               {/* Cut Back Eave */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Cut Back Eave <ParamTip tip="Distance the existing house eave is cut back to allow the new roof to connect flush" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{cutBackEave || "—"} mm</span>
-                ) : (
-                  <Input
-                    className="h-7 text-xs flex-1"
-                    value={cutBackEave}
-                    onChange={(e) => onCutBackEaveChange(e.target.value)}
-                    placeholder="mm"
-                  />
-                )}
-              </div>
-
-              {/* Wall Type */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Wall Type <ParamTip tip="Construction type of the existing house wall where the structure attaches" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{houseWallType || "—"}</span>
-                ) : (
-                  <Select value={houseWallType} onValueChange={onHouseWallTypeChange}>
-                    <SelectTrigger className="h-7 text-xs flex-1">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Brick Veneer">Brick Veneer</SelectItem>
-                      <SelectItem value="Double Brick">Double Brick</SelectItem>
-                      <SelectItem value="Weatherboard">Weatherboard</SelectItem>
-                      <SelectItem value="Hebel">Hebel</SelectItem>
-                      <SelectItem value="Rendered">Rendered</SelectItem>
-                      <SelectItem value="Colorbond">Colorbond</SelectItem>
-                      <SelectItem value="Other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-
-              {/* Beam Size — with RB100 validation colour coding */}
-              {(() => {
-                const validation: BeamValidationResult = (beamSize && beamSpanMm && windCat)
-                  ? validateBeamSize(beamSize, beamSpanMm, parseFloat(projection) || 3000, windCat)
-                  : { status: "unknown", colour: "#9ca3af", borderClass: "border-gray-300", bgClass: "", textClass: "text-gray-500", label: "N/A", tooltip: "Set beam span and wind category to validate.", maxSpanMm: null, utilisation: null };
-                const bgTint = validation.status === "pass" ? "bg-green-50" : validation.status === "warning" ? "bg-amber-50" : validation.status === "fail" ? "bg-red-50" : "";
-                return (
-                  <div className={`flex items-center gap-2 px-3 py-2 ${bgTint}`}>
-                    <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Beam Size <ParamTip tip="Cross-section dimensions of the main beam (width × depth in mm). Colour indicates RB100 compliance." /></label>
-                    {readOnly ? (
-                      <span className="text-xs font-medium">{beamSize || "—"}</span>
-                    ) : (
-                      <Select value={beamSize} onValueChange={onBeamSizeChange}>
-                        <SelectTrigger className={`h-7 text-xs flex-1 ${validation.borderClass}`}>
-                          <SelectValue placeholder="Select" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="75x50">75x50</SelectItem>
-                          <SelectItem value="100x50">100x50</SelectItem>
-                          <SelectItem value="125x50">125x50</SelectItem>
-                          <SelectItem value="150x50">150x50</SelectItem>
-                          <SelectItem value="175x50">175x50</SelectItem>
-                          <SelectItem value="200x50">200x50</SelectItem>
-                          <SelectItem value="250x50">250x50</SelectItem>
-                          <SelectItem value="300x50">300x50</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    )}
-                    {/* Validation status badge with tooltip */}
-                    {validation.status !== "unknown" && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${validation.textClass} ${validation.bgClass} border ${validation.borderClass} cursor-help flex items-center gap-0.5`}>
-                            {validation.status === "pass" && <CheckCircle2 className="h-3 w-3" />}
-                            {validation.status === "warning" && <AlertTriangle className="h-3 w-3" />}
-                            {validation.status === "fail" && <XCircle className="h-3 w-3" />}
-                            {validation.label}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="max-w-[280px] text-xs">
-                          <p>{validation.tooltip}</p>
-                          {validation.suggestion && <p className="mt-1 font-semibold">{validation.suggestion}</p>}
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
-                    {/* Auto-suggest: one-click accept recommended beam size */}
-                    {!readOnly && (validation.status === "fail" || validation.status === "warning") && validation.suggestion && (() => {
-                      // Extract the recommended beam size from the suggestion string
-                      const match = validation.suggestion.match(/(\d+x\d+)/);
-                      const recommended = match ? match[1] : null;
-                      if (!recommended || recommended === beamSize) return null;
-                      return (
-                        <button
-                          type="button"
-                          className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-300 hover:bg-blue-200 transition-colors whitespace-nowrap"
-                          onClick={() => {
-                            onBeamSizeChange(recommended);
-                            onBeamSizeAutoSuggest?.(recommended);
-                          }}
-                          title={`Accept recommended beam size: ${recommended}`}
-                        >
-                          Use {recommended}
-                        </button>
-                      );
-                    })()}
-                  </div>
-                );
-              })()}
-
-              {/* Post Size */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Post Size <ParamTip tip="Cross-section dimensions of the support posts (square section in mm)" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{postSize || "—"}</span>
-                ) : (
-                  <Select value={postSize} onValueChange={onPostSizeChange}>
-                    <SelectTrigger className="h-7 text-xs flex-1">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="75x75">75x75</SelectItem>
-                      <SelectItem value="90x90">90x90</SelectItem>
-                      <SelectItem value="100x100">100x100</SelectItem>
-                      <SelectItem value="125x125">125x125</SelectItem>
-                      <SelectItem value="150x150">150x150</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-
-              {/* Gutter Type */}
-              <div className="flex items-center gap-2 px-3 py-2">
-                <label className="text-xs text-slate-600 w-24 shrink-0 flex items-center gap-1">Gutter <ParamTip tip="Gutter profile type at the low end of the roof (collects rainwater)" /></label>
-                {readOnly ? (
-                  <span className="text-xs font-medium">{gutterType || "—"}</span>
-                ) : (
-                  <Select value={gutterType} onValueChange={onGutterTypeChange}>
-                    <SelectTrigger className="h-7 text-xs flex-1">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Quad">Quad</SelectItem>
-                      <SelectItem value="Half Round">Half Round</SelectItem>
-                      <SelectItem value="Square">Square</SelectItem>
-                      <SelectItem value="OG">OG</SelectItem>
-                      <SelectItem value="Fascia">Fascia</SelectItem>
-                      <SelectItem value="None">None</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
+              <div className="flex items-center gap-2 px-3 py-2 bg-amber-50">
+                <label className="text-xs text-amber-700 w-24 shrink-0 flex items-center gap-1">Cut Back Eave <ParamTip tip="Reference from Cut Back Eave in Dimensions & Structure." /></label>
+                <span className="text-xs font-medium text-amber-900">{cutBackLabel}</span>
               </div>
 
               {/* Connection Type (read-only display) */}
@@ -821,9 +602,7 @@ export default function SideElevationDiagram({
       </div>
 
       <p className="text-[10px] text-muted-foreground mt-2">
-        {readOnly
-          ? "Values from the original spec sheet. Diagram drawn to true scale — proportions reflect actual dimensions."
-          : "Fill in the fields on the right. Diagram drawn to true scale — proportions update dynamically as values change."}
+        Reference values from Dimensions & Structure. Diagram drawn to true scale — proportions reflect actual dimensions.
       </p>
     </div>
   );

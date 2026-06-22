@@ -16,7 +16,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import SpecSheetSidebar, { type SectionMeta } from "@/components/SpecSheetSidebar";
-import { loadSectionOrder, saveSectionOrder, loadHiddenSections, saveHiddenSections, resetAllPreferences, DEFAULT_SECTION_ORDER } from "@/lib/specSheetPrefs";
+import { loadSectionOrder, saveSectionOrder, loadHiddenSections, saveHiddenSections, resetAllPreferences, DEFAULT_SECTION_ORDER, ensureDefaultSections } from "@/lib/specSheetPrefs";
 import { useState, useEffect, useRef, useCallback, useMemo, type SetStateAction } from "react";
 import { toast } from "sonner";
 import { ColourSwatch, ColourSelectPreview, getColourHex, parseCombinationColour } from "@/components/ColourSwatch";
@@ -33,7 +33,6 @@ import PostPositionDiagram from "@/components/PostPositionDiagram";
 import BeamPositionPlan from "@/components/BeamPositionPlan";
 import PlanViewDiagram from "@/components/PlanViewDiagram";
 import SitePlanPreviewDialog from "@/components/SitePlanPreviewDialog";
-import CrossSectionDiagram from "@/components/CrossSectionDiagram";
 import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
@@ -53,6 +52,7 @@ const SECTION_CATEGORIES = [
 
 const SECTIONS = [
   { id: "client", label: "Client & Job Info", requiredFields: [] as string[], category: "general" },
+  { id: "siteDetails", label: "Site Details", requiredFields: [] as string[], category: "general" },
   { id: "dimensions", label: "Dimensions & Structure", requiredFields: ["specWidth", "specLength"], category: "structure" },
   { id: "roof", label: "Roof", requiredFields: [] as string[], category: "exterior" },
   { id: "gutter", label: "Gutter & Downpipe", requiredFields: [] as string[], category: "exterior" },
@@ -75,6 +75,21 @@ const SECTIONS = [
   { id: "floor", label: "Internal Floor", requiredFields: [] as string[], category: "interior" },
   { id: "history", label: "Revision History", requiredFields: [] as string[], category: "general" },
 ] as const;
+
+const HOUSE_ROOF_TYPE_OPTIONS = ["Tile", "Metal", "Flat", "Concrete", "Slate", "Other"];
+const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered", "Weatherboard", "Hebel", "Cladding", "Concrete Block", "Other"];
+const YES_NO_OPTIONS = ["Yes", "No"];
+
+function normalizeCutBackEaveOption(value?: string | null): string {
+  const raw = (value || "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (["yes", "y", "true"].includes(lower)) return "Yes";
+  if (["no", "n", "false", "na", "n/a"].includes(lower)) return "No";
+  const numeric = Number(raw);
+  if (!Number.isNaN(numeric)) return numeric > 0 ? "Yes" : "No";
+  return "";
+}
 
 // HOW tiers (default fallback if not configured in master data)
 const HOW_TIERS = [
@@ -473,7 +488,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     if (prefsLoading || prefsInitialized) return;
     if (quotePrefs) {
       if (quotePrefs.sectionOrder && quotePrefs.sectionOrder.length > 0) {
-        setSectionOrder(quotePrefs.sectionOrder);
+        setSectionOrder(ensureDefaultSections(quotePrefs.sectionOrder));
       }
       if (quotePrefs.hiddenSections) {
         setHiddenSections(new Set(quotePrefs.hiddenSections));
@@ -542,7 +557,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     const template = sectionTemplatesList?.find(t => t.id === templateId);
     if (!template) return;
     const hidden = new Set<string>(template.hiddenSections as string[]);
-    const order = (template.sectionOrder as string[] | null) || [...DEFAULT_SECTION_ORDER];
+    const order = ensureDefaultSections((template.sectionOrder as string[] | null) || [...DEFAULT_SECTION_ORDER]);
     setSectionOrder(order);
     setHiddenSections(hidden);
     setActiveTemplateId(templateId);
@@ -565,7 +580,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
         toast.error("That quote has no custom section layout to copy");
         return;
       }
-      const order = prefs.sectionOrder?.length ? prefs.sectionOrder : [...DEFAULT_SECTION_ORDER];
+      const order = ensureDefaultSections(prefs.sectionOrder?.length ? prefs.sectionOrder : [...DEFAULT_SECTION_ORDER]);
       const hidden = new Set<string>(prefs.hiddenSections || []);
       setSectionOrder(order);
       setHiddenSections(hidden);
@@ -796,6 +811,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   }, [quote, leadData]);
 
   const update = useCallback((key: string, value: string) => setForm(prev => ({ ...prev, [key]: value })), []);
+  const cutBackEaveValue = normalizeCutBackEaveOption(form.specCutBackEave);
 
   // Auto-set Box Gutter Overflow to "Yes" when gutter type includes "box"
   useEffect(() => {
@@ -989,6 +1005,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const sectionHasData = useCallback((sectionId: string): boolean => {
     const sectionFieldPrefixes: Record<string, string[]> = {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
+      siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
       dimensions: ["specWidth", "specLength", "specFloorHeight"],
       brackets: ["specAttachmentMethod", "specFasciaBrackets", "specBracketColour"],
       posts: ["specPostsNumber", "specPostsType"],
@@ -1414,6 +1431,62 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
           )}
 
 
+          {/* Site Details */}
+          {isSectionVisible("siteDetails") && (
+          <AccordionItem value="siteDetails" id="spec-section-siteDetails" className="border rounded-lg px-4">
+            <AccordionTrigger className="text-sm font-medium">Site Details</AccordionTrigger>
+            <AccordionContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteAccess === "1"} onChange={(e) => update("specSiteAccess", e.target.checked ? "1" : "")} />
+                  <div>
+                    <span className="text-xs font-medium">Access difficult</span>
+                    <p className="text-[10px] text-muted-foreground">e.g. delivery time, lack of space</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteRestricted === "1"} onChange={(e) => update("specSiteRestricted", e.target.checked ? "1" : "")} />
+                  <div>
+                    <span className="text-xs font-medium">Restricted work times</span>
+                    <p className="text-[10px] text-muted-foreground">e.g. client always needs to be home, Body Corporate rules</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteConditions === "1"} onChange={(e) => update("specSiteConditions", e.target.checked ? "1" : "")} />
+                  <div>
+                    <span className="text-xs font-medium">Site conditions</span>
+                    <p className="text-[10px] text-muted-foreground">e.g. other trades on site, not much room</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteOther === "1"} onChange={(e) => update("specSiteOther", e.target.checked ? "1" : "")} />
+                  <div>
+                    <span className="text-xs font-medium">Other</span>
+                    <p className="text-[10px] text-muted-foreground">Other site-specific considerations</p>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteMixed === "1"} onChange={(e) => update("specSiteMixed", e.target.checked ? "1" : "")} />
+                  <div>
+                    <span className="text-xs font-medium">Mixed materials/angles design</span>
+                    <p className="text-[10px] text-muted-foreground">e.g. multiple roof materials, complex angles</p>
+                  </div>
+                </label>
+              </div>
+              <div className="mt-3">
+                <Label className="text-xs text-muted-foreground mb-1 block">Site Notes</Label>
+                <textarea
+                  className="w-full h-20 px-3 py-2 rounded-md border bg-background text-sm resize-y"
+                  value={form.specSiteNotes || ""}
+                  onChange={(e) => update("specSiteNotes", e.target.value)}
+                  placeholder="Additional site details..."
+                />
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+          )}
+
+
           {/* Dimensions & Structure */}
           {isSectionVisible("dimensions") && (
           <AccordionItem value="dimensions" id="spec-section-dimensions" className="border rounded-lg px-4">
@@ -1473,66 +1546,17 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       : <span className="text-muted-foreground italic">Enter width & length</span>}
                   </div>
                 </div>
-                <Field label="Floor Height" suffix="mm" placeholder="e.g. 2400" min={1800} max={5000} value={form.specFloorHeight || ""} onChange={(v) => update("specFloorHeight", v)} />
+                <SelectField label="Existing Roof Type of house" value={form.specHouseRoofType || ""} onChange={(v) => update("specHouseRoofType", v)} options={HOUSE_ROOF_TYPE_OPTIONS} />
+                <SelectField label="Existing House Wall" value={form.specHouseWallType || ""} onChange={(v) => update("specHouseWallType", v)} options={EXISTING_HOUSE_WALL_OPTIONS} />
+                <Field label="Floor Height" suffix="mm" placeholder="e.g. 2400" min={0} max={5000} value={form.specFloorHeight || ""} onChange={(v) => update("specFloorHeight", v)} />
                 <Field label="Roof to Floor" suffix="mm" placeholder="e.g. 2700" min={2100} max={6000} value={form.specRoofToFloor || ""} onChange={(v) => update("specRoofToFloor", v)} />
                 <Field label="Floor to Ground" suffix="mm" placeholder="e.g. 300" min={0} max={3000} value={form.specFloorToGround || ""} onChange={(v) => update("specFloorToGround", v)} />
                 <Field label="House Eave" suffix="mm" placeholder="e.g. 600" min={0} max={1500} value={form.specHouseEave || ""} onChange={(v) => update("specHouseEave", v)} />
+                <SelectField label="Cut Back Eave" value={cutBackEaveValue} onChange={(v) => update("specCutBackEave", v)} options={YES_NO_OPTIONS} />
                 <Field label="Job Eave" suffix="mm" placeholder="e.g. 600" min={0} max={1500} value={form.specJobEave || ""} onChange={(v) => update("specJobEave", v)} />
                 <SelectField label="Wind Category" value={form.specWindCat || ""} onChange={(v) => update("specWindCat", v)} options={["N1", "N2", "N3", "N4", "C1", "C2", "C3", "C4"]} />
                 <SelectField label="Cp'n" value={form.specCpn || ""} onChange={(v) => update("specCpn", v)} options={["0.45 — Open 3 Sides (Single)", "0.7 — Open 3 Sides (Double)", "1.0 — Open 2 Sides", "1.1 — Screen Enclosed", "1.2 — Open 1 Side / Fully Enclosed"]} />
                 <Field label="Fall in degrees" suffix="°" placeholder="e.g. 2" min={0.5} max={15} value={form.specFall || ""} onChange={(v) => update("specFall", v)} />
-              </div>
-
-              {/* Cross-Section Diagram with Annotations */}
-              <div className="mt-5 border-t pt-4">
-                <DiagramAnnotation
-                  annotations={(() => {
-                    try {
-                      const all = JSON.parse(form.specDiagramAnnotations || "[]") as (Annotation & { diagram?: string })[];
-                      return all.filter(a => a.diagram === "cross-section");
-                    } catch { return []; }
-                  })()}
-                  onChange={(anns) => {
-                    try {
-                      const all = JSON.parse(form.specDiagramAnnotations || "[]") as (Annotation & { diagram?: string })[];
-                      const others = all.filter(a => a.diagram !== "cross-section");
-                      const tagged = anns.map(a => ({ ...a, diagram: "cross-section" }));
-                      update("specDiagramAnnotations", JSON.stringify([...others, ...tagged]));
-                    } catch {
-                      update("specDiagramAnnotations", JSON.stringify(anns.map(a => ({ ...a, diagram: "cross-section" }))));
-                    }
-                  }}
-                >
-                  <CrossSectionDiagram
-                    roofPitch={form.specFall || ""}
-                    houseRoofType={form.specHouseRoofType || ""}
-                    cutBackEave={form.specCutBackEave || ""}
-                    removeGutterFlash={form.specRemoveGutterFlash || ""}
-                    houseWallType={form.specHouseWallType || ""}
-                    fallOnGround={form.specFallOnGround || ""}
-                    groundLevel={form.specGroundLevel || ""}
-                    roofOverhang={form.specRoofOverhang || ""}
-                    onRoofPitchChange={(v) => update("specFall", v)}
-                    onHouseRoofTypeChange={(v) => update("specHouseRoofType", v)}
-                    onCutBackEaveChange={(v) => update("specCutBackEave", v)}
-                    onRemoveGutterFlashChange={(v) => update("specRemoveGutterFlash", v)}
-                    onHouseWallTypeChange={(v) => update("specHouseWallType", v)}
-                    onFallOnGroundChange={(v) => update("specFallOnGround", v)}
-                    onGroundLevelChange={(v) => update("specGroundLevel", v)}
-                    onRoofOverhangChange={(v) => update("specRoofOverhang", v)}
-                    connectionType={(() => {
-                      const method = form.specAttachmentMethod || "";
-                      if (!method || method === "None") return undefined;
-                      if (form.specFreeStanding === "Yes") return "FSS";
-                      if (parseInt(form.specPopupBrackets || "0") > 0) return "POP";
-                      if (parseInt(form.specGableBrackets || "0") > 0) return "GBL";
-                      if (parseInt(form.specExtendaBrackets || "0") > 0) return "FLY";
-                      if (form.specWallFixingBeam || form.specWallFixingBracket) return "WFX";
-                      if (parseInt(form.specFasciaBrackets || "0") > 0) return "BCH";
-                      return "BCH";
-                    })()}
-                  />
-                </DiagramAnnotation>
               </div>
 
               {/* Side Elevation Diagram with Annotations */}
@@ -1562,12 +1586,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     roofType={form.specRoofType || "Flat"}
                     postSize={form.specPostsType || ""}
                     beamSize={form.specBeamSize || ""}
-                    gutterType={form.specGutterType || ""}
-                    cutBackEave={form.specCutBackEave || ""}
-                    houseWallType={form.specHouseWallType || ""}
+                    cutBackEave={cutBackEaveValue}
                     jobEave={form.specJobEave || ""}
-                    windCat={form.specWindCat || ""}
-                    beamSpanMm={parseFloat(form.specPostSpacing || "0") || (parseFloat(form.specWidth || "0") * 1000) || undefined}
                     connectionType={(() => {
                       const method = form.specAttachmentMethod || "";
                       if (!method || method === "None") return undefined;
@@ -1579,70 +1599,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       if (parseInt(form.specFasciaBrackets || "0") > 0) return "BCH";
                       return "BCH";
                     })()}
-                    onProjectionChange={(v) => update("specLength", String(parseFloat(v) / 1000))}
-                    onBeamHeightChange={(v) => update("specFloorHeight", v)}
-                    onRoofFallChange={(v) => update("specFall", v)}
-                    onPostSizeChange={(v) => update("specPostsType", v)}
-                    onBeamSizeChange={(v) => update("specBeamSize", v)}
-                    onGutterTypeChange={(v) => update("specGutterType", v)}
-                    onCutBackEaveChange={(v) => update("specCutBackEave", v)}
-                    onHouseWallTypeChange={(v) => update("specHouseWallType", v)}
-                    onBeamSizeAutoSuggest={(newSize) => {
-                      updateBeamCostMutation.mutate({ quoteId, newBeamSize: newSize });
-                    }}
                   />
                 </DiagramAnnotation>
-              </div>
-
-              {/* Site Details */}
-              <div className="mt-5 border-t pt-4">
-                <Label className="text-sm font-medium mb-3 block">Site Details</Label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
-                    <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteAccess === "1"} onChange={(e) => update("specSiteAccess", e.target.checked ? "1" : "")} />
-                    <div>
-                      <span className="text-xs font-medium">Access difficult</span>
-                      <p className="text-[10px] text-muted-foreground">e.g. delivery time, lack of space</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
-                    <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteRestricted === "1"} onChange={(e) => update("specSiteRestricted", e.target.checked ? "1" : "")} />
-                    <div>
-                      <span className="text-xs font-medium">Restricted work times</span>
-                      <p className="text-[10px] text-muted-foreground">e.g. client always needs to be home, Body Corporate rules</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
-                    <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteConditions === "1"} onChange={(e) => update("specSiteConditions", e.target.checked ? "1" : "")} />
-                    <div>
-                      <span className="text-xs font-medium">Site conditions</span>
-                      <p className="text-[10px] text-muted-foreground">e.g. other trades on site, not much room</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
-                    <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteOther === "1"} onChange={(e) => update("specSiteOther", e.target.checked ? "1" : "")} />
-                    <div>
-                      <span className="text-xs font-medium">Other</span>
-                      <p className="text-[10px] text-muted-foreground">Other site-specific considerations</p>
-                    </div>
-                  </label>
-                  <label className="flex items-start gap-2 p-2 rounded-md bg-secondary/50 cursor-pointer">
-                    <input type="checkbox" className="mt-0.5 rounded border-border" checked={form.specSiteMixed === "1"} onChange={(e) => update("specSiteMixed", e.target.checked ? "1" : "")} />
-                    <div>
-                      <span className="text-xs font-medium">Mixed materials/angles design</span>
-                      <p className="text-[10px] text-muted-foreground">e.g. multiple roof materials, complex angles</p>
-                    </div>
-                  </label>
-                </div>
-                <div className="mt-3">
-                  <Label className="text-xs text-muted-foreground mb-1 block">Site Notes</Label>
-                  <textarea
-                    className="w-full h-20 px-3 py-2 rounded-md border bg-background text-sm resize-y"
-                    value={form.specSiteNotes || ""}
-                    onChange={(e) => update("specSiteNotes", e.target.value)}
-                    placeholder="Additional site details..."
-                  />
-                </div>
               </div>
             </AccordionContent>
           </AccordionItem>
@@ -3835,6 +3793,20 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               </div>
             </div>
 
+            {(form.specSiteAccess || form.specSiteRestricted || form.specSiteConditions || form.specSiteOther || form.specSiteMixed || form.specSiteNotes) && (
+              <div className="spec-section">
+                <h3>Site Details</h3>
+                <div className="text-[10px] space-y-0.5">
+                  {form.specSiteAccess === "1" && <p>✓ Access difficult</p>}
+                  {form.specSiteRestricted === "1" && <p>✓ Restricted work times</p>}
+                  {form.specSiteConditions === "1" && <p>✓ Site conditions</p>}
+                  {form.specSiteOther === "1" && <p>✓ Other</p>}
+                  {form.specSiteMixed === "1" && <p>✓ Mixed materials/angles design</p>}
+                  {form.specSiteNotes && <p className="italic mt-1">Notes: {form.specSiteNotes}</p>}
+                </div>
+              </div>
+            )}
+
             {/* Dimensions */}
             <div className="spec-section">
               <h3>Preliminary</h3>
@@ -3843,29 +3815,19 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Length (m)" value={form.specLength} />
                 <PrintRow label="Area (m²)" value={form.specWidth && form.specLength ? (parseFloat(form.specWidth) * parseFloat(form.specLength)).toFixed(2) : ""} />
                 <PrintRow label="Perimeter (m)" value={form.specWidth && form.specLength ? (2 * parseFloat(form.specWidth) + 2 * parseFloat(form.specLength)).toFixed(2) : ""} />
+                <PrintRow label="Existing Roof Type of house" value={form.specHouseRoofType} />
+                <PrintRow label="Existing House Wall" value={form.specHouseWallType} />
                 <PrintRow label="Floor Height" value={form.specFloorHeight} />
                 <PrintRow label="Roof to Floor" value={form.specRoofToFloor} />
                 <PrintRow label="Floor to Ground" value={form.specFloorToGround} />
                 <PrintRow label="House Eave" value={form.specHouseEave} />
+                <PrintRow label="Cut Back Eave" value={cutBackEaveValue || form.specCutBackEave} />
                 <PrintRow label="Job Eave" value={form.specJobEave} />
                 <PrintRow label="Wind Cat" value={form.specWindCat} />
                 <PrintRow label="Cp'n" value={form.specCpn} />
                 <PrintRow label="Fall" value={form.specFall} />
                 <PrintRow label="Attachment" value={form.specAttachmentMethod} />
               </div>
-              {(form.specSiteAccess || form.specSiteRestricted || form.specSiteConditions || form.specSiteOther || form.specSiteMixed || form.specSiteNotes) && (
-                <div className="mt-2 pt-2 border-t">
-                  <p className="text-[10px] font-semibold mb-1">Site Details</p>
-                  <div className="text-[10px] space-y-0.5">
-                    {form.specSiteAccess === "1" && <p>✓ Access difficult</p>}
-                    {form.specSiteRestricted === "1" && <p>✓ Restricted work times</p>}
-                    {form.specSiteConditions === "1" && <p>✓ Site conditions</p>}
-                    {form.specSiteOther === "1" && <p>✓ Other</p>}
-                    {form.specSiteMixed === "1" && <p>✓ Mixed materials/angles design</p>}
-                    {form.specSiteNotes && <p className="italic mt-1">Notes: {form.specSiteNotes}</p>}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Brackets - only show in print when Attachment Method is not None */}
