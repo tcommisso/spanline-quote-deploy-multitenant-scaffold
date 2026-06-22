@@ -819,9 +819,10 @@ function DashboardLayoutContent({
     (items: MenuItem[]) =>
       items.filter(item => {
         if (!isDefaultTenant && item.path === "/admin/api-health") return false;
+        if (normalizedRole === "driver" && item.path === "/manufacturing") return false;
         return canAccessPath(item.path);
       }),
-    [canAccessPath, isDefaultTenant],
+    [canAccessPath, isDefaultTenant, normalizedRole],
   );
   const visibleCrmItems = useMemo(() => filterAccessibleItems(crmItems), [filterAccessibleItems]);
   const visibleSalesItems = useMemo(() => filterAccessibleItems(salesItems), [filterAccessibleItems]);

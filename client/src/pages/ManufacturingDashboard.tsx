@@ -1,9 +1,17 @@
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { Link } from "wouter";
+import { normalizeUserRole } from "@shared/const";
+import { Link, Redirect } from "wouter";
 import { Factory, ClipboardList, CalendarDays, BarChart3, Receipt, AlertTriangle, CheckCircle2, Clock, Package } from "lucide-react";
 
 export default function ManufacturingDashboard() {
-  const { data: summary, isLoading } = trpc.manufacturing.reports.summary.useQuery();
+  const { user } = useAuth();
+  const isDriver = normalizeUserRole(user?.role) === "driver";
+  const { data: summary } = trpc.manufacturing.reports.summary.useQuery(undefined, {
+    enabled: !isDriver,
+  });
+
+  if (isDriver) return <Redirect to="/manufacturing/dispatch" />;
 
   return (
     <div className="space-y-6">
