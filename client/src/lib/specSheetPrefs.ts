@@ -11,32 +11,90 @@ export const DEFAULT_SECTION_ORDER = [
   "client",
   "siteDetails",
   "dimensions",
-  "demolition",
-  "existingHouse",
-  "brackets",
   "roof",
-  "gutter",
+  "brackets",
   "beams",
   "posts",
-  "sitePlan",
-  "concreting",
-  "stairs",
-  "adjustments",
-  "additionalCosts",
-  "balustrade",
-  "electrical",
-  "plumbing",
+  "gutter",
   "walls",
   "windows",
+  "demolition",
+  "existingHouse",
+  "additionalCosts",
   "floor",
+  "concreting",
+  "electrical",
+  "plumbing",
+  "balustrade",
+  "stairs",
+  "sitePlan",
+  "adjustments",
   "history",
 ] as const;
 
 export type SectionId = (typeof DEFAULT_SECTION_ORDER)[number];
 
+const LEGACY_DEFAULT_SECTION_ORDERS = [
+  [
+    "client",
+    "dimensions",
+    "demolition",
+    "existingHouse",
+    "brackets",
+    "roof",
+    "gutter",
+    "beams",
+    "posts",
+    "sitePlan",
+    "concreting",
+    "stairs",
+    "adjustments",
+    "additionalCosts",
+    "balustrade",
+    "electrical",
+    "plumbing",
+    "walls",
+    "windows",
+    "floor",
+    "history",
+  ],
+  [
+    "client",
+    "siteDetails",
+    "dimensions",
+    "demolition",
+    "existingHouse",
+    "brackets",
+    "roof",
+    "gutter",
+    "beams",
+    "posts",
+    "sitePlan",
+    "concreting",
+    "stairs",
+    "adjustments",
+    "additionalCosts",
+    "balustrade",
+    "electrical",
+    "plumbing",
+    "walls",
+    "windows",
+    "floor",
+    "history",
+  ],
+] as const;
+
+function sameOrder(order: readonly string[], candidate: readonly string[]): boolean {
+  return order.length === candidate.length && order.every((id, index) => id === candidate[index]);
+}
+
 export function ensureDefaultSections(order: readonly string[]): string[] {
   const defaultIds = new Set<string>(DEFAULT_SECTION_ORDER);
   const result = order.filter(id => defaultIds.has(id));
+
+  if (LEGACY_DEFAULT_SECTION_ORDERS.some(legacyOrder => sameOrder(result, legacyOrder))) {
+    return [...DEFAULT_SECTION_ORDER];
+  }
 
   DEFAULT_SECTION_ORDER.forEach((id, index) => {
     if (result.includes(id)) return;
