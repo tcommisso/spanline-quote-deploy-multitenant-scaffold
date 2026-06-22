@@ -263,7 +263,6 @@ const adminGroups: AdminGroup[] = [
     icon: Building2,
     items: [
       { icon: Building2, label: "Company Settings", path: "/admin/company-settings" },
-      { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
       { icon: Palette, label: "Colour Scheme", path: "/admin/colour-scheme" },
       { icon: Palette, label: "Colours", path: "/admin/master-data/general/colour" },
       { icon: Palette, label: "Colour Groups", path: "/admin/master-data/general/colour-groups" },
@@ -274,10 +273,11 @@ const adminGroups: AdminGroup[] = [
     ],
   },
   {
-    label: "Users & Access",
+    label: "People & Portals",
     icon: Users,
     items: [
       { icon: Users, label: "People", path: "/admin/people" },
+      { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
       { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
       { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
       { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },
