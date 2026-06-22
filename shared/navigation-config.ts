@@ -66,7 +66,7 @@ const DEFAULT_MOBILE_NAV_BY_ROLE: Record<UserRole, MobileNavItemId[]> = {
   design_adviser: ["app_central", "crm", "sales", "inbox"],
   office_user: ["app_central", "crm", "construction", "inbox"],
   construction_user: ["app_central", "construction", "approvals", "inbox"],
-  driver: ["app_central", "manufacturing", "support"],
+  driver: ["app_central", "manufacturing"],
   warehouse: ["app_central", "inventory", "manufacturing", "inbox"],
   user: ["app_central", "support"],
 };
