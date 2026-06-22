@@ -3,7 +3,6 @@
  */
 import { useState, useRef, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -150,8 +149,8 @@ function ContactSearchInput({
 }
 
 export default function InboxCompose() {
-  const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const fromAddressTouchedRef = useRef(false);
   const [toEmails, setToEmails] = useState<string[]>([]);
   const [ccEmails, setCcEmails] = useState<string[]>([]);
   const [recipientNamesByEmail, setRecipientNamesByEmail] = useState<Record<string, string>>({});
@@ -162,6 +161,7 @@ export default function InboxCompose() {
   const [includeSignature, setIncludeSignature] = useState(true);
   const [includeRateUs, setIncludeRateUs] = useState(false);
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
+  const { data: composeDefaults } = trpc.inbox.composeDefaults.useQuery();
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
   const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
   const composeMut = trpc.inbox.compose.useMutation({
@@ -171,6 +171,13 @@ export default function InboxCompose() {
     },
     onError: (err) => toast.error(`Failed to send email: ${err.message}`),
   });
+
+  useEffect(() => {
+    if (fromAddressTouchedRef.current) return;
+    if (composeDefaults?.fromAddressId) {
+      setFromAddressId(String(composeDefaults.fromAddressId));
+    }
+  }, [composeDefaults?.fromAddressId]);
 
   function handleSend() {
     if (toEmails.length === 0) {
@@ -246,7 +253,7 @@ export default function InboxCompose() {
           {addresses && addresses.length > 0 && (
             <div className="flex items-center gap-3">
               <Label className="w-16 text-sm text-muted-foreground shrink-0">From</Label>
-              <Select value={fromAddressId} onValueChange={setFromAddressId}>
+              <Select value={fromAddressId} onValueChange={(value) => { fromAddressTouchedRef.current = true; setFromAddressId(value); }}>
                 <SelectTrigger className="flex-1">
                   <SelectValue placeholder="Select from address" />
                 </SelectTrigger>

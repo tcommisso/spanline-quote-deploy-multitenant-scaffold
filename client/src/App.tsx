@@ -87,6 +87,7 @@ const NotificationLog = lazy(() => import("./pages/admin/NotificationLog"));
 const GeneralThreshold = lazy(() => import("./pages/admin/GeneralThreshold"));
 const DescriptionsOfWork = lazy(() => import("./pages/admin/DescriptionsOfWork"));
 const SmsTemplates = lazy(() => import("./pages/admin/SmsTemplates"));
+const ProposalLibrary = lazy(() => import("./pages/admin/ProposalLibrary"));
 const SupplierCategoriesPage = lazy(() => import("./pages/admin/SupplierCategoriesPage"));
 const AIRenderPricingSettings = lazy(() => import("./pages/admin/AIRenderPricingSettings"));
 const AdminImageLibrary = lazy(() => import("./pages/AdminImageLibrary"));
@@ -409,6 +410,7 @@ function MainRouter() {
         <Route path="/admin/master-data/general/threshold">{() => <AdminRoute><GeneralThreshold /></AdminRoute>}</Route>
         <Route path="/admin/master-data/general/descriptions-of-work">{() => <AdminRoute><DescriptionsOfWork /></AdminRoute>}</Route>
         <Route path="/admin/master-data/general/sms-templates">{() => <AdminRoute><SmsTemplates /></AdminRoute>}</Route>
+        <Route path="/admin/sales-content/proposal-library">{() => <AdminRoute><ProposalLibrary /></AdminRoute>}</Route>
         <Route path="/admin/master-data/general/supplier-categories">{() => <AdminRoute><SupplierCategoriesPage /></AdminRoute>}</Route>
         <Route path="/admin/master-data/general/image-library">{() => <AdminRoute><AdminImageLibrary /></AdminRoute>}</Route>
         <Route path="/admin/master-data/general/crm-dropdowns">{() => <AdminRoute><CrmDropdownOptions /></AdminRoute>}</Route>

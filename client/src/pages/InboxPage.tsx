@@ -2,7 +2,7 @@
  * Inbox Page — Shared Inbox / Central Email Hub
  * List view with filters, SLA highlights, assignment, tags, bulk actions, and thread navigation
  */
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { HelpLink } from "@/components/HelpLink";
 import { trpc } from "@/lib/trpc";
 import { PullToRefresh } from "@/components/PullToRefresh";
@@ -40,6 +40,10 @@ type DirectionFilter = "all" | "inbound" | "outbound";
 type PriorityFilter = "all" | InboxTicketPriority;
 type ChannelFilter = "all" | InboxTicketChannel;
 type SlaFilter = "all" | "breached" | "warning" | "due" | "none";
+
+function getDefaultAssignedFilter(role: string | null | undefined) {
+  return isAdminRole(role || "") ? "all" : "mine";
+}
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
@@ -125,18 +129,26 @@ function participantLabelForMessage(msg: any): string {
 export default function InboxPage() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const assignedFilterTouchedRef = useRef(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [directionFilter, setDirectionFilter] = useState<DirectionFilter>("all");
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [slaFilter, setSlaFilter] = useState<SlaFilter>("all");
-  const [assignedFilter, setAssignedFilter] = useState<string>("all");
+  const [assignedFilter, setAssignedFilter] = useState<string>(() => getDefaultAssignedFilter(user?.role));
   const [addressFilter, setAddressFilter] = useState<string>("all");
   const [tagFilter, setTagFilter] = useState<number | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(0);
   const pageSize = 30;
+  const defaultAssignedFilter = useMemo(() => getDefaultAssignedFilter(user?.role), [user?.role]);
+
+  useEffect(() => {
+    if (!user || assignedFilterTouchedRef.current) return;
+    setAssignedFilter(defaultAssignedFilter);
+    setPage(0);
+  }, [defaultAssignedFilter, user?.id]);
 
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -565,7 +577,7 @@ export default function InboxPage() {
               </SelectContent>
             </Select>
 
-            <Select value={assignedFilter} onValueChange={(v) => { setAssignedFilter(v); setPage(0); }}>
+            <Select value={assignedFilter} onValueChange={(v) => { assignedFilterTouchedRef.current = true; setAssignedFilter(v); setPage(0); }}>
               <SelectTrigger className="w-[150px] h-8 text-xs">
                 <SelectValue placeholder="Assigned" />
               </SelectTrigger>
@@ -617,7 +629,8 @@ export default function InboxPage() {
               setPriorityFilter("all");
               setChannelFilter("all");
               setSlaFilter("all");
-              setAssignedFilter("all");
+              assignedFilterTouchedRef.current = true;
+              setAssignedFilter(defaultAssignedFilter);
               setAddressFilter("all");
               setTagFilter(null);
               setSearch("");

@@ -3,6 +3,7 @@
  * Shared Inbox / Central Email Hub — all CRUD, tagging, assignment, filtering, signatures, SLA rules
  */
 import { z } from "zod";
+import { normalizeUserRole } from "@shared/const";
 import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import * as inboxDb from "./inbox-db";
@@ -31,6 +32,61 @@ const SLA_HOUR_LIMITS = {
 } as const;
 
 const EMAIL_ADDRESS_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+type InboxAddressOption = Awaited<ReturnType<typeof inboxDb.listInboxAddresses>>[number];
+
+const ROLE_COMPOSE_LOCAL_PARTS: Record<string, string> = {
+  design_adviser: "design",
+  construction_user: "build",
+  office_user: "office",
+  warehouse: "procurement",
+  driver: "procurement",
+};
+
+function getLocalPart(address: string | null | undefined) {
+  return String(address || "").split("@")[0]?.toLowerCase().trim() || "";
+}
+
+function findInboxAddressBySetting(addresses: InboxAddressOption[], settingValue: string | null | undefined) {
+  const value = String(settingValue || "").trim().toLowerCase();
+  if (!value) return null;
+  const numericId = Number(value);
+  if (Number.isFinite(numericId)) {
+    const byId = addresses.find((address) => address.id === numericId);
+    if (byId) return byId;
+  }
+  return addresses.find((address) => address.address.toLowerCase() === value) || null;
+}
+
+async function resolveComposeFromAddress(
+  user: { id: number; role?: string | null },
+  tenantId: number,
+  addresses?: InboxAddressOption[],
+) {
+  const activeAddresses = addresses || await inboxDb.listInboxAddresses(true, tenantId);
+
+  const savedSettingKeys = [
+    `compose_default_from_address_user_${user.id}`,
+    `default_from_address_user_${user.id}`,
+    "compose_default_from_address_id",
+    "default_from_address_id",
+  ];
+  for (const key of savedSettingKeys) {
+    const configured = findInboxAddressBySetting(activeAddresses, await inboxDb.getSetting(key, tenantId));
+    if (configured) return { address: configured, reason: "inbox_setting" as const };
+  }
+
+  const userDefaultAddress = activeAddresses.find((address) => address.defaultAssigneeId === user.id);
+  if (userDefaultAddress) return { address: userDefaultAddress, reason: "default_assignee" as const };
+
+  const localPart = ROLE_COMPOSE_LOCAL_PARTS[normalizeUserRole(user.role)];
+  if (localPart) {
+    const roleAddress = activeAddresses.find((address) => getLocalPart(address.address) === localPart);
+    if (roleAddress) return { address: roleAddress, reason: "role" as const };
+  }
+
+  return { address: null, reason: "fallback" as const };
+}
 
 function boundedSlaHours(max: number) {
   return z.preprocess((value) => {
@@ -767,14 +823,16 @@ export const inboxRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       let fullHtml = input.htmlBody;
+      const tenantId = ctx.tenant!.id;
+      const user = ctx.user!;
 
       if (input.includeSignature) {
         let signature: any = null;
         if (input.signatureId) {
-          const sigs = await inboxDb.getUserSignatures(ctx.user!.id, ctx.tenant!.id);
+          const sigs = await inboxDb.getUserSignatures(user.id, tenantId);
           signature = sigs.find(s => s.id === input.signatureId);
         } else {
-          signature = await inboxDb.getDefaultSignature(ctx.user!.id, ctx.tenant!.id);
+          signature = await inboxDb.getDefaultSignature(user.id, tenantId);
         }
         if (signature) {
           fullHtml += `<br/><div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">${signature.htmlContent}</div>`;
@@ -784,26 +842,29 @@ export const inboxRouter = router({
       // Rate Us placeholder - will be replaced with actual content before sending
       let includeRateUsInEmail = false;
       if (input.includeRateUs) {
-        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled", ctx.tenant!.id);
+        const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled", tenantId);
         if (rateUsEnabled === "true") {
           includeRateUsInEmail = true;
         }
       }
 
-      const fromDomain = await getTenantSenderDomain(ctx.tenant!.id);
-      const userName = ctx.user!.name || "Altaspan Team";
-      // For compose, use the selected from address or default
+      const fromDomain = await getTenantSenderDomain(tenantId);
+      const userName = user.name || "Altaspan Team";
+      // For compose, use the selected from address, configured user default, role default, or fallback.
       let composeFromEmail = `onboarding@${fromDomain}`;
+      const addresses = await inboxDb.listInboxAddresses(true, tenantId);
       if (input.fromAddressId) {
-        const addresses = await inboxDb.listInboxAddresses(true, ctx.tenant!.id);
         const addr = addresses.find(a => a.id === input.fromAddressId);
         if (addr) composeFromEmail = addr.address;
+      } else {
+        const resolved = await resolveComposeFromAddress(user, tenantId, addresses);
+        if (resolved.address) composeFromEmail = resolved.address.address;
       }
       // First, create the DB record to get a message ID for the Rate Us link
       const threadId = `thread-${crypto.randomUUID()}`;
       const fromAddress = `${userName} <${composeFromEmail}>`;
       const { id: msgId } = await inboxDb.createInboxMessage({
-        tenantId: ctx.tenant!.id,
+        tenantId,
         threadId,
         direction: "outbound",
         resendEmailId: null,
@@ -822,16 +883,16 @@ export const inboxRouter = router({
         isStarred: false,
         portalVisible: false,
         autoReplySent: false,
-        assignedToId: ctx.user!.id,
+        assignedToId: user.id,
         assignedToName: userName,
         assignedAt: new Date(),
-        createdBy: ctx.user!.id,
+        createdBy: user.id,
         createdByName: userName,
       });
 
       // Now build Rate Us HTML with the actual message ID and append to email body
       if (includeRateUsInEmail) {
-        const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt", ctx.tenant!.id) || "How would you rate our service?";
+        const rateUsPrompt = await inboxDb.getSetting("rate_us_prompt", tenantId) || "How would you rate our service?";
         const baseUrl = ctx.req.headers.origin || "";
         const feedbackHtml = buildRateUsHtml(baseUrl, msgId, rateUsPrompt);
         fullHtml += feedbackHtml;
@@ -847,7 +908,7 @@ export const inboxRouter = router({
         subject: input.subject,
         htmlBody: fullHtml,
         textBody: input.textBody || undefined,
-        tenantId: ctx.tenant!.id,
+        tenantId,
       });
 
       if (!sendResult.success) {
@@ -859,9 +920,20 @@ export const inboxRouter = router({
       await inboxDb.updateInboxMessage(msgId, {
         htmlBody: fullHtml,
         resendEmailId: sendResult.emailId || null,
-      }, ctx.tenant!.id);
+      }, tenantId);
 
       return { success: true, messageId: msgId, provider: sendResult.provider, emailId: sendResult.emailId };
+    }),
+
+  composeDefaults: protectedProcedure
+    .query(async ({ ctx }) => {
+      const resolved = await resolveComposeFromAddress(ctx.user!, ctx.tenant!.id);
+      return {
+        fromAddressId: resolved.address?.id ?? null,
+        fromAddress: resolved.address?.address ?? null,
+        fromDisplayName: resolved.address?.displayName ?? null,
+        reason: resolved.reason,
+      };
     }),
 
   syncNow: protectedProcedure

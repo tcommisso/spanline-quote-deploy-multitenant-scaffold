@@ -4281,6 +4281,37 @@ export const blindQuoteCostAdditions = mysqlTable("blind_quote_cost_additions", 
 export type BlindQuoteCostAddition = typeof blindQuoteCostAdditions.$inferSelect;
 export type InsertBlindQuoteCostAddition = typeof blindQuoteCostAdditions.$inferInsert;
 
+// ─── Proposal Library (Sales Content) ────────────────────────────────────────
+export const proposalLibraryItems = mysqlTable("proposal_library_items", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }).notNull(),
+  sectionType: varchar("sectionType", { length: 50 }).notNull().default("all"),
+  contentType: varchar("contentType", { length: 50 }).notNull().default("overview"),
+  title: varchar("title", { length: 255 }).notNull(),
+  body: mediumtext("body"),
+  imageUrl: text("imageUrl"),
+  imageAlt: varchar("imageAlt", { length: 255 }),
+  originalFileName: varchar("originalFileName", { length: 255 }),
+  originalImageWidth: int("originalImageWidth"),
+  originalImageHeight: int("originalImageHeight"),
+  imageWidth: int("imageWidth"),
+  imageHeight: int("imageHeight"),
+  imageSizeBytes: int("imageSizeBytes"),
+  imageMimeType: varchar("imageMimeType", { length: 80 }),
+  imageWarning: text("imageWarning"),
+  defaultIncluded: boolean("defaultIncluded").notNull().default(true),
+  isActive: boolean("isActive").notNull().default(true),
+  sortOrder: int("sortOrder").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_proposal_library_tenant").on(table.tenantId),
+  index("idx_proposal_library_tenant_section").on(table.tenantId, table.sectionType, table.isActive),
+  index("idx_proposal_library_tenant_default").on(table.tenantId, table.defaultIncluded, table.isActive),
+]);
+export type ProposalLibraryItem = typeof proposalLibraryItems.$inferSelect;
+export type InsertProposalLibraryItem = typeof proposalLibraryItems.$inferInsert;
+
 // ─── Proposals (Centralised Proposal Generation) ─────────────────────────────
 export const proposals = mysqlTable("proposals", {
   id: int("id").autoincrement().primaryKey(),

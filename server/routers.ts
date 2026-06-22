@@ -66,6 +66,7 @@ import { plansRouter } from "./plans-router";
 import { planConverterRouter } from "./plan-converter-router";
 import { weatherRouter } from "./weather-router";
 import { proposalRouter } from "./proposal-router";
+import { proposalLibraryRouter } from "./proposal-library-router";
 import { reviewsRouter } from "./reviews-router";
 import { territoryRouter } from "./territory-router";
 import { nylasRouter } from "./nylas-router";
@@ -2236,6 +2237,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   xeroSupplierSync: xeroSupplierSyncRouter,
   plans: plansRouter,
   proposals: proposalRouter,
+  proposalLibrary: proposalLibraryRouter,
   securityScreens: securityScreensRouter,
   blinds: blindsRouter,
   reviews: reviewsRouter,

@@ -299,6 +299,13 @@ const adminGroups: AdminGroup[] = [
     ],
   },
   {
+    label: "Sales Content",
+    icon: BookOpen,
+    items: [
+      { icon: Library, label: "Proposal Library", path: "/admin/sales-content/proposal-library" },
+    ],
+  },
+  {
     label: "Templates & Documents",
     icon: Files,
     items: [
