@@ -106,7 +106,7 @@ export async function generateProposalPdf(
   // Sections table
   const sectionRows = data.sections.map((s, i) => [
     String(i + 1),
-    s.label,
+    s.description ? `${s.label}\n${s.description}` : s.label,
     formatCurrency(s.worksPrice),
   ]);
 
@@ -333,12 +333,7 @@ export async function generateProposalPdf(
     doc.text(`${totalPct.toFixed(1)}% \u2014 ${formatCurrency(totalAmt)}`, pageWidth - margin, y, { align: "right" });
   }
 
-  // ─── Page 3: Terms & Signature ──────────────────────────────────────────────
-  doc.addPage();
-  y = drawPageHeader(doc, logo, data.proposalNumber, pageWidth, margin);
-  y = drawTermsAndSignature(doc, proposalText, data, pageWidth, pageHeight, margin, y);
-
-  // ─── Appendix Pages (plugin-generated) ─────────────────────────────────────
+  // ─── Quote Detail / Spec Sheet / Image Appendix Pages ─────────────────────
   const appendixSections = data.sections.map((s) => ({
     type: s.type as SectionType,
     quoteId: s.quoteId,
@@ -366,6 +361,11 @@ export async function generateProposalPdf(
     // Delegate rendering to the plugin
     y = page.render(doc, y, pageWidth, margin);
   }
+
+  // ─── Final Page: Terms & Signature ─────────────────────────────────────────
+  doc.addPage();
+  y = drawPageHeader(doc, logo, data.proposalNumber, pageWidth, margin);
+  y = drawTermsAndSignature(doc, proposalText, data, pageWidth, pageHeight, margin, y);
 
   // ─── Output ─────────────────────────────────────────────────────────────────
   const fileName = `Proposal_${data.proposalNumber}_${data.clientName.replace(/\s+/g, "_")}.pdf`;
@@ -403,9 +403,9 @@ function drawCoverPage(
 
   // Logo
   let logoX = margin;
-  if (logo?.dataUrl) {
-    const { w, h } = logoSize(logo, 50, 20);
-    doc.addImage(logo.dataUrl, "PNG", margin, 10, w, h);
+  const coverLogoSize = drawLogo(doc, logo, margin, 10, 50, 20);
+  if (coverLogoSize) {
+    const { w } = coverLogoSize;
     logoX = margin + w + 8;
   }
 
@@ -505,10 +505,7 @@ function drawPageHeader(
   margin: number
 ): number {
   let y = 12;
-  if (logo?.dataUrl) {
-    const { w, h } = logoSize(logo, 30, 12);
-    doc.addImage(logo.dataUrl, "PNG", margin, y - 4, w, h);
-  }
+  drawLogo(doc, logo, margin, y - 4, 30, 12);
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(120, 120, 120);
@@ -629,6 +626,32 @@ function logoSize(logo: CustomLogo, maxW: number, maxH: number) {
   let h = w / ratio;
   if (h > maxH) { h = maxH; w = h * ratio; }
   return { w, h };
+}
+
+function logoFormat(dataUrl: string): "PNG" | "JPEG" | undefined {
+  if (/^data:image\/png[;,]/i.test(dataUrl)) return "PNG";
+  if (/^data:image\/jpe?g[;,]/i.test(dataUrl)) return "JPEG";
+  return undefined;
+}
+
+function drawLogo(
+  doc: jsPDF,
+  logo: CustomLogo | null,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number
+) {
+  if (!logo?.dataUrl) return null;
+  const format = logoFormat(logo.dataUrl);
+  if (!format) return null;
+  const size = logoSize(logo, maxW, maxH);
+  try {
+    doc.addImage(logo.dataUrl, format, x, y, size.w, size.h);
+    return size;
+  } catch {
+    return null;
+  }
 }
 
 function formatCurrency(amount: number): string {

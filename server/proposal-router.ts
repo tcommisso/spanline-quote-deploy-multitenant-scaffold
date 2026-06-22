@@ -1,9 +1,16 @@
 import { z } from "zod";
+import { and, asc, eq } from "drizzle-orm";
 import { router, tenantProcedure, tenantAdminProcedure } from "./_core/trpc";
 import * as proposalDb from "./proposal-db";
 import * as db from "./db";
 import * as eclipseDb from "./eclipse-db";
 import * as deckDb from "./deck-db";
+import {
+  blindQuoteItems,
+  blindQuotes,
+  ssQuoteItems,
+  ssQuotes,
+} from "../drizzle/schema";
 
 const sectionSchema = z.object({
   type: z.enum(["opq", "deck", "eclipse", "blind", "louvre", "security_door", "security_screen"]),
@@ -12,6 +19,59 @@ const sectionSchema = z.object({
   worksPrice: z.number(),
   description: z.string().optional(),
 });
+
+function normaliseJson<T>(value: unknown, fallback: T): T {
+  if (!value) return fallback;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return value as T;
+}
+
+function hasValue(value: unknown) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function compactSpecSheet(source: Record<string, unknown> | null | undefined) {
+  if (!source) return {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .filter(([key, value]) => key.startsWith("spec") && hasValue(value))
+      .filter(([key]) => !["specDiagramAnnotations"].includes(key))
+  );
+}
+
+function latestRenderImage(renderHistory: unknown) {
+  const entries = normaliseJson<any[]>(renderHistory, []);
+  return entries
+    .filter((entry) => entry?.imageUrl)
+    .sort((a, b) => {
+      if (a?.isFavourite && !b?.isFavourite) return -1;
+      if (!a?.isFavourite && b?.isFavourite) return 1;
+      return Number(b?.createdAt || 0) - Number(a?.createdAt || 0);
+    })[0]?.imageUrl as string | undefined;
+}
+
+function imageEntries(...items: Array<{ url?: unknown; caption: string }>) {
+  const seen = new Set<string>();
+  return items
+    .map((item) => ({ url: String(item.url || "").trim(), caption: item.caption }))
+    .filter((item) => item.url)
+    .filter((item) => {
+      if (seen.has(item.url)) return false;
+      seen.add(item.url);
+      return true;
+    })
+    .slice(0, 8);
+}
 
 export const proposalRouter = router({
   // ─── List proposals ─────────────────────────────────────────────────────────
@@ -302,10 +362,18 @@ export const proposalRouter = router({
           }));
           results[key] = {
             descriptionOfWorks: quote?.descriptionOfWork || "",
+            notes: quote?.notes || "",
             materials,
             specItems,
+            specSheet: compactSpecSheet(quote as Record<string, unknown>),
             specWidth: quote?.specWidth || null,
             specLength: quote?.specLength || null,
+            images: imageEntries(
+              ...((quote as any).proposalPhotos || []).map((url: string, index: number) => ({ url, caption: `Proposal photo ${index + 1}` })),
+              { url: (quote as any).sitePlanImage, caption: "Site plan" },
+              { url: (quote as any).photoUrl, caption: "Uploaded site photo" },
+              { url: latestRenderImage((quote as any).renderHistory), caption: "AI render" },
+            ),
           };
         } else if (section.type === "eclipse") {
           const quote = await eclipseDb.getEclipseQuoteById(section.quoteId, ctx.tenant.id);
@@ -341,6 +409,14 @@ export const proposalRouter = router({
             units: unitSummary,
             materialLines,
             totalSqm: quote?.totalSqm || null,
+            descriptionOfWorks: quote?.descriptionOfWork || "",
+            notes: quote?.notes || "",
+            specSheet: normaliseJson<Record<string, unknown>>(quote?.specData, {}),
+            images: imageEntries(
+              { url: quote?.sitePlanImage, caption: "Site plan" },
+              { url: quote?.photoUrl, caption: "Uploaded site photo" },
+              { url: latestRenderImage(quote?.renderHistory), caption: "AI render" },
+            ),
           };
         } else if (section.type === "deck") {
           const quote = await deckDb.getDeckQuoteById(section.quoteId, ctx.tenant.id);
@@ -353,12 +429,63 @@ export const proposalRouter = router({
             frameType: quote?.frameType || "",
             colour: quote?.colour || "",
             shape: quote?.deckShape || "",
+            descriptionOfWorks: quote?.descriptionOfWork || "",
+            notes: quote?.notes || "",
+            specSheet: normaliseJson<Record<string, unknown>>(quote?.specData, {}),
+            images: imageEntries(
+              { url: quote?.photoUrl, caption: "Uploaded site photo" },
+              { url: latestRenderImage(quote?.renderHistory), caption: "AI render" },
+            ),
             addons: {
               stairs: quote?.stairsRequired || false,
               handrail: quote?.handrailRequired || false,
               screens: quote?.screensRequired || false,
               lighting: quote?.lightingRequired || false,
             },
+          };
+        } else if (section.type === "blind" || section.type === "security_screen") {
+          const appDb = await db.getDb();
+          if (!appDb) continue;
+          const quoteTable = section.type === "blind" ? blindQuotes : ssQuotes;
+          const itemTable = section.type === "blind" ? blindQuoteItems : ssQuoteItems;
+          const [quote] = await appDb
+            .select()
+            .from(quoteTable as any)
+            .where(and(eq((quoteTable as any).id, section.quoteId), eq((quoteTable as any).tenantId, ctx.tenant.id)))
+            .limit(1);
+          if (!quote) continue;
+          const items = await appDb
+            .select()
+            .from(itemTable as any)
+            .where(and(eq((itemTable as any).quoteId, section.quoteId), eq((itemTable as any).tenantId, ctx.tenant.id)))
+            .orderBy(asc((itemTable as any).itemNumber));
+          results[key] = {
+            quoteNumber: quote.quoteNumber,
+            notes: quote.notes || "",
+            items: items.map((item: any) => ({
+              itemNumber: item.itemNumber,
+              brand: item.brand,
+              productType: item.productType,
+              widthMm: item.widthMm,
+              heightMm: item.heightMm,
+              quantity: item.quantity,
+              colourName: item.colourName,
+              fabricColourName: item.fabricColourName,
+              handleSide: item.handleSide,
+              hingeSide: item.hingeSide,
+              openingDirection: item.openingDirection,
+              hingePosition: item.hingePosition,
+              glassInfillQuantity: item.glassInfillQuantity,
+              notes: item.notes,
+              lineTotalExGst: item.lineTotalExGst,
+              photoUrl: item.photoUrl,
+            })),
+            images: imageEntries(
+              ...items.map((item: any) => ({
+                url: item.photoUrl,
+                caption: `Item ${item.itemNumber}${item.productType ? ` — ${item.productType}` : ""}`,
+              })),
+            ),
           };
         }
       }

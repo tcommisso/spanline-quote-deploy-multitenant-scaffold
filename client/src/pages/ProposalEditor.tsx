@@ -51,6 +51,7 @@ interface SectionItem {
   type: "opq" | "deck" | "eclipse" | "security_screen" | "blind";
   quoteId: number;
   label: string;
+  description?: string;
   worksPrice: number;
   selected: boolean;
   sharedCosts: { name: string; amount: number; source: string }[];
@@ -900,6 +901,7 @@ export default function ProposalEditor() {
         quoteId: s.quoteId,
         label: s.label,
         worksPrice: s.worksPrice,
+        description: s.description,
       })),
       // All cost fields
       siteClean: costs.siteClean || undefined,
