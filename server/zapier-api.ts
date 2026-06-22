@@ -41,6 +41,41 @@ const SOURCE_CREATED_FIELD_NAMES = [
   "lead_date",
 ];
 
+const ZAPIER_FIELD_ALIASES = {
+  contactFirstName: ["contactFirstName", "firstName", "first_name", "first name", "First Name", "givenName", "given_name"],
+  contactLastName: ["contactLastName", "lastName", "last_name", "last name", "Last Name", "surname", "familyName", "family_name"],
+  contactName: ["name", "contactName", "contact_name", "fullName", "full_name", "full name", "Full Name", "clientName", "client_name"],
+  contactPhone: ["contactPhone", "phone", "phoneNumber", "phone_number", "mobile", "mobilePhone", "mobile_phone", "Contact Phone"],
+  contactEmail: ["contactEmail", "email", "emailAddress", "email_address", "e-mail", "Email", "Contact Email"],
+  contactAddress: ["contactAddress", "address", "streetAddress", "street_address", "siteAddress", "site_address", "Street Address", "Address"],
+  suburb: ["suburb", "city", "town", "locality", "Suburb", "City"],
+  state: ["state", "region", "State"],
+  postcode: ["postcode", "postCode", "post_code", "postalCode", "postal_code", "zip", "ZIP", "Postcode"],
+  productType: ["productType", "product", "product_type", "Product", "Product Type", "enquiryType", "enquiry_type"],
+  leadSource: ["leadSource", "source", "lead_source", "Lead Source"],
+  designAdvisor: ["designAdvisor", "advisor", "design_advisor", "Design Advisor"],
+  notes: ["notes", "message", "comments", "comment", "enquiry", "description", "Notes", "Message"],
+  leadDate: ["leadDate", "lead_date", "Lead Date"],
+} as const;
+
+const PLACEHOLDER_TEXT_VALUES = new Set([
+  "true",
+  "false",
+  "yes",
+  "no",
+  "n/a",
+  "na",
+  "none",
+  "null",
+  "undefined",
+  "unknown",
+  "not provided",
+  "no email",
+  "no-email",
+  "-",
+  "--",
+]);
+
 function normalizePayloadKey(key: string) {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -111,6 +146,45 @@ function parseSourceCreatedAt(value: unknown): Date | null {
 
 function formatDateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
+}
+
+function cleanZapierText(value: unknown, options: { allowNumber?: boolean } = {}) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "boolean") return "";
+  if (typeof value === "number" && !options.allowNumber) return "";
+
+  const raw = String(value).trim();
+  if (!raw) return "";
+
+  const normalized = raw.toLowerCase().replace(/\s+/g, " ");
+  if (PLACEHOLDER_TEXT_VALUES.has(normalized)) return "";
+  return raw;
+}
+
+function getPayloadText(body: Record<string, any>, keys: readonly string[], options: { allowNumber?: boolean } = {}) {
+  return cleanZapierText(getPayloadValue(body, [...keys]), options);
+}
+
+function isLikelyEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function looksLikePersonName(value: string) {
+  const cleaned = cleanZapierText(value);
+  if (!cleaned || isLikelyEmail(cleaned) || /\d/.test(cleaned)) return false;
+  return /^[A-Za-z][A-Za-z' -]{1,120}$/.test(cleaned);
+}
+
+function splitFullName(value: string) {
+  const parts = cleanZapierText(value).split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: "", lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function looksLikeStreetAddress(value: string) {
+  const cleaned = cleanZapierText(value);
+  return /^\d+[A-Za-z]?\s+/.test(cleaned)
+    || /\b(st|street|rd|road|ave|avenue|cres|crescent|lane|ln|place|pl|drive|dr|cct|circuit|court|ct|way|terrace|tce)\b/i.test(cleaned);
 }
 
 async function getDefaultApiTenantId() {
@@ -282,39 +356,52 @@ export function registerZapierApi(app: Express) {
     try {
       const user = (req as any).apiUser;
       const tenantId = (req as any).apiTenantId ?? null;
-      let {
-        contactFirstName,
-        contactLastName,
-        contactPhone,
-        contactEmail,
-        contactAddress,
-        suburb,
-        state,
-        postcode,
-        productType,
-        leadSource,
-        designAdvisor,
-        notes,
-      } = req.body;
+      let contactFirstName = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactFirstName);
+      let contactLastName = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactLastName);
+      let contactPhone = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactPhone, { allowNumber: true });
+      let contactEmail = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactEmail);
+      let contactAddress = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactAddress);
+      let suburb = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.suburb);
+      let state = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.state);
+      let postcode = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.postcode, { allowNumber: true });
+      let productType = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.productType);
+      let leadSource = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.leadSource);
+      let designAdvisor = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.designAdvisor);
+      let notes = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.notes);
       const sourceCreatedAt = parseSourceCreatedAt(getPayloadValue(req.body, SOURCE_CREATED_FIELD_NAMES));
 
       // ── Smart parsing: handle common Zapier mapping issues ──
 
+      // 0. Zapier sometimes maps placeholder values like "False" or "No Email"
+      // into name/email fields. Never persist those as contact data.
+      let nameFromInvalidEmail = "";
+      if (contactEmail && !isLikelyEmail(contactEmail)) {
+        if (looksLikePersonName(contactEmail)) nameFromInvalidEmail = contactEmail;
+        contactEmail = "";
+      }
+
       // 1. Name splitting: if firstName has a space and lastName is empty, split it
       if (contactFirstName && !contactLastName && contactFirstName.trim().includes(" ")) {
-        const parts = contactFirstName.trim().split(/\s+/);
-        contactFirstName = parts[0];
-        contactLastName = parts.slice(1).join(" ");
+        const parts = splitFullName(contactFirstName);
+        contactFirstName = parts.firstName;
+        contactLastName = parts.lastName;
       }
 
       // Also accept a "name" or "contactName" field as fallback
       if (!contactFirstName && !contactLastName) {
-        const rawName = req.body.name || req.body.contactName || req.body.full_name || req.body.fullName || "";
-        if (rawName.trim()) {
-          const parts = rawName.trim().split(/\s+/);
-          contactFirstName = parts[0];
-          contactLastName = parts.slice(1).join(" ") || "";
+        const rawName = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.contactName) || nameFromInvalidEmail;
+        if (rawName) {
+          const parts = splitFullName(rawName);
+          contactFirstName = parts.firstName;
+          contactLastName = parts.lastName;
         }
+      }
+
+      // Zapier can map street address into suburb. Move it rather than storing
+      // addresses as suburbs.
+      if (!contactAddress && suburb && looksLikeStreetAddress(suburb)) {
+        contactAddress = suburb;
+        suburb = "";
       }
 
       // 2. Postcode extraction: if suburb contains a leading 4-digit postcode (e.g. "2603, RED HILL")
@@ -533,7 +620,8 @@ export function registerZapierApi(app: Express) {
       const leadNumber = await crmDb.getNextLeadNumber(tenantId);
 
       // Accept leadDate from API body, or default to today (YYYY-MM-DD)
-      const leadDate = req.body.leadDate || req.body.lead_date || (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
+      const leadDate = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.leadDate, { allowNumber: true })
+        || (sourceCreatedAt ? formatDateOnly(sourceCreatedAt) : new Date().toISOString().slice(0, 10));
 
       // ── Auto-allocate branch from postcode (DB-backed territory lookup) ──
       const { getBranchIdForPostcodeFromDb } = await import("./territory-router");
@@ -543,9 +631,9 @@ export function registerZapierApi(app: Express) {
         console.log(`[Zapier API] Auto-assigned branch ${autoBranchId} (${territoryMatch!.territory}) for postcode ${postcode}`);
       }
 
-	      const result = await crmDb.createLead({
+      const result = await crmDb.createLead({
         tenantId,
-	        leadNumber,
+        leadNumber,
         contactFirstName: contactFirstName || null,
         contactLastName: contactLastName || null,
         contactPhone: contactPhone || null,
