@@ -253,6 +253,91 @@ function categoryForCostLine(line: XeroLineItem): "materials" | "labour" | "othe
   return "other";
 }
 
+function textMatchesMapping(text: string, textCompact: string, mapping: PreparedMapping) {
+  if (mapping.clientNumberNorm && text.includes(mapping.clientNumberNorm)) return true;
+  if (mapping.clientNumberCompact && textCompact.includes(mapping.clientNumberCompact)) return true;
+  if (mapping.constructionJobNumberNorm && text.includes(mapping.constructionJobNumberNorm)) return true;
+  if (mapping.constructionJobNumberCompact && textCompact.includes(mapping.constructionJobNumberCompact)) return true;
+  if (mapping.quoteNumberNorm && text.includes(mapping.quoteNumberNorm)) return true;
+  if (mapping.quoteNumberCompact && textCompact.includes(mapping.quoteNumberCompact)) return true;
+  const textIdentifiers = extractProjectIdentifiers(text);
+  if (textIdentifiers.some((identifier) => mapping.accountNumberIdentifiers.includes(identifier))) return true;
+  if (textIdentifiers.some((identifier) => mapping.projectIdentifiers.includes(identifier))) return true;
+  if (mapping.jobNumber && text.includes(mapping.jobNumber)) return true;
+  if (mapping.projectNameNorm && text.includes(mapping.projectNameNorm)) return true;
+  if (mapping.projectNameCompact && textCompact.includes(mapping.projectNameCompact)) return true;
+  if (mapping.siteAddressNorm && mapping.siteAddressNorm.length >= 8 && text.includes(mapping.siteAddressNorm)) return true;
+  if (mapping.siteAddressCompact && mapping.siteAddressCompact.length >= 8 && textCompact.includes(mapping.siteAddressCompact)) return true;
+  if (mapping.clientNameNorm && mapping.clientNameNorm.length >= 6 && text.includes(mapping.clientNameNorm)) return true;
+  if (mapping.clientNameCompact && mapping.clientNameCompact.length >= 6 && textCompact.includes(mapping.clientNameCompact)) return true;
+  return false;
+}
+
+function findTextCandidates(text: string, textCompact: string, mappings: PreparedMapping[]) {
+  return mappings.filter((mapping) => textMatchesMapping(text, textCompact, mapping));
+}
+
+function unmatchedReviewCandidates(
+  sourceType: "invoice" | "bill" | "bank_transaction" | "credit_note",
+  document: XeroAccountingDocument,
+  line: XeroLineItem,
+  mappings: PreparedMapping[],
+) {
+  const candidates = new Map<number, PreparedMapping>();
+  const addTextCandidates = (text: string) => {
+    const normalised = normalise(text);
+    if (!normalised) return;
+    for (const mapping of findTextCandidates(normalised, compact(normalised), mappings)) {
+      candidates.set(mapping.id, mapping);
+    }
+  };
+
+  for (const track of line.Tracking || []) {
+    const option = normalise(track.Option);
+    const category = normalise(track.Name);
+    if (!option) continue;
+    if (isBranchTrackingCategory(category)) continue;
+    if (!isProjectTrackingCategory(category) && isBranchOnlyTrackingOption(option)) continue;
+    addTextCandidates(option);
+  }
+
+  addTextCandidates([
+    document.Reference,
+    document.InvoiceNumber,
+    document.BankTransactionNumber,
+    document.CreditNoteNumber,
+    document.Contact?.AccountNumber,
+    document.Contact?.Name,
+  ].filter(Boolean).join(" "));
+
+  addTextCandidates([
+    line.Description,
+    document.Reference,
+  ].filter(Boolean).join(" "));
+
+  addTextCandidates([
+    document.Reference,
+    ...(document.LineItems || []).map((documentLine) => documentLine.Description),
+  ].filter(Boolean).join(" "));
+
+  if ((sourceType === "invoice" || sourceType === "credit_note") && document.Contact?.ContactID) {
+    for (const mapping of mappings.filter((mapping) => mapping.xeroContactId === document.Contact?.ContactID)) {
+      candidates.set(mapping.id, mapping);
+    }
+  }
+
+  return Array.from(candidates.values());
+}
+
+function shouldStoreUnmatchedLine(
+  sourceType: "invoice" | "bill" | "bank_transaction" | "credit_note",
+  document: XeroAccountingDocument,
+  line: XeroLineItem,
+  mappings: PreparedMapping[],
+) {
+  return unmatchedReviewCandidates(sourceType, document, line, mappings).length > 0;
+}
+
 function findMappingForLine(
   sourceType: "invoice" | "bill" | "bank_transaction" | "credit_note",
   document: XeroAccountingDocument,
@@ -260,27 +345,8 @@ function findMappingForLine(
   mappings: PreparedMapping[],
 ): MatchResult {
   const tracking = line.Tracking || [];
-  const textMatchesMapping = (text: string, textCompact: string, mapping: PreparedMapping) => {
-    if (mapping.clientNumberNorm && text.includes(mapping.clientNumberNorm)) return true;
-    if (mapping.clientNumberCompact && textCompact.includes(mapping.clientNumberCompact)) return true;
-    if (mapping.constructionJobNumberNorm && text.includes(mapping.constructionJobNumberNorm)) return true;
-    if (mapping.constructionJobNumberCompact && textCompact.includes(mapping.constructionJobNumberCompact)) return true;
-    if (mapping.quoteNumberNorm && text.includes(mapping.quoteNumberNorm)) return true;
-    if (mapping.quoteNumberCompact && textCompact.includes(mapping.quoteNumberCompact)) return true;
-    const textIdentifiers = extractProjectIdentifiers(text);
-    if (textIdentifiers.some((identifier) => mapping.accountNumberIdentifiers.includes(identifier))) return true;
-    if (textIdentifiers.some((identifier) => mapping.projectIdentifiers.includes(identifier))) return true;
-    if (mapping.jobNumber && text.includes(mapping.jobNumber)) return true;
-    if (mapping.projectNameNorm && text.includes(mapping.projectNameNorm)) return true;
-    if (mapping.projectNameCompact && textCompact.includes(mapping.projectNameCompact)) return true;
-    if (mapping.siteAddressNorm && mapping.siteAddressNorm.length >= 8 && text.includes(mapping.siteAddressNorm)) return true;
-    if (mapping.siteAddressCompact && mapping.siteAddressCompact.length >= 8 && textCompact.includes(mapping.siteAddressCompact)) return true;
-    if (mapping.clientNameNorm && mapping.clientNameNorm.length >= 6 && text.includes(mapping.clientNameNorm)) return true;
-    if (mapping.clientNameCompact && mapping.clientNameCompact.length >= 6 && textCompact.includes(mapping.clientNameCompact)) return true;
-    return false;
-  };
   const findDescriptionMatch = (text: string, textCompact: string) => {
-    const matches = mappings.filter((mapping) => textMatchesMapping(text, textCompact, mapping));
+    const matches = findTextCandidates(text, textCompact, mappings);
     return matches.length === 1 ? matches[0] : null;
   };
 
@@ -491,9 +557,12 @@ async function storeDocumentLines(
       const line = lines[index];
       const match = findMappingForLine(sourceType, effectiveDocument, line, mappings);
       matchCounts[match.method] = (matchCounts[match.method] || 0) + 1;
-      if (!match.mapping && !options.includeUnmatched) {
+      if (!match.mapping) {
         unmatched++;
-        continue;
+        if (!options.includeUnmatched) continue;
+        if (!shouldStoreUnmatchedLine(sourceType, effectiveDocument, line, mappings)) {
+          continue;
+        }
       }
 
       const lineItemId = line.LineItemID || `${transactionId}:${index}`;

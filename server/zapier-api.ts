@@ -51,6 +51,25 @@ const ZAPIER_FIELD_ALIASES = {
   suburb: ["suburb", "city", "town", "locality", "Suburb", "City"],
   state: ["state", "region", "State"],
   postcode: ["postcode", "postCode", "post_code", "postalCode", "postal_code", "zip", "ZIP", "Postcode"],
+  combinedLocation: [
+    "combinedLocation",
+    "location",
+    "Location",
+    "area",
+    "Area",
+    "suburbPostcode",
+    "suburb_postcode",
+    "suburb postcode",
+    "Suburb Postcode",
+    "Suburb/Postcode",
+    "Suburb / Postcode",
+    "postcodeSuburb",
+    "postcode_suburb",
+    "postcode suburb",
+    "Postcode Suburb",
+    "Postcode/Suburb",
+    "Postcode / Suburb",
+  ],
   productType: ["productType", "product", "product_type", "Product", "Product Type", "enquiryType", "enquiry_type"],
   leadSource: ["leadSource", "source", "lead_source", "Lead Source"],
   designAdvisor: ["designAdvisor", "advisor", "design_advisor", "Design Advisor"],
@@ -195,6 +214,85 @@ function looksLikeStreetAddress(value: string) {
   if (!cleaned || isLikelyPhoneNumber(cleaned)) return false;
   return /\d/.test(cleaned)
     && /\b(st|street|rd|road|ave|avenue|cres|crescent|lane|ln|place|pl|drive|dr|cct|circuit|court|ct|way|terrace|tce)\b/i.test(cleaned);
+}
+
+const AU_STATE_ALIASES: Record<string, string> = {
+  act: "ACT",
+  "australian capital territory": "ACT",
+  nsw: "NSW",
+  "new south wales": "NSW",
+  vic: "VIC",
+  victoria: "VIC",
+  qld: "QLD",
+  queensland: "QLD",
+  sa: "SA",
+  "south australia": "SA",
+  wa: "WA",
+  "western australia": "WA",
+  tas: "TAS",
+  tasmania: "TAS",
+  nt: "NT",
+  "northern territory": "NT",
+};
+
+function normaliseAuState(value?: string | null) {
+  const cleaned = cleanZapierText(value);
+  return AU_STATE_ALIASES[cleaned.toLowerCase()] || cleaned.toUpperCase();
+}
+
+function inferStateFromPostcode(postcode?: string | null) {
+  const pc = Number(String(postcode || "").match(/\b\d{4}\b/)?.[0] || "");
+  if (!pc) return "";
+  if ((pc >= 2600 && pc <= 2619) || (pc >= 2900 && pc <= 2920)) return "ACT";
+  if ((pc >= 2000 && pc <= 2599) || (pc >= 2620 && pc <= 2899)) return "NSW";
+  if (pc >= 3000 && pc <= 3999) return "VIC";
+  if (pc >= 4000 && pc <= 4999) return "QLD";
+  if (pc >= 5000 && pc <= 5799) return "SA";
+  if (pc >= 6000 && pc <= 6797) return "WA";
+  if (pc >= 7000 && pc <= 7799) return "TAS";
+  if (pc >= 800 && pc <= 899) return "NT";
+  return "";
+}
+
+function parseCombinedLocation(value: unknown) {
+  const raw = cleanZapierText(value, { allowNumber: true });
+  if (!raw) return { suburb: "", state: "", postcode: "" };
+
+  const postcode = raw.match(/\b(\d{4})\b/)?.[1] || "";
+  let remainder = raw.replace(/\b\d{4}\b/g, " ");
+  let state = "";
+
+  const statePattern = /\b(ACT|NSW|VIC|QLD|SA|WA|TAS|NT|Australian Capital Territory|New South Wales|Victoria|Queensland|South Australia|Western Australia|Tasmania|Northern Territory)\b/i;
+  const stateMatch = remainder.match(statePattern);
+  if (stateMatch) {
+    state = normaliseAuState(stateMatch[1]);
+    remainder = remainder.replace(statePattern, " ");
+  }
+  if (!state && postcode) state = inferStateFromPostcode(postcode);
+
+  let suburb = remainder
+    .replace(/[|/]+/g, " ")
+    .replace(/[,;:-]+/g, " ")
+    .replace(/\b(postcode|postal code|suburb|state|location|area)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (looksLikeStreetAddress(suburb) || /^\d+$/.test(suburb)) suburb = "";
+  return { suburb, state, postcode };
+}
+
+function fillLocationParts(
+  current: { suburb: string; state: string; postcode: string },
+  ...candidates: unknown[]
+) {
+  const next = { ...current };
+  for (const candidate of candidates) {
+    const parsed = parseCombinedLocation(candidate);
+    if (!next.postcode && parsed.postcode) next.postcode = parsed.postcode;
+    if (!next.state && parsed.state) next.state = parsed.state;
+    if (!next.suburb && parsed.suburb) next.suburb = parsed.suburb;
+  }
+  return next;
 }
 
 async function getDefaultApiTenantId() {
@@ -374,6 +472,7 @@ export function registerZapierApi(app: Express) {
       let suburb = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.suburb);
       let state = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.state);
       let postcode = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.postcode, { allowNumber: true });
+      const combinedLocation = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.combinedLocation, { allowNumber: true });
       let productType = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.productType);
       let leadSource = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.leadSource);
       let designAdvisor = getPayloadText(req.body, ZAPIER_FIELD_ALIASES.designAdvisor);
@@ -426,18 +525,19 @@ export function registerZapierApi(app: Express) {
         suburb = "";
       }
 
-      // 2. Postcode extraction: if suburb contains a leading 4-digit postcode (e.g. "2603, RED HILL")
-      if (suburb && /^\d{4}/.test(suburb.trim())) {
-        const match = suburb.trim().match(/^(\d{4})[,\s]+(.+)$/);
-        if (match) {
-          if (!postcode) postcode = match[1];
-          suburb = match[2].trim();
-        } else if (/^\d{4}$/.test(suburb.trim())) {
-          // suburb field contains ONLY a postcode
-          if (!postcode) postcode = suburb.trim();
-          suburb = "";
-        }
-      }
+      // 2. Postcode/suburb extraction: Zapier can send "2906 Banks",
+      // "Banks ACT 2906", or put that combined value into a renamed field.
+      const locationParts = fillLocationParts(
+        { suburb, state, postcode },
+        combinedLocation,
+        suburb,
+        postcode,
+        state,
+        contactAddress,
+      );
+      suburb = locationParts.suburb;
+      state = locationParts.state;
+      postcode = locationParts.postcode;
 
       // 3. Address contains suburb: if address has suburb appended (e.g. "46 Discovery St Red Hill")
       //    and suburb is now known, try to strip it from the address
@@ -450,19 +550,8 @@ export function registerZapierApi(app: Express) {
       }
 
       // 4. State inference from postcode (Australian postcodes)
-      if (postcode && !state) {
-        const pc = parseInt(postcode, 10);
-        if (pc >= 2000 && pc <= 2599) state = "NSW";
-        else if (pc >= 2600 && pc <= 2619) state = "ACT";
-        else if (pc >= 2620 && pc <= 2899) state = "NSW";
-        else if (pc >= 2900 && pc <= 2920) state = "ACT";
-        else if (pc >= 3000 && pc <= 3999) state = "VIC";
-        else if (pc >= 4000 && pc <= 4999) state = "QLD";
-        else if (pc >= 5000 && pc <= 5799) state = "SA";
-        else if (pc >= 6000 && pc <= 6797) state = "WA";
-        else if (pc >= 7000 && pc <= 7799) state = "TAS";
-        else if (pc >= 800 && pc <= 899) state = "NT";
-      }
+      if (postcode && !state) state = inferStateFromPostcode(postcode);
+      if (state) state = normaliseAuState(state);
 
       // 5. Title-case the name fields
       const titleCase = (s: string) => s.replace(/\b\w/g, c => c.toUpperCase());

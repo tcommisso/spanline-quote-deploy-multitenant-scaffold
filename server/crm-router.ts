@@ -337,8 +337,17 @@ export const crmRouter = router({
         designAdvisor,
       };
 
-      // Auto-assign branch based on franchise number or address proximity
+      // Auto-assign branch using admin postcode territory coverage first.
       let branchId = createData.branchId;
+      if (!branchId && postcode) {
+        try {
+          const { getBranchIdForPostcodeFromDb } = await import("./territory-router");
+          const match = await getBranchIdForPostcodeFromDb(postcode, tenantId);
+          if (match) branchId = match.branchId;
+        } catch (e) {
+          console.warn("[CRM] Could not auto-assign branch by postcode territory:", e);
+        }
+      }
       if (!branchId && createData.franchiseNumber === 'RIV') {
         branchId = 2; // Wagga Wagga
       } else if (!branchId && createData.franchiseNumber === 'ACT') {
@@ -433,6 +442,19 @@ export const crmRouter = router({
         }
         if (data.state !== undefined || contactAddress) {
           data.state = normaliseLeadState(data.state || inferredAddress.state);
+        }
+      }
+
+      if (data.branchId === undefined && data.postcode) {
+        try {
+          const existingLead = await crmDb.getLead(id, tenantId);
+          if (existingLead && !existingLead.branchId) {
+            const { getBranchIdForPostcodeFromDb } = await import("./territory-router");
+            const match = await getBranchIdForPostcodeFromDb(data.postcode, tenantId);
+            if (match) data.branchId = match.branchId;
+          }
+        } catch (e) {
+          console.warn("[CRM] Could not auto-assign branch by postcode territory on update:", e);
         }
       }
 

@@ -72,7 +72,15 @@ function collectSearchableStrings(value: unknown, depth = 0): string[] {
 }
 
 function rawSearchText(raw: unknown) {
-  return collectSearchableStrings(raw).join(" ");
+  if (!raw || typeof raw !== "object") return "";
+  const payload = raw as {
+    transaction?: { lineDescriptions?: unknown };
+    line?: { Description?: unknown };
+  };
+  return [
+    ...collectSearchableStrings(payload.transaction?.lineDescriptions),
+    ...collectSearchableStrings(payload.line?.Description),
+  ].join(" ");
 }
 
 function textIncludesToken(text: string, compact: string, value: unknown, minLength = 4) {
