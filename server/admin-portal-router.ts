@@ -6,7 +6,7 @@ import {
   portalAccess, portalSessions, portalDocuments, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, portalContacts, portalVariations,
   cpcPlans, cpcSubscriptions, cpcServiceHistory, constructionJobs,
-  portalPhotoComments, quotes, crmLeads,
+  portalPhotoComments, quotes, crmLeads, users, tenantMemberships, designAdvisors,
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
 import crypto from "crypto";
@@ -17,6 +17,27 @@ import { buildTrustedAppUrlForTenant } from "./_core/url";
 
 function generateToken(length = 64): string {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
+}
+
+function normaliseEmail(email?: string | null) {
+  return email?.trim().toLowerCase() || "";
+}
+
+function contactRoleTitle(role?: string | null) {
+  if (!role) return "";
+  const roleLabels: Record<string, string> = {
+    super_admin: "Director",
+    admin: "Admin",
+    design_adviser: "Design Adviser",
+    office_user: "Office Manager",
+    construction_user: "Construction Manager",
+    driver: "Driver",
+    warehouse: "Warehouse",
+    user: "Team Member",
+  };
+  return roleLabels[role] ?? role
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 async function assertPortalJobAccess(ctx: any, jobId: number) {
@@ -702,6 +723,93 @@ export const adminPortalRouter = router({
     }),
 
   // ─── Portal Contacts Management ───────────────────────────────────────────
+
+  listContactUsers: adminProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+    const tenantId = tenantIdFromContext(ctx);
+    if (!tenantId) return [];
+
+    const tenantUsers = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    }).from(tenantMemberships)
+      .innerJoin(users, eq(users.id, tenantMemberships.userId))
+      .where(eq(tenantMemberships.tenantId, tenantId))
+      .orderBy(users.name);
+
+    const staffRows = await db.select({
+      id: designAdvisors.id,
+      userId: designAdvisors.userId,
+      name: designAdvisors.name,
+      email: designAdvisors.email,
+      phone: designAdvisors.phone,
+      role: designAdvisors.role,
+      profileDescription: designAdvisors.profileDescription,
+      photoUrl: designAdvisors.photoUrl,
+      archived: designAdvisors.archived,
+    }).from(designAdvisors)
+      .where(and(eq(designAdvisors.tenantId, tenantId), eq(designAdvisors.archived, false)))
+      .orderBy(designAdvisors.name);
+
+    const staffByUserId = new Map(staffRows.filter((staff) => staff.userId).map((staff) => [staff.userId!, staff]));
+    const staffByEmail = new Map(staffRows
+      .filter((staff) => normaliseEmail(staff.email))
+      .map((staff) => [normaliseEmail(staff.email), staff]));
+    const matchedStaffIds = new Set<number>();
+
+    const contactUsers: Array<{
+      key: string;
+      source: "user" | "staff";
+      userId: number | null;
+      staffId: number;
+      name: string;
+      email: string | null;
+      phone: string | null;
+      role: string | null;
+      roleLabel: string;
+      profileDescription: string | null;
+      photoUrl: string | null;
+    }> = tenantUsers.map((tenantUser) => {
+      const matchingStaff = staffByUserId.get(tenantUser.id) ?? staffByEmail.get(normaliseEmail(tenantUser.email));
+      if (matchingStaff) matchedStaffIds.add(matchingStaff.id);
+      const role = matchingStaff?.role || tenantUser.role;
+      return {
+        key: `user:${tenantUser.id}`,
+        source: "user" as const,
+        userId: tenantUser.id,
+        staffId: matchingStaff?.id ?? tenantUser.id,
+        name: tenantUser.name || tenantUser.email || `User #${tenantUser.id}`,
+        email: tenantUser.email || matchingStaff?.email || null,
+        phone: matchingStaff?.phone || null,
+        role,
+        roleLabel: contactRoleTitle(role),
+        profileDescription: matchingStaff?.profileDescription || null,
+        photoUrl: matchingStaff?.photoUrl || null,
+      };
+    });
+
+    for (const staff of staffRows) {
+      if (matchedStaffIds.has(staff.id)) continue;
+      contactUsers.push({
+        key: `staff:${staff.id}`,
+        source: "staff" as const,
+        userId: null,
+        staffId: staff.id,
+        name: staff.name,
+        email: staff.email || null,
+        phone: staff.phone || null,
+        role: staff.role,
+        roleLabel: contactRoleTitle(staff.role),
+        profileDescription: staff.profileDescription || null,
+        photoUrl: staff.photoUrl || null,
+      });
+    }
+
+    return contactUsers.sort((a, b) => a.name.localeCompare(b.name));
+  }),
 
   listContacts: adminProcedure
     .input(z.object({ jobId: z.number() }))

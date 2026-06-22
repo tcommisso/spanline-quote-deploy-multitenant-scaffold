@@ -57,6 +57,8 @@ const FALLBACK_LEAD_SOURCES = [
   "Social Media", "Print Ad", "Door Knock", "Repeat Client", "Other"
 ];
 
+const NOT_COMPLETED_STATUS_FILTER = "not_completed";
+
 type BranchFilterValue = number | "unassigned" | undefined;
 
 type LeadFilterSnapshot = {
@@ -560,9 +562,13 @@ export default function CrmLeadsList() {
   };
 
   const applyFilterSnapshot = (filters: LeadFilterSnapshot) => {
-    setLeadView(filters.leadView || "pipeline");
+    const nextLeadView = filters.leadView || "pipeline";
+    const nextStatusFilter = nextLeadView === "clients" || filters.statusFilter !== NOT_COMPLETED_STATUS_FILTER
+      ? filters.statusFilter || ""
+      : "";
+    setLeadView(nextLeadView);
     setSearch(filters.search || "");
-    setStatusFilter(filters.statusFilter || "");
+    setStatusFilter(nextStatusFilter);
     setProductFilter(filters.productFilter || "");
     setSourceFilter(filters.sourceFilter || "");
     setAdvisorFilter(filters.advisorFilter || "");
@@ -830,6 +836,9 @@ export default function CrmLeadsList() {
             onClick={() => {
               if (leadView === view.value) return;
               setLeadView(view.value);
+              if (view.value !== "clients" && statusFilter === NOT_COMPLETED_STATUS_FILTER) {
+                setStatusFilter("");
+              }
               setSelectedIds(new Set());
               setSelectAllMatchingMode(false);
               resetLeadList();
@@ -1025,6 +1034,9 @@ export default function CrmLeadsList() {
                   <SelectTrigger><SelectValue placeholder="All statuses" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
+                    {leadView === "clients" && (
+                      <SelectItem value={NOT_COMPLETED_STATUS_FILTER}>Not completed</SelectItem>
+                    )}
                     {Object.entries(EFFECTIVE_STATUS_LABELS).map(([k, v]) => (
                       <SelectItem key={k} value={k}>{v}</SelectItem>
                     ))}

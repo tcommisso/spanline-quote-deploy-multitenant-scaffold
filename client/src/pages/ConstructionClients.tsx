@@ -25,6 +25,12 @@ const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }>
   cancelled: { color: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300", icon: Ban, label: "Cancelled" },
 };
 
+const STATUS_FILTER_LABELS: Record<string, string> = {
+  not_completed: "Not completed",
+  all: "Active (excl. Completed)",
+  all_incl_completed: "All statuses",
+};
+
 const PAYMENT_STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   paid: { color: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300", label: "Paid" },
   partial: { color: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300", label: "Partial" },
@@ -40,7 +46,7 @@ const PAGE_SIZE = 50;
 export default function ConstructionClients() {
   const [, navigate] = useLocation();
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("not_completed");
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
   const [baFilter, setBaFilter] = useState<string>("all");
   const [scheduledFilter, setScheduledFilter] = useState<string>("all");
@@ -356,6 +362,7 @@ export default function ConstructionClients() {
               <SelectValue placeholder="All Statuses" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="not_completed">Not completed</SelectItem>
               <SelectItem value="all">Active (excl. Completed)</SelectItem>
               <SelectItem value="all_incl_completed">All Statuses</SelectItem>
               {Object.entries(STATUS_CONFIG).map(([key, config]) => (
@@ -453,7 +460,7 @@ export default function ConstructionClients() {
         {displayClients.length > 0 && (
           <p className="text-xs text-muted-foreground">
             Showing {displayClients.length} of {total} project{total !== 1 ? "s" : ""}
-            {statusFilter !== "all" && statusFilter !== "all_incl_completed" && ` (${STATUS_CONFIG[statusFilter]?.label})`}
+            {statusFilter !== "all_incl_completed" && ` (${STATUS_FILTER_LABELS[statusFilter] || STATUS_CONFIG[statusFilter]?.label || statusFilter})`}
             {paymentFilter !== "all" && ` · ${PAYMENT_STATUS_CONFIG[paymentFilter]?.label}`}
             {scheduledFilter !== "all" && ` · ${scheduledFilter.replace(/_/g, " ")}`}
             {branchFilter !== "all" && ` · ${branchFilter}`}

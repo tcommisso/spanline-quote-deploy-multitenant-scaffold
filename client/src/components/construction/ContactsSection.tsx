@@ -46,6 +46,7 @@ export default function ContactsSection({
   // Portal Staff Contacts state
   const [staffDialogOpen, setStaffDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<any>(null);
+  const [selectedTeamMemberKey, setSelectedTeamMemberKey] = useState("custom");
   const [staffForm, setStaffForm] = useState({
     staffId: null as number | null,
     name: "",
@@ -68,7 +69,7 @@ export default function ContactsSection({
 
   // Portal contacts queries
   const portalContactsQuery = trpc.adminPortal.listContacts.useQuery({ jobId });
-  const staffListQuery = trpc.designAdvisors.list.useQuery({ includeArchived: false, includePendingInvites: true });
+  const contactUsersQuery = trpc.adminPortal.listContactUsers.useQuery(undefined, { enabled: staffDialogOpen });
   const upsertContactMut = trpc.adminPortal.upsertContact.useMutation({
     onSuccess: () => {
       toast.success(editingContact ? "Contact updated" : "Staff contact added");
@@ -87,12 +88,14 @@ export default function ContactsSection({
 
   function openAddStaffContact() {
     setEditingContact(null);
+    setSelectedTeamMemberKey("custom");
     setStaffForm({ staffId: null, name: "", role: "", phone: "", email: "", profileDescription: "", photoUrl: "" });
     setStaffDialogOpen(true);
   }
 
   function openEditStaffContact(contact: any) {
     setEditingContact(contact);
+    setSelectedTeamMemberKey("custom");
     setStaffForm({
       staffId: contact.staffId || null,
       name: contact.name,
@@ -108,29 +111,26 @@ export default function ContactsSection({
   function closeStaffDialog() {
     setStaffDialogOpen(false);
     setEditingContact(null);
+    setSelectedTeamMemberKey("custom");
     setStaffForm({ staffId: null, name: "", role: "", phone: "", email: "", profileDescription: "", photoUrl: "" });
   }
 
-  function handleSelectStaff(staffIdStr: string) {
-    if (staffIdStr === "custom") {
+  function handleSelectTeamMember(memberKey: string) {
+    setSelectedTeamMemberKey(memberKey);
+    if (memberKey === "custom") {
       setStaffForm({ staffId: null, name: "", role: "", phone: "", email: "", profileDescription: "", photoUrl: "" });
       return;
     }
-    const staffId = Number(staffIdStr);
-    const staff = staffListQuery.data?.find(s => s.id === staffId);
-    if (staff) {
+    const teamMember = contactUsersQuery.data?.find(member => member.key === memberKey);
+    if (teamMember) {
       setStaffForm({
-        staffId: staff.id,
-        name: staff.name,
-        role: staff.role === "design_adviser" ? "Design Adviser" :
-              staff.role === "super_admin" ? "Director" :
-              staff.role === "construction_user" ? "Construction Manager" :
-              staff.role === "office_user" ? "Office Manager" :
-              staff.role || "",
-        phone: staff.phone || "",
-        email: staff.email || "",
-        profileDescription: staff.profileDescription || "",
-        photoUrl: staff.photoUrl || "",
+        staffId: teamMember.staffId,
+        name: teamMember.name,
+        role: teamMember.roleLabel || teamMember.role || "",
+        phone: teamMember.phone || "",
+        email: teamMember.email || "",
+        profileDescription: teamMember.profileDescription || "",
+        photoUrl: teamMember.photoUrl || "",
       });
     }
   }
@@ -414,26 +414,29 @@ export default function ContactsSection({
               <div>
                 <Label>Select from Team</Label>
                 <Select
-                  value={staffForm.staffId ? String(staffForm.staffId) : "custom"}
-                  onValueChange={handleSelectStaff}
+                  value={selectedTeamMemberKey}
+                  onValueChange={handleSelectTeamMember}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Choose a team member or enter custom..." />
+                    <SelectValue placeholder="Choose a user or enter custom..." />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="custom">— Enter manually —</SelectItem>
-                    {(staffListQuery.data || []).map(s => (
-                      <SelectItem key={s.id} value={String(s.id)}>
-                        {s.name} ({s.role === "design_adviser" ? "Design Adviser" :
-                          s.role === "super_admin" ? "Director" :
-                          s.role === "construction_user" ? "Construction" :
-                          s.role === "office_user" ? "Office" : s.role})
+                    {contactUsersQuery.isLoading && (
+                      <SelectItem value="__loading" disabled>Loading users...</SelectItem>
+                    )}
+                    {(contactUsersQuery.data || []).map(member => (
+                      <SelectItem key={member.key} value={member.key}>
+                        {member.name} ({member.roleLabel || member.role || "User"})
                       </SelectItem>
                     ))}
+                    {!contactUsersQuery.isLoading && (contactUsersQuery.data || []).length === 0 && (
+                      <SelectItem value="__empty" disabled>No users found</SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Selecting a team member pre-fills their details. You can customise below.
+                  Selecting a user pre-fills their details. You can customise below.
                 </p>
               </div>
             )}

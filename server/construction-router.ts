@@ -12,6 +12,8 @@ import { generateWorkOrderPdf } from "./construction-pdf";
 import { triggerPushSharedFileUploaded } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
+const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+
 function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
   conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
 }
@@ -161,7 +163,7 @@ export const constructionRouter = router({
   jobs: router({
     list: protectedProcedure
       .input(z.object({
-        status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled"]).optional(),
+        status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled", "not_completed"]).optional(),
         fyStartYear: z.number().optional(),
         excludeCompleted: z.boolean().optional(), // default true when no status filter set
       }).optional())
@@ -171,7 +173,9 @@ export const constructionRouter = router({
         const conditions: any[] = [];
         const tenantId = tenantIdFromContext(ctx);
         appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
-        if (input?.status) {
+        if (input?.status === "not_completed") {
+          conditions.push(inArray(constructionJobs.status, [...ACTIVE_CONSTRUCTION_JOB_STATUSES]));
+        } else if (input?.status) {
           conditions.push(eq(constructionJobs.status, input.status));
         } else if (input?.excludeCompleted !== false) {
           // By default, exclude completed jobs when no specific status filter is set

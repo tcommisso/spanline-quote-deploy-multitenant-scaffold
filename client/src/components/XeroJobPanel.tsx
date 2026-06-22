@@ -529,7 +529,7 @@ function CreatePurchaseOrderDialog({ jobId, onSuccess }: { jobId: number; onSucc
           <Plus className="h-3.5 w-3.5 mr-1" /> New PO
         </Button>
       </DialogTrigger>
-      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[760px] max-w-[calc(100vw-2rem)] sm:max-w-[90vw] max-h-[90vh] min-h-[min(520px,80vh)] resize overflow-auto flex flex-col">
+      <DialogContent className="!w-[calc(100vw-2rem)] sm:!w-[760px] !max-w-[calc(100vw-2rem)] sm:!max-w-[90vw] max-h-[90vh] min-h-[min(520px,80vh)] !resize !overflow-auto !flex flex-col">
         <DialogHeader>
           <DialogTitle>Create Purchase Order</DialogTitle>
         </DialogHeader>

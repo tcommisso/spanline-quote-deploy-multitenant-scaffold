@@ -15,6 +15,7 @@ const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
 
 const POST_SALE_LEAD_STATUSES = ["contract", "building_authority", "construction", "completed", "won"] as const;
+const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const ACTIVE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "lost", "cancelled"] as const;
 const PIPELINE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "cancelled"] as const;
 const STALE_EXCLUDED_LEAD_STATUSES = [...POST_SALE_LEAD_STATUSES, "cancelled"] as const;
@@ -24,6 +25,7 @@ function quotedSqlList(values: readonly string[]) {
 }
 
 const POST_SALE_STATUS_SQL = quotedSqlList(POST_SALE_LEAD_STATUSES);
+const ACTIVE_CONSTRUCTION_JOB_STATUS_SQL = quotedSqlList(ACTIVE_CONSTRUCTION_JOB_STATUSES);
 const QUOTED_OR_LATER_STATUS_SQL = quotedSqlList(["quoted", ...POST_SALE_LEAD_STATUSES]);
 const ACTIVE_EXCLUDED_STATUS_SQL = quotedSqlList(ACTIVE_EXCLUDED_LEAD_STATUSES);
 const PIPELINE_EXCLUDED_STATUS_SQL = quotedSqlList(PIPELINE_EXCLUDED_LEAD_STATUSES);
@@ -42,6 +44,34 @@ function tenantClause(alias: string, tenantId?: number | null) {
   return isMultiTenancyMode()
     ? { sql: ` AND ${alias}.tenantId = ?`, params: [tenantId] }
     : { sql: ` AND (${alias}.tenantId = ? OR ${alias}.tenantId IS NULL)`, params: [tenantId] };
+}
+
+function linkedConstructionJobCondition(tenantId?: number | null, statusSql?: string) {
+  const statusCondition = statusSql ? sql`AND cj.status IN (${sql.raw(statusSql)})` : sql``;
+  if (tenantId) {
+    return sql`EXISTS (
+      SELECT 1 FROM construction_jobs cj
+      WHERE cj.leadId = ${crmLeads.id}
+        ${statusCondition}
+        AND ${isMultiTenancyMode()
+          ? sql`cj.tenantId = ${tenantId}`
+          : sql`(cj.tenantId = ${tenantId} OR cj.tenantId IS NULL)`}
+    )`;
+  }
+  return sql`EXISTS (
+    SELECT 1 FROM construction_jobs cj
+    WHERE cj.leadId = ${crmLeads.id}
+      ${statusCondition}
+  )`;
+}
+
+function appendLeadStatusFilter(conditions: any[], status?: string, tenantId?: number | null) {
+  if (!status) return;
+  if (status === "not_completed") {
+    conditions.push(linkedConstructionJobCondition(tenantId, ACTIVE_CONSTRUCTION_JOB_STATUS_SQL));
+    return;
+  }
+  conditions.push(eq(crmLeads.status, status as any));
 }
 
 function latestContractPerLead(alias: string) {
@@ -128,20 +158,7 @@ export async function listLeads(filters?: {
 
   if (filters?.lifecycleView === "clients") {
     conditions.push(sql`${crmLeads.status} IN (${sql.raw(POST_SALE_STATUS_SQL)})`);
-    conditions.push(
-      filters.tenantId
-        ? sql`EXISTS (
-            SELECT 1 FROM construction_jobs cj
-            WHERE cj.leadId = ${crmLeads.id}
-              AND ${isMultiTenancyMode()
-                ? sql`cj.tenantId = ${filters.tenantId}`
-                : sql`(cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)`}
-          )`
-        : sql`EXISTS (
-            SELECT 1 FROM construction_jobs cj
-            WHERE cj.leadId = ${crmLeads.id}
-          )`
-    );
+    conditions.push(linkedConstructionJobCondition(filters.tenantId));
   } else if (filters?.lifecycleView === "pipeline") {
     conditions.push(sql`${crmLeads.status} NOT IN (${sql.raw(PIPELINE_EXCLUDED_STATUS_SQL)})`);
   }
@@ -159,7 +176,7 @@ export async function listLeads(filters?: {
     conditions.push(gte(crmLeads.createdAt, threeMonthsAgo));
   }
 
-  if (filters?.status) conditions.push(eq(crmLeads.status, filters.status as any));
+  appendLeadStatusFilter(conditions, filters?.status, filters?.tenantId);
   if (filters?.productType) conditions.push(eq(crmLeads.productType, filters.productType));
   if (filters?.leadSource) conditions.push(eq(crmLeads.leadSource, filters.leadSource));
   if (filters?.designAdvisor === "__unassigned__") {
@@ -259,24 +276,11 @@ export async function listLeadIds(filters?: {
   }
   if (filters?.lifecycleView === "clients") {
     conditions.push(sql`${crmLeads.status} IN (${sql.raw(POST_SALE_STATUS_SQL)})`);
-    conditions.push(
-      filters.tenantId
-        ? sql`EXISTS (
-            SELECT 1 FROM construction_jobs cj
-            WHERE cj.leadId = ${crmLeads.id}
-              AND ${isMultiTenancyMode()
-                ? sql`cj.tenantId = ${filters.tenantId}`
-                : sql`(cj.tenantId = ${filters.tenantId} OR cj.tenantId IS NULL)`}
-          )`
-        : sql`EXISTS (
-            SELECT 1 FROM construction_jobs cj
-            WHERE cj.leadId = ${crmLeads.id}
-          )`
-    );
+    conditions.push(linkedConstructionJobCondition(filters.tenantId));
   } else if (filters?.lifecycleView === "pipeline") {
     conditions.push(sql`${crmLeads.status} NOT IN (${sql.raw(PIPELINE_EXCLUDED_STATUS_SQL)})`);
   }
-  if (filters?.status) conditions.push(eq(crmLeads.status, filters.status as any));
+  appendLeadStatusFilter(conditions, filters?.status, filters?.tenantId);
   if (filters?.productType) conditions.push(eq(crmLeads.productType, filters.productType));
   if (filters?.leadSource) conditions.push(eq(crmLeads.leadSource, filters.leadSource));
   if (filters?.designAdvisor === "__unassigned__") {

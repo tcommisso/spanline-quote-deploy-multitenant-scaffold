@@ -391,11 +391,11 @@ function CreatePODialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[88vh] overflow-y-auto">
+      <DialogContent className="!w-[calc(100vw-2rem)] sm:!w-[1100px] !max-w-[calc(100vw-2rem)] sm:!max-w-[92vw] max-h-[90vh] min-h-[min(620px,84vh)] !resize !overflow-auto !flex flex-col">
         <DialogHeader>
           <DialogTitle>Create Purchase Order</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4">
+        <div className="space-y-4 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Linked Manufacturing Order</Label>
@@ -547,11 +547,11 @@ function EditPODialog({ po, onClose }: { po: any; onClose: () => void }) {
 
   return (
     <Dialog open onOpenChange={() => onClose()}>
-      <DialogContent className="max-w-6xl max-h-[88vh] overflow-y-auto">
+      <DialogContent className="!w-[calc(100vw-2rem)] sm:!w-[1100px] !max-w-[calc(100vw-2rem)] sm:!max-w-[92vw] max-h-[90vh] min-h-[min(620px,84vh)] !resize !overflow-auto !flex flex-col">
         <DialogHeader>
           <DialogTitle>Edit Line Items — {po.poNumber}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-3 min-h-0 flex-1 overflow-y-auto pr-1">
           <ManufacturingProductCatalogue onAddProduct={addCatalogueItem} />
           <SelectedLineItemsEditor
             lineItems={lineItems}

@@ -73,7 +73,7 @@ const formatCurrency = formatCurrencyShort;
 export default function ConstructionDashboard() {
   const [, navigate] = useLocation();
 
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("not_completed");
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [showCreateJob, setShowCreateJob] = useState(false);
 

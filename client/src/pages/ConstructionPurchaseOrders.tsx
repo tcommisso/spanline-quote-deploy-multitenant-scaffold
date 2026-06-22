@@ -452,12 +452,12 @@ function NewPODialog({ open, onOpenChange, tradeTypes }: { open: boolean; onOpen
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) resetForm(); onOpenChange(v); }}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="!w-[calc(100vw-2rem)] sm:!w-[760px] !max-w-[calc(100vw-2rem)] sm:!max-w-[90vw] max-h-[90vh] min-h-[min(520px,80vh)] !resize !overflow-auto !flex flex-col">
         <DialogHeader>
           <DialogTitle>New Purchase Order</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="space-y-4 py-2 min-h-0 flex-1 overflow-y-auto pr-1">
           {/* Job Selector */}
           <div className="space-y-2">
             <Label>Job / Client *</Label>

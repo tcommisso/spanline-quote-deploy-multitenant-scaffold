@@ -11,6 +11,8 @@ import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 
+const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+
 async function requireDb() {
   const db = await getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
@@ -177,7 +179,7 @@ export const constructionClientsRouter = router({
   // List all construction clients (jobs) with stage indicators
   list: protectedProcedure
     .input(z.object({
-      status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled"]).optional(),
+      status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled", "not_completed"]).optional(),
       search: z.string().optional(),
       branch: z.string().optional(),
       suburb: z.string().optional(),
@@ -195,7 +197,9 @@ export const constructionClientsRouter = router({
 
       const conditions: any[] = [];
       conditions.push(visibleConstructionClientCondition());
-      if (input?.status) {
+      if (input?.status === "not_completed") {
+        conditions.push(inArray(constructionJobs.status, [...ACTIVE_CONSTRUCTION_JOB_STATUSES]));
+      } else if (input?.status) {
         conditions.push(eq(constructionJobs.status, input.status));
       } else if (input?.excludeCompleted !== false) {
         // By default, exclude completed jobs when no specific status filter is set
