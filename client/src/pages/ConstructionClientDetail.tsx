@@ -56,6 +56,7 @@ import ProgressInvoicesCard from "@/components/ProgressInvoicesCard";
 import ClientActivityTab from "@/components/ClientActivityTab";
 import SitePlanDiagram from "@/components/SitePlanDiagram";
 import SitePlanPrintPage from "@/components/SitePlanPrintPage";
+import ProjectTeamFields, { type ProjectTeamPayload } from "@/components/construction/ProjectTeamFields";
 
 const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   scheduled: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Clock, label: "Scheduled" },
@@ -217,6 +218,13 @@ export default function ConstructionClientDetail() {
       toast.success("Financials updated");
     },
   });
+  const updateProjectTeam = trpc.constructionClients.updateProjectTeam.useMutation({
+    onSuccess: () => {
+      detailQuery.refetch();
+      toast.success("Project team updated");
+    },
+    onError: (err) => toast.error(err.message || "Failed to update project team"),
+  });
 
   if (detailQuery.isLoading) {
     return (
@@ -363,6 +371,14 @@ export default function ConstructionClientDetail() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Design Adviser</span>
                   <span className="font-medium">{job.designAdviserName || "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Construction Manager</span>
+                  <span className="font-medium">{financials?.constructionManagerName || job.supervisorName || "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Technical Designer</span>
+                  <span className="font-medium">{financials?.technicalDesignerName || "—"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Scheduled Start</span>
@@ -515,6 +531,8 @@ export default function ConstructionClientDetail() {
             xeroAccountingSummary={xeroAccountingSummary}
             onSave={(data) => updateFinancials.mutate({ jobId, ...data })}
             loading={updateFinancials.isPending}
+            onProjectTeamSave={(data) => updateProjectTeam.mutate({ jobId, ...data })}
+            projectTeamLoading={updateProjectTeam.isPending}
           />
           {/* Xero Integration Panel */}
           <XeroJobPanel jobId={jobId} clientName={job.clientName || "Unknown"} financials={financials} />
@@ -805,13 +823,15 @@ const BUDGET_CATEGORY_LABELS: Record<string, string> = {
 };
 
 function FinancialsTab({
-  jobId, financials, xeroAccountingSummary, onSave, loading,
+  jobId, financials, xeroAccountingSummary, onSave, loading, onProjectTeamSave, projectTeamLoading,
 }: {
   jobId: number;
   financials: any;
   xeroAccountingSummary?: any;
   onSave: (data: any) => void;
   loading: boolean;
+  onProjectTeamSave: (data: ProjectTeamPayload) => void;
+  projectTeamLoading: boolean;
 }) {
   const [form, setForm] = useState({
     contractValue: financials?.contractValue || "0",
@@ -864,6 +884,13 @@ function FinancialsTab({
 
   return (
     <div className="space-y-4">
+      <ProjectTeamFields
+        value={financials}
+        onSave={onProjectTeamSave}
+        saving={projectTeamLoading}
+        description="Assign who owns construction delivery and technical specification for this project."
+      />
+
       {/* Health Indicator + Summary Cards */}
       <div className="flex items-center gap-3 mb-1">
         <h3 className="text-lg font-semibold">Project Health</h3>

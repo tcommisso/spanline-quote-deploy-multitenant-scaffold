@@ -4,12 +4,13 @@ import { getDb } from "./db";
 import {
   constructionJobs, constructionProgress, constructionAssignments,
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
-  quotes, crmLeads, crmBuildingAuthority,
+  quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
 } from "../drizzle/schema";
 import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
+import { ENV } from "./_core/env";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 
@@ -42,6 +43,53 @@ async function requireJobAccess(db: any, ctx: any, jobId: number) {
     .limit(1);
   if (!job) throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
   return job;
+}
+
+function nullableName(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  return trimmed || null;
+}
+
+async function resolveProjectTeamRole(db: any, ctx: any, userId?: number | null, manualName?: string | null) {
+  const name = nullableName(manualName);
+  if (userId == null) return { userId: null, name };
+
+  const tenantId = tenantIdFromContext(ctx);
+  if (!tenantId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required" });
+  }
+
+  const userRows = ENV.tenancyMode === "single"
+    ? await db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1)
+    : await db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      })
+        .from(tenantMemberships)
+        .innerJoin(users, eq(users.id, tenantMemberships.userId))
+        .where(and(
+          eq(tenantMemberships.tenantId, tenantId),
+          eq(users.id, userId),
+        ))
+        .limit(1);
+
+  const selectedUser = userRows[0];
+  if (!selectedUser) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected user is not available for this tenant" });
+  }
+
+  return {
+    userId,
+    name: name || selectedUser.name || selectedUser.email || `User #${userId}`,
+  };
 }
 
 /**
@@ -81,6 +129,31 @@ function currentFyStartYear(): number {
 }
 
 export const constructionClientsRouter = router({
+  assignableUsers: protectedProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    const tenantId = tenantIdFromContext(ctx);
+    if (!tenantId) return [];
+
+    const selectFields = {
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    };
+
+    if (ENV.tenancyMode === "single") {
+      return await db.select(selectFields)
+        .from(users)
+        .orderBy(users.name, users.email);
+    }
+
+    return await db.select(selectFields)
+      .from(tenantMemberships)
+      .innerJoin(users, eq(users.id, tenantMemberships.userId))
+      .where(eq(tenantMemberships.tenantId, tenantId))
+      .orderBy(users.name, users.email);
+  }),
+
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const tenantConditions = jobTenantConditions(ctx);
@@ -297,6 +370,8 @@ export const constructionClientsRouter = router({
           branch: constructionJobFinancials.branch,
           constructionManagerId: constructionJobFinancials.constructionManagerId,
           constructionManagerName: constructionJobFinancials.constructionManagerName,
+          technicalDesignerId: constructionJobFinancials.technicalDesignerId,
+          technicalDesignerName: constructionJobFinancials.technicalDesignerName,
         }).from(constructionJobs)
           .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
           .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
@@ -313,7 +388,17 @@ export const constructionClientsRouter = router({
           .where(where),
       ]);
 
-      const jobRows = jobs.map((row: any) => ({ ...row.job, clientNumber: row.clientNumber, leadSuburb: row.leadSuburb, quoteSuburb: row.quoteSuburb, branch: row.branch, constructionManagerId: row.constructionManagerId, constructionManagerName: row.constructionManagerName }));
+      const jobRows = jobs.map((row: any) => ({
+        ...row.job,
+        clientNumber: row.clientNumber,
+        leadSuburb: row.leadSuburb,
+        quoteSuburb: row.quoteSuburb,
+        branch: row.branch,
+        constructionManagerId: row.constructionManagerId,
+        constructionManagerName: row.constructionManagerName,
+        technicalDesignerId: row.technicalDesignerId,
+        technicalDesignerName: row.technicalDesignerName,
+      }));
 
       // Get progress for each job to show stage indicators
       const jobIds = jobRows.map(j => j.id);
@@ -613,6 +698,82 @@ export const constructionClientsRouter = router({
       };
     }),
 
+  projectTeamByLeadId: protectedProcedure
+    .input(z.object({ leadId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+
+      const [row] = await db.select({
+        jobId: constructionJobs.id,
+        clientName: constructionJobs.clientName,
+        quoteNumber: constructionJobs.quoteNumber,
+        constructionManagerId: constructionJobFinancials.constructionManagerId,
+        constructionManagerName: constructionJobFinancials.constructionManagerName,
+        technicalDesignerId: constructionJobFinancials.technicalDesignerId,
+        technicalDesignerName: constructionJobFinancials.technicalDesignerName,
+      })
+        .from(constructionJobs)
+        .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+        .where(and(
+          ...jobTenantConditions(ctx, eq(constructionJobs.leadId, input.leadId)),
+          visibleConstructionClientCondition(),
+        ))
+        .orderBy(desc(constructionJobs.updatedAt))
+        .limit(1);
+
+      return row || null;
+    }),
+
+  updateProjectTeam: protectedProcedure
+    .input(z.object({
+      jobId: z.number(),
+      constructionManagerId: z.number().nullable().optional(),
+      constructionManagerName: z.string().nullable().optional(),
+      technicalDesignerId: z.number().nullable().optional(),
+      technicalDesignerName: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const { jobId } = input;
+      await requireJobAccess(db, ctx, jobId);
+
+      const constructionManager = await resolveProjectTeamRole(
+        db,
+        ctx,
+        input.constructionManagerId,
+        input.constructionManagerName,
+      );
+      const technicalDesigner = await resolveProjectTeamRole(
+        db,
+        ctx,
+        input.technicalDesignerId,
+        input.technicalDesignerName,
+      );
+
+      const values = {
+        constructionManagerId: constructionManager.userId,
+        constructionManagerName: constructionManager.name,
+        technicalDesignerId: technicalDesigner.userId,
+        technicalDesignerName: technicalDesigner.name,
+      };
+
+      const existing = await db.select({ id: constructionJobFinancials.id })
+        .from(constructionJobFinancials)
+        .where(eq(constructionJobFinancials.jobId, jobId))
+        .limit(1);
+
+      if (existing.length > 0) {
+        await db.update(constructionJobFinancials)
+          .set(values)
+          .where(eq(constructionJobFinancials.jobId, jobId));
+      } else {
+        await db.insert(constructionJobFinancials).values({ jobId, ...values });
+      }
+
+      return { success: true };
+    }),
+
   // Update financials for a job
   updateFinancials: protectedProcedure
     .input(z.object({
@@ -626,6 +787,8 @@ export const constructionClientsRouter = router({
       branch: z.string().optional(),
       constructionManagerId: z.number().nullable().optional(),
       constructionManagerName: z.string().nullable().optional(),
+      technicalDesignerId: z.number().nullable().optional(),
+      technicalDesignerName: z.string().nullable().optional(),
       roofStyle: z.string().optional(),
       postcode: z.string().optional(),
     }))
@@ -634,6 +797,28 @@ export const constructionClientsRouter = router({
 
       const { jobId, ...data } = input;
       await requireJobAccess(db, ctx, jobId);
+
+      if ("constructionManagerId" in data || "constructionManagerName" in data) {
+        const constructionManager = await resolveProjectTeamRole(
+          db,
+          ctx,
+          data.constructionManagerId,
+          data.constructionManagerName,
+        );
+        data.constructionManagerId = constructionManager.userId;
+        data.constructionManagerName = constructionManager.name;
+      }
+      if ("technicalDesignerId" in data || "technicalDesignerName" in data) {
+        const technicalDesigner = await resolveProjectTeamRole(
+          db,
+          ctx,
+          data.technicalDesignerId,
+          data.technicalDesignerName,
+        );
+        data.technicalDesignerId = technicalDesigner.userId;
+        data.technicalDesignerName = technicalDesigner.name;
+      }
+
       // Calculate totals
       const materials = parseFloat(data.materialsCost || "0");
       const labour = parseFloat(data.labourCost || "0");

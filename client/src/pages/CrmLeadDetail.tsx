@@ -23,6 +23,7 @@ import LeadSectionNotes from "@/components/LeadSectionNotes";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 import CommunicationsTab from "@/components/CommunicationsTab";
 import ClientActivityTab from "@/components/ClientActivityTab";
+import ProjectTeamFields from "@/components/construction/ProjectTeamFields";
 import { useLeadStatusOptions, useProductTypeOptions, useLeadSourceOptions, useOutcomeOptions, useAppointmentTypeOptions, useBuildingAuthorityOptions, useCouncilLetterTypeOptions } from "@/hooks/useCrmDropdowns";
 
 // Fallback arrays used only while dynamic options load
@@ -155,6 +156,8 @@ const SECTIONS = [
   { id: "activity", label: "Activity Log" },
 ];
 
+const PROJECT_TEAM_STATUSES = new Set(["won", "contract", "building_authority", "construction", "completed"]);
+
 export default function CrmLeadDetail() {
   const [, navigate] = useLocation();
   const params = useParams<{ id: string }>();
@@ -242,6 +245,19 @@ export default function CrmLeadDetail() {
   }, [lead]);
 
   const utils = trpc.useUtils();
+  const showProjectTeam = !isNew && !!leadId && PROJECT_TEAM_STATUSES.has(form.status);
+  const projectTeamQuery = trpc.constructionClients.projectTeamByLeadId.useQuery(
+    { leadId: leadId! },
+    { enabled: showProjectTeam }
+  );
+  const updateProjectTeam = trpc.constructionClients.updateProjectTeam.useMutation({
+    onSuccess: () => {
+      toast.success("Project team updated");
+      projectTeamQuery.refetch();
+      if (leadId) utils.constructionClients.projectTeamByLeadId.invalidate({ leadId });
+    },
+    onError: (err) => toast.error(err.message || "Failed to update project team"),
+  });
   const createMut = trpc.crm.leads.create.useMutation({
     onSuccess: (data) => {
       if (data.id === 0) {
@@ -890,6 +906,36 @@ export default function CrmLeadDetail() {
                       </CardContent>
                     </Card>
                   </div>
+
+                  {showProjectTeam && (
+                    <div className="pb-4">
+                      {projectTeamQuery.isLoading ? (
+                        <Card>
+                          <CardContent className="py-6 text-sm text-muted-foreground flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Loading linked construction job...
+                          </CardContent>
+                        </Card>
+                      ) : projectTeamQuery.data ? (
+                        <ProjectTeamFields
+                          value={projectTeamQuery.data}
+                          linkedJobLabel={`Linked job #${projectTeamQuery.data.jobId}${projectTeamQuery.data.quoteNumber ? ` - Quote ${projectTeamQuery.data.quoteNumber}` : ""}`}
+                          description="Assign the construction handover team for this client from users, or enter a non-user name."
+                          saving={updateProjectTeam.isPending}
+                          onSave={(data) => updateProjectTeam.mutate({ jobId: projectTeamQuery.data!.jobId, ...data })}
+                        />
+                      ) : (
+                        <Card>
+                          <CardContent className="py-6">
+                            <p className="text-sm font-medium">No linked construction job yet</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Construction Manager and Technical Designer assignments are saved against the construction job once this client reaches the contract handover stage.
+                            </p>
+                          </CardContent>
+                        </Card>
+                      )}
+                    </div>
+                  )}
 
                   {/* Email Correspondence - visible to office_user, admin, super_admin only */}
                   {!isNew && (user?.role === "office_user" || user?.role === "admin" || user?.role === "super_admin") && (

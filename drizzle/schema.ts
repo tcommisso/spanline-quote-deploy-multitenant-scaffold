@@ -1632,6 +1632,8 @@ export const constructionJobFinancials = mysqlTable("construction_job_financials
   branch: varchar("branch", { length: 128 }),
   constructionManagerId: int("constructionManagerId").references(() => users.id),
   constructionManagerName: varchar("constructionManagerName", { length: 255 }),
+  technicalDesignerId: int("technicalDesignerId").references(() => users.id),
+  technicalDesignerName: varchar("technicalDesignerName", { length: 255 }),
   roofStyle: varchar("roofStyle", { length: 64 }),
   postcode: varchar("postcode", { length: 10 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
