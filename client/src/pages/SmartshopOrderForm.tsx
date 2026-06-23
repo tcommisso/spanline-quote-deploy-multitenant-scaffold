@@ -112,6 +112,19 @@ interface OrderDetails {
   notes: string;
 }
 
+interface SelectedJob {
+  id: number;
+  clientName: string;
+  quoteNumber: string | null;
+  siteAddress: string | null;
+}
+
+interface OrderDraftPayload {
+  orderDetails: OrderDetails;
+  selectedJob?: SelectedJob | null;
+  lines: OrderLine[];
+}
+
 function generateId() {
   return `line-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -125,12 +138,40 @@ function formatCurrency(amount: number) {
     minimumFractionDigits: 2,
   }).format(amount);
 }
+function defaultDraftName(orderDetails: OrderDetails, selectedJob: SelectedJob | null) {
+  const jobNumber = orderDetails.jobNumber || selectedJob?.quoteNumber;
+  return jobNumber ? `Component order ${jobNumber}` : `Component order ${getToday()}`;
+}
+
+function normalizeLoadedLine(line: Partial<OrderLine>): OrderLine {
+  const unitPrice = Number(line.unitPrice || 0);
+  const quantity = Math.max(1, Number(line.quantity || 1));
+  const lineTotal = Number(line.lineTotal || unitPrice * quantity);
+  return {
+    id: typeof line.id === "string" && line.id ? line.id : generateId(),
+    category: line.category || "",
+    spaCode: line.spaCode || "",
+    description: line.description || "",
+    colour: line.colour || "",
+    requiredColour: line.requiredColour || "",
+    uom: line.uom || "",
+    packQtySizes: line.packQtySizes || "",
+    unitPrice,
+    quantity,
+    length: line.length || "",
+    lineNotes: line.lineNotes || "",
+    lineTotal,
+    colourInputAllowed: line.colourInputAllowed,
+    colourGroup: line.colourGroup || "",
+  };
+}
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export default function SmartshopOrderForm() {
   const { user } = useAuth();
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const [orderDetails, setOrderDetails] = useState<OrderDetails>({
     orderDate: getToday(),
     requestedBy: "",
@@ -141,6 +182,8 @@ export default function SmartshopOrderForm() {
     notes: "",
   });
   const [orderLines, setOrderLines] = useState<OrderLine[]>([]);
+  const [currentDraftId, setCurrentDraftId] = useState<number | null>(null);
+  const [draftName, setDraftName] = useState("");
 
   const [lastSubmittedOrderId, setLastSubmittedOrderId] = useState<string | null>(null);
   const [showKitPicker, setShowKitPicker] = useState(false);
@@ -148,12 +191,7 @@ export default function SmartshopOrderForm() {
   // Job picker state
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
   const [jobSearch, setJobSearch] = useState("");
-  const [selectedJob, setSelectedJob] = useState<{
-    id: number;
-    clientName: string;
-    quoteNumber: string | null;
-    siteAddress: string | null;
-  } | null>(null);
+  const [selectedJob, setSelectedJob] = useState<SelectedJob | null>(null);
 
   // Query construction clients for the job picker
   const { data: jobsData } = trpc.constructionClients.list.useQuery(
@@ -249,6 +287,28 @@ export default function SmartshopOrderForm() {
     },
   });
 
+  const draftsQuery = trpc.smartshop.listDrafts.useQuery();
+
+  const saveDraftMutation = trpc.smartshop.saveDraft.useMutation({
+    onSuccess: (result) => {
+      setCurrentDraftId(result.id);
+      setDraftName(result.name);
+      utils.smartshop.listDrafts.invalidate();
+      toast.success("Draft saved");
+    },
+    onError: (err) => toast.error(err.message || "Failed to save draft"),
+  });
+
+  const deleteDraftMutation = trpc.smartshop.deleteDraft.useMutation({
+    onSuccess: () => {
+      setCurrentDraftId(null);
+      setDraftName("");
+      utils.smartshop.listDrafts.invalidate();
+      toast.success("Draft deleted");
+    },
+    onError: (err) => toast.error(err.message || "Failed to delete draft"),
+  });
+
   const submitMutation = trpc.smartshop.submitOrder.useMutation({
     onSuccess: (result) => {
       toast.success(`Order #${result.orderNumber || "N/A"} submitted successfully!`, {
@@ -258,6 +318,11 @@ export default function SmartshopOrderForm() {
       // Store the orderId so we can offer PDF download
       if (result.orderId) {
         setLastSubmittedOrderId(result.orderId);
+      }
+      if (currentDraftId) {
+        deleteDraftMutation.mutate({ id: currentDraftId }, {
+          onSettled: () => utils.smartshop.listDrafts.invalidate(),
+        });
       }
       resetForm();
     },
@@ -308,6 +373,15 @@ export default function SmartshopOrderForm() {
     () => orderLines.reduce((sum, line) => sum + line.lineTotal, 0),
     [orderLines]
   );
+  const hasDraftContent = useMemo(
+    () =>
+      orderLines.length > 0 ||
+      Boolean(selectedJob) ||
+      Boolean(orderDetails.jobNumber.trim()) ||
+      Boolean(orderDetails.locationRequired.trim()) ||
+      Boolean(orderDetails.notes.trim()),
+    [orderDetails.jobNumber, orderDetails.locationRequired, orderDetails.notes, orderLines.length, selectedJob]
+  );
 
   const resetForm = useCallback(() => {
     setOrderDetails({
@@ -321,7 +395,61 @@ export default function SmartshopOrderForm() {
     });
     setOrderLines([]);
     setSelectedJob(null);
+    setCurrentDraftId(null);
+    setDraftName("");
   }, [user]);
+
+  const handleSaveDraft = useCallback(() => {
+    if (!hasDraftContent) {
+      toast.error("Add a job, delivery location, note, or order line before saving a draft");
+      return;
+    }
+    saveDraftMutation.mutate({
+      id: currentDraftId,
+      name: draftName.trim() || defaultDraftName(orderDetails, selectedJob),
+      payload: {
+        orderDetails,
+        selectedJob,
+        lines: orderLines,
+      },
+    });
+  }, [currentDraftId, draftName, hasDraftContent, orderDetails, orderLines, saveDraftMutation, selectedJob]);
+
+  const handleLoadDraft = useCallback(async (value: string) => {
+    const draftId = Number(value);
+    if (!draftId) return;
+    if (hasDraftContent && draftId !== currentDraftId) {
+      const ok = window.confirm("Load this draft and replace the current working order?");
+      if (!ok) return;
+    }
+    try {
+      const draft = await utils.client.smartshop.getDraft.query({ id: draftId });
+      const payload = draft.payload as OrderDraftPayload;
+      setOrderDetails({
+        orderDate: payload.orderDetails?.orderDate || getToday(),
+        requestedBy: payload.orderDetails?.requestedBy || user?.name || "",
+        email: payload.orderDetails?.email || user?.email || "",
+        locationRequired: payload.orderDetails?.locationRequired || "",
+        jobNumber: payload.orderDetails?.jobNumber || "",
+        dateRequired: payload.orderDetails?.dateRequired || "",
+        notes: payload.orderDetails?.notes || "",
+      });
+      setSelectedJob(payload.selectedJob || null);
+      setOrderLines((payload.lines || []).map(normalizeLoadedLine));
+      setCurrentDraftId(draft.id);
+      setDraftName(draft.name || "");
+      toast.success("Draft loaded");
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to load draft");
+    }
+  }, [currentDraftId, hasDraftContent, user?.email, user?.name, utils]);
+
+  const handleDeleteCurrentDraft = useCallback(() => {
+    if (!currentDraftId) return;
+    const ok = window.confirm("Delete this saved draft? Your current on-screen order will remain open.");
+    if (!ok) return;
+    deleteDraftMutation.mutate({ id: currentDraftId });
+  }, [currentDraftId, deleteDraftMutation]);
 
   const handleSubmit = useCallback(() => {
     if (!orderDetails.requestedBy || !orderDetails.email || !orderDetails.locationRequired || !orderDetails.jobNumber || !orderDetails.dateRequired) {
@@ -466,7 +594,7 @@ export default function SmartshopOrderForm() {
       {/* Order Summary & Submit */}
       <Card className="border-primary/20">
         <CardContent className="py-4">
-          <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2 text-muted-foreground">
                 <ShoppingBag className="h-5 w-5" />
@@ -482,24 +610,70 @@ export default function SmartshopOrderForm() {
                 </span>
               </div>
             </div>
-            <Button
-              size="lg"
-              onClick={handleSubmit}
-              disabled={submitMutation.isPending || orderLines.length === 0}
-              className="gap-2 px-8 text-base font-semibold"
-            >
-              {submitMutation.isPending ? (
-                <>
-                  <Spinner className="h-5 w-5" />
-                  Submitting...
-                </>
-              ) : (
-                <>
-                  <Send className="h-5 w-5" />
-                  Submit Order
-                </>
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+              <Input
+                value={draftName}
+                onChange={(event) => setDraftName(event.target.value)}
+                placeholder={defaultDraftName(orderDetails, selectedJob)}
+                className="w-full sm:w-56"
+              />
+              <Select
+                value={currentDraftId ? String(currentDraftId) : undefined}
+                onValueChange={handleLoadDraft}
+                disabled={draftsQuery.isLoading || !draftsQuery.data?.length}
+              >
+                <SelectTrigger className="w-full sm:w-56">
+                  <SelectValue placeholder={draftsQuery.isLoading ? "Loading drafts..." : "Load draft"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(draftsQuery.data || []).map((draft) => (
+                    <SelectItem key={draft.id} value={String(draft.id)}>
+                      {draft.name} · {draft.lineCount} item{draft.lineCount === 1 ? "" : "s"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={handleSaveDraft}
+                disabled={saveDraftMutation.isPending || !hasDraftContent}
+                className="gap-2"
+              >
+                {saveDraftMutation.isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Save className="h-5 w-5" />}
+                Save Draft
+              </Button>
+              {currentDraftId && (
+                <Button
+                  variant="ghost"
+                  size="lg"
+                  onClick={handleDeleteCurrentDraft}
+                  disabled={deleteDraftMutation.isPending}
+                  className="gap-2 text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="h-5 w-5" />
+                  Delete Draft
+                </Button>
               )}
-            </Button>
+              <Button
+                size="lg"
+                onClick={handleSubmit}
+                disabled={submitMutation.isPending || orderLines.length === 0}
+                className="gap-2 px-8 text-base font-semibold"
+              >
+                {submitMutation.isPending ? (
+                  <>
+                    <Spinner className="h-5 w-5" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Send className="h-5 w-5" />
+                    Submit Order
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

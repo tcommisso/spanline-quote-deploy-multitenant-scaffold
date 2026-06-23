@@ -10,6 +10,7 @@ import {
   componentCatalogueProducts,
   smartshopOrders,
   smartshopOrderLines,
+  smartshopOrderDrafts,
   smartshopOrderStatusHistory,
   productFavourites,
   orderTemplates,
@@ -45,6 +46,12 @@ function orderTemplateTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function orderDraftTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, smartshopOrderDrafts.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 async function requireOrderTemplateAccess(db: any, ctx: any, templateId: number) {
   const [template] = await db
     .select()
@@ -53,6 +60,80 @@ async function requireOrderTemplateAccess(db: any, ctx: any, templateId: number)
     .limit(1);
   if (!template) throw new Error("Template not found");
   return template;
+}
+
+async function requireOrderDraftAccess(db: any, ctx: any, draftId: number) {
+  const [draft] = await db
+    .select()
+    .from(smartshopOrderDrafts)
+    .where(and(
+      ...orderDraftTenantConditions(ctx, eq(smartshopOrderDrafts.id, draftId)),
+      eq(smartshopOrderDrafts.userId, ctx.user.id),
+    ))
+    .limit(1);
+  if (!draft) throw new Error("Draft not found");
+  return draft;
+}
+
+const orderDetailsDraftSchema = z.object({
+  orderDate: z.string().default(""),
+  requestedBy: z.string().default(""),
+  email: z.string().default(""),
+  locationRequired: z.string().default(""),
+  jobNumber: z.string().default(""),
+  dateRequired: z.string().default(""),
+  notes: z.string().default(""),
+});
+
+const orderLineDraftSchema = z.object({
+  id: z.string().optional(),
+  category: z.string().default(""),
+  spaCode: z.string().default(""),
+  description: z.string().default(""),
+  colour: z.string().default(""),
+  requiredColour: z.string().default(""),
+  uom: z.string().default(""),
+  packQtySizes: z.string().default(""),
+  unitPrice: z.number().default(0),
+  quantity: z.number().min(1).default(1),
+  length: z.string().default(""),
+  lineNotes: z.string().default(""),
+  lineTotal: z.number().default(0),
+  colourInputAllowed: z.boolean().optional(),
+  colourGroup: z.string().nullish(),
+});
+
+const selectedJobDraftSchema = z.object({
+  id: z.number(),
+  clientName: z.string(),
+  quoteNumber: z.string().nullable().optional(),
+  siteAddress: z.string().nullable().optional(),
+}).nullable().optional();
+
+const orderDraftPayloadSchema = z.object({
+  orderDetails: orderDetailsDraftSchema,
+  selectedJob: selectedJobDraftSchema,
+  lines: z.array(orderLineDraftSchema).default([]),
+});
+
+function normaliseDraftPayload(payload: z.infer<typeof orderDraftPayloadSchema>) {
+  const lines = payload.lines.map((line) => {
+    const unitPrice = Number(line.unitPrice || 0);
+    const quantity = Math.max(1, Number(line.quantity || 1));
+    return {
+      ...line,
+      unitPrice,
+      quantity,
+      lineTotal: Number.isFinite(Number(line.lineTotal)) && Number(line.lineTotal) > 0
+        ? Number(line.lineTotal)
+        : unitPrice * quantity,
+    };
+  });
+  return {
+    orderDetails: payload.orderDetails,
+    selectedJob: payload.selectedJob || null,
+    lines,
+  };
 }
 
 export const smartshopRouter = router({
@@ -234,6 +315,119 @@ export const smartshopRouter = router({
       }));
 
       return { products, total };
+    }),
+
+  /** List saved working drafts for the current user */
+  listDrafts: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) return [];
+    const rows = await db
+      .select({
+        id: smartshopOrderDrafts.id,
+        name: smartshopOrderDrafts.name,
+        jobNumber: smartshopOrderDrafts.jobNumber,
+        lineCount: smartshopOrderDrafts.lineCount,
+        totalExGst: smartshopOrderDrafts.totalExGst,
+        updatedAt: smartshopOrderDrafts.updatedAt,
+        createdAt: smartshopOrderDrafts.createdAt,
+      })
+      .from(smartshopOrderDrafts)
+      .where(and(
+        ...orderDraftTenantConditions(ctx, eq(smartshopOrderDrafts.userId, ctx.user.id)),
+      ))
+      .orderBy(desc(smartshopOrderDrafts.updatedAt));
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      jobNumber: row.jobNumber || "",
+      lineCount: row.lineCount || 0,
+      totalExGst: Number(row.totalExGst || 0),
+      updatedAt: row.updatedAt?.toISOString?.() || null,
+      createdAt: row.createdAt?.toISOString?.() || null,
+    }));
+  }),
+
+  /** Save or update a working component order draft */
+  saveDraft: protectedProcedure
+    .input(z.object({
+      id: z.number().optional().nullable(),
+      name: z.string().trim().min(1).max(255).optional(),
+      payload: orderDraftPayloadSchema,
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+
+      const payload = normaliseDraftPayload(input.payload);
+      const lineCount = payload.lines.length;
+      const totalExGst = payload.lines.reduce((sum, line) => sum + Number(line.lineTotal || 0), 0);
+      const jobNumber = payload.orderDetails.jobNumber || payload.selectedJob?.quoteNumber || null;
+      const fallbackName = jobNumber ? `Component order ${jobNumber}` : "Component order draft";
+      const name = input.name?.trim() || fallbackName;
+
+      if (input.id) {
+        await requireOrderDraftAccess(db, ctx, input.id);
+        await db
+          .update(smartshopOrderDrafts)
+          .set({
+            name,
+            jobNumber,
+            payload,
+            lineCount,
+            totalExGst: totalExGst.toFixed(2),
+          })
+          .where(and(
+            ...orderDraftTenantConditions(ctx, eq(smartshopOrderDrafts.id, input.id)),
+            eq(smartshopOrderDrafts.userId, ctx.user.id),
+          ));
+        return { id: input.id, name };
+      }
+
+      const [result] = await db.insert(smartshopOrderDrafts).values({
+        tenantId: ctx.tenant!.id,
+        userId: ctx.user.id,
+        name,
+        jobNumber,
+        payload,
+        lineCount,
+        totalExGst: totalExGst.toFixed(2),
+      });
+      return { id: result.insertId, name };
+    }),
+
+  /** Load a saved working component order draft */
+  getDraft: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const draft = await requireOrderDraftAccess(db, ctx, input.id);
+      return {
+        id: draft.id,
+        name: draft.name,
+        jobNumber: draft.jobNumber || "",
+        payload: draft.payload,
+        lineCount: draft.lineCount || 0,
+        totalExGst: Number(draft.totalExGst || 0),
+        updatedAt: draft.updatedAt?.toISOString?.() || null,
+      };
+    }),
+
+  /** Delete a saved working component order draft */
+  deleteDraft: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      await requireOrderDraftAccess(db, ctx, input.id);
+      await db
+        .delete(smartshopOrderDrafts)
+        .where(and(
+          ...orderDraftTenantConditions(ctx, eq(smartshopOrderDrafts.id, input.id)),
+          eq(smartshopOrderDrafts.userId, ctx.user.id),
+        ));
+      return { success: true };
     }),
 
   /** Submit a construction order (stored locally) */

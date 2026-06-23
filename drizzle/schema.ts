@@ -3560,6 +3560,26 @@ export const smartshopOrderLines = mysqlTable("smartshop_order_lines", {
 export type SmartshopOrderLine = typeof smartshopOrderLines.$inferSelect;
 export type InsertSmartshopOrderLine = typeof smartshopOrderLines.$inferInsert;
 
+// ─── Smartshop Order Drafts (working component order sheets) ────────────────
+export const smartshopOrderDrafts = mysqlTable("smartshop_order_drafts", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  jobNumber: varchar("jobNumber", { length: 128 }),
+  payload: json("payload").$type<Record<string, any>>().notNull(),
+  lineCount: int("lineCount").default(0).notNull(),
+  totalExGst: decimal("totalExGst", { precision: 12, scale: 2 }).default("0"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_smartshop_order_drafts_tenant_user").on(table.tenantId, table.userId),
+  index("idx_smartshop_order_drafts_tenant_updated").on(table.tenantId, table.updatedAt),
+  index("idx_smartshop_order_drafts_tenant_job").on(table.tenantId, table.jobNumber),
+]);
+export type SmartshopOrderDraft = typeof smartshopOrderDrafts.$inferSelect;
+export type InsertSmartshopOrderDraft = typeof smartshopOrderDrafts.$inferInsert;
+
 // ─── Smartshop Order Status History (Audit Log) ─────────────────────────────
 export const smartshopOrderStatusHistory = mysqlTable("smartshop_order_status_history", {
   id: int("id").autoincrement().primaryKey(),
