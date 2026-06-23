@@ -1,16 +1,18 @@
 import DeckMasterData from "@/components/DeckMasterData";
+import ErrorBoundary from "@/components/ErrorBoundary";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { trpc } from "@/lib/trpc";
-import { Clock } from "lucide-react";
+import { AlertTriangle, Clock } from "lucide-react";
 
 export default function DeckDataPage() {
-  const { data: products } = trpc.deck.products.list.useQuery({});
+  const { data: products, error: productsError, isError: hasProductsError } = trpc.deck.products.list.useQuery({});
+  const productRows = Array.isArray(products) ? products : [];
+  const hasUnexpectedProductsShape = products !== undefined && !Array.isArray(products);
 
-  const lastUpdated = products
-    ? products.reduce((latest, p) => {
+  const lastUpdated = productRows.reduce((latest, p) => {
         const t = new Date(p.updatedAt).getTime();
-        return t > latest ? t : latest;
-      }, 0)
-    : 0;
+        return Number.isFinite(t) && t > latest ? t : latest;
+      }, 0);
 
   return (
     <div className="space-y-4">
@@ -26,7 +28,18 @@ export default function DeckDataPage() {
           </div>
         )}
       </div>
-      <DeckMasterData />
+      {(hasProductsError || hasUnexpectedProductsShape) && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Deck data could not be loaded cleanly</AlertTitle>
+          <AlertDescription>
+            {productsError?.message || "The deck products response was not in the expected list format. Reload the page and check server logs if it continues."}
+          </AlertDescription>
+        </Alert>
+      )}
+      <ErrorBoundary inline>
+        <DeckMasterData />
+      </ErrorBoundary>
     </div>
   );
 }

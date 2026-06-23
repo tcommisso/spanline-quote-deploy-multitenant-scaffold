@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Trash2, Save, Package, Wrench, Users, DollarSign, Puzzle, ImagePlus, Loader2, Copy, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { AlertTriangle, Plus, Trash2, Save, Package, Wrench, Users, DollarSign, Puzzle, ImagePlus, Loader2, Copy, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 
@@ -30,10 +31,21 @@ export default function DeckMasterData() {
   );
 }
 
+function DeckQueryError({ title, message }: { title: string; message?: string }) {
+  return (
+    <Alert variant="destructive">
+      <AlertTriangle className="h-4 w-4" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription>{message || "Reload the page and try again. If this persists, check the deck master-data endpoint logs."}</AlertDescription>
+    </Alert>
+  );
+}
+
 // ─── Deck Products Tab ────────────────────────────────────────────────────────
 function DeckProductsTab() {
   const utils = trpc.useUtils();
-  const { data: products, isLoading } = trpc.deck.products.list.useQuery({});
+  const { data: products, isLoading, error: productsError, isError: hasProductsError } = trpc.deck.products.list.useQuery({});
+  const productRows = Array.isArray(products) ? products : [];
   const upsertMutation = trpc.deck.products.upsert.useMutation({
     onSuccess: () => { toast.success("Product saved"); utils.deck.products.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -60,7 +72,7 @@ function DeckProductsTab() {
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
   const sortedProducts = useMemo(() => {
-    let list = [...(products || [])];
+    let list = [...productRows];
     // Apply search filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -93,7 +105,7 @@ function DeckProductsTab() {
       const cmp = valA.localeCompare(valB);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [products, sortField, sortDir, searchQuery, typeFilter]);
+  }, [productRows, sortField, sortDir, searchQuery, typeFilter]);
 
   const toggleSort = (field: "productName" | "brand" | "type") => {
     if (sortField === field) {
@@ -128,6 +140,7 @@ function DeckProductsTab() {
   };
 
   if (isLoading) return <div className="animate-pulse h-32 bg-muted rounded-lg" />;
+  if (hasProductsError) return <DeckQueryError title="Deck products could not be loaded" message={productsError?.message} />;
 
   return (
     <Card>
@@ -251,7 +264,7 @@ function DeckProductsTab() {
                   </td>
                 </tr>
               ))}
-              {(!products || products.length === 0) && <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No deck products yet</td></tr>}
+              {productRows.length === 0 && <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No deck products yet</td></tr>}
             </tbody>
           </table>
         </div>
@@ -264,7 +277,8 @@ function DeckProductsTab() {
 // ─── Deck Framing Tab ─────────────────────────────────────────────────────────
 function DeckFramingTab() {
   const utils = trpc.useUtils();
-  const { data: items, isLoading } = trpc.deck.framing.list.useQuery({});
+  const { data: items, isLoading, error: itemsError, isError: hasItemsError } = trpc.deck.framing.list.useQuery({});
+  const itemRows = Array.isArray(items) ? items : [];
   const upsertMutation = trpc.deck.framing.upsert.useMutation({
     onSuccess: () => { toast.success("Framing saved"); utils.deck.framing.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -277,6 +291,7 @@ function DeckFramingTab() {
   const [editing, setEditing] = useState<any>(null);
 
   if (isLoading) return <div className="animate-pulse h-32 bg-muted rounded-lg" />;
+  if (hasItemsError) return <DeckQueryError title="Deck framing options could not be loaded" message={itemsError?.message} />;
 
   return (
     <Card>
@@ -312,7 +327,7 @@ function DeckFramingTab() {
               <th className="p-2 w-20"></th>
             </tr></thead>
             <tbody>
-              {(items || []).map((f: any) => (
+              {itemRows.map((f: any) => (
                 <tr key={f.id} className="border-b hover:bg-muted/50 cursor-pointer" onClick={() => setEditing(f)}>
                   <td className="p-2">{f.productName}</td>
                   <td className="p-2">{f.frameType}</td>
@@ -326,7 +341,7 @@ function DeckFramingTab() {
                   </td>
                 </tr>
               ))}
-              {(!items || items.length === 0) && <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">No framing options yet</td></tr>}
+              {itemRows.length === 0 && <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">No framing options yet</td></tr>}
             </tbody>
           </table>
         </div>
@@ -339,7 +354,8 @@ function DeckFramingTab() {
 // ─── Deck Labour Rules Tab ────────────────────────────────────────────────────
 function DeckLabourTab() {
   const utils = trpc.useUtils();
-  const { data: rules, isLoading } = trpc.deck.labourRules.list.useQuery();
+  const { data: rules, isLoading, error: rulesError, isError: hasRulesError } = trpc.deck.labourRules.list.useQuery();
+  const ruleRows = Array.isArray(rules) ? rules : [];
   const upsertMutation = trpc.deck.labourRules.upsert.useMutation({
     onSuccess: () => { toast.success("Labour rule saved"); utils.deck.labourRules.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -352,6 +368,7 @@ function DeckLabourTab() {
   const [editing, setEditing] = useState<any>(null);
 
   if (isLoading) return <div className="animate-pulse h-32 bg-muted rounded-lg" />;
+  if (hasRulesError) return <DeckQueryError title="Deck labour rules could not be loaded" message={rulesError?.message} />;
 
   return (
     <Card>
@@ -388,7 +405,7 @@ function DeckLabourTab() {
               <th className="p-2 text-right">Split</th><th className="p-2 text-right">Multi</th><th className="p-2 w-16"></th>
             </tr></thead>
             <tbody>
-              {(rules || []).map((r: any) => (
+              {ruleRows.map((r: any) => (
                 <tr key={r.id} className="border-b hover:bg-muted/50 cursor-pointer" onClick={() => setEditing(r)}>
                   <td className="p-2">{r.ruleName}</td>
                   <td className="p-2 text-right">${parseFloat(r.baseRatePerM2 || "0").toFixed(0)}</td>
@@ -401,7 +418,7 @@ function DeckLabourTab() {
                   <td className="p-2"><Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); setDeleteTarget(r.id); }}><Trash2 className="w-4 h-4 text-destructive" /></Button></td>
                 </tr>
               ))}
-              {(!rules || rules.length === 0) && <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No labour rules yet</td></tr>}
+              {ruleRows.length === 0 && <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No labour rules yet</td></tr>}
             </tbody>
           </table>
         </div>
@@ -414,7 +431,8 @@ function DeckLabourTab() {
 // ─── Deck Pricing Rules Tab ───────────────────────────────────────────────────
 function DeckPricingTab() {
   const utils = trpc.useUtils();
-  const { data: rules, isLoading } = trpc.deck.pricingRules.list.useQuery();
+  const { data: rules, isLoading, error: rulesError, isError: hasRulesError } = trpc.deck.pricingRules.list.useQuery();
+  const ruleRows = Array.isArray(rules) ? rules : [];
   const upsertMutation = trpc.deck.pricingRules.upsert.useMutation({
     onSuccess: () => { toast.success("Pricing rule saved"); utils.deck.pricingRules.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -427,6 +445,7 @@ function DeckPricingTab() {
   const [editing, setEditing] = useState<any>(null);
 
   if (isLoading) return <div className="animate-pulse h-32 bg-muted rounded-lg" />;
+  if (hasRulesError) return <DeckQueryError title="Deck pricing rules could not be loaded" message={rulesError?.message} />;
 
   return (
     <Card>
@@ -463,7 +482,7 @@ function DeckPricingTab() {
               <th className="p-2 text-right">Delivery</th><th className="p-2 w-16"></th>
             </tr></thead>
             <tbody>
-              {(rules || []).map((r: any) => (
+              {ruleRows.map((r: any) => (
                 <tr key={r.id} className="border-b hover:bg-muted/50 cursor-pointer" onClick={() => setEditing(r)}>
                   <td className="p-2">{r.ruleName}</td>
                   <td className="p-2 text-right">{parseFloat(r.defaultMarginPercent || "0")}%</td>
@@ -475,7 +494,7 @@ function DeckPricingTab() {
                   <td className="p-2"><Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); setDeleteTarget(r.id); }}><Trash2 className="w-4 h-4 text-destructive" /></Button></td>
                 </tr>
               ))}
-              {(!rules || rules.length === 0) && <tr><td colSpan={8} className="p-4 text-center text-muted-foreground">No pricing rules yet</td></tr>}
+              {ruleRows.length === 0 && <tr><td colSpan={8} className="p-4 text-center text-muted-foreground">No pricing rules yet</td></tr>}
             </tbody>
           </table>
         </div>
@@ -488,7 +507,8 @@ function DeckPricingTab() {
 // ─── Deck Add-Ons Tab ─────────────────────────────────────────────────────────
 function DeckAddonsTab() {
   const utils = trpc.useUtils();
-  const { data: items, isLoading } = trpc.deck.addonItems.list.useQuery({});
+  const { data: items, isLoading, error: itemsError, isError: hasItemsError } = trpc.deck.addonItems.list.useQuery({});
+  const itemRows = Array.isArray(items) ? items : [];
   const upsertMutation = trpc.deck.addonItems.upsert.useMutation({
     onSuccess: () => { toast.success("Add-on saved"); utils.deck.addonItems.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -501,6 +521,7 @@ function DeckAddonsTab() {
   const [editing, setEditing] = useState<any>(null);
 
   if (isLoading) return <div className="animate-pulse h-32 bg-muted rounded-lg" />;
+  if (hasItemsError) return <DeckQueryError title="Deck add-ons could not be loaded" message={itemsError?.message} />;
 
   return (
     <Card>
@@ -566,7 +587,7 @@ function DeckAddonsTab() {
               <th className="p-2 text-right">Price</th><th className="p-2 text-right">Labour</th><th className="p-2">Description</th><th className="p-2 w-16"></th>
             </tr></thead>
             <tbody>
-              {(items || []).map((a: any) => (
+              {itemRows.map((a: any) => (
                 <tr key={a.id} className="border-b hover:bg-muted/50 cursor-pointer" onClick={() => setEditing(a)}>
                   <td className="p-2">{a.itemName}</td>
                   <td className="p-2 capitalize">{a.category}</td>
@@ -577,7 +598,7 @@ function DeckAddonsTab() {
                   <td className="p-2"><Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); setDeleteTarget(a.id); }}><Trash2 className="w-4 h-4 text-destructive" /></Button></td>
                 </tr>
               ))}
-              {(!items || items.length === 0) && <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">No add-on items yet</td></tr>}
+              {itemRows.length === 0 && <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">No add-on items yet</td></tr>}
             </tbody>
           </table>
         </div>
