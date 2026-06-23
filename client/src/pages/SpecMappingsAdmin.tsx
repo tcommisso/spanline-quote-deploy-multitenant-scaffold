@@ -8,14 +8,14 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Zap, Info, Download, Copy, Play, AlertTriangle, History, ShieldCheck, CircleAlert, CircleCheck, TriangleAlert, ChevronsUpDown, Check } from "lucide-react";
+import { Plus, Pencil, Trash2, Zap, Info, Download, Copy, Play, AlertTriangle, History, ShieldCheck, CircleAlert, CircleCheck, TriangleAlert, ChevronsUpDown, Check, BookOpen, Search } from "lucide-react";
 import { useState, useMemo } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { SPEC_FIELDS, type SpecFieldDefinition, type SpecFieldType } from "@shared/spec-field-catalogue";
+import { SPEC_DEFINED_TERMS, SPEC_FIELDS, type SpecDefinedTerm, type SpecFieldDefinition, type SpecFieldType } from "@shared/spec-field-catalogue";
 
 // Tab options are now loaded dynamically from the Tab Names master data (product_tab category)
 
@@ -106,6 +106,9 @@ export default function SpecMappingsAdmin() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewResult, setPreviewResult] = useState<string | null>(null);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsSearch, setTermsSearch] = useState("");
+  const [termsSection, setTermsSection] = useState("all");
 
   // Seed templates mutation
   const seedTemplatesMutation = (trpc.specItems as any).seedTemplates.useMutation({
@@ -242,6 +245,37 @@ export default function SpecMappingsAdmin() {
     return result;
   }, [mappingRows, filterTab, filterSubTab]);
 
+  const definedTermSections = useMemo(() => {
+    return Array.from(new Set(SPEC_DEFINED_TERMS.map(term => term.section))).sort((a, b) => a.localeCompare(b));
+  }, []);
+
+  const filteredDefinedTerms = useMemo(() => {
+    const query = termsSearch.trim().toLowerCase();
+    return SPEC_DEFINED_TERMS.filter((term) => {
+      if (termsSection !== "all" && term.section !== termsSection) return false;
+      if (!query) return true;
+      const haystack = [
+        term.term,
+        term.fieldName,
+        term.section,
+        term.type,
+        term.notes,
+        term.productMatchField || "",
+        term.formulaExamples.join(" "),
+      ].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [termsSearch, termsSection]);
+
+  const copyText = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success(`${label} copied`);
+    } catch {
+      toast.error("Could not copy to clipboard");
+    }
+  };
+
   if (isLoading) return <Skeleton className="h-96 w-full" />;
 
   return (
@@ -258,7 +292,7 @@ export default function SpecMappingsAdmin() {
             </TooltipContent>
           </Tooltip>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           {selectedMappings.size > 0 && (
             <Button size="sm" variant="destructive" onClick={() => setBulkDeleteOpen(true)} className="gap-1.5">
               <Trash2 className="h-3.5 w-3.5" /> Delete {selectedMappings.size}
@@ -269,6 +303,9 @@ export default function SpecMappingsAdmin() {
           </Button>
           <Button size="sm" variant="outline" onClick={() => { setValidateOpen(true); refetchValidation(); }} className="gap-1.5">
             <ShieldCheck className="h-3.5 w-3.5" /> Validate All
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setTermsOpen(true)} className="gap-1.5">
+            <BookOpen className="h-3.5 w-3.5" /> Defined Terms
           </Button>
           <Button size="sm" variant="outline" onClick={() => setDryRunOpen(true)} className="gap-1.5">
             <Play className="h-3.5 w-3.5" /> Dry Run
@@ -746,6 +783,129 @@ export default function SpecMappingsAdmin() {
         title={`Delete ${selectedMappings.size} Mappings?`}
         description={`Are you sure you want to delete ${selectedMappings.size} selected mapping${selectedMappings.size !== 1 ? "s" : ""}? This action cannot be undone.`}
       />
+
+      {/* Defined Terms Catalogue */}
+      <Dialog open={termsOpen} onOpenChange={setTermsOpen}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4" /> Specsheet Defined Terms
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={termsSearch}
+                  onChange={(event) => setTermsSearch(event.target.value)}
+                  placeholder="Search term, field name, formula, or notes..."
+                  className="h-9 pl-8"
+                />
+              </div>
+              <Select value={termsSection} onValueChange={setTermsSection}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="All sections" />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  <SelectItem value="all">All sections</SelectItem>
+                  {definedTermSections.map(section => (
+                    <SelectItem key={section} value={section}>{section}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span>{filteredDefinedTerms.length} of {SPEC_DEFINED_TERMS.length} terms</span>
+              <span>Text fields are usually triggers or product matches; numeric and computed fields are valid quantity inputs.</span>
+            </div>
+
+            {filteredDefinedTerms.length === 0 ? (
+              <Card>
+                <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                  No defined terms match that search.
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-2">
+                {filteredDefinedTerms.map((term: SpecDefinedTerm) => {
+                  const typeLabel = FIELD_TYPE_LABELS[term.type];
+                  return (
+                    <Card key={`${term.section}-${term.fieldName}`} className="overflow-hidden">
+                      <CardContent className="p-3">
+                        <div className="grid gap-3 lg:grid-cols-[minmax(180px,0.85fr)_minmax(220px,1fr)_minmax(260px,1.25fr)]">
+                          <div className="space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-semibold">{term.term}</span>
+                              <span className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[10px] font-bold ${typeLabel.color}`}>
+                                {typeLabel.short}
+                              </span>
+                            </div>
+                            <Badge variant="outline" className="text-[10px]">{term.section}</Badge>
+                          </div>
+
+                          <div className="space-y-2">
+                            <div>
+                              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Specsheet field</p>
+                              <button
+                                type="button"
+                                onClick={() => copyText(term.fieldName, "Field name")}
+                                className="inline-flex max-w-full items-center gap-1 rounded border bg-muted px-2 py-1 font-mono text-xs hover:bg-muted/70"
+                              >
+                                <span className="truncate">{term.fieldName}</span>
+                                <Copy className="h-3 w-3 shrink-0" />
+                              </button>
+                            </div>
+                            {term.productMatchField && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Product match</p>
+                                <button
+                                  type="button"
+                                  onClick={() => copyText(term.productMatchField || "", "Product match field")}
+                                  className="inline-flex max-w-full items-center gap-1 rounded border bg-blue-50 px-2 py-1 font-mono text-xs text-blue-800 hover:bg-blue-100"
+                                >
+                                  <span className="truncate">{term.productMatchField}</span>
+                                  <Copy className="h-3 w-3 shrink-0" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <div>
+                              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Formula examples</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {term.formulaExamples.map(example => (
+                                  <button
+                                    key={`${term.fieldName}-${example}`}
+                                    type="button"
+                                    onClick={() => copyText(example, "Formula")}
+                                    className="inline-flex max-w-full items-center gap-1 rounded border bg-background px-2 py-1 font-mono text-xs hover:bg-muted"
+                                  >
+                                    <span className="truncate">{example}</span>
+                                    <Copy className="h-3 w-3 shrink-0" />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <p className="text-xs leading-relaxed text-muted-foreground">{term.notes}</p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTermsOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dry-Run Preview Dialog */}
       <Dialog open={dryRunOpen} onOpenChange={(v) => { setDryRunOpen(v); if (!v) setDryRunQuoteId(""); }}>

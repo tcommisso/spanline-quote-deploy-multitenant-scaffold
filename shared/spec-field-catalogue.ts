@@ -7,6 +7,16 @@ export interface SpecFieldDefinition {
   section: string;
 }
 
+export interface SpecDefinedTerm {
+  term: string;
+  fieldName: string;
+  section: string;
+  type: SpecFieldType;
+  formulaExamples: string[];
+  productMatchField?: string;
+  notes: string;
+}
+
 export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specWidth", label: "Width (m)", type: "num", section: "Dimensions & Structure" },
   { value: "specLength", label: "Length (m)", type: "num", section: "Dimensions & Structure" },
@@ -283,6 +293,261 @@ export const VALID_SPEC_FORMULA_VARIABLES = Array.from(new Set([
   ...VALID_SPEC_FIELD_VALUES,
   ...FORMULA_ONLY_SPEC_VALUES,
 ]));
+
+const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
+  specWidth: {
+    term: "Structure width",
+    formulaExamples: ["specWidth", "specWidth * specLength"],
+    notes: "Primary structure width in metres. Useful for area, perimeter, beam, or capping formulas.",
+  },
+  specLength: {
+    term: "Structure length",
+    formulaExamples: ["specLength", "specWidth * specLength"],
+    notes: "Primary structure length in metres. Use with width for area or with side-based products.",
+  },
+  specArea: {
+    term: "Structure area",
+    formulaExamples: ["specArea", "specWidth * specLength"],
+    notes: "Computed square metres from width and length.",
+  },
+  area: {
+    term: "Area formula alias",
+    formulaExamples: ["area", "area * (1 + wasteFactor / 100)"],
+    notes: "Formula-only alias for computed area.",
+  },
+  specPerimeter: {
+    term: "Structure perimeter",
+    formulaExamples: ["specPerimeter", "(specWidth + specLength) * 2"],
+    notes: "Computed perimeter in metres.",
+  },
+  perimeter: {
+    term: "Perimeter formula alias",
+    formulaExamples: ["perimeter"],
+    notes: "Formula-only alias for computed perimeter.",
+  },
+  specRoofArea: {
+    term: "Roof area",
+    formulaExamples: ["specRoofArea", "specRoofArea * (1 + wasteFactor / 100)"],
+    notes: "Pitch-adjusted roof area in square metres.",
+  },
+  specRoofRunWidth: {
+    term: "Roof run width",
+    formulaExamples: ["specRoofRunWidth", "Math.ceil(roofRunWidth / (productCover / 1000))"],
+    notes: "Computed dimension perpendicular to roof sheet fall direction.",
+  },
+  roofRunWidth: {
+    term: "Roof run width formula alias",
+    formulaExamples: ["roofRunWidth", "Math.ceil(roofRunWidth / (productCover / 1000))"],
+    notes: "Formula-only alias for the roof run width.",
+  },
+  specRoofSheetLength: {
+    term: "Roof sheet length",
+    formulaExamples: ["specRoofSheetLength", "roofSheetQty * roofSheetLength"],
+    notes: "Computed dimension parallel to fall direction.",
+  },
+  roofSheetLength: {
+    term: "Roof sheet length formula alias",
+    formulaExamples: ["roofSheetLength", "roofSheetQty * roofSheetLength"],
+    notes: "Formula-only alias for the computed sheet length.",
+  },
+  specRoofSheetQty: {
+    term: "Roof sheet quantity",
+    formulaExamples: ["specRoofSheetQty", "roofSheetQty * roofSheetLength"],
+    notes: "Computed from roof run width and selected product coverage width.",
+  },
+  roofSheetQty: {
+    term: "Roof sheet quantity formula alias",
+    formulaExamples: ["roofSheetQty", "roofSheetQty * roofSheetLength"],
+    notes: "Formula-only alias for the computed sheet count. Use with roofSheetLength when you want the calculation to read explicitly.",
+  },
+  roofSheetLM: {
+    term: "Roof sheet linear metres",
+    formulaExamples: ["roofSheetLM", "roofSheetLM * (1 + wasteFactor / 100)"],
+    notes: "Total roof sheet LM already equals roofSheetQty multiplied by roofSheetLength.",
+  },
+  productCover: {
+    term: "Product cover width",
+    formulaExamples: ["Math.ceil(roofRunWidth / (productCover / 1000))", "roofSheetLM"],
+    notes: "Coverage width in millimetres from the matched product. Only available when a product with coverage is matched.",
+  },
+  wasteFactor: {
+    term: "Waste factor",
+    formulaExamples: ["roofSheetLM * (1 + wasteFactor / 100)", "specArea * (1 + wasteFactor / 100)"],
+    notes: "Waste percentage from master data.",
+  },
+  specRoofType: {
+    term: "Roof product type",
+    formulaExamples: ["roofSheetLM", "roofSheetQty * roofSheetLength"],
+    productMatchField: "specRoofType",
+    notes: "Use as the trigger and product match for roof sheet products such as Climatek or Slendek.",
+  },
+  specRoofTopColour: {
+    term: "Roof top colour",
+    formulaExamples: ["roofSheetLM"],
+    notes: "Use as the colour field for roof sheet, capping, and flashing mappings.",
+  },
+  specRoofBottomColour: {
+    term: "Roof bottom colour",
+    formulaExamples: ["roofSheetLM"],
+    notes: "Use as the bottom colour field for roof sheet products that have separate underside colour.",
+  },
+  specSkylightQty: {
+    term: "Skylight quantity",
+    formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
+    notes: "Number of skylight units. Multiply by skylight LM when the product is costed by lineal metre.",
+  },
+  specSkylightLm: {
+    term: "Skylight linear metres",
+    formulaExamples: ["specSkylightLm", "specSkylightQty * specSkylightLm"],
+    notes: "Lineal metres per skylight entry.",
+  },
+  specSkylightType: {
+    term: "Skylight product type",
+    formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
+    productMatchField: "specSkylightType",
+    notes: "Use as product match when skylight type selects the costed item.",
+  },
+  specBoxGutter: {
+    term: "Total gutter length",
+    formulaExamples: ["specBoxGutter / 1000", "specTotalGutterLength / 1000"],
+    productMatchField: "specGutterType",
+    notes: "Stored in millimetres. Divide by 1000 for LM pricing.",
+  },
+  specTotalGutterLength: {
+    term: "Total gutter length alias",
+    formulaExamples: ["specTotalGutterLength / 1000"],
+    productMatchField: "specGutterType",
+    notes: "Alias for specBoxGutter. Stored in millimetres, so divide by 1000 for lineal metres.",
+  },
+  specGutterType: {
+    term: "Gutter product type",
+    formulaExamples: ["specBoxGutter / 1000", "specTotalGutterLength / 1000"],
+    productMatchField: "specGutterType",
+    notes: "Use as the trigger/product match. Do not multiply this text field by the length.",
+  },
+  specGutterSideCount: {
+    term: "Gutter side count",
+    formulaExamples: ["specGutterSideCount"],
+    productMatchField: "specGutterType",
+    notes: "Computed count from selected gutter sides.",
+  },
+  specDownpipeCount: {
+    term: "Downpipe count",
+    formulaExamples: ["Math.max(1, specDownpipeCount)"],
+    productMatchField: "specDownpipeType",
+    notes: "Computed from downpipe markers/locations.",
+  },
+  specNumberOfBrackets: {
+    term: "Bracket quantity",
+    formulaExamples: ["specNumberOfBrackets"],
+    productMatchField: "specBracketAttachmentMethod",
+    notes: "Number of brackets selected in Attachment & Brackets.",
+  },
+  specBracketAttachmentMethod: {
+    term: "Attachment method",
+    formulaExamples: ["specNumberOfBrackets", "1"],
+    productMatchField: "specBracketAttachmentMethod",
+    notes: "Use as product match for fascia, gable, popup, wall, or other bracket method selections.",
+  },
+  specBeamSize: {
+    term: "Beam size",
+    formulaExamples: ["specWidth", "roofRunWidth"],
+    productMatchField: "specBeamSize",
+    notes: "Use as product match for beam products. Quantity usually comes from the relevant beam span or entries.",
+  },
+  specBeamEntries: {
+    term: "Beam entries",
+    formulaExamples: ["specWidth", "roofRunWidth"],
+    productMatchField: "specBeamSize",
+    notes: "JSON entries from the beam section. Current starter mappings use conservative span formulas until entry parsing is deeper.",
+  },
+  specPostsNumber: {
+    term: "Post quantity",
+    formulaExamples: ["specPostsNumber"],
+    productMatchField: "specPostsType",
+    notes: "Number of posts to generate.",
+  },
+  specConcreteArea: {
+    term: "Concrete area",
+    formulaExamples: ["specConcreteArea", "specArea"],
+    productMatchField: "specConcreteType",
+    notes: "Concrete square metres. Use specArea as fallback only when concrete area is blank and the slab matches the structure area.",
+  },
+  specWallPanels: {
+    term: "Wall panel quantity",
+    formulaExamples: ["specWallPanels"],
+    productMatchField: "specWallType",
+    notes: "Number of insulated wall panels.",
+  },
+  specWallLM: {
+    term: "Wall lineal metres",
+    formulaExamples: ["specWallLM"],
+    productMatchField: "specWallType",
+    notes: "Lineal metres of walling.",
+  },
+  specElecLights: {
+    term: "Electrical light quantity",
+    formulaExamples: ["specElecLights"],
+    productMatchField: "specElecLightType",
+    notes: "Number of light fittings.",
+  },
+  specElecFan: {
+    term: "Fan quantity",
+    formulaExamples: ["specElecFan"],
+    notes: "Number of ceiling fans.",
+  },
+  specPlumbFitoffs: {
+    term: "Plumbing fitoff quantity",
+    formulaExamples: ["specPlumbFitoffs"],
+    notes: "Number of plumbing fitoffs.",
+  },
+  specBalustradeLM: {
+    term: "Balustrade lineal metres",
+    formulaExamples: ["specBalustradeLM"],
+    productMatchField: "specBalustradeType",
+    notes: "Lineal metres of balustrade.",
+  },
+};
+
+function defaultFormulaExamples(field: SpecFieldDefinition): string[] {
+  if (field.type === "num" || field.type === "computed") return [field.value];
+  return ["1"];
+}
+
+function defaultNotes(field: SpecFieldDefinition): string {
+  if (field.type === "text") return "Use as a trigger, condition, product match, colour field, or one-off allowance. Text fields are not numeric quantities.";
+  if (field.type === "json") return "Structured specsheet data. Use as a trigger or condition unless a dedicated parser exists for the selected mapping.";
+  if (field.type === "computed") return "Computed value available to quantity formulas.";
+  return "Numeric specsheet value available to quantity formulas.";
+}
+
+function buildDefinedTerm(field: SpecFieldDefinition): SpecDefinedTerm {
+  const override = SPEC_TERM_OVERRIDES[field.value] ?? {};
+  return {
+    term: override.term ?? field.label,
+    fieldName: field.value,
+    section: field.section,
+    type: field.type,
+    formulaExamples: override.formulaExamples ?? defaultFormulaExamples(field),
+    productMatchField: override.productMatchField,
+    notes: override.notes ?? defaultNotes(field),
+  };
+}
+
+const SPEC_FIELD_NAMES = new Set(SPEC_FIELDS.map((field) => field.value));
+const FORMULA_ALIAS_TERMS: SpecDefinedTerm[] = FORMULA_ONLY_SPEC_VALUES
+  .filter((value) => !SPEC_FIELD_NAMES.has(value))
+  .map((value) => buildDefinedTerm({
+    value,
+    label: value,
+    type: "computed",
+    section: "Computed Formula Aliases",
+  }));
+
+export const SPEC_DEFINED_TERMS: SpecDefinedTerm[] = [
+  ...SPEC_FIELDS.map(buildDefinedTerm),
+  ...FORMULA_ALIAS_TERMS,
+];
 
 function countCsv(value: unknown): number {
   if (Array.isArray(value)) return value.filter(Boolean).length;
