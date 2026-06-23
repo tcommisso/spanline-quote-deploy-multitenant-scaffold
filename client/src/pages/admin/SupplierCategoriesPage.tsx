@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ export default function SupplierCategoriesPage() {
 
   const { data: categories, isLoading } = trpc.supplierCategories.listAll.useQuery();
   const utils = trpc.useUtils();
+  const categoryRows = useMemo(() => Array.isArray(categories) ? categories : [], [categories]);
 
   const createMutation = trpc.supplierCategories.create.useMutation({
     onSuccess: () => {
@@ -95,24 +96,23 @@ export default function SupplierCategoriesPage() {
   }
 
   function handleMoveUp(index: number) {
-    if (!categories || index === 0) return;
-    const activeCategories = categories.filter(c => c.isActive);
+    if (index === 0) return;
+    const activeCategories = categoryRows.filter(c => c.isActive);
     const ids = activeCategories.map(c => c.id);
     [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
     reorderMutation.mutate({ ids });
   }
 
   function handleMoveDown(index: number) {
-    if (!categories) return;
-    const activeCategories = categories.filter(c => c.isActive);
+    const activeCategories = categoryRows.filter(c => c.isActive);
     if (index >= activeCategories.length - 1) return;
     const ids = activeCategories.map(c => c.id);
     [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
     reorderMutation.mutate({ ids });
   }
 
-  const activeCategories = categories?.filter(c => c.isActive) || [];
-  const inactiveCategories = categories?.filter(c => !c.isActive) || [];
+  const activeCategories = categoryRows.filter(c => c.isActive);
+  const inactiveCategories = categoryRows.filter(c => !c.isActive);
 
   return (
     <div className="space-y-6">

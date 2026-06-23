@@ -29,6 +29,7 @@ interface DowItem {
 export default function DescriptionsOfWork() {
   const utils = trpc.useUtils();
   const { data: allMasterData } = trpc.masterData.getAll.useQuery();
+  const masterDataRows = useMemo(() => Array.isArray(allMasterData) ? allMasterData : [], [allMasterData]);
 
   const upsertMutation = trpc.masterData.upsert.useMutation({
     onSuccess: () => {
@@ -46,16 +47,14 @@ export default function DescriptionsOfWork() {
 
   // Parse groups and items from master data
   const groups = useMemo(() => {
-    if (!allMasterData) return [];
-    return allMasterData
+    return masterDataRows
       .filter(d => d.category === "dow_group")
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       .map(d => ({ id: d.id, key: d.key, value: d.value, sortOrder: d.sortOrder ?? 0 }));
-  }, [allMasterData]);
+  }, [masterDataRows]);
 
   const items = useMemo(() => {
-    if (!allMasterData) return [];
-    return allMasterData
+    return masterDataRows
       .filter(d => d.category === "dow_item")
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       .map(d => ({
@@ -65,7 +64,7 @@ export default function DescriptionsOfWork() {
         sortOrder: d.sortOrder ?? 0,
         metadata: d.metadata as { groupKey: string } | null,
       }));
-  }, [allMasterData]);
+  }, [masterDataRows]);
 
   const itemsByGroup = useMemo(() => {
     const map: Record<string, DowItem[]> = {};

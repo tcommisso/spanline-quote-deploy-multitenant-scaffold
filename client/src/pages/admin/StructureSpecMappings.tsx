@@ -4,13 +4,12 @@ import { Clock } from "lucide-react";
 
 export default function StructureSpecMappings() {
   const { data: mappings } = trpc.specItems.mappings.list.useQuery();
+  const mappingRows = Array.isArray(mappings) ? mappings : [];
 
-  const lastUpdated = mappings
-    ? mappings.reduce((latest, m) => {
+  const lastUpdated = mappingRows.reduce((latest, m) => {
         const t = new Date(m.updatedAt).getTime();
-        return t > latest ? t : latest;
-      }, 0)
-    : 0;
+        return Number.isFinite(t) && t > latest ? t : latest;
+      }, 0);
 
   return (
     <div className="space-y-4">

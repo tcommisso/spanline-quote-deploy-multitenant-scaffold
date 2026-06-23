@@ -68,7 +68,7 @@ export default function MasterDataAdmin() {
   const [entries, setEntries] = useState<Array<{ id?: number; category: string; key: string; value: string; sortOrder: number }>>([]); 
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       setEntries(masterData.map(d => ({
         id: d.id,
         category: d.category,

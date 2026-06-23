@@ -39,6 +39,7 @@ export default function StructureTabNames() {
   const [entries, setEntries] = useState<Array<{ id?: number; category: string; key: string; value: string; sortOrder: number; specField: string }>>([]);
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; index: number; entry: typeof entries[0] | null; productCount: number }>({ open: false, index: -1, entry: null, productCount: 0 });
   const [reassignTo, setReassignTo] = useState<string>("__blank__");
+  const masterDataRows = Array.isArray(masterData) ? masterData : [];
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -46,12 +47,12 @@ export default function StructureTabNames() {
     useSensor(KeyboardSensor)
   );
 
-  const lastUpdated = masterData
-    ? masterData.filter(d => d.category === "product_tab").reduce((latest, d) => {
+  const lastUpdated = masterDataRows
+    .filter(d => d.category === "product_tab")
+    .reduce((latest, d) => {
         const t = new Date(d.updatedAt).getTime();
-        return t > latest ? t : latest;
-      }, 0)
-    : 0;
+        return Number.isFinite(t) && t > latest ? t : latest;
+      }, 0);
 
   // Available spec sheet dropdown fields that can be linked to product tabs
   const specFieldOptions = [
@@ -72,7 +73,7 @@ export default function StructureTabNames() {
   ];
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       setEntries(masterData.filter(d => d.category === "product_tab").map(d => ({
         id: d.id,
         category: d.category,

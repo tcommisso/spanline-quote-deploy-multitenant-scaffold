@@ -622,33 +622,103 @@ export const specItemsRouter = router({
 
       const TEMPLATES = [
         // ── Roof ──
-        { name: "Roof Sheets (LM from coverage)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength", description: null, colourField: "specRoofTopColour", uom: "LM", sortOrder: 10 },
-        { name: "Roof Sheets + Waste Factor", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength * (1 + wasteFactor / 100)", description: null, colourField: "specRoofTopColour", uom: "LM", sortOrder: 11 },
-        { name: "Ridge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specWidth", description: "Ridge Capping", colourField: "specRoofTopColour", uom: "LM", sortOrder: 20 },
-        { name: "Barge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specLength * 2", description: "Barge Capping", colourField: "specRoofTopColour", uom: "LM", sortOrder: 21 },
-        // ── Beams ──
-        { name: "Beams from spec entries", tabName: "beams", specField: "specBeamEntries", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", uom: "LM", sortOrder: 30 },
+        { name: "Roof Sheets (LM from coverage)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetLM", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 10 },
+        { name: "Roof Sheets + Waste Factor", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetLM * (1 + wasteFactor / 100)", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 11 },
+        { name: "Roof Sheets (Qty x Length)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetQty * roofSheetLength", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 12 },
+        { name: "Polycarbonate Roof Sheets", tabName: "roof", specField: "specPolyType", condition: "!= ''", productMatch: "specPolyType", qtyFormula: "roofSheetLM", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 13 },
+        { name: "Angle Cutting (LM)", tabName: "roof", specField: "specAngleCuttingMetres", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specAngleCuttingMetres", description: "Angle Cutting", colourField: "specRoofTopColour", bottomColourField: null, uom: "LM", sortOrder: 14 },
+        { name: "Ridge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specWidth", description: "Ridge Capping", colourField: "specRoofTopColour", bottomColourField: null, uom: "LM", sortOrder: 20 },
+        { name: "Barge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specLength * 2", description: "Barge Capping", colourField: "specRoofTopColour", bottomColourField: null, uom: "LM", sortOrder: 21 },
+        { name: "Skylights (LM)", tabName: "roof", specField: "specSkylightQty", condition: "> 0", productMatch: "specSkylightType", qtyFormula: "specSkylightQty * specSkylightLm", description: null, colourField: "specSkylightFinish", bottomColourField: null, uom: "LM", sortOrder: 22 },
+        { name: "Skylights (Each)", tabName: "roof", specField: "specSkylightQty", condition: "> 0", productMatch: "specSkylightType", qtyFormula: "specSkylightQty", description: null, colourField: "specSkylightFinish", bottomColourField: null, uom: "ea", sortOrder: 23 },
+        { name: "Spanlites (Each)", tabName: "roof", specField: "specSpanlitesType", condition: "!= ''", productMatch: "specSpanlitesType", qtyFormula: "Math.max(1, specSkylightQty)", description: null, colourField: "specSpanlitesFinish", bottomColourField: null, uom: "ea", sortOrder: 24 },
+
+        // ── Attachment & brackets ──
+        { name: "Attachment Method Allowance", tabName: "attachment", specField: "specBracketAttachmentMethod", condition: "!= ''", productMatch: "specBracketAttachmentMethod", qtyFormula: "1", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 30 },
+        { name: "Number of Brackets", tabName: "attachment", specField: "specNumberOfBrackets", condition: "> 0", productMatch: "specBracketAttachmentMethod", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 31 },
+        { name: "Fascia Brackets", tabName: "attachment", specField: "specFasciaBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specFasciaBrackets", description: "Fascia Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 32 },
+        { name: "Extenda Brackets", tabName: "attachment", specField: "specExtendaBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specExtendaBrackets", description: "Extenda Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 33 },
+        { name: "Gable Brackets", tabName: "attachment", specField: "specGableBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGableBrackets", description: "Gable Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 34 },
+        { name: "Pop-up Brackets", tabName: "attachment", specField: "specPopupBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPopupBrackets", description: "Pop-up Brackets", colourField: "specPopupColour", bottomColourField: null, uom: "ea", sortOrder: 35 },
+        { name: "Bracket Cover", tabName: "attachment", specField: "specBracketCover", condition: "!= ''", productMatch: "specBracketCover", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 36 },
+        { name: "Wall Fixing Beam", tabName: "attachment", specField: "specWallFixingBeam", condition: "!= ''", productMatch: "specWallFixingBeam", qtyFormula: "roofRunWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 37 },
+        { name: "Wall Fixing Bracket", tabName: "attachment", specField: "specWallFixingBracket", condition: "!= ''", productMatch: "specWallFixingBracket", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 38 },
+
+        // ── Beams, channels & flashings ──
+        { name: "Beams from spec entries", tabName: "beams", specField: "specBeamEntries", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 40 },
+        { name: "Beam Size Allowance", tabName: "beams", specField: "specBeamSize", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 41 },
+        { name: "Back Channel", tabName: "beams", specField: "specBackChannelColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "roofRunWidth", description: "Back Channel", colourField: "specBackChannelColour", bottomColourField: null, uom: "LM", sortOrder: 42 },
+        { name: "Side Channels", tabName: "beams", specField: "specSideChannelsColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "roofSheetLength * 2", description: "Side Channels", colourField: "specSideChannelsColour", bottomColourField: null, uom: "LM", sortOrder: 43 },
+        { name: "Flashings", tabName: "beams", specField: "specFlashingsColour", condition: "!= ''", productMatch: "specFlashingsType", qtyFormula: "roofRunWidth", description: "Flashings", colourField: "specFlashingsColour", bottomColourField: null, uom: "LM", sortOrder: 44 },
+        { name: "Twinwall", tabName: "beams", specField: "specTwinwallColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specArea", description: "Twinwall", colourField: "specTwinwallColour", bottomColourField: null, uom: "m2", sortOrder: 45 },
+
         // ── Posts ──
-        { name: "Posts from spec count", tabName: "posts", specField: "specPostsNumber", condition: "> 0", productMatch: "specPostsType", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", uom: "ea", sortOrder: 40 },
-        // ── Gutters ──
-        { name: "Gutter (front)", tabName: "gutters", specField: "specBoxGutter", condition: "> 0", productMatch: "specGutterType", qtyFormula: "specBoxGutter / 1000", description: null, colourField: "specGutterColour", uom: "LM", sortOrder: 50 },
-        { name: "Downpipes", tabName: "gutters", specField: "specDownpipeType", condition: "!= ''", productMatch: "specDownpipeType", qtyFormula: "Math.max(1, specDownpipeCount)", description: null, colourField: "specDownpipeColour", uom: "ea", sortOrder: 51 },
+        { name: "Posts from spec count", tabName: "posts", specField: "specPostsNumber", condition: "> 0", productMatch: "specPostsType", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 50 },
+        { name: "Post Fixings", tabName: "posts", specField: "specPostsFixing", condition: "!= ''", productMatch: "specPostsFixing", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 51 },
+        { name: "Post Lengths", tabName: "posts", specField: "specPostSize", condition: "!= ''", productMatch: "specPostSize", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 52 },
+
+        // ── Gutters & downpipes ──
+        { name: "Gutter (front)", tabName: "gutters", specField: "specBoxGutter", condition: "> 0", productMatch: "specGutterType", qtyFormula: "specBoxGutter / 1000", description: null, colourField: "specGutterColour", bottomColourField: null, uom: "LM", sortOrder: 60 },
+        { name: "Gutter Sides", tabName: "gutters", specField: "specGutterSideCount", condition: "> 0", productMatch: "specGutterType", qtyFormula: "specGutterSideCount", description: "Gutter Sides", colourField: "specGutterColour", bottomColourField: null, uom: "ea", sortOrder: 61 },
+        { name: "Downpipes", tabName: "gutters", specField: "specDownpipeType", condition: "!= ''", productMatch: "specDownpipeType", qtyFormula: "Math.max(1, specDownpipeCount)", description: null, colourField: "specDownpipeColour", bottomColourField: null, uom: "ea", sortOrder: 62 },
+        { name: "Overflow", tabName: "gutters", specField: "specOverflow", condition: "!= ''", productMatch: "specOverflow", qtyFormula: "1", description: null, colourField: "specGutterColour", bottomColourField: null, uom: "ea", sortOrder: 63 },
+
+        // ── Walls, windows, doors, glass ──
+        { name: "Wall Panels", tabName: "walls", specField: "specWallPanels", condition: "> 0", productMatch: "specWallType", qtyFormula: "specWallPanels", description: null, colourField: "specWallColour", bottomColourField: null, uom: "ea", sortOrder: 70 },
+        { name: "Wall LM", tabName: "walls", specField: "specWallLM", condition: "> 0", productMatch: "specWallType", qtyFormula: "specWallLM", description: null, colourField: "specWallColour", bottomColourField: null, uom: "LM", sortOrder: 71 },
+        { name: "IWP / Ceiling Panels", tabName: "walls", specField: "specIwpEntries", condition: "!= ''", productMatch: "specIwpFinish", qtyFormula: "specArea", description: null, colourField: "specIwpColour", bottomColourField: null, uom: "m2", sortOrder: 72 },
+        { name: "Ceiling Finish", tabName: "walls", specField: "specCeilingFinish", condition: "!= ''", productMatch: "specCeilingFinish", qtyFormula: "specArea", description: null, colourField: "specCeilingColour", bottomColourField: null, uom: "m2", sortOrder: 73 },
+        { name: "Windows Allowance", tabName: "windows", specField: "specWindowEntries", condition: "!= ''", productMatch: "specWindowType", qtyFormula: "1", description: null, colourField: "specWindowsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 74 },
+        { name: "Doors Allowance", tabName: "doors", specField: "specDoorEntries", condition: "!= ''", productMatch: "specDoorType", qtyFormula: "1", description: null, colourField: "specDoorsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 75 },
+        { name: "Glass Screens", tabName: "glass", specField: "specGlassScreens", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGlassScreens", description: "Glass Screens", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 76 },
+        { name: "Glass Options Allowance", tabName: "glass", specField: "specGlassWindows", condition: "!= ''", productMatch: "specGlassWindows", qtyFormula: "1", description: null, colourField: "specGlassTint", bottomColourField: null, uom: "ea", sortOrder: 77 },
+        { name: "Pet Door", tabName: "glass", specField: "specGlassPetDoor", condition: "!= ''", productMatch: "specGlassPetDoor", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 78 },
+
         // ── Concrete ──
-        { name: "Concrete Slab (m²)", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specArea", description: null, colourField: null, uom: "m2", sortOrder: 60 },
-        { name: "Concrete Pier Holes", tabName: "concrete", specField: "specConcretePierHoles", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specConcretePierHoles", description: "Pier Holes", colourField: null, uom: "ea", sortOrder: 61 },
+        { name: "Concrete Slab (m²)", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specConcreteArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 80 },
+        { name: "Concrete Area Fallback", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 81 },
+        { name: "Concrete Finish", tabName: "concrete", specField: "specConcreteFinish", condition: "!= ''", productMatch: "specConcreteFinish", qtyFormula: "specConcreteArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 82 },
+        { name: "Concrete Pier Holes", tabName: "concrete", specField: "specConcreteItemChecks", condition: "contains Pier", productId: null, productMatch: null, qtyFormula: "1", description: "Pier Holes", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 83 },
+
         // ── Electrical ──
-        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: null, qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, uom: "ea", sortOrder: 70 },
-        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: null, qtyFormula: "specElecFan", description: "Ceiling Fans", colourField: null, uom: "ea", sortOrder: 71 },
-        { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, uom: "ea", sortOrder: 72 },
+        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
+        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: null, qtyFormula: "specElecFan", description: "Ceiling Fans", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 91 },
+        { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 92 },
+        { name: "Electrical GPOs", tabName: "electrical", specField: "specElecGpos", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecGpos", description: "GPOs", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 93 },
+        { name: "Electrical Switches", tabName: "electrical", specField: "specElecSwitches", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitches", description: "Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 94 },
+        { name: "Electrical One-Way Switches", tabName: "electrical", specField: "specElecSwitchOneWay", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchOneWay", description: "One-Way Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 95 },
+        { name: "Electrical Two-Way Switches", tabName: "electrical", specField: "specElecSwitchTwoWay", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchTwoWay", description: "Two-Way Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 96 },
+        { name: "Electrical Dimmer Switches", tabName: "electrical", specField: "specElecSwitchDimmer", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchDimmer", description: "Dimmer Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 97 },
+        { name: "Electrical Remove/Reinstall", tabName: "electrical", specField: "specElecRemoveReinstall", condition: "!= ''", productMatch: "specElecRemoveReinstall", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 98 },
+
         // ── Plumbing ──
-        { name: "Plumbing Fitoffs", tabName: "plumbing", specField: "specPlumbFitoffs", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbFitoffs", description: "Plumbing Fitoffs", colourField: null, uom: "ea", sortOrder: 80 },
-        // ── Flooring ──
-        { name: "Flooring (m²)", tabName: "flooring", specField: "specFloorFinish", condition: "!= ''", productMatch: "specFloorFinish", qtyFormula: "specArea", description: null, colourField: null, uom: "m2", sortOrder: 90 },
-        { name: "Subfloor (m²)", tabName: "flooring", specField: "specSubfloorM2", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specSubfloorM2", description: "Subfloor", colourField: null, uom: "m2", sortOrder: 91 },
-        // ── Balustrade ──
-        { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLM", description: null, colourField: null, uom: "LM", sortOrder: 100 },
-        // ── Glass / Screens ──
-        { name: "Glass Screens", tabName: "glass", specField: "specGlassScreens", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGlassScreens", description: "Glass Screens", colourField: null, uom: "ea", sortOrder: 110 },
+        { name: "Plumbing Fitoffs", tabName: "plumbing", specField: "specPlumbFitoffs", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbFitoffs", description: "Plumbing Fitoffs", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 100 },
+        { name: "Plumbing Pipes", tabName: "plumbing", specField: "specPlumbPipes", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbPipes", description: "Plumbing Pipes", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 101 },
+        { name: "Stormwater Allowance", tabName: "plumbing", specField: "specPlumbStormwater", condition: "!= ''", productMatch: "specPlumbStormwater", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 102 },
+        { name: "Gas Allowance", tabName: "plumbing", specField: "specPlumbGas", condition: "!= ''", productMatch: "specPlumbGas", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 103 },
+
+        // ── Flooring, stairs & balustrade ──
+        { name: "Flooring (m²)", tabName: "flooring", specField: "specFloorFinish", condition: "!= ''", productMatch: "specFloorFinish", qtyFormula: "specArea", description: null, colourField: null, bottomColourField: null, uom: "m2", sortOrder: 110 },
+        { name: "Subfloor (m²)", tabName: "flooring", specField: "specSubfloorM2", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specSubfloorM2", description: "Subfloor", colourField: null, bottomColourField: null, uom: "m2", sortOrder: 111 },
+        { name: "Floor Prep", tabName: "flooring", specField: "specFloorPrep", condition: "!= ''", productMatch: "specFloorPrep", qtyFormula: "specArea", description: null, colourField: null, bottomColourField: null, uom: "m2", sortOrder: 112 },
+        { name: "Stairs Steps", tabName: "stairs", specField: "specStairsSteps", condition: "> 0", productMatch: "specStairsType", qtyFormula: "specStairsSteps", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 120 },
+        { name: "Stairs Gate", tabName: "stairs", specField: "specStairsGate", condition: "!= ''", productMatch: "specStairsGate", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 121 },
+        { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLM", description: null, colourField: null, bottomColourField: null, uom: "LM", sortOrder: 130 },
+        { name: "Balustrade Posts", tabName: "balustrade", specField: "specBalustradePosts", condition: "> 0", productMatch: "specBalPostType", qtyFormula: "specBalustradePosts", description: null, colourField: "specBalPostColour", bottomColourField: null, uom: "ea", sortOrder: 131 },
+        { name: "Balustrade Glass Spigots", tabName: "balustrade", specField: "specBalGlassSpigots", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specBalGlassSpigots", description: "Glass Spigots", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 132 },
+
+        // ── Existing work & demolition ──
+        { name: "Remove Gutter / Flashing", tabName: "existing", specField: "specRemoveGutterFlash", condition: "!= ''", productMatch: "specRemoveGutterFlash", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 140 },
+        { name: "Existing Eave Work", tabName: "existing", specField: "specExistingEave", condition: "!= ''", productMatch: "specExistingEave", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 141 },
+        { name: "Existing Fascia Work", tabName: "existing", specField: "specExistingFascia", condition: "!= ''", productMatch: "specExistingFascia", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 142 },
+        { name: "Existing Wall Work", tabName: "existing", specField: "specExistingWalls", condition: "!= ''", productMatch: "specExistingWalls", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 143 },
+        { name: "Existing Beam Work", tabName: "existing", specField: "specExistingBeams", condition: "!= ''", productMatch: "specExistingBeams", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 144 },
+        { name: "Demolition Allowance", tabName: "demolition", specField: "specDemolitionWorkItems", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Demolition Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 150 },
+
+        // ── Site allowances ──
+        { name: "Difficult Access Allowance", tabName: "site", specField: "specSiteAccess", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Difficult Access Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 160 },
+        { name: "Restricted Work Times Allowance", tabName: "site", specField: "specSiteRestricted", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Restricted Work Times Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 161 },
+        { name: "Mixed Materials / Angles Allowance", tabName: "site", specField: "specSiteMixed", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Mixed Materials / Angles Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 162 },
       ];
 
       // Get existing mapping names to skip duplicates
@@ -724,17 +794,22 @@ export const specItemsRouter = router({
       const fallDir = String(specValues.specFallDirection || "");
       const roofRunWidth = (fallDir === "B-C" || fallDir === "D-A") ? width : length;
       specValues.roofRunWidth = roofRunWidth;
+      specValues.specRoofRunWidth = roofRunWidth;
       const roofSheetLength = (fallDir === "B-C" || fallDir === "D-A") ? length : width;
       specValues.roofSheetLength = roofSheetLength;
+      specValues.specRoofSheetLength = roofSheetLength;
 
-      // If productId provided, inject productCover and compute roofSheetLM
+      // If productId provided, inject productCover and compute roof sheet quantity/LM.
       if (productId) {
         const allProducts = await getAllProducts(ctx.tenant!.id);
         const product = (allProducts as any[]).find(p => p.id === productId);
         if (product && product.coverageWidth) {
           specValues.productCover = product.coverageWidth;
           const coverM = product.coverageWidth / 1000;
-          specValues.roofSheetLM = coverM > 0 ? Math.ceil(roofRunWidth / coverM) * roofSheetLength : 0;
+          const roofSheetQty = coverM > 0 ? Math.ceil(roofRunWidth / coverM) : 0;
+          specValues.roofSheetQty = roofSheetQty;
+          specValues.specRoofSheetQty = roofSheetQty;
+          specValues.roofSheetLM = roofSheetQty * roofSheetLength;
         }
       }
 
@@ -766,6 +841,7 @@ export const specItemsRouter = router({
             perimeter,
             roofArea,
             productCover: specValues.productCover || "N/A",
+            roofSheetQty: specValues.roofSheetQty || "N/A",
             roofSheetLM: specValues.roofSheetLM || "N/A",
             wasteFactor: specValues.wasteFactor || 0,
           },
@@ -793,6 +869,7 @@ export const specItemsRouter = router({
 
       const VALID_SPEC_FIELDS = new Set(VALID_SPEC_FIELD_VALUES);
       const VALID_FORMULA_VARS = new Set(VALID_SPEC_FORMULA_VARIABLES);
+      const VALID_FORMULA_VARS_LOWER = new Set(VALID_SPEC_FORMULA_VARIABLES.map((value) => value.toLowerCase()));
 
       type Finding = {
         mappingId: number;
@@ -879,7 +956,7 @@ export const specItemsRouter = router({
           try {
             let testExpr = m.qtyFormula.trim();
             // Replace all valid field references with 1
-            const fieldPattern = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetLM|productCover|wasteFactor)\b/gi;
+            const fieldPattern = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
             testExpr = testExpr.replace(fieldPattern, "1");
             // Try to evaluate
             const safeExpr = testExpr.replace(/Math\.(ceil|floor|round|max|min|abs)/g, "Math.$1");
@@ -903,7 +980,7 @@ export const specItemsRouter = router({
             usedVars.add(v);
           }
           for (const v of Array.from(usedVars)) {
-            if (!VALID_FORMULA_VARS.has(v)) {
+            if (!VALID_FORMULA_VARS.has(v) && !VALID_FORMULA_VARS_LOWER.has(v.toLowerCase())) {
               findings.push({
                 mappingId: m.id, mappingName: m.name, tabName: m.tabName,
                 severity: "warning", category: "Unknown Formula Variable",

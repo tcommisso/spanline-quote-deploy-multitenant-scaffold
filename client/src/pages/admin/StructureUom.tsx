@@ -28,16 +28,17 @@ export default function StructureUom() {
 
   const [entries, setEntries] = useState<Array<{ id?: number; category: string; key: string; value: string; sortOrder: number }>>([]);
   const [deleteTarget, setDeleteTarget] = useState<{ index: number; entry: typeof entries[0] } | null>(null);
+  const masterDataRows = Array.isArray(masterData) ? masterData : [];
 
-  const lastUpdated = masterData
-    ? masterData.filter(d => d.category === "product_uom").reduce((latest, d) => {
+  const lastUpdated = masterDataRows
+    .filter(d => d.category === "product_uom")
+    .reduce((latest, d) => {
         const t = new Date(d.updatedAt).getTime();
-        return t > latest ? t : latest;
-      }, 0)
-    : 0;
+        return Number.isFinite(t) && t > latest ? t : latest;
+      }, 0);
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       setEntries(masterData.filter(d => d.category === "product_uom").map(d => ({
         id: d.id,
         category: d.category,

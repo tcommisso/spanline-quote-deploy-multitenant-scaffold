@@ -97,6 +97,12 @@ export default function ProductTable() {
   const [showImport, setShowImport] = useState(false);
   const [showCatalogueImport, setShowCatalogueImport] = useState(false);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const productRows = useMemo(() => Array.isArray(allProducts) ? allProducts : [], [allProducts]);
+  const masterDataRows = useMemo(() => Array.isArray(masterDataItems) ? masterDataItems : [], [masterDataItems]);
+  const tabRows = useMemo(() => Array.isArray(tabsAndUoms?.tabs) ? tabsAndUoms.tabs : [], [tabsAndUoms]);
+  const subTabRows = useMemo(() => Array.isArray(tabsAndUoms?.subTabs) ? tabsAndUoms.subTabs : [], [tabsAndUoms]);
+  const uomRows = useMemo(() => Array.isArray(tabsAndUoms?.uoms) ? tabsAndUoms.uoms : [], [tabsAndUoms]);
+  const colourGroupRows = useMemo(() => Array.isArray(colourGroupsList) ? colourGroupsList : [], [colourGroupsList]);
 
   const upsertMutation = trpc.products.upsert.useMutation({
     onSuccess: () => {
@@ -136,15 +142,13 @@ export default function ProductTable() {
   // Build markup lookup and categories list from master data
   const markupLookup = useMemo(() => {
     const map: Record<string, number> = {};
-    if (masterDataItems) {
-      for (const item of masterDataItems) {
-        if (item.category === "markup") {
-          map[item.key] = parseFloat(item.value) || 1;
-        }
+    for (const item of masterDataRows) {
+      if (item.category === "markup") {
+        map[item.key] = parseFloat(item.value) || 1;
       }
     }
     return map;
-  }, [masterDataItems]);
+  }, [masterDataRows]);
 
   // Dynamic markup categories from master data
   const markupCategories = useMemo(() => {
@@ -162,18 +166,17 @@ export default function ProductTable() {
 
   // Sub-tabs for the currently selected tab filter
   const subTabsForTab = useMemo(() => {
-    if (tabFilter === "all" || !tabsAndUoms?.subTabs) return [];
-    return tabsAndUoms.subTabs.filter(st => st.description === tabFilter).map(st => {
+    if (tabFilter === "all") return [];
+    return subTabRows.filter(st => st.description === tabFilter).map(st => {
       // Extract the subtab name from the key format "parent::subtab"
       const parts = st.key.split("::");
       return parts.length > 1 ? parts[1] : st.key;
     });
-  }, [tabFilter, tabsAndUoms]);
+  }, [tabFilter, subTabRows]);
 
   // Filter and search
   const filtered = useMemo(() => {
-    if (!allProducts) return [];
-    let result = [...allProducts];
+    let result = [...productRows];
     if (tabFilter !== "all") {
       result = result.filter(p => p.tabName === tabFilter);
     }
@@ -191,25 +194,25 @@ export default function ProductTable() {
       );
     }
     return result;
-  }, [allProducts, tabFilter, subTabFilter, search]);
+  }, [productRows, tabFilter, subTabFilter, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   // Unique tabs: dynamic from master data + any tabs found in existing product data
   const tabsInData = useMemo(() => {
-    const fromData = allProducts ? Array.from(new Set(allProducts.map(p => p.tabName))) : [];
-    const fromMasterData = tabsAndUoms?.tabs?.map(t => t.key) || [];
+    const fromData = Array.from(new Set(productRows.map(p => p.tabName)));
+    const fromMasterData = tabRows.map(t => t.key);
     const all = Array.from(new Set([...fromMasterData, ...fromData]));
     return all.sort();
-  }, [allProducts, tabsAndUoms]);
+  }, [productRows, tabRows]);
 
   // Dynamic UoMs list from master data + any UoMs found in existing product data
   const uomOptions = useMemo(() => {
-    const fromData = allProducts ? Array.from(new Set(allProducts.map(p => p.uom))) : [];
-    const fromMasterData = tabsAndUoms?.uoms?.map(u => u.key) || [];
+    const fromData = Array.from(new Set(productRows.map(p => p.uom)));
+    const fromMasterData = uomRows.map(u => u.key);
     return Array.from(new Set([...fromMasterData, ...fromData])).sort();
-  }, [allProducts, tabsAndUoms]);
+  }, [productRows, uomRows]);
 
   // Toggle selection
   const toggleSelect = (id: number) => {
@@ -272,7 +275,7 @@ export default function ProductTable() {
 
   const saveEdit = () => {
     if (!editing) return;
-    const product = allProducts?.find(p => p.id === editing.id);
+    const product = productRows.find(p => p.id === editing.id);
     if (!product) return;
     upsertMutation.mutate({
       id: editing.id,
@@ -514,7 +517,7 @@ export default function ProductTable() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="_none">—</SelectItem>
-                          {(tabsAndUoms?.subTabs || []).filter(st => st.description === adding.tabName).map(st => {
+                          {subTabRows.filter(st => st.description === adding.tabName).map(st => {
                             const name = st.key.includes("::") ? st.key.split("::")[1] : st.key;
                             return <SelectItem key={st.key} value={name}>{name}</SelectItem>;
                           })}
@@ -576,7 +579,7 @@ export default function ProductTable() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="_none">—</SelectItem>
-                          {(colourGroupsList || []).map(g => (
+                          {colourGroupRows.map(g => (
                             <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
                           ))}
                         </SelectContent>
@@ -589,7 +592,7 @@ export default function ProductTable() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="_none">—</SelectItem>
-                          {(colourGroupsList || []).map(g => (
+                          {colourGroupRows.map(g => (
                             <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
                           ))}
                         </SelectContent>
@@ -657,7 +660,7 @@ export default function ProductTable() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {(tabsAndUoms?.subTabs || []).filter(st => st.description === product.tabName).map(st => {
+                              {subTabRows.filter(st => st.description === product.tabName).map(st => {
                                 const name = st.key.includes("::") ? st.key.split("::")[1] : st.key;
                                 return <SelectItem key={st.key} value={name}>{name}</SelectItem>;
                               })}
@@ -764,7 +767,7 @@ export default function ProductTable() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {(colourGroupsList || []).map(g => (
+                              {colourGroupRows.map(g => (
                                 <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
                               ))}
                             </SelectContent>
@@ -781,7 +784,7 @@ export default function ProductTable() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {(colourGroupsList || []).map(g => (
+                              {colourGroupRows.map(g => (
                                 <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
                               ))}
                             </SelectContent>

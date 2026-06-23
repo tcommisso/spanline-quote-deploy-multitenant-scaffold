@@ -142,29 +142,28 @@ export default function StructureSubTabNames() {
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
     useSensor(KeyboardSensor)
   );
+  const masterDataRows = useMemo(() => Array.isArray(masterData) ? masterData : [], [masterData]);
 
   // Get parent tabs for the dropdown
   const parentTabs = useMemo(() => {
-    if (!masterData) return [];
-    return masterData
+    return masterDataRows
       .filter(d => d.category === "product_tab")
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       .map(d => ({ key: d.key, label: d.value }));
-  }, [masterData]);
+  }, [masterDataRows]);
 
   // Compute last updated
   const lastUpdated = useMemo(() => {
-    if (!masterData) return 0;
-    return masterData
+    return masterDataRows
       .filter(d => d.category === "product_subtab")
       .reduce((latest, d) => {
         const t = new Date(d.updatedAt).getTime();
-        return t > latest ? t : latest;
+        return Number.isFinite(t) && t > latest ? t : latest;
       }, 0);
-  }, [masterData]);
+  }, [masterDataRows]);
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       const subtabs = masterData
         .filter(d => d.category === "product_subtab")
         .map(d => ({

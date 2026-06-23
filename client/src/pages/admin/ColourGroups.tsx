@@ -17,6 +17,9 @@ export default function ColourGroups() {
   const { data: groups } = trpc.colourGroups.getAll.useQuery();
   const { data: allMembers } = trpc.colourGroups.getAllMembers.useQuery();
   const { data: allColours } = trpc.masterData.getByCategory.useQuery({ category: "colour" });
+  const groupRows = useMemo(() => Array.isArray(groups) ? groups : [], [groups]);
+  const memberRows = useMemo(() => Array.isArray(allMembers) ? allMembers : [], [allMembers]);
+  const colourRows = useMemo(() => Array.isArray(allColours) ? allColours : [], [allColours]);
 
   const upsertMutation = trpc.colourGroups.upsert.useMutation({
     onSuccess: () => {
@@ -73,33 +76,28 @@ export default function ColourGroups() {
   // Build a map of groupId -> colour values
   const membersByGroup = useMemo(() => {
     const map: Record<number, string[]> = {};
-    if (allMembers) {
-      for (const m of allMembers) {
-        if (!map[m.colourGroupId]) map[m.colourGroupId] = [];
-        map[m.colourGroupId].push(m.colourValue);
-      }
+    for (const m of memberRows) {
+      if (!map[m.colourGroupId]) map[m.colourGroupId] = [];
+      map[m.colourGroupId].push(m.colourValue);
     }
     return map;
-  }, [allMembers]);
+  }, [memberRows]);
 
   // Build a map of groupId -> standard colours
   const standardByGroup = useMemo(() => {
     const map: Record<number, string[]> = {};
-    if (groups) {
-      for (const g of groups) {
-        map[g.id] = (g.standardColours as string[] | null) || [];
-      }
+    for (const g of groupRows) {
+      map[g.id] = (g.standardColours as string[] | null) || [];
     }
     return map;
-  }, [groups]);
+  }, [groupRows]);
 
   const availableColours = useMemo(() => {
-    if (!allColours) return [];
-    return allColours.map(c => c.value).sort();
-  }, [allColours]);
+    return colourRows.map(c => c.value).sort();
+  }, [colourRows]);
 
   const openAddGroup = () => {
-    setEditGroup({ name: "", description: "", sortOrder: (groups?.length ?? 0) });
+    setEditGroup({ name: "", description: "", sortOrder: groupRows.length });
   };
 
   const openEditGroup = (g: any) => {
@@ -207,11 +205,11 @@ export default function ColourGroups() {
           </div>
         </CardHeader>
         <CardContent>
-          {!groups || groups.length === 0 ? (
+          {groupRows.length === 0 ? (
             <p className="text-xs text-muted-foreground py-4 text-center">No colour groups defined. Click "Add Group" to create one.</p>
           ) : (
             <div className="space-y-2">
-              {groups.map((g) => {
+              {groupRows.map((g) => {
                 const members = membersByGroup[g.id] || [];
                 const standard = standardByGroup[g.id] || [];
                 return (

@@ -23,7 +23,7 @@ export interface SpecMapping {
 }
 
 export interface SpecValues {
-  [key: string]: string | number | null | undefined;
+  [key: string]: string | number | boolean | Record<string, any> | any[] | null | undefined;
 }
 
 export interface ProductLookup {
@@ -59,15 +59,37 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
+
+function getNumericSpecValue(specValues: SpecValues, key: string): number | null {
+  const direct = specValues[key];
+  if (direct !== undefined && direct !== null && direct !== "") {
+    return parseFloat(String(direct)) || 0;
+  }
+
+  const lowerKey = key.toLowerCase();
+  const matchingKey = Object.keys(specValues).find((specKey) => specKey.toLowerCase() === lowerKey);
+  if (matchingKey) {
+    const value = specValues[matchingKey];
+    if (value !== undefined && value !== null && value !== "") {
+      return parseFloat(String(value)) || 0;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Evaluate a condition expression against a spec field value.
  * Supports: "> 0", ">= 1", "!= ''", "= value", "!= value", "contains value", "any" (always true)
  */
-export function evaluateCondition(fieldValue: string | number | null | undefined, condition: string): boolean {
+export function evaluateCondition(fieldValue: unknown, condition: string): boolean {
   if (!condition || condition.trim().toLowerCase() === "any") return true;
   
   const val = fieldValue ?? "";
-  const strVal = String(val).trim();
+  const strVal = Array.isArray(val)
+    ? (val.length > 0 ? JSON.stringify(val) : "")
+    : (typeof val === "object" && val !== null ? JSON.stringify(val) : String(val)).trim();
   const numVal = parseFloat(strVal);
   const cond = condition.trim();
 
@@ -129,18 +151,18 @@ export function evaluateFormula(formula: string, specValues: SpecValues): number
 
   // Replace spec field references with their numeric values
   // Match field names that start with "spec" or common computed variables
-  const fieldPattern = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetLM|productCover|wasteFactor)\b/gi;
-  expr = expr.replace(fieldPattern, (match) => {
+  expr = expr.replace(FORMULA_FIELD_PATTERN, (match) => {
     const key = match;
-    // Try exact match first
-    if (specValues[key] !== undefined && specValues[key] !== null && specValues[key] !== "") {
-      return String(parseFloat(String(specValues[key])) || 0);
+    const directValue = getNumericSpecValue(specValues, key);
+    if (directValue !== null) {
+      return String(directValue);
     }
     // Try with "spec" prefix if not already prefixed
-    if (!key.startsWith("spec")) {
+    if (!key.toLowerCase().startsWith("spec")) {
       const prefixed = "spec" + key.charAt(0).toUpperCase() + key.slice(1);
-      if (specValues[prefixed] !== undefined && specValues[prefixed] !== null && specValues[prefixed] !== "") {
-        return String(parseFloat(String(specValues[prefixed])) || 0);
+      const prefixedValue = getNumericSpecValue(specValues, prefixed);
+      if (prefixedValue !== null) {
+        return String(prefixedValue);
       }
     }
     return "0";
@@ -242,7 +264,10 @@ export function generateItemsFromSpec(
       const sheetLength = parseFloat(String(specValues.roofSheetLength || 0));
       const coverM = product.coverageWidth / 1000;
       if (runWidth > 0 && sheetLength > 0 && coverM > 0) {
-        mappingSpecValues.roofSheetLM = Math.ceil(runWidth / coverM) * sheetLength;
+        const sheetQty = Math.ceil(runWidth / coverM);
+        mappingSpecValues.roofSheetQty = sheetQty;
+        mappingSpecValues.specRoofSheetQty = sheetQty;
+        mappingSpecValues.roofSheetLM = sheetQty * sheetLength;
       }
     }
 

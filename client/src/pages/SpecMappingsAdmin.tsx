@@ -74,12 +74,15 @@ export default function SpecMappingsAdmin() {
   const { data: mappings, isLoading } = trpc.specItems.mappings.list.useQuery();
   const { data: allProducts } = trpc.products.getAll.useQuery();
   const { data: tabsAndUoms } = trpc.products.getTabsAndUoms.useQuery();
+  const mappingRows = useMemo(() => Array.isArray(mappings) ? mappings : [], [mappings]);
+  const productRows = useMemo(() => Array.isArray(allProducts) ? allProducts : [], [allProducts]);
+  const tabRows = useMemo(() => Array.isArray(tabsAndUoms?.tabs) ? tabsAndUoms.tabs : [], [tabsAndUoms]);
+  const subTabRows = useMemo(() => Array.isArray(tabsAndUoms?.subTabs) ? tabsAndUoms.subTabs : [], [tabsAndUoms]);
 
   // Dynamically populate tab options from the Tab Names master data
   const TAB_OPTIONS = useMemo(() => {
-    if (!tabsAndUoms?.tabs?.length) return [];
-    return tabsAndUoms.tabs.map((t: any) => t.value.toLowerCase());
-  }, [tabsAndUoms]);
+    return tabRows.map((t: any) => t.value.toLowerCase());
+  }, [tabRows]);
   const createMutation = trpc.specItems.mappings.create.useMutation({
     onSuccess: () => { toast.success("Mapping created"); utils.specItems.mappings.list.invalidate(); setOpen(false); },
     onError: (e: any) => toast.error(e.message),
@@ -123,11 +126,13 @@ export default function SpecMappingsAdmin() {
     { limit: 50 },
     { enabled: historyOpen }
   );
+  const historyRows = useMemo(() => Array.isArray(historyData) ? historyData : [], [historyData]);
 
   // Dry-run state
   const [dryRunOpen, setDryRunOpen] = useState(false);
   const [dryRunQuoteId, setDryRunQuoteId] = useState<string>("");
   const { data: quotesList } = trpc.quotes.list.useQuery(undefined, { enabled: dryRunOpen });
+  const quoteRows = useMemo(() => Array.isArray(quotesList) ? quotesList : [], [quotesList]);
   const { data: dryRunResult, isLoading: dryRunLoading, error: dryRunError } = (trpc.specItems as any).dryRun.useQuery(
     { quoteId: Number(dryRunQuoteId) },
     { enabled: dryRunOpen && !!dryRunQuoteId && !isNaN(Number(dryRunQuoteId)) }
@@ -150,9 +155,9 @@ export default function SpecMappingsAdmin() {
 
   // Sub-tabs for the currently selected tab
   const subTabsForTab = useMemo(() => {
-    if (filterTab === "all" || !tabsAndUoms?.subTabs) return [];
-    return (tabsAndUoms.subTabs as any[]).filter((st: any) => st.description === filterTab.toLowerCase()).map((st: any) => st.value);
-  }, [filterTab, tabsAndUoms]);
+    if (filterTab === "all") return [];
+    return subTabRows.filter((st: any) => st.description === filterTab.toLowerCase()).map((st: any) => st.value);
+  }, [filterTab, subTabRows]);
 
   const openCreate = () => { setEditId(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (m: any) => {
@@ -196,13 +201,13 @@ export default function SpecMappingsAdmin() {
   };
 
   const handleDownloadCsv = () => {
-    if (!mappings || mappings.length === 0) {
+    if (mappingRows.length === 0) {
       toast.error("No mappings to download");
       return;
     }
     const headers = ["id", "name", "tabName", "specField", "condition", "qtyFormula", "productId", "productMatch", "colourField", "bottomColourField", "uom", "sortOrder", "active", "description"];
     const csvRows = [headers.join(",")];
-    for (const m of mappings as any[]) {
+    for (const m of mappingRows as any[]) {
       csvRows.push([
         m.id,
         `"${(m.name || "").replace(/"/g, '""')}"`,
@@ -231,11 +236,11 @@ export default function SpecMappingsAdmin() {
   };
 
   const filtered = useMemo(() => {
-    let result = mappings || [];
+    let result = mappingRows;
     if (filterTab !== "all") result = result.filter(m => m.tabName === filterTab);
     // Note: spec_mappings don't have a subTab field currently, but we can filter by product's subTab
     return result;
-  }, [mappings, filterTab, filterSubTab]);
+  }, [mappingRows, filterTab, filterSubTab]);
 
   if (isLoading) return <Skeleton className="h-96 w-full" />;
 
@@ -330,12 +335,12 @@ export default function SpecMappingsAdmin() {
                     {/* Product link verification badge */}
                     {(() => {
                       if (m.productId) {
-                        const product = (allProducts as any[])?.find((p: any) => p.id === m.productId);
+                        const product = productRows.find((p: any) => p.id === m.productId);
                         return product
                           ? <Badge variant="outline" className="text-xs text-green-700 border-green-300 bg-green-50" title={`Linked: ${product.name} (ID ${product.id})`}>✓ {product.name?.substring(0, 15)}</Badge>
                           : <Badge variant="outline" className="text-xs text-red-700 border-red-300 bg-red-50" title={`Product ID ${m.productId} not found or inactive`}>✗ Missing Product</Badge>;
                       } else if (m.productMatch) {
-                        const tabProducts = (allProducts as any[])?.filter((p: any) => p.tabName === m.tabName) || [];
+                        const tabProducts = productRows.filter((p: any) => p.tabName === m.tabName);
                         const matchFieldLabel = m.productMatch?.replace('spec', '') || '';
                         if (tabProducts.length === 0) {
                           return <Badge variant="outline" className="text-xs text-red-700 border-red-300 bg-red-50" title={`No active products in tab '${m.tabName}'`}>✗ No products in tab</Badge>;
@@ -480,6 +485,7 @@ export default function SpecMappingsAdmin() {
                     <p className="font-semibold mb-1">Available Computed Variables:</p>
                     <p><code>roofRunWidth</code> — Dimension perpendicular to fall (m)</p>
                     <p><code>roofSheetLength</code> — Dimension parallel to fall (m)</p>
+                    <p><code>roofSheetQty</code> — Roof sheet count from product cover</p>
                     <p><code>roofSheetLM</code> — Total roof LM (auto-calc with product cover)</p>
                     <p><code>productCover</code> — Product coverage width (mm)</p>
                     <p><code>area</code> — specWidth × specLength (m²)</p>
@@ -490,6 +496,7 @@ export default function SpecMappingsAdmin() {
                     <p>+, -, *, /, Math.ceil(), Math.floor(), Math.round()</p>
                     <p className="font-semibold mt-2 mb-1">Examples:</p>
                     <p><code>roofSheetLM</code></p>
+                    <p><code>roofSheetQty * roofSheetLength</code></p>
                     <p><code>Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength</code></p>
                     <p><code>roofSheetLM * (1 + wasteFactor / 100)</code></p>
                     <p><code>specWidth * specLength</code></p>
@@ -511,7 +518,7 @@ export default function SpecMappingsAdmin() {
                 <PopoverTrigger asChild>
                   <Button variant="outline" role="combobox" className="h-9 w-full justify-between font-normal">
                     {form.productId ? (() => {
-                      const prod = (allProducts as any[])?.find((p: any) => p.id === form.productId);
+                      const prod = productRows.find((p: any) => p.id === form.productId);
                       return prod ? <span className="truncate">{prod.name} ({prod.tabName})</span> : `Product #${form.productId}`;
                     })() : <span className="text-muted-foreground">— No product (manual rates) —</span>}
                     <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 opacity-50" />
@@ -520,7 +527,7 @@ export default function SpecMappingsAdmin() {
                 <PopoverContent className="w-[360px] p-0" align="start">
                   <Command filter={(value, search) => {
                     if (value === "none") return search ? 0 : 1;
-                    const prod = (allProducts as any[])?.find((p: any) => String(p.id) === value);
+                    const prod = productRows.find((p: any) => String(p.id) === value);
                     if (!prod) return 0;
                     const haystack = `${prod.name} ${prod.tabName} ${prod.productCode || ""}`.toLowerCase();
                     return haystack.includes(search.toLowerCase()) ? 1 : 0;
@@ -533,7 +540,7 @@ export default function SpecMappingsAdmin() {
                           <Check className={`mr-1 h-3 w-3 ${!form.productId ? "opacity-100" : "opacity-0"}`} />
                           — No product (manual rates) —
                         </CommandItem>
-                        {(allProducts as any[])?.map((p: any) => (
+                        {productRows.map((p: any) => (
                           <CommandItem key={p.id} value={String(p.id)} onSelect={(v) => setForm(prev => ({ ...prev, productId: Number(v) }))}>
                             <Check className={`mr-1 h-3 w-3 ${form.productId === p.id ? "opacity-100" : "opacity-0"}`} />
                             <span className="truncate">{p.name}</span>
@@ -754,7 +761,7 @@ export default function SpecMappingsAdmin() {
                 <Select value={dryRunQuoteId} onValueChange={setDryRunQuoteId}>
                   <SelectTrigger className="h-9"><SelectValue placeholder="Pick a quote..." /></SelectTrigger>
                   <SelectContent className="max-h-60">
-                    {(quotesList || []).map((q: any) => (
+                    {quoteRows.map((q: any) => (
                       <SelectItem key={q.id} value={String(q.id)}>
                         {q.quoteNumber || `#${q.id}`} — {q.clientName || "No client"} ({q.specWidth || "?"}m × {q.specLength || "?"}m)
                       </SelectItem>
@@ -936,10 +943,10 @@ export default function SpecMappingsAdmin() {
           </DialogHeader>
           <div className="space-y-2">
             {historyLoading && <Skeleton className="h-20 w-full" />}
-            {!historyLoading && (!historyData || (historyData as any[]).length === 0) && (
+            {!historyLoading && historyRows.length === 0 && (
               <p className="text-sm text-muted-foreground py-4 text-center">No history yet. Changes will appear here after creating, editing, or deleting mappings.</p>
             )}
-            {!historyLoading && historyData && (historyData as any[]).map((entry: any) => (
+            {!historyLoading && historyRows.map((entry: any) => (
               <div key={entry.id} className="border rounded-md p-3 space-y-1">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">

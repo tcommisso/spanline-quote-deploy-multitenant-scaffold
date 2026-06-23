@@ -71,18 +71,17 @@ export default function MasterDataCategory({
   const [deleteTarget, setDeleteTarget] = useState<{ index: number; entry: typeof entries[0] } | null>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const masterDataRows = Array.isArray(masterData) ? masterData : [];
 
-  const lastUpdated = masterData
-    ? masterData
-        .filter(d => d.category === category)
-        .reduce((latest, d) => {
-          const t = new Date(d.updatedAt).getTime();
-          return t > latest ? t : latest;
-        }, 0)
-    : 0;
+  const lastUpdated = masterDataRows
+    .filter(d => d.category === category)
+    .reduce((latest, d) => {
+      const t = new Date(d.updatedAt).getTime();
+      return Number.isFinite(t) && t > latest ? t : latest;
+    }, 0);
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       const sorted = masterData
         .filter(d => d.category === category)
         .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));

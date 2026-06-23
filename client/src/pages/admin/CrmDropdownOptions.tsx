@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,8 @@ export default function CrmDropdownOptions() {
   const utils = trpc.useUtils();
   const { data: options, isLoading } = trpc.crmDropdowns.list.useQuery({ category: selectedCategory, activeOnly: false });
   const { data: categories } = trpc.crmDropdowns.categories.useQuery();
+  const optionRows = useMemo(() => Array.isArray(options) ? options : [], [options]);
+  const categoryRows = useMemo(() => Array.isArray(categories) ? categories : [], [categories]);
 
   const createMut = trpc.crmDropdowns.create.useMutation({
     onSuccess: () => {
@@ -67,8 +69,8 @@ export default function CrmDropdownOptions() {
   });
 
   const handleMoveUp = (index: number) => {
-    if (!options || index === 0) return;
-    const items = [...options];
+    if (index === 0) return;
+    const items = [...optionRows];
     const temp = items[index - 1];
     items[index - 1] = items[index];
     items[index] = temp;
@@ -78,8 +80,8 @@ export default function CrmDropdownOptions() {
   };
 
   const handleMoveDown = (index: number) => {
-    if (!options || index === options.length - 1) return;
-    const items = [...options];
+    if (index === optionRows.length - 1) return;
+    const items = [...optionRows];
     const temp = items[index + 1];
     items[index + 1] = items[index];
     items[index] = temp;
@@ -93,7 +95,7 @@ export default function CrmDropdownOptions() {
       toast.error("Both value and label are required");
       return;
     }
-    const maxSort = options?.reduce((max, o) => Math.max(max, o.sortOrder), 0) || 0;
+    const maxSort = optionRows.reduce((max, o) => Math.max(max, o.sortOrder), 0);
     createMut.mutate({
       category: selectedCategory,
       value: newValue.trim(),
@@ -112,7 +114,7 @@ export default function CrmDropdownOptions() {
     });
   };
 
-  const allCategories = categories || Object.keys(CATEGORY_LABELS);
+  const allCategories = categoryRows.length > 0 ? categoryRows : Object.keys(CATEGORY_LABELS);
 
   return (
     <div className="space-y-4">
@@ -150,11 +152,11 @@ export default function CrmDropdownOptions() {
         <CardContent>
           {isLoading ? (
             <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : !options?.length ? (
+          ) : optionRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">No options defined for this category.</p>
           ) : (
             <div className="space-y-1">
-              {options.map((opt, idx) => (
+              {optionRows.map((opt, idx) => (
                 <div
                   key={opt.id}
                   className={`flex items-center gap-2 p-2 rounded border ${!opt.active ? "opacity-50 bg-muted" : "bg-background"}`}
@@ -171,7 +173,7 @@ export default function CrmDropdownOptions() {
                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleMoveUp(idx)} disabled={idx === 0}>
                       <ArrowUp className="h-3 w-3" />
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleMoveDown(idx)} disabled={idx === options.length - 1}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => handleMoveDown(idx)} disabled={idx === optionRows.length - 1}>
                       <ArrowDown className="h-3 w-3" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditingItem({ id: opt.id, value: opt.value, label: opt.label, sortOrder: opt.sortOrder, active: opt.active })}>

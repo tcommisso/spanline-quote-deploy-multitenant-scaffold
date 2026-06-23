@@ -40,18 +40,17 @@ export default function PricingRegion() {
   const [deleteTarget, setDeleteTarget] = useState<{ index: number; entry: RegionEntry } | null>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const masterDataRows = Array.isArray(masterData) ? masterData : [];
 
-  const lastUpdated = masterData
-    ? masterData
-        .filter(d => d.category === "region")
-        .reduce((latest, d) => {
-          const t = new Date(d.updatedAt).getTime();
-          return t > latest ? t : latest;
-        }, 0)
-    : 0;
+  const lastUpdated = masterDataRows
+    .filter(d => d.category === "region")
+    .reduce((latest, d) => {
+      const t = new Date(d.updatedAt).getTime();
+      return Number.isFinite(t) && t > latest ? t : latest;
+    }, 0);
 
   useEffect(() => {
-    if (masterData) {
+    if (Array.isArray(masterData)) {
       setEntries(masterData.filter(d => d.category === "region").map(d => ({
         id: d.id,
         category: d.category,

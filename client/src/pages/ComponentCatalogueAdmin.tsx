@@ -108,6 +108,10 @@ export default function ComponentCatalogueAdmin() {
     },
     { placeholderData: (prev) => prev }
   );
+  const categoryRows = useMemo(() => Array.isArray(categories) ? categories : [], [categories]);
+  const subGroupRows = useMemo(() => Array.isArray(subGroups) ? subGroups : [], [subGroups]);
+  const tagRows = useMemo(() => Array.isArray(allTags) ? allTags : [], [allTags]);
+  const productRows = useMemo(() => Array.isArray(results?.products) ? results.products : [], [results]);
 
   const updateMutation = trpc.smartshop.updateCatalogueProduct.useMutation({
     onSuccess: () => {
@@ -173,20 +177,20 @@ export default function ComponentCatalogueAdmin() {
 
   const exportMutation = trpc.smartshop.exportCatalogueProducts.useMutation({
     onSuccess: (data) => {
-      downloadCsv("component-order-data.csv", data.products);
-      toast.success(`Exported ${data.products.length} products`);
+      const products = Array.isArray(data.products) ? data.products : [];
+      downloadCsv("component-order-data.csv", products);
+      toast.success(`Exported ${products.length} products`);
     },
     onError: (err) => toast.error(err.message),
   });
 
-  const allProducts = results?.products ?? [];
   const filteredProducts = useMemo(() => {
-    let items = allProducts;
+    let items = productRows;
     if (!showInactive) {
       items = items.filter((p: any) => p.isActive !== false);
     }
     return items;
-  }, [allProducts, showInactive]);
+  }, [productRows, showInactive]);
 
   const paginatedProducts = filteredProducts.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filteredProducts.length / PAGE_SIZE);
@@ -272,7 +276,7 @@ export default function ComponentCatalogueAdmin() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Categories</SelectItem>
-                {(categories ?? []).map((cat) => (
+                {categoryRows.map((cat) => (
                   <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                 ))}
               </SelectContent>
@@ -283,7 +287,7 @@ export default function ComponentCatalogueAdmin() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Sub-Groups</SelectItem>
-                {(subGroups ?? []).map((sg) => (
+                {subGroupRows.map((sg) => (
                   <SelectItem key={sg} value={sg}>{sg}</SelectItem>
                 ))}
               </SelectContent>
@@ -294,7 +298,7 @@ export default function ComponentCatalogueAdmin() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Tags</SelectItem>
-                {(allTags ?? []).map((tag) => (
+                {tagRows.map((tag) => (
                   <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                 ))}
               </SelectContent>
@@ -448,7 +452,7 @@ export default function ComponentCatalogueAdmin() {
       {/* Edit Dialog */}
       <EditProductDialog
         product={editItem}
-        subGroups={subGroups ?? []}
+        subGroups={subGroupRows}
         onClose={() => setEditItem(null)}
         onSave={(data) => updateMutation.mutate(data)}
         isPending={updateMutation.isPending}
@@ -457,8 +461,8 @@ export default function ComponentCatalogueAdmin() {
       {/* Add Dialog */}
       <AddProductDialog
         open={addItem}
-        categories={categories ?? []}
-        subGroups={subGroups ?? []}
+        categories={categoryRows}
+        subGroups={subGroupRows}
         onClose={() => setAddItem(false)}
         onSave={(data) => createMutation.mutate(data)}
         isPending={createMutation.isPending}
@@ -491,7 +495,7 @@ export default function ComponentCatalogueAdmin() {
       <BulkTagDialog
         open={showBulkTag}
         selectedCount={selectedIds.size}
-        existingTags={allTags ?? []}
+        existingTags={tagRows}
         onClose={() => setShowBulkTag(false)}
         onApply={(tags) => bulkTagMutation.mutate({ productIds: Array.from(selectedIds), tags })}
         isPending={bulkTagMutation.isPending}
@@ -501,7 +505,7 @@ export default function ComponentCatalogueAdmin() {
       <BulkSubGroupDialog
         open={showBulkSubGroup}
         selectedCount={selectedIds.size}
-        existingSubGroups={subGroups ?? []}
+        existingSubGroups={subGroupRows}
         onClose={() => setShowBulkSubGroup(false)}
         onApply={(subGroup) => bulkSubGroupMutation.mutate({ productIds: Array.from(selectedIds), subGroup })}
         isPending={bulkSubGroupMutation.isPending}
@@ -561,6 +565,7 @@ function EditProductDialog({
 
   // Fetch colour groups for the dropdown
   const { data: colourGroupsList } = trpc.colourGroups.getAll.useQuery();
+  const colourGroupRows = useMemo(() => Array.isArray(colourGroupsList) ? colourGroupsList : [], [colourGroupsList]);
 
   // Update form when product prop changes
   if (product && form.spaCode !== product.spaCode) {
@@ -658,7 +663,7 @@ function EditProductDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">Standard Colorbond (default)</SelectItem>
-                {colourGroupsList?.map(g => (
+                {colourGroupRows.map(g => (
                   <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
                 ))}
               </SelectContent>

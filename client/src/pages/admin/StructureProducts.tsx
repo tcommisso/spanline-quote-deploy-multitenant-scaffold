@@ -4,13 +4,12 @@ import { Clock } from "lucide-react";
 
 export default function StructureProducts() {
   const { data: products } = trpc.products.getAll.useQuery();
+  const productRows = Array.isArray(products) ? products : [];
 
-  const lastUpdated = products
-    ? products.reduce((latest, p) => {
+  const lastUpdated = productRows.reduce((latest, p) => {
         const t = new Date(p.updatedAt).getTime();
-        return t > latest ? t : latest;
-      }, 0)
-    : 0;
+        return Number.isFinite(t) && t > latest ? t : latest;
+      }, 0);
 
   return (
     <div className="space-y-4">

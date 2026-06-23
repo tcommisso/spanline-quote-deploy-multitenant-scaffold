@@ -62,6 +62,7 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specGutterSides", label: "Gutter Sides", type: "text", section: "Gutters & Downpipes" },
   { value: "specGutterSideCount", label: "Gutter Side Count", type: "computed", section: "Gutters & Downpipes" },
   { value: "specBoxGutter", label: "Total Gutter Length (mm)", type: "num", section: "Gutters & Downpipes" },
+  { value: "specTotalGutterLength", label: "Total Gutter Length (mm)", type: "computed", section: "Gutters & Downpipes" },
   { value: "specOverflow", label: "Overflow", type: "text", section: "Gutters & Downpipes" },
   { value: "specDownpipeType", label: "Downpipe Type", type: "text", section: "Gutters & Downpipes" },
   { value: "specDownpipeColour", label: "Downpipe Colour", type: "text", section: "Gutters & Downpipes" },
@@ -238,8 +239,10 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specRoofArea", label: "Roof Area (pitch-adjusted)", type: "computed", section: "Computed" },
   { value: "specRoofRunWidth", label: "Roof Run Width", type: "computed", section: "Computed" },
   { value: "specRoofSheetLength", label: "Roof Sheet Length", type: "computed", section: "Computed" },
+  { value: "specRoofSheetQty", label: "Roof Sheet Qty", type: "computed", section: "Computed" },
   { value: "wasteFactor", label: "Waste Factor (from master data)", type: "computed", section: "Computed" },
   { value: "roofSheetLM", label: "Roof Sheet LM", type: "computed", section: "Computed" },
+  { value: "roofSheetQty", label: "Roof Sheet Qty", type: "computed", section: "Computed" },
   { value: "productCover", label: "Product Cover Width", type: "computed", section: "Computed" },
 ];
 
@@ -250,6 +253,7 @@ export const LEGACY_SPEC_FIELD_ALIASES: Record<string, string> = {
   specRoofFinishTop: "specFinishType",
   specRoofFinishBottom: "specFinishType",
   specDownpipes: "specDownpipeCount",
+  specTotalGutterLength: "specBoxGutter",
   specElecFans: "specElecFan",
   specBalustradeLm: "specBalustradeLM",
   specSpanliteType: "specSpanlitesType",
@@ -265,6 +269,7 @@ export const FORMULA_ONLY_SPEC_VALUES = [
   "perimeter",
   "roofRunWidth",
   "roofSheetLength",
+  "roofSheetQty",
   "roofSheetLM",
   "productCover",
 ] as const;
