@@ -26,7 +26,7 @@ function getTileMetric(
     case "inbox":
       return `${inboxUnread} unread email${inboxUnread === 1 ? "" : "s"}`;
     case "chat":
-      return `${chatUnread} chat message${chatUnread === 1 ? "" : "s"}`;
+      return `${chatUnread} unread chat message${chatUnread === 1 ? "" : "s"}`;
     case "crm":
       return kpiData?.leadsThisMonth != null ? `${kpiData.leadsThisMonth} new leads` : null;
     case "sales":

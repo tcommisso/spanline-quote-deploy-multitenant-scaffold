@@ -97,6 +97,51 @@ async function ensureMembership(db: any, ctx: any, channelId: number, userId: nu
   throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this channel" });
 }
 
+async function getVisibleChannelIdsForUser(db: any, ctx: any, userId: number) {
+  const systemChannels = await db
+    .select({ id: chatChannels.id })
+    .from(chatChannels)
+    .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "system"), eq(chatChannels.isArchived, false))));
+
+  const memberScopedChannels = await db
+    .select({ channelId: chatChannelMembers.channelId })
+    .from(chatChannelMembers)
+    .innerJoin(chatChannels, eq(chatChannelMembers.channelId, chatChannels.id))
+    .where(and(
+      ...memberTenantConditions(ctx, eq(chatChannelMembers.userId, userId)),
+      ...channelTenantConditions(
+        ctx,
+        inArray(chatChannels.type, ["team", "job"]),
+        eq(chatChannels.isArchived, false),
+      ),
+    ));
+
+  return Array.from(new Set([
+    ...systemChannels.map((channel: { id: number }) => channel.id),
+    ...memberScopedChannels.map((member: { channelId: number }) => member.channelId),
+  ]));
+}
+
+async function getUnreadCountForChannel(db: any, ctx: any, channelId: number, userId: number) {
+  const [membership] = await db
+    .select({ lastReadAt: chatChannelMembers.lastReadAt })
+    .from(chatChannelMembers)
+    .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, userId))))
+    .limit(1);
+
+  const lastRead = membership?.lastReadAt;
+  const [unread] = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(chatMessages)
+    .where(
+      lastRead
+        ? and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead)))
+        : and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId)))
+    );
+
+  return Number(unread?.count || 0);
+}
+
 // ─── Chat Router ────────────────────────────────────────────────────────────
 
 export const chatRouter = router({
@@ -138,22 +183,7 @@ export const chatRouter = router({
     const unreadCounts: Record<number, number> = {};
 
     for (const channelId of allChannelIds) {
-      const [membership] = await db
-        .select({ lastReadAt: chatChannelMembers.lastReadAt })
-        .from(chatChannelMembers)
-        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id))))
-        .limit(1);
-
-      const lastRead = membership?.lastReadAt;
-      const [unread] = await db
-        .select({ count: sql<number>`COUNT(*)` })
-        .from(chatMessages)
-        .where(
-          lastRead
-            ? and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead)))
-            : and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId)))
-        );
-      unreadCounts[channelId] = unread?.count || 0;
+      unreadCounts[channelId] = await getUnreadCountForChannel(db, ctx, channelId, ctx.user.id);
     }
 
     // Get last message for each channel
@@ -301,45 +331,11 @@ export const chatRouter = router({
   // ─── Get total unread count across all channels ─────────────────────────────
   getUnreadTotal: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-
-    // System channels (everyone is auto-member)
-    const systemChannels = await db
-      .select({ id: chatChannels.id })
-      .from(chatChannels)
-      .where(and(...channelTenantConditions(ctx, eq(chatChannels.type, "system"))));
-
-    // Job channels user is a member of
-    const memberChannels = await db
-      .select({ channelId: chatChannelMembers.channelId })
-      .from(chatChannelMembers)
-      .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.userId, ctx.user.id))));
-
-    const allChannelIds = [
-      ...systemChannels.map((c) => c.id),
-      ...memberChannels.map((m) => m.channelId),
-    ];
-    const uniqueIds = Array.from(new Set(allChannelIds));
+    const visibleChannelIds = await getVisibleChannelIdsForUser(db, ctx, ctx.user.id);
 
     let totalUnread = 0;
-    for (const channelId of uniqueIds) {
-      const [membership] = await db
-        .select({ lastReadAt: chatChannelMembers.lastReadAt })
-        .from(chatChannelMembers)
-        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, channelId), eq(chatChannelMembers.userId, ctx.user.id))))
-        .limit(1);
-
-      const lastRead = membership?.lastReadAt;
-      // If user has no membership record for this channel, treat as 0 unread
-      // (they haven't joined yet, so don't show historical messages as unread)
-      if (!membership) continue;
-      if (!lastRead) continue; // No lastReadAt means they haven't opened it yet — don't count as unread
-      const [unread] = await db
-        .select({ count: sql<number>`COUNT(*)` })
-        .from(chatMessages)
-        .where(
-          and(...messageTenantConditions(ctx, eq(chatMessages.channelId, channelId), gt(chatMessages.createdAt, lastRead)))
-        );
-      totalUnread += unread?.count || 0;
+    for (const channelId of visibleChannelIds) {
+      totalUnread += await getUnreadCountForChannel(db, ctx, channelId, ctx.user.id);
     }
 
     return { total: totalUnread };
