@@ -86,6 +86,7 @@ export default function ComponentCatalogueAdmin() {
   const [editItem, setEditItem] = useState<CatalogueProduct | null>(null);
   const [addItem, setAddItem] = useState(false);
   const [showPriceImport, setShowPriceImport] = useState(false);
+  const [showCatalogueUpload, setShowCatalogueUpload] = useState(false);
   const [showBulkTag, setShowBulkTag] = useState(false);
   const [showBulkSubGroup, setShowBulkSubGroup] = useState(false);
   const [showBulkDelete, setShowBulkDelete] = useState(false);
@@ -93,7 +94,7 @@ export default function ComponentCatalogueAdmin() {
 
   const utils = trpc.useUtils();
 
-  const { data: categories } = trpc.products.catalogueCategories.useQuery();
+  const { data: categories } = trpc.smartshop.allCategories.useQuery();
   const { data: subGroups } = trpc.smartshop.subGroups.useQuery();
   const { data: allTags } = trpc.smartshop.allTags.useQuery();
   const { data: results, isLoading } = trpc.smartshop.fetchProducts.useQuery(
@@ -239,6 +240,9 @@ export default function ComponentCatalogueAdmin() {
           >
             {exportMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
             Export CSV
+          </Button>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowCatalogueUpload(true)}>
+            <Upload className="h-3.5 w-3.5" /> Bulk Upload CSV
           </Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowPriceImport(true)}>
             <Upload className="h-3.5 w-3.5" /> Price Update CSV
@@ -467,6 +471,19 @@ export default function ComponentCatalogueAdmin() {
         onComplete={() => {
           setShowPriceImport(false);
           utils.smartshop.fetchProducts.invalidate();
+        }}
+      />
+
+      <CatalogueUploadDialog
+        open={showCatalogueUpload}
+        onClose={() => setShowCatalogueUpload(false)}
+        onComplete={() => {
+          setShowCatalogueUpload(false);
+          utils.smartshop.fetchProducts.invalidate();
+          utils.smartshop.allCategories.invalidate();
+          utils.smartshop.subGroups.invalidate();
+          utils.smartshop.allTags.invalidate();
+          utils.products.searchCatalogue.invalidate();
         }}
       />
 
@@ -953,6 +970,177 @@ function BulkSubGroupDialog({
             {isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
             Apply to {selectedCount} Products
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Full Catalogue Upload Dialog ───────────────────────────────────────────
+function CatalogueUploadDialog({
+  open,
+  onClose,
+  onComplete,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onComplete: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [csvContent, setCsvContent] = useState("");
+  const [preview, setPreview] = useState<any | null>(null);
+  const [result, setResult] = useState<{ created: number; updated: number; unchanged: number; invalid: number } | null>(null);
+
+  const previewMutation = trpc.smartshop.previewCatalogueUpload.useMutation({
+    onSuccess: (data) => setPreview(data),
+    onError: (err) => toast.error(err.message),
+  });
+
+  const applyMutation = trpc.smartshop.applyCatalogueUpload.useMutation({
+    onSuccess: (data) => {
+      setResult(data);
+      toast.success(`Imported ${data.created} new and updated ${data.updated} products`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) return;
+    setFile(selectedFile);
+    setPreview(null);
+    setResult(null);
+    const text = await selectedFile.text();
+    setCsvContent(text);
+    previewMutation.mutate({ csvContent: text });
+  };
+
+  const resetState = () => {
+    setFile(null);
+    setCsvContent("");
+    setPreview(null);
+    setResult(null);
+  };
+
+  const rows = preview?.rows ?? [];
+  const summary = preview?.summary;
+  const importableCount = (summary?.create ?? 0) + (summary?.update ?? 0);
+
+  const statusVariant = (status: string) => {
+    if (status === "invalid") return "destructive" as const;
+    if (status === "unchanged") return "secondary" as const;
+    return "default" as const;
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={() => { onClose(); resetState(); }}>
+      <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Bulk Upload Component Order Data</DialogTitle>
+        </DialogHeader>
+
+        {!result ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Upload a CSV to create new catalogue products and update matching products by <code className="bg-muted px-1 rounded">SPA Code</code>. Supported columns include Description, Category, Price, Colour, UOM, Pack Qty/Sizes, Sub-Group, Tags, Colour Group, Colour Input Allowed, and Active.
+            </p>
+
+            <div className="flex items-center gap-3">
+              <Input type="file" accept=".csv" onChange={handleFileSelect} className="max-w-xs" />
+              {previewMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              {file && <span className="text-xs text-muted-foreground">{file.name}</span>}
+            </div>
+
+            {summary && (
+              <div className="flex flex-wrap gap-2 text-xs">
+                <Badge variant="default">{summary.create} to create</Badge>
+                <Badge variant="default">{summary.update} to update</Badge>
+                <Badge variant="secondary">{summary.unchanged} unchanged</Badge>
+                <Badge variant={summary.invalid > 0 ? "destructive" : "secondary"}>{summary.invalid} invalid</Badge>
+              </div>
+            )}
+
+            {summary?.invalid > 0 && (
+              <p className="text-xs text-destructive">
+                Invalid rows will be skipped. Fix missing SPA codes, duplicate SPA codes, invalid prices, or missing descriptions for new products before importing if those rows are required.
+              </p>
+            )}
+
+            {rows.length > 0 && (
+              <div className="border rounded-md max-h-[360px] overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-muted/80">
+                    <tr className="border-b">
+                      <th className="text-left py-2 px-2 font-medium">Row</th>
+                      <th className="text-left py-2 px-2 font-medium">SPA Code</th>
+                      <th className="text-left py-2 px-2 font-medium">Description</th>
+                      <th className="text-left py-2 px-2 font-medium">Category</th>
+                      <th className="text-right py-2 px-2 font-medium">Old Price</th>
+                      <th className="text-right py-2 px-2 font-medium">New Price</th>
+                      <th className="text-center py-2 px-2 font-medium">Status</th>
+                      <th className="text-left py-2 px-2 font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.slice(0, 150).map((item: any) => (
+                      <tr key={`${item.rowNumber}-${item.spaCode}`} className={`border-b ${item.status === "invalid" ? "bg-red-50 dark:bg-red-950/20" : item.status === "create" ? "bg-green-50 dark:bg-green-950/20" : item.status === "update" ? "bg-yellow-50 dark:bg-yellow-950/20" : ""}`}>
+                        <td className="py-1.5 px-2">{item.rowNumber}</td>
+                        <td className="py-1.5 px-2 font-mono">{item.spaCode || "-"}</td>
+                        <td className="py-1.5 px-2 max-w-[220px] truncate">{item.description || "-"}</td>
+                        <td className="py-1.5 px-2">{item.category || "-"}</td>
+                        <td className="py-1.5 px-2 text-right">{item.oldPrice != null ? `$${Number(item.oldPrice).toFixed(2)}` : "-"}</td>
+                        <td className="py-1.5 px-2 text-right font-medium">${Number(item.price || 0).toFixed(2)}</td>
+                        <td className="py-1.5 px-2 text-center">
+                          <Badge variant={statusVariant(item.status)} className="text-[10px]">
+                            {item.status}
+                          </Badge>
+                        </td>
+                        <td className="py-1.5 px-2 text-muted-foreground max-w-[220px] truncate">
+                          {item.errors?.length ? item.errors.join("; ") : item.existingId ? `Matched #${item.existingId}` : "New product"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {rows.length > 150 && (
+              <p className="text-xs text-muted-foreground">Showing the first 150 of {rows.length} rows. All valid rows will be imported.</p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4 py-4">
+            <div className="flex flex-col items-center gap-3">
+              <div className="h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                <Package className="h-6 w-6 text-green-600" />
+              </div>
+              <h3 className="font-medium">Upload Complete</h3>
+              <div className="flex flex-wrap justify-center gap-3 text-sm">
+                <Badge variant="default">{result.created} created</Badge>
+                <Badge variant="default">{result.updated} updated</Badge>
+                <Badge variant="secondary">{result.unchanged} unchanged</Badge>
+                <Badge variant={result.invalid > 0 ? "destructive" : "secondary"}>{result.invalid} skipped</Badge>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          {!result ? (
+            <>
+              <Button variant="outline" onClick={() => { onClose(); resetState(); }}>Cancel</Button>
+              <Button
+                disabled={!csvContent || importableCount === 0 || applyMutation.isPending}
+                onClick={() => applyMutation.mutate({ csvContent })}
+              >
+                {applyMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                Import {importableCount} Rows
+              </Button>
+            </>
+          ) : (
+            <Button onClick={() => { onComplete(); resetState(); }}>Done</Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

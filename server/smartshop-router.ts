@@ -184,6 +184,147 @@ function normaliseDraftPayload(payload: z.infer<typeof orderDraftPayloadSchema>)
   };
 }
 
+function parseCsvRows(csvContent: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < csvContent.length; i++) {
+    const char = csvContent[i];
+    const next = csvContent[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        field += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      row.push(field.trim());
+      field = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") i++;
+      row.push(field.trim());
+      if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+      row = [];
+      field = "";
+      continue;
+    }
+
+    field += char;
+  }
+
+  row.push(field.trim());
+  if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+  return rows;
+}
+
+function normaliseCsvHeader(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function csvColumn(headers: string[], aliases: string[]) {
+  const normalisedAliases = aliases.map(normaliseCsvHeader);
+  return headers.findIndex((header) => normalisedAliases.includes(normaliseCsvHeader(header)));
+}
+
+function csvValue(row: string[], index: number) {
+  if (index < 0) return undefined;
+  const value = row[index]?.trim();
+  return value ? value : undefined;
+}
+
+function parseCsvNumber(value: string | undefined) {
+  if (!value) return undefined;
+  const parsed = Number(value.replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseCsvBoolean(value: string | undefined) {
+  if (!value) return undefined;
+  const normalised = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "active", "allowed"].includes(normalised)) return true;
+  if (["0", "false", "no", "n", "inactive", "not allowed"].includes(normalised)) return false;
+  return undefined;
+}
+
+function parseCatalogueUploadRows(csvContent: string) {
+  const rows = parseCsvRows(csvContent);
+  if (rows.length < 2) return [];
+
+  const headers = rows[0];
+  const spaIdx = csvColumn(headers, ["spa code", "spacode", "sku", "code", "item code", "product code"]);
+  const descriptionIdx = csvColumn(headers, ["description", "desc", "name", "product name", "item name"]);
+  const categoryIdx = csvColumn(headers, ["category", "product category"]);
+  const priceIdx = csvColumn(headers, ["price", "cost", "unit price", "sell rate", "rate"]);
+  const colourIdx = csvColumn(headers, ["colour", "color"]);
+  const uomIdx = csvColumn(headers, ["uom", "unit", "unit of measure"]);
+  const packQtySizesIdx = csvColumn(headers, ["pack qty/sizes", "pack qty sizes", "pack quantity sizes", "pack qty", "pack sizes"]);
+  const subGroupIdx = csvColumn(headers, ["sub-group", "sub group", "subgroup", "group"]);
+  const tagsIdx = csvColumn(headers, ["tags", "tag"]);
+  const colourGroupIdx = csvColumn(headers, ["colour group", "color group"]);
+  const colourInputAllowedIdx = csvColumn(headers, ["colour input allowed", "color input allowed", "requires colour", "requires color"]);
+  const activeIdx = csvColumn(headers, ["active", "is active", "status"]);
+
+  if (spaIdx < 0) {
+    throw new Error("CSV must include a SPA Code, SKU, Code, or Product Code column.");
+  }
+
+  return rows.slice(1).map((row, index) => {
+    const priceValue = csvValue(row, priceIdx);
+    const parsedPrice = parseCsvNumber(priceValue);
+    return {
+      rowNumber: index + 2,
+      spaCode: csvValue(row, spaIdx) || "",
+      description: csvValue(row, descriptionIdx),
+      category: csvValue(row, categoryIdx),
+      price: parsedPrice,
+      priceRaw: priceValue,
+      colour: csvValue(row, colourIdx),
+      uom: csvValue(row, uomIdx),
+      packQtySizes: csvValue(row, packQtySizesIdx),
+      subGroup: csvValue(row, subGroupIdx),
+      tags: csvValue(row, tagsIdx),
+      colourGroup: csvValue(row, colourGroupIdx),
+      colourInputAllowed: parseCsvBoolean(csvValue(row, colourInputAllowedIdx)),
+      isActive: parseCsvBoolean(csvValue(row, activeIdx)),
+    };
+  }).filter((row) => row.spaCode || row.description || row.category || row.priceRaw);
+}
+
+function catalogueUploadSetData(row: ReturnType<typeof parseCatalogueUploadRows>[number]) {
+  const setData: any = {};
+  if (row.description !== undefined) setData.description = row.description;
+  if (row.category !== undefined) setData.category = row.category || "Other";
+  if (typeof row.price === "number") setData.price = row.price.toString();
+  if (row.colour !== undefined) setData.colour = row.colour;
+  if (row.uom !== undefined) setData.uom = row.uom || "ea";
+  if (row.packQtySizes !== undefined) setData.packQtySizes = row.packQtySizes;
+  if (row.subGroup !== undefined) setData.subGroup = row.subGroup;
+  if (row.tags !== undefined) setData.tags = row.tags;
+  if (row.colourGroup !== undefined) setData.colourGroup = row.colourGroup;
+  if (row.colourInputAllowed !== undefined) setData.colourInputAllowed = row.colourInputAllowed;
+  if (row.isActive !== undefined) setData.isActive = row.isActive;
+  return setData;
+}
+
+function catalogueUploadChanged(row: ReturnType<typeof parseCatalogueUploadRows>[number], existing: typeof componentCatalogueProducts.$inferSelect) {
+  const setData = catalogueUploadSetData(row);
+  return Object.entries(setData).some(([key, value]) => {
+    const current = (existing as any)[key];
+    if (key === "price") return Math.abs(Number(current || 0) - Number(value || 0)) > 0.001;
+    return String(current ?? "") !== String(value ?? "");
+  });
+}
+
 export const smartshopRouter = router({
   /** List available product categories */
   categories: protectedProcedure.query(() => {
@@ -1255,8 +1396,128 @@ export const smartshopRouter = router({
       return { updated, notFound, unchanged };
     }),
 
+  /** Preview full catalogue upload from CSV content */
+  previewCatalogueUpload: adminProcedure
+    .input(z.object({ csvContent: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+
+      const rows = parseCatalogueUploadRows(input.csvContent);
+      const seenSpaCodes = new Set<string>();
+      const preview: any[] = [];
+
+      for (const row of rows) {
+        const errors: string[] = [];
+        const normalisedSpaCode = row.spaCode.trim().toLowerCase();
+        if (!row.spaCode.trim()) errors.push("SPA Code is required");
+        if (row.price === null) errors.push("Price must be a valid number");
+        if (normalisedSpaCode && seenSpaCodes.has(normalisedSpaCode)) errors.push("Duplicate SPA Code in upload");
+        if (normalisedSpaCode) seenSpaCodes.add(normalisedSpaCode);
+
+        const existing = row.spaCode.trim()
+          ? await db.select().from(componentCatalogueProducts).where(eq(componentCatalogueProducts.spaCode, row.spaCode.trim())).limit(1)
+          : [];
+
+        if (existing.length === 0 && !row.description?.trim()) {
+          errors.push("Description is required for new products");
+        }
+
+        const status = errors.length > 0
+          ? "invalid"
+          : existing.length === 0
+            ? "create"
+            : catalogueUploadChanged(row, existing[0])
+              ? "update"
+              : "unchanged";
+
+        preview.push({
+          rowNumber: row.rowNumber,
+          spaCode: row.spaCode,
+          description: row.description || existing[0]?.description || "",
+          category: row.category || existing[0]?.category || "Other",
+          price: typeof row.price === "number" ? row.price : Number(existing[0]?.price || 0),
+          oldPrice: existing[0] ? Number(existing[0].price || 0) : null,
+          existingId: existing[0]?.id || null,
+          status,
+          errors,
+        });
+      }
+
+      return {
+        rows: preview,
+        summary: {
+          create: preview.filter((row) => row.status === "create").length,
+          update: preview.filter((row) => row.status === "update").length,
+          unchanged: preview.filter((row) => row.status === "unchanged").length,
+          invalid: preview.filter((row) => row.status === "invalid").length,
+        },
+      };
+    }),
+
+  /** Create or update catalogue products from CSV content */
+  applyCatalogueUpload: adminProcedure
+    .input(z.object({ csvContent: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+
+      const rows = parseCatalogueUploadRows(input.csvContent);
+      const seenSpaCodes = new Set<string>();
+      let created = 0;
+      let updated = 0;
+      let unchanged = 0;
+      let invalid = 0;
+
+      for (const row of rows) {
+        const spaCode = row.spaCode.trim();
+        const normalisedSpaCode = spaCode.toLowerCase();
+        if (!spaCode || row.price === null || seenSpaCodes.has(normalisedSpaCode)) {
+          invalid++;
+          continue;
+        }
+        seenSpaCodes.add(normalisedSpaCode);
+
+        const existing = await db.select().from(componentCatalogueProducts).where(eq(componentCatalogueProducts.spaCode, spaCode)).limit(1);
+        if (existing.length === 0) {
+          if (!row.description?.trim()) {
+            invalid++;
+            continue;
+          }
+          await db.insert(componentCatalogueProducts).values({
+            spaCode,
+            description: row.description.trim(),
+            category: row.category?.trim() || "Other",
+            price: typeof row.price === "number" ? row.price.toString() : "0",
+            colour: row.colour || "",
+            uom: row.uom || "ea",
+            packQtySizes: row.packQtySizes || "",
+            subGroup: row.subGroup || "",
+            tags: row.tags || "",
+            isActive: row.isActive ?? true,
+            colourInputAllowed: row.colourInputAllowed ?? false,
+            colourGroup: row.colourGroup || "",
+          });
+          created++;
+          continue;
+        }
+
+        if (!catalogueUploadChanged(row, existing[0])) {
+          unchanged++;
+          continue;
+        }
+
+        await db.update(componentCatalogueProducts)
+          .set(catalogueUploadSetData(row))
+          .where(eq(componentCatalogueProducts.id, existing[0].id));
+        updated++;
+      }
+
+      return { created, updated, unchanged, invalid };
+    }),
+
   // ─── Dynamic Categories ──────────────────────────────────────────────────
-  /** Returns all categories: the 14 defaults merged with any custom ones from the DB */
+  /** Returns default categories plus active catalogue categories */
   allCategories: protectedProcedure.query(async () => {
     const db = await getDb();
     if (!db) return [...PRODUCT_CATEGORIES];
@@ -1264,9 +1525,7 @@ export const smartshopRouter = router({
       .selectDistinct({ category: componentCatalogueProducts.category })
       .from(componentCatalogueProducts)
       .where(eq(componentCatalogueProducts.isActive, true));
-    const dbCategories = rows.map((r) => r.category).filter(Boolean);
-    // Merge defaults with any new ones from DB
-    const merged = new Set([...PRODUCT_CATEGORIES, ...dbCategories]);
+    const merged = new Set([...PRODUCT_CATEGORIES, ...rows.map((row) => row.category).filter(Boolean)]);
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
   }),
 
