@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { router, tenantProcedure, tenantAdminProcedure } from "./_core/trpc";
 import * as proposalDb from "./proposal-db";
 import * as db from "./db";
@@ -8,6 +8,7 @@ import * as deckDb from "./deck-db";
 import {
   blindQuoteItems,
   blindQuotes,
+  proposalLibraryItems,
   ssQuoteItems,
   ssQuotes,
 } from "../drizzle/schema";
@@ -19,6 +20,28 @@ const sectionSchema = z.object({
   worksPrice: z.number(),
   description: z.string().optional(),
 });
+
+const proposalLibraryItemIdsSchema = z.array(z.number().int().positive()).optional();
+
+async function filterTenantProposalLibraryItemIds(ids: number[] | undefined, tenantId: number) {
+  const uniqueIds = Array.from(new Set((ids || []).filter((id) => Number.isInteger(id) && id > 0)));
+  if (uniqueIds.length === 0) return [];
+
+  const appDb = await db.getDb();
+  if (!appDb) return [];
+
+  const rows = await appDb
+    .select({ id: proposalLibraryItems.id })
+    .from(proposalLibraryItems)
+    .where(and(
+      eq(proposalLibraryItems.tenantId, tenantId),
+      eq(proposalLibraryItems.isActive, true),
+      inArray(proposalLibraryItems.id, uniqueIds),
+    ));
+
+  const validIds = new Set(rows.map((row) => row.id));
+  return uniqueIds.filter((id) => validIds.has(id));
+}
 
 function normaliseJson<T>(value: unknown, fallback: T): T {
   if (!value) return fallback;
@@ -100,10 +123,12 @@ export const proposalRouter = router({
       coverMessage: z.string().optional(),
       validityDays: z.number().optional(),
       notes: z.string().optional(),
+      proposalLibraryItemIds: proposalLibraryItemIdsSchema,
       progressPayments: z.record(z.string(), z.object({ percent: z.string(), amount: z.string() })).nullable().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const proposalNumber = await proposalDb.getNextProposalNumber();
+      const proposalLibraryItemIds = await filterTenantProposalLibraryItemIds(input.proposalLibraryItemIds, ctx.tenant.id);
       const result = await proposalDb.createProposal({
         proposalNumber,
         tenantId: ctx.tenant.id,
@@ -113,6 +138,7 @@ export const proposalRouter = router({
         coverMessage: input.coverMessage,
         validityDays: input.validityDays || 30,
         notes: input.notes,
+        proposalLibraryItemIds,
         progressPayments: input.progressPayments || null,
       });
       await proposalDb.logActivity({
@@ -160,6 +186,7 @@ export const proposalRouter = router({
       depositPercent: z.string().optional(),
       depositAmount: z.string().optional(),
       notes: z.string().optional(),
+      proposalLibraryItemIds: proposalLibraryItemIdsSchema,
       // Editable content
       termsAndConditions: z.string().optional(),
       scopeOfWorks: z.string().optional(),
@@ -178,6 +205,9 @@ export const proposalRouter = router({
       const { id, otherCost, ...data } = input;
       // Map otherCost to the DB column otherCostAmount
       const payload: any = { ...data };
+      if (input.proposalLibraryItemIds !== undefined) {
+        payload.proposalLibraryItemIds = await filterTenantProposalLibraryItemIds(input.proposalLibraryItemIds, ctx.tenant.id);
+      }
       if (otherCost !== undefined) {
         payload.otherCostAmount = otherCost;
         payload.otherCostLabel = "Other Cost";

@@ -18,11 +18,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { ArrowLeft, ArrowRight, Check, FileText, Send, Loader2, Download, Eye, Lock, AlertTriangle, ExternalLink } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, FileText, Send, Loader2, Download, Eye, Lock, AlertTriangle, ExternalLink, ImageIcon, Library, RefreshCw } from "lucide-react";
 import { generateProposalPdf, type ProposalPdfData } from "@/lib/proposalConsolidatedPdf";
 import SendProposalDialog from "@/components/SendProposalDialog";
 import SendForSignatureDialog from "@/components/SendForSignatureDialog";
 import { toast } from "sonner";
+import {
+  PROPOSAL_LIBRARY_CONTENT_LABELS,
+  PROPOSAL_LIBRARY_SECTION_LABELS,
+  type ProposalLibraryContentType,
+  type ProposalLibrarySectionType,
+} from "@shared/proposal-library";
 
 const STEPS = ["Client", "Sections", "Costs", "Content", "Payments", "Adjustments", "Review"];
 
@@ -57,6 +63,21 @@ interface SectionItem {
   sharedCosts: { name: string; amount: number; source: string }[];
 }
 
+type ProposalLibraryItem = {
+  id: number;
+  sectionType: ProposalLibrarySectionType;
+  contentType: ProposalLibraryContentType;
+  title: string;
+  body?: string | null;
+  imageUrl?: string | null;
+  imageAlt?: string | null;
+  imageWidth?: number | null;
+  imageHeight?: number | null;
+  imageWarning?: string | null;
+  defaultIncluded: boolean;
+  sortOrder: number;
+};
+
 // All shared cost field names
 const COST_FIELDS = [
   { key: "siteClean", label: "Site Clean" },
@@ -68,6 +89,17 @@ const COST_FIELDS = [
 
 type CostKey = typeof COST_FIELDS[number]["key"];
 
+function normaliseProposalLibraryIds(value: unknown): number[] {
+  const raw = typeof value === "string"
+    ? (() => {
+      try { return JSON.parse(value); } catch { return []; }
+    })()
+    : value;
+
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+}
+
 export default function ProposalEditor() {
   const [, params] = useRoute("/proposals/edit/:id");
   const [, setLocation] = useLocation();
@@ -78,6 +110,8 @@ export default function ProposalEditor() {
   const [clientId, setClientId] = useState<number | null>(null);
   const [clientSearch, setClientSearch] = useState("");
   const [sections, setSections] = useState<SectionItem[]>([]);
+  const [proposalLibraryItemIds, setProposalLibraryItemIds] = useState<number[]>([]);
+  const [proposalLibrarySelectionInitialised, setProposalLibrarySelectionInitialised] = useState(false);
 
   // Additional costs — all 15 fields
   const [costs, setCosts] = useState<Record<CostKey, string>>(() => {
@@ -125,6 +159,9 @@ export default function ProposalEditor() {
   const { data: existingProposal } = trpc.proposals.get.useQuery(
     { id: proposalId! },
     { enabled: isEdit }
+  );
+  const { data: proposalLibraryItems = [], isLoading: loadingProposalLibrary } = trpc.proposalLibrary.list.useQuery(
+    { activeOnly: true }
   );
 
   const createMutation = trpc.proposals.create.useMutation();
@@ -243,6 +280,43 @@ export default function ProposalEditor() {
   // ─── Computed Totals ────────────────────────────────────────────────────────
   const selectedSections = sections.filter(s => s.selected);
   const sectionsSubtotal = selectedSections.reduce((sum, s) => sum + s.worksPrice, 0);
+  const typedProposalLibraryItems = proposalLibraryItems as ProposalLibraryItem[];
+  const selectedSectionTypes = useMemo(() => {
+    return new Set(selectedSections.map((section) => section.type as ProposalLibrarySectionType));
+  }, [selectedSections]);
+  const applicableProposalLibraryItems = useMemo(() => {
+    return typedProposalLibraryItems.filter((item) =>
+      item.sectionType === "all" || selectedSectionTypes.has(item.sectionType)
+    );
+  }, [selectedSectionTypes, typedProposalLibraryItems]);
+  const selectedProposalLibraryItems = useMemo(() => {
+    const selectedIds = new Set(proposalLibraryItemIds);
+    return applicableProposalLibraryItems.filter((item) => selectedIds.has(item.id));
+  }, [applicableProposalLibraryItems, proposalLibraryItemIds]);
+
+  useEffect(() => {
+    if (proposalLibrarySelectionInitialised) return;
+    if (selectedSections.length === 0 || typedProposalLibraryItems.length === 0) return;
+
+    const applicableIds = new Set(applicableProposalLibraryItems.map((item) => item.id));
+    const savedRaw = (existingProposal as any)?.proposalLibraryItemIds;
+    const hasSavedSelection = savedRaw !== null && savedRaw !== undefined && !(typeof savedRaw === "string" && savedRaw.trim() === "");
+    const savedIds = normaliseProposalLibraryIds(savedRaw)
+      .filter((id) => applicableIds.has(id));
+    const defaultIds = applicableProposalLibraryItems
+      .filter((item) => item.defaultIncluded)
+      .map((item) => item.id);
+
+    setProposalLibraryItemIds(isEdit && hasSavedSelection ? savedIds : defaultIds);
+    setProposalLibrarySelectionInitialised(true);
+  }, [
+    applicableProposalLibraryItems,
+    existingProposal,
+    isEdit,
+    proposalLibrarySelectionInitialised,
+    selectedSections.length,
+    typedProposalLibraryItems.length,
+  ]);
 
   const additionalCostsTotal = useMemo(() => {
     let total = 0;
@@ -308,6 +382,7 @@ export default function ProposalEditor() {
       exclusions,
       validityDays,
       notes,
+      proposalLibraryItemIds,
       progressPayments: Object.keys(payments).filter(k => payments[k]?.percent || payments[k]?.amount).length > 0
         ? Object.fromEntries(Object.entries(payments).filter(([, v]) => v.percent || v.amount))
         : null,
@@ -484,6 +559,30 @@ export default function ProposalEditor() {
   }
 
   function renderContentStep() {
+    const itemsBySection = applicableProposalLibraryItems.reduce((acc, item) => {
+      const key = item.sectionType;
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(item);
+      return acc;
+    }, {} as Record<ProposalLibrarySectionType, ProposalLibraryItem[]>);
+    const sectionOrder = Object.keys(itemsBySection) as ProposalLibrarySectionType[];
+    const selectedIdSet = new Set(proposalLibraryItemIds);
+    const setDefaultContent = () => {
+      setProposalLibraryItemIds(applicableProposalLibraryItems.filter((item) => item.defaultIncluded).map((item) => item.id));
+      setProposalLibrarySelectionInitialised(true);
+    };
+    const clearContent = () => {
+      setProposalLibraryItemIds([]);
+      setProposalLibrarySelectionInitialised(true);
+    };
+    const toggleContentItem = (id: number, checked: boolean) => {
+      setProposalLibraryItemIds((current) => {
+        if (checked) return Array.from(new Set([...current, id]));
+        return current.filter((itemId) => itemId !== id);
+      });
+      setProposalLibrarySelectionInitialised(true);
+    };
+
     return (
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
@@ -532,6 +631,99 @@ export default function ProposalEditor() {
             disabled={isLocked}
           />
           <p className="text-xs text-muted-foreground mt-1">Custom terms override the default. Leave blank for standard terms.</p>
+        </div>
+        <Separator />
+        <div className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <Label className="flex items-center gap-2 text-base font-semibold">
+                <Library className="h-4 w-4" />
+                Proposal Library Content
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {selectedProposalLibraryItems.length} of {applicableProposalLibraryItems.length} available item{applicableProposalLibraryItems.length === 1 ? "" : "s"} selected
+              </p>
+            </div>
+            {!isLocked && applicableProposalLibraryItems.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={setDefaultContent} className="gap-1.5">
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Defaults
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={clearContent}>
+                  Clear
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {loadingProposalLibrary ? (
+            <div className="flex items-center gap-2 rounded-md border p-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading proposal content...
+            </div>
+          ) : applicableProposalLibraryItems.length === 0 ? (
+            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+              No Proposal Library content matches the selected quote sections.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {sectionOrder.map((sectionType) => (
+                <div key={sectionType} className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">{PROPOSAL_LIBRARY_SECTION_LABELS[sectionType]}</Badge>
+                    <span className="text-xs text-muted-foreground">{itemsBySection[sectionType].length} item{itemsBySection[sectionType].length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="grid gap-2">
+                    {itemsBySection[sectionType].map((item) => {
+                      const checked = selectedIdSet.has(item.id);
+                      return (
+                        <div
+                          key={item.id}
+                          className={`rounded-md border p-3 transition-colors ${checked ? "border-primary/60 bg-primary/5" : "bg-background"}`}
+                        >
+                          <div className="flex gap-3">
+                            <Checkbox
+                              checked={checked}
+                              disabled={isLocked}
+                              onCheckedChange={(value) => toggleContentItem(item.id, value === true)}
+                              className="mt-1"
+                            />
+                            {item.imageUrl ? (
+                              <img
+                                src={item.imageUrl}
+                                alt={item.imageAlt || item.title}
+                                className="h-16 w-20 shrink-0 rounded border bg-white object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-16 w-20 shrink-0 items-center justify-center rounded border bg-muted text-muted-foreground">
+                                <ImageIcon className="h-5 w-5" />
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-start gap-2">
+                                <p className="font-medium leading-tight">{item.title}</p>
+                                <Badge variant="outline" className="text-[10px]">
+                                  {PROPOSAL_LIBRARY_CONTENT_LABELS[item.contentType]}
+                                </Badge>
+                                {item.defaultIncluded && <Badge variant="secondary" className="text-[10px]">Default</Badge>}
+                              </div>
+                              {item.body && (
+                                <p className="line-clamp-2 text-xs text-muted-foreground whitespace-pre-line">{item.body}</p>
+                              )}
+                              {item.imageWarning && (
+                                <p className="text-xs text-amber-600">{item.imageWarning}</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -861,7 +1053,7 @@ export default function ProposalEditor() {
         </div>
 
         {/* Content preview */}
-        {(coverMessage || scopeOfWorks || exclusions) && (
+        {(coverMessage || scopeOfWorks || exclusions || termsAndConditions || selectedProposalLibraryItems.length > 0) && (
           <>
             <Separator />
             <h4 className="font-semibold text-sm">Content Preview</h4>
@@ -869,6 +1061,7 @@ export default function ProposalEditor() {
             {scopeOfWorks && <div className="text-xs text-muted-foreground"><span className="font-medium">Scope:</span> {scopeOfWorks.slice(0, 100)}...</div>}
             {exclusions && <div className="text-xs text-muted-foreground"><span className="font-medium">Exclusions:</span> {exclusions.slice(0, 100)}...</div>}
             {termsAndConditions && <div className="text-xs text-muted-foreground"><span className="font-medium">Custom Terms:</span> Yes ({termsAndConditions.length} chars)</div>}
+            {selectedProposalLibraryItems.length > 0 && <div className="text-xs text-muted-foreground"><span className="font-medium">Proposal Library:</span> {selectedProposalLibraryItems.length} selected item{selectedProposalLibraryItems.length === 1 ? "" : "s"}</div>}
           </>
         )}
       </div>
@@ -927,6 +1120,15 @@ export default function ProposalEditor() {
       progressPayments: Object.keys(payments).filter(k => payments[k]?.percent || payments[k]?.amount).length > 0
         ? Object.fromEntries(Object.entries(payments).filter(([, v]) => v.percent || v.amount))
         : undefined,
+      proposalLibraryContent: selectedProposalLibraryItems.map((item) => ({
+        id: item.id,
+        sectionType: item.sectionType,
+        contentType: item.contentType,
+        title: item.title,
+        body: item.body || undefined,
+        imageUrl: item.imageUrl || undefined,
+        imageAlt: item.imageAlt || undefined,
+      })),
     };
   }
 

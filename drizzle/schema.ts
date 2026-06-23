@@ -4399,6 +4399,7 @@ export const proposals = mysqlTable("proposals", {
   depositAmount: decimal("depositAmount", { precision: 12, scale: 2 }).default("0"),
   // Progress Payments (JSON: Record<string, {percent: string, amount: string}>)
   progressPayments: json("progressPayments"),
+  proposalLibraryItemIds: json("proposalLibraryItemIds").$type<number[]>().default([]),
   pdfUrl: text("pdfUrl"),
   pdfGeneratedAt: timestamp("pdfGeneratedAt"),
 

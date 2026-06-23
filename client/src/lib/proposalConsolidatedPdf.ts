@@ -22,6 +22,12 @@ import {
 } from "./proposalStore";
 import { getAppendixPages, type SectionType } from "./proposalAppendixPlugins";
 import { trpcVanilla } from "./trpcVanilla";
+import {
+  PROPOSAL_LIBRARY_CONTENT_LABELS,
+  PROPOSAL_LIBRARY_SECTION_LABELS,
+  type ProposalLibraryContentType,
+  type ProposalLibrarySectionType,
+} from "@shared/proposal-library";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface ProposalSection {
@@ -30,6 +36,23 @@ export interface ProposalSection {
   label: string;
   worksPrice: number;
   description?: string;
+}
+
+export interface ProposalLibraryPdfItem {
+  id: number;
+  sectionType: ProposalLibrarySectionType;
+  contentType: ProposalLibraryContentType;
+  title: string;
+  body?: string;
+  imageUrl?: string;
+  imageAlt?: string;
+}
+
+interface PreparedProposalLibraryPdfItem extends ProposalLibraryPdfItem {
+  imageDataUrl?: string;
+  imageFormat?: "JPEG" | "PNG";
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 export interface ProposalPdfData {
@@ -71,6 +94,7 @@ export interface ProposalPdfData {
   depositTotal?: number;
   // Progress Payments
   progressPayments?: Record<string, { percent: string; amount: string }>;
+  proposalLibraryContent?: ProposalLibraryPdfItem[];
 }
 
 export type PdfOutputMode = "download" | "preview" | "base64" | "blob";
@@ -232,6 +256,14 @@ export async function generateProposalPdf(
   doc.setFontSize(8);
   doc.setFont("helvetica", "italic");
   doc.text(`This proposal is valid for ${data.validityDays} days from the date of issue.`, margin, y);
+
+  // ─── Proposal Library Sales Content ─────────────────────────────────────────
+  const proposalLibraryContent = await prepareProposalLibraryContent(data.proposalLibraryContent || []);
+  if (proposalLibraryContent.length > 0) {
+    doc.addPage();
+    y = drawPageHeader(doc, logo, data.proposalNumber, pageWidth, margin);
+    y = drawProposalLibraryContent(doc, proposalLibraryContent, logo, data.proposalNumber, pageWidth, pageHeight, margin, y);
+  }
 
   // ─── Progress Payments Schedule Page ─────────────────────────────────────────
   if (data.progressPayments && Object.keys(data.progressPayments).length > 0) {
@@ -617,6 +649,214 @@ function drawTermsAndSignature(
   doc.text("Print Name", margin, y + 5);
 
   return y + 10;
+}
+
+// ─── Proposal Library Content ────────────────────────────────────────────────
+function isSupportedImageMime(mime: string) {
+  return ["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(mime.toLowerCase());
+}
+
+function loadBrowserImage(src: string): Promise<HTMLImageElement | undefined> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(undefined);
+    image.src = src;
+  });
+}
+
+async function imageUrlToPdfImage(url?: string): Promise<Pick<PreparedProposalLibraryPdfItem, "imageDataUrl" | "imageFormat" | "imageWidth" | "imageHeight"> | undefined> {
+  if (!url || typeof document === "undefined") return undefined;
+
+  let objectUrl: string | undefined;
+  let source = url;
+
+  try {
+    if (url.startsWith("data:image/")) {
+      const mime = url.match(/^data:([^;,]+)/i)?.[1] || "";
+      if (!isSupportedImageMime(mime)) return undefined;
+    } else {
+      const response = await fetch(url, { mode: "cors" });
+      if (!response.ok) return undefined;
+      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "";
+      const blob = await response.blob();
+      const mime = blob.type || contentType;
+      if (!isSupportedImageMime(mime)) return undefined;
+      objectUrl = URL.createObjectURL(blob);
+      source = objectUrl;
+    }
+
+    const image = await loadBrowserImage(source);
+    if (!image) return undefined;
+
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return undefined;
+
+    const maxDimension = 1600;
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    return {
+      imageDataUrl: canvas.toDataURL("image/jpeg", 0.88),
+      imageFormat: "JPEG",
+      imageWidth: canvas.width,
+      imageHeight: canvas.height,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function prepareProposalLibraryContent(items: ProposalLibraryPdfItem[]): Promise<PreparedProposalLibraryPdfItem[]> {
+  const prepared: PreparedProposalLibraryPdfItem[] = [];
+  for (const item of items) {
+    prepared.push({
+      ...item,
+      ...(await imageUrlToPdfImage(item.imageUrl)),
+    });
+  }
+  return prepared;
+}
+
+function contentPageBreak(
+  doc: jsPDF,
+  logo: CustomLogo | null,
+  proposalNumber: string,
+  pageWidth: number,
+  pageHeight: number,
+  margin: number,
+  y: number,
+  requiredHeight: number,
+) {
+  if (y + requiredHeight <= pageHeight - margin) return y;
+  doc.addPage();
+  return drawPageHeader(doc, logo, proposalNumber, pageWidth, margin);
+}
+
+function drawPagedLines(
+  doc: jsPDF,
+  lines: string[],
+  x: number,
+  y: number,
+  lineHeight: number,
+  logo: CustomLogo | null,
+  proposalNumber: string,
+  pageWidth: number,
+  pageHeight: number,
+  margin: number,
+) {
+  let nextY = y;
+  for (const line of lines) {
+    nextY = contentPageBreak(doc, logo, proposalNumber, pageWidth, pageHeight, margin, nextY, lineHeight + 1);
+    doc.text(line, x, nextY);
+    nextY += lineHeight;
+  }
+  return nextY;
+}
+
+function drawProposalLibraryContent(
+  doc: jsPDF,
+  items: PreparedProposalLibraryPdfItem[],
+  logo: CustomLogo | null,
+  proposalNumber: string,
+  pageWidth: number,
+  pageHeight: number,
+  margin: number,
+  startY: number,
+) {
+  const contentWidth = pageWidth - margin * 2;
+  let y = startY;
+
+  doc.setFontSize(14);
+  doc.setFont("helvetica", "bold");
+  doc.text("Product & Project Information", margin, y);
+  y += 8;
+
+  const groups = items.reduce((acc, item) => {
+    if (!acc[item.sectionType]) acc[item.sectionType] = [];
+    acc[item.sectionType].push(item);
+    return acc;
+  }, {} as Record<ProposalLibrarySectionType, PreparedProposalLibraryPdfItem[]>);
+
+  const sectionOrder = Object.keys(groups) as ProposalLibrarySectionType[];
+  for (const sectionType of sectionOrder) {
+    y = contentPageBreak(doc, logo, proposalNumber, pageWidth, pageHeight, margin, y, 18);
+
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(51, 51, 51);
+    doc.text(PROPOSAL_LIBRARY_SECTION_LABELS[sectionType], margin, y);
+    doc.setDrawColor(210, 210, 210);
+    doc.line(margin, y + 2.5, pageWidth - margin, y + 2.5);
+    doc.setTextColor(0, 0, 0);
+    y += 8;
+
+    for (const item of groups[sectionType]) {
+      y = contentPageBreak(doc, logo, proposalNumber, pageWidth, pageHeight, margin, y, 18);
+
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "bold");
+      const titleLines = doc.splitTextToSize(item.title, contentWidth - 28) as string[];
+      y = drawPagedLines(doc, titleLines, margin, y, 4.5, logo, proposalNumber, pageWidth, pageHeight, margin);
+
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(120, 120, 120);
+      doc.text(PROPOSAL_LIBRARY_CONTENT_LABELS[item.contentType], margin, y);
+      doc.setTextColor(0, 0, 0);
+      y += 5;
+
+      if (item.body) {
+        doc.setFontSize(8.5);
+        doc.setFont("helvetica", "normal");
+        const bodyLines = doc.splitTextToSize(item.body, contentWidth) as string[];
+        y = drawPagedLines(doc, bodyLines, margin, y, 4, logo, proposalNumber, pageWidth, pageHeight, margin);
+        y += 2;
+      }
+
+      if (item.imageDataUrl && item.imageWidth && item.imageHeight) {
+        const maxImageWidth = Math.min(contentWidth, 150);
+        const maxImageHeight = 82;
+        const ratio = item.imageWidth / item.imageHeight;
+        let drawW = maxImageWidth;
+        let drawH = drawW / ratio;
+        if (drawH > maxImageHeight) {
+          drawH = maxImageHeight;
+          drawW = drawH * ratio;
+        }
+        y = contentPageBreak(doc, logo, proposalNumber, pageWidth, pageHeight, margin, y, drawH + 8);
+        const x = margin + (contentWidth - drawW) / 2;
+        try {
+          doc.addImage(item.imageDataUrl, item.imageFormat || "JPEG", x, y, drawW, drawH);
+          y += drawH + 4;
+          if (item.imageAlt) {
+            doc.setFontSize(7);
+            doc.setFont("helvetica", "italic");
+            doc.setTextColor(120, 120, 120);
+            doc.text(item.imageAlt, pageWidth / 2, y, { align: "center" });
+            doc.setTextColor(0, 0, 0);
+            y += 5;
+          }
+        } catch {
+          y += 2;
+        }
+      }
+
+      y += 5;
+    }
+  }
+
+  return y;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
