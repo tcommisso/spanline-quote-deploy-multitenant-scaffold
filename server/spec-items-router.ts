@@ -633,15 +633,9 @@ export const specItemsRouter = router({
         { name: "Spanlites (Each)", tabName: "roof", specField: "specSpanlitesType", condition: "!= ''", productMatch: "specSpanlitesType", qtyFormula: "Math.max(1, specSkylightQty)", description: null, colourField: "specSpanlitesFinish", bottomColourField: null, uom: "ea", sortOrder: 24 },
 
         // ── Attachment & brackets ──
-        { name: "Attachment Method Allowance", tabName: "attachment", specField: "specBracketAttachmentMethod", condition: "!= ''", productMatch: "specBracketAttachmentMethod", qtyFormula: "1", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 30 },
-        { name: "Number of Brackets", tabName: "attachment", specField: "specNumberOfBrackets", condition: "> 0", productMatch: "specBracketAttachmentMethod", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 31 },
-        { name: "Fascia Brackets", tabName: "attachment", specField: "specFasciaBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specFasciaBrackets", description: "Fascia Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 32 },
-        { name: "Extenda Brackets", tabName: "attachment", specField: "specExtendaBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specExtendaBrackets", description: "Extenda Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 33 },
-        { name: "Gable Brackets", tabName: "attachment", specField: "specGableBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGableBrackets", description: "Gable Brackets", colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 34 },
-        { name: "Pop-up Brackets", tabName: "attachment", specField: "specPopupBrackets", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPopupBrackets", description: "Pop-up Brackets", colourField: "specPopupColour", bottomColourField: null, uom: "ea", sortOrder: 35 },
-        { name: "Bracket Cover", tabName: "attachment", specField: "specBracketCover", condition: "!= ''", productMatch: "specBracketCover", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 36 },
-        { name: "Wall Fixing Beam", tabName: "attachment", specField: "specWallFixingBeam", condition: "!= ''", productMatch: "specWallFixingBeam", qtyFormula: "roofRunWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 37 },
-        { name: "Wall Fixing Bracket", tabName: "attachment", specField: "specWallFixingBracket", condition: "!= ''", productMatch: "specWallFixingBracket", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 38 },
+        { name: "Number of Brackets", tabName: "attachment", specField: "specBracketAttachmentMethod", condition: "!= ''", productMatch: "specBracketAttachmentMethod", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 30 },
+        { name: "Bracket Cover", tabName: "attachment", specField: "specBracketCover", condition: "!= ''", productMatch: "specBracketCover", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 31 },
+        { name: "Wall Fixing Beam", tabName: "attachment", specField: "specWallFixingBeam", condition: "!= ''", productMatch: "specWallFixingBeam", qtyFormula: "roofRunWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 32 },
 
         // ── Beams, channels & flashings ──
         { name: "Beams from spec entries", tabName: "beams", specField: "specBeamEntries", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 40 },
@@ -726,6 +720,12 @@ export const specItemsRouter = router({
       const retiredTemplateNames = [
         "Roof Sheets + Waste Factor",
         "Roof Sheets (Qty x Length)",
+        "Attachment Method Allowance",
+        "Fascia Brackets",
+        "Extenda Brackets",
+        "Gable Brackets",
+        "Pop-up Brackets",
+        "Wall Fixing Bracket",
       ];
 
       let created = 0;

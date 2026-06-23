@@ -442,13 +442,13 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
     term: "Bracket quantity",
     formulaExamples: ["specNumberOfBrackets"],
     productMatchField: "specBracketAttachmentMethod",
-    notes: "Number of brackets selected in Attachment & Brackets.",
+    notes: "Number of brackets selected in Attachment & Brackets. Use with specBracketAttachmentMethod as the product match so one selected method produces one priced bracket line.",
   },
   specBracketAttachmentMethod: {
     term: "Attachment method",
-    formulaExamples: ["specNumberOfBrackets", "1"],
+    formulaExamples: ["specNumberOfBrackets"],
     productMatchField: "specBracketAttachmentMethod",
-    notes: "Use as product match for fascia, gable, popup, wall, or other bracket method selections.",
+    notes: "Use as product match for fascia, gable, popup, wall, or other bracket method selections. Avoid also activating method-specific bracket quantity mappings unless they are separate add-on products.",
   },
   specBeamSize: {
     term: "Beam size",
@@ -571,6 +571,19 @@ function countCsv(value: unknown): number {
     .length;
 }
 
+const BRACKET_METHOD_QUANTITY_FIELDS = [
+  { method: "Fascia brackets", field: "specFasciaBrackets" },
+  { method: "Extenda brackets", field: "specExtendaBrackets" },
+  { method: "Gable brackets", field: "specGableBrackets" },
+  { method: "popup brackets", field: "specPopupBrackets" },
+  { method: "wall brackets", field: "specWallFixingBracket" },
+];
+
+function numericSpecValue(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 0;
+  return parseFloat(String(value)) || 0;
+}
+
 export function enrichDerivedSpecValues<T extends Record<string, any>>(values: T): T {
   const target = values as Record<string, any>;
   const gutterSideCount = countCsv(target.specGutterSides);
@@ -584,6 +597,16 @@ export function enrichDerivedSpecValues<T extends Record<string, any>>(values: T
     if (target[legacyField] === undefined || target[legacyField] === null || target[legacyField] === "") {
       target[legacyField] = target[currentField];
     }
+  }
+
+  const bracketMethod = String(target.specBracketAttachmentMethod || "").trim();
+  const bracketQty = numericSpecValue(target.specNumberOfBrackets);
+  const inferredBracket = BRACKET_METHOD_QUANTITY_FIELDS.find(({ field }) => numericSpecValue(target[field]) > 0);
+  if (!bracketMethod && inferredBracket) {
+    target.specBracketAttachmentMethod = inferredBracket.method;
+  }
+  if (bracketQty <= 0 && inferredBracket) {
+    target.specNumberOfBrackets = numericSpecValue(target[inferredBracket.field]);
   }
 
   return values;

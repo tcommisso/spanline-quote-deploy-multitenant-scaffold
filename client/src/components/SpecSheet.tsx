@@ -79,9 +79,10 @@ const HOUSE_ROOF_TYPE_OPTIONS = ["Tile", "Metal", "Flat", "Concrete", "Slate", "
 const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered", "Weatherboard", "Hebel", "Cladding", "Concrete Block", "Other"];
 const YES_NO_OPTIONS = ["Yes", "No"];
 const ATTACHED_SIDE_OPTIONS = ["None", "1 Side", "2 Side", "3 Side", "4 Side"];
-const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["None", "Fascia brackets", "Gable brackets", "popup brackets", "wall brackets"];
+const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["None", "Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
 const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
   "Fascia brackets": "specFasciaBrackets",
+  "Extenda brackets": "specExtendaBrackets",
   "Gable brackets": "specGableBrackets",
   "popup brackets": "specPopupBrackets",
   "wall brackets": "specWallFixingBracket",
@@ -95,6 +96,7 @@ function bracketQuantityForMethod(form: Record<string, string>, method: string) 
 
 function inferBracketAttachmentMethod(form: Record<string, string>) {
   if (parseInt(form.specFasciaBrackets || "0") > 0) return "Fascia brackets";
+  if (parseInt(form.specExtendaBrackets || "0") > 0) return "Extenda brackets";
   if (parseInt(form.specGableBrackets || "0") > 0) return "Gable brackets";
   if (parseInt(form.specPopupBrackets || "0") > 0) return "popup brackets";
   if (parseInt(form.specWallFixingBracket || "0") > 0) return "wall brackets";
@@ -934,6 +936,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       return applyBracketMethodQuantity(prev, method, quantity);
     });
   }, []);
+  const updateMethodSpecificBracketQuantity = useCallback((method: string, quantity: string) => {
+    setForm(prev => applyBracketMethodQuantity(prev, method, quantity));
+  }, []);
 
   // Auto-set Box Gutter Overflow to "Yes" when gutter type includes "box"
   useEffect(() => {
@@ -1738,17 +1743,17 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <SelectField label="Attachment Method" value={displayedBracketAttachmentMethod} onChange={updateBracketAttachmentMethod} options={BRACKET_ATTACHMENT_METHOD_OPTIONS} />
                 <Field label="Number of Brackets" value={displayedNumberOfBrackets} onChange={updateNumberOfBrackets} min={0} max={20} placeholder="0" />
                 {form.specAttachmentMethod && form.specAttachmentMethod !== "None" && (<>
-                <SelectField label="Fascia Brackets" value={form.specFasciaBrackets || ""} onChange={(v) => update("specFasciaBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Extenda Brackets" value={form.specExtendaBrackets || ""} onChange={(v) => update("specExtendaBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Gable Brackets" value={form.specGableBrackets || ""} onChange={(v) => update("specGableBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
+                <SelectField label="Fascia Brackets" value={form.specFasciaBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Fascia brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
+                <SelectField label="Extenda Brackets" value={form.specExtendaBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Extenda brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
+                <SelectField label="Gable Brackets" value={form.specGableBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Gable brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
                 <SelectField label="Oversized D Gutter" value={form.specOversizedDGutter || ""} onChange={(v) => update("specOversizedDGutter", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
                 <SelectField label="Bracket Cover" value={form.specBracketCover || ""} onChange={(v) => update("specBracketCover", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
                 <ColourField label="Bracket Colour" value={form.specBracketColour || ""} onChange={(v) => update("specBracketColour", v)} colours={getColoursForSection("brackets")} />
-                <SelectField label="Pop-up Brackets" value={form.specPopupBrackets || ""} onChange={(v) => update("specPopupBrackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
+                <SelectField label="Pop-up Brackets" value={form.specPopupBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("popup brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
                 <ColourField label="Pop-up Colour" value={form.specPopupColour || ""} onChange={(v) => update("specPopupColour", v)} colours={getColoursForSection("brackets")} />
                 <SelectField label="Free Standing" value={form.specFreeStanding || ""} onChange={(v) => update("specFreeStanding", v)} options={["Yes"]} />
                 <SelectField label="Wall Fixing Beam" value={form.specWallFixingBeam || ""} onChange={(v) => update("specWallFixingBeam", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
-                <SelectField label="Wall Fixing Bracket" value={form.specWallFixingBracket || ""} onChange={(v) => update("specWallFixingBracket", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
+                <SelectField label="Wall Fixing Bracket" value={form.specWallFixingBracket || ""} onChange={(v) => updateMethodSpecificBracketQuantity("wall brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
                 <SelectField label="Foam Cut" value={form.specFoamCut || ""} onChange={(v) => update("specFoamCut", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
                 </>)}
               </div>
