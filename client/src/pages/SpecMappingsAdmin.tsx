@@ -69,6 +69,22 @@ const emptyForm: MappingForm = {
   active: true,
 };
 
+const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
+  const csvRows = [
+    headers.map(csvCell).join(","),
+    ...rows.map(row => row.map(csvCell).join(",")),
+  ];
+  const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function SpecMappingsAdmin() {
   const utils = trpc.useUtils();
   const { data: mappings, isLoading } = trpc.specItems.mappings.list.useQuery();
@@ -208,33 +224,26 @@ export default function SpecMappingsAdmin() {
       toast.error("No mappings to download");
       return;
     }
-    const headers = ["id", "name", "tabName", "specField", "condition", "qtyFormula", "productId", "productMatch", "colourField", "bottomColourField", "uom", "sortOrder", "active", "description"];
-    const csvRows = [headers.join(",")];
-    for (const m of mappingRows as any[]) {
-      csvRows.push([
+    downloadCsv(
+      "spec-mappings.csv",
+      ["id", "name", "tabName", "specField", "condition", "qtyFormula", "productId", "productMatch", "colourField", "bottomColourField", "uom", "sortOrder", "active", "description"],
+      (mappingRows as any[]).map((m) => [
         m.id,
-        `"${(m.name || "").replace(/"/g, '""')}"`,
+        m.name || "",
         m.tabName,
         m.specField,
-        `"${(m.condition || "").replace(/"/g, '""')}"`,
-        `"${(m.qtyFormula || "").replace(/"/g, '""')}"`,
+        m.condition || "",
+        m.qtyFormula || "",
         m.productId || "",
-        `"${(m.productMatch || "").replace(/"/g, '""')}"`,
+        m.productMatch || "",
         m.colourField || "",
         m.bottomColourField || "",
         m.uom || "ea",
         m.sortOrder || 0,
         m.active !== false,
-        `"${(m.description || "").replace(/"/g, '""')}"`,
-      ].join(","));
-    }
-    const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "spec-mappings.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+        m.description || "",
+      ])
+    );
     toast.success("CSV downloaded");
   };
 
@@ -274,6 +283,28 @@ export default function SpecMappingsAdmin() {
     } catch {
       toast.error("Could not copy to clipboard");
     }
+  };
+
+  const handleDownloadDefinedTermsCsv = () => {
+    const sourceRows = filteredDefinedTerms;
+    if (sourceRows.length === 0) {
+      toast.error("No defined terms to download");
+      return;
+    }
+    downloadCsv(
+      "spec-defined-terms.csv",
+      ["term", "fieldName", "section", "type", "formulaExamples", "productMatchField", "notes"],
+      sourceRows.map((term) => [
+        term.term,
+        term.fieldName,
+        term.section,
+        term.type,
+        term.formulaExamples.join(" | "),
+        term.productMatchField || "",
+        term.notes,
+      ])
+    );
+    toast.success(`${sourceRows.length} defined terms downloaded`);
   };
 
   if (isLoading) return <Skeleton className="h-96 w-full" />;
@@ -794,7 +825,7 @@ export default function SpecMappingsAdmin() {
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -815,6 +846,9 @@ export default function SpecMappingsAdmin() {
                   ))}
                 </SelectContent>
               </Select>
+              <Button type="button" variant="outline" onClick={handleDownloadDefinedTermsCsv} className="h-9 gap-1.5">
+                <Download className="h-3.5 w-3.5" /> Download CSV
+              </Button>
             </div>
 
             <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
