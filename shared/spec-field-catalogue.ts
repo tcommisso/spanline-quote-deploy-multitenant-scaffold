@@ -100,6 +100,7 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specPolyType", label: "Polycarbonate Type", type: "text", section: "Roof & Finish" },
   { value: "specPolyRafters", label: "Polycarbonate Rafters", type: "text", section: "Roof & Finish" },
   { value: "specFlashingsType", label: "Flashings Type", type: "text", section: "Channels & Flashings" },
+  { value: "specFlashingsQty", label: "Flashings Qty", type: "num", section: "Channels & Flashings" },
   { value: "specBackChannelColour", label: "Back Channel Colour", type: "text", section: "Channels & Flashings" },
   { value: "specSideChannelsColour", label: "Side Channels Colour", type: "text", section: "Channels & Flashings" },
   { value: "specFlashingsColour", label: "Flashings Colour", type: "text", section: "Channels & Flashings" },
@@ -460,6 +461,18 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
     formulaExamples: ["specWidth", "roofRunWidth"],
     productMatchField: "specBeamSize",
     notes: "JSON entries from the beam section. Current starter mappings use conservative span formulas until entry parsing is deeper.",
+  },
+  specFlashingsType: {
+    term: "Flashings product type",
+    formulaExamples: ["roofRunWidth * Math.max(1, specFlashingsQty)", "roofRunWidth", "roofSheetLength * 2"],
+    productMatchField: "specFlashingsType",
+    notes: "Use as the trigger/product match for flashing products. Quantity usually comes from the roof run width multiplied by the flashings quantity.",
+  },
+  specFlashingsQty: {
+    term: "Flashings quantity",
+    formulaExamples: ["roofRunWidth * Math.max(1, specFlashingsQty)", "specFlashingsQty"],
+    productMatchField: "specFlashingsType",
+    notes: "Number of flashing runs or sets. Use Math.max(1, specFlashingsQty) when a blank value should still price one run.",
   },
   specPostsNumber: {
     term: "Post quantity",

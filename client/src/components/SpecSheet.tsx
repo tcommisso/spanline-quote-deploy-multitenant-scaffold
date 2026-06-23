@@ -449,6 +449,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const gutterProductNames = useMemo(() => getSpecFieldAllOptions("specGutterType"), [getSpecFieldAllOptions]);
   const downpipeProductNames = useMemo(() => getSpecFieldAllOptions("specDownpipeType"), [getSpecFieldAllOptions]);
   const wallProductNames = useMemo(() => getSpecFieldAllOptions("specWallType"), [getSpecFieldAllOptions]);
+  const flashingsProductNames = useMemo(() => getSpecFieldAllOptions("specFlashingsType"), [getSpecFieldAllOptions]);
 
   // Category arrays for FilteredSelect (from dynamic specField mapping)
   const roofCategories = useMemo(() => getSpecFieldCategories("specRoofType"), [getSpecFieldCategories]);
@@ -457,6 +458,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const downpipeCategories = useMemo(() => getSpecFieldCategories("specDownpipeType"), [getSpecFieldCategories]);
   const wallCategories = useMemo(() => getSpecFieldCategories("specWallType"), [getSpecFieldCategories]);
   const beamCategories = useMemo(() => getSpecFieldCategories("specBeamSize"), [getSpecFieldCategories]);
+  const flashingsCategories = useMemo(() => getSpecFieldCategories("specFlashingsType"), [getSpecFieldCategories]);
 
   // Derive beam size options from product database, extracting just the dimension (e.g. "140×50")
   const dbSteelSizes = useMemo(() => {
@@ -709,6 +711,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [windowEntries, setWindowEntries] = useState<WindowEntry[]>([]);
   const [doorEntries, setDoorEntries] = useState<DoorEntry[]>([]);
   const beamColourLookupValue = form.specBeamSize || beamEntries.find(entry => entry.size)?.size || "";
+  const flashingsColourLookupValue = form.specFlashingsType || beamColourLookupValue;
 
   // ─── Checklist Pricing Selections ───
   type ChecklistSelection = { itemId: number; label: string; unitPrice: number; qty: number; total: number; section: string; unit: string };
@@ -1130,7 +1133,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
       walls: ["specWallType", "specWallColour", "specWallNotes"],
-      beams: ["specBeamSize", "specBeamColour"],
+      beams: ["specBeamSize", "specBeamColour", "specFlashingsType", "specFlashingsQty", "specFlashingsColour"],
       roof: ["specRoofType", "specRoofTopColour"],
       windows: ["specWindowsFrameColour", "specDoorsFrameColour"],
       floor: ["specFloorPrep", "specElecFrameType", "specFloorFinish", "specSubfloorM2"],
@@ -2057,7 +2060,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
                 <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
                 <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
-                <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                {flashingsCategories.length > 0 ? (
+                  <FilteredSelect label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} categories={flashingsCategories} />
+                ) : (
+                  <SelectField label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} options={flashingsProductNames} />
+                )}
+                <Field label="Flashings Qty" value={form.specFlashingsQty || ""} onChange={(v) => update("specFlashingsQty", v)} placeholder="e.g. 1" min={0} />
+                <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(flashingsColourLookupValue, "beams")} />
                 <ColourField label="Twinwall Colour" value={form.specTwinwallColour || ""} onChange={(v) => update("specTwinwallColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
               </div>
 
@@ -4038,7 +4047,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             )}
 
             {/* Beams, Channels & Flashings */}
-            {(form.specBeamSize || form.specBeamColour || form.specBackChannelColour || form.specSideChannelsColour || form.specFlashingsColour || form.specTwinwallColour || beamEntries.length > 0) && (
+            {(form.specBeamSize || form.specBeamColour || form.specBackChannelColour || form.specSideChannelsColour || form.specFlashingsType || form.specFlashingsQty || form.specFlashingsColour || form.specTwinwallColour || beamEntries.length > 0) && (
             <div className="spec-section">
               <h3>Beams, Channels & Flashings{getColourGroupsForSection("beams").length > 0 && <span className="section-colour-group">Palette: {getColourGroupsForSection("beams").join(", ")}</span>}</h3>
               <div className="spec-3col">
@@ -4046,7 +4055,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Beam Colour" value={form.specBeamColour} isColour />
                 <PrintRow label="Back Channel" value={form.specBackChannelColour} isColour />
                 <PrintRow label="Side Channels" value={form.specSideChannelsColour} isColour />
-                <PrintRow label="Flashings" value={form.specFlashingsColour} isColour />
+                <PrintRow label="Flashings Type" value={form.specFlashingsType} />
+                <PrintRow label="Flashings Qty" value={form.specFlashingsQty} />
+                <PrintRow label="Flashings Colour" value={form.specFlashingsColour} isColour />
                 <PrintRow label="Twinwall" value={form.specTwinwallColour} isColour />
               </div>
               {beamEntries.length > 0 && (
