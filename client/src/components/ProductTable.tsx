@@ -414,7 +414,7 @@ export default function ProductTable() {
             </DialogTrigger>
             <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>Import from Construction Data</DialogTitle>
+                <DialogTitle>Import from Component Order Data</DialogTitle>
               </DialogHeader>
               <CatalogueImportDialog onImportComplete={() => {
                 setShowCatalogueImport(false);

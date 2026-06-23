@@ -40,6 +40,54 @@ const PRODUCT_CATEGORIES = [
   "Touch Up Paint",
 ];
 
+const catalogueProductFilterSchema = z.object({
+  category: z.string().optional(),
+  subGroup: z.string().optional(),
+  tag: z.string().optional(),
+  search: z.string().optional().default(""),
+  includeInactive: z.boolean().optional().default(false),
+});
+
+function catalogueProductConditions(input: z.infer<typeof catalogueProductFilterSchema>) {
+  const conditions: any[] = [];
+
+  if (input.category && PRODUCT_CATEGORIES.includes(input.category)) {
+    conditions.push(eq(componentCatalogueProducts.category, input.category));
+  }
+
+  if (input.subGroup) {
+    conditions.push(eq(componentCatalogueProducts.subGroup, input.subGroup));
+  }
+
+  if (input.tag) {
+    conditions.push(
+      or(
+        like(componentCatalogueProducts.tags, `${input.tag},%`),
+        like(componentCatalogueProducts.tags, `%,${input.tag},%`),
+        like(componentCatalogueProducts.tags, `%,${input.tag}`),
+        eq(componentCatalogueProducts.tags, input.tag)
+      )!
+    );
+  }
+
+  if (!input.includeInactive) {
+    conditions.push(eq(componentCatalogueProducts.isActive, true));
+  }
+
+  if (input.search.trim()) {
+    const searchTerm = `%${input.search.trim().toLowerCase()}%`;
+    conditions.push(
+      or(
+        like(sql`LOWER(${componentCatalogueProducts.spaCode})`, searchTerm),
+        like(sql`LOWER(${componentCatalogueProducts.description})`, searchTerm),
+        like(sql`LOWER(${componentCatalogueProducts.colour})`, searchTerm)
+      )!
+    );
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
 function orderTemplateTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, orderTemplates.tenantId, tenantIdFromContext(ctx));
@@ -211,62 +259,33 @@ export const smartshopRouter = router({
       return { updated: input.productIds.length };
     }),
 
+  /** Soft-delete catalogue products in bulk */
+  bulkDeleteCatalogueProducts: adminProcedure
+    .input(z.object({
+      productIds: z.array(z.number().int().positive()).min(1).max(500),
+    }))
+    .mutation(async ({ input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      await db.update(componentCatalogueProducts)
+        .set({ isActive: false })
+        .where(inArray(componentCatalogueProducts.id, input.productIds));
+      return { deleted: input.productIds.length };
+    }),
+
   /** Fetch products from a category with optional search, sub-group, and tag filtering */
   fetchProducts: protectedProcedure
     .input(
-      z.object({
-        category: z.string().optional(),
-        subGroup: z.string().optional(),
-        tag: z.string().optional(),
-        search: z.string().optional().default(""),
+      catalogueProductFilterSchema.extend({
         offset: z.number().int().min(0).optional().default(0),
         limit: z.number().int().min(1).max(500).optional().default(50),
-        includeInactive: z.boolean().optional().default(false),
       })
     )
     .query(async ({ input }) => {
       const db = await getDb();
       if (!db) return { products: [], total: 0 };
 
-      // Build conditions
-      const conditions: any[] = [];
-
-      if (input.category && PRODUCT_CATEGORIES.includes(input.category)) {
-        conditions.push(eq(componentCatalogueProducts.category, input.category));
-      }
-
-      if (input.subGroup) {
-        conditions.push(eq(componentCatalogueProducts.subGroup, input.subGroup));
-      }
-
-      if (input.tag) {
-        // Tags are comma-separated, search for the tag within the string
-        conditions.push(
-          or(
-            like(componentCatalogueProducts.tags, `${input.tag},%`),
-            like(componentCatalogueProducts.tags, `%,${input.tag},%`),
-            like(componentCatalogueProducts.tags, `%,${input.tag}`),
-            eq(componentCatalogueProducts.tags, input.tag)
-          )!
-        );
-      }
-
-      if (!input.includeInactive) {
-        conditions.push(eq(componentCatalogueProducts.isActive, true));
-      }
-
-      if (input.search.trim()) {
-        const searchTerm = `%${input.search.trim().toLowerCase()}%`;
-        conditions.push(
-          or(
-            like(sql`LOWER(${componentCatalogueProducts.spaCode})`, searchTerm),
-            like(sql`LOWER(${componentCatalogueProducts.description})`, searchTerm),
-            like(sql`LOWER(${componentCatalogueProducts.colour})`, searchTerm)
-          )!
-        );
-      }
-
-      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+      const whereClause = catalogueProductConditions(input);
 
       // Get total count
       const [countResult] = await db
@@ -315,6 +334,52 @@ export const smartshopRouter = router({
       }));
 
       return { products, total };
+    }),
+
+  /** Export all matching catalogue products */
+  exportCatalogueProducts: adminProcedure
+    .input(catalogueProductFilterSchema)
+    .mutation(async ({ input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const whereClause = catalogueProductConditions(input);
+      const rows = await db
+        .select({
+          id: componentCatalogueProducts.id,
+          spaCode: componentCatalogueProducts.spaCode,
+          description: componentCatalogueProducts.description,
+          colour: componentCatalogueProducts.colour,
+          uom: componentCatalogueProducts.uom,
+          packQtySizes: componentCatalogueProducts.packQtySizes,
+          price: componentCatalogueProducts.price,
+          category: componentCatalogueProducts.category,
+          subGroup: componentCatalogueProducts.subGroup,
+          tags: componentCatalogueProducts.tags,
+          isActive: componentCatalogueProducts.isActive,
+          colourInputAllowed: componentCatalogueProducts.colourInputAllowed,
+          colourGroup: componentCatalogueProducts.colourGroup,
+        })
+        .from(componentCatalogueProducts)
+        .where(whereClause)
+        .orderBy(componentCatalogueProducts.category, componentCatalogueProducts.subGroup, componentCatalogueProducts.spaCode);
+
+      return {
+        products: rows.map((row) => ({
+          id: row.id,
+          spaCode: row.spaCode || "",
+          description: row.description || "",
+          colour: row.colour || "",
+          uom: row.uom || "",
+          packQtySizes: row.packQtySizes || "",
+          price: Number(row.price || 0),
+          category: row.category || "",
+          subGroup: row.subGroup || "",
+          tags: row.tags || "",
+          isActive: row.isActive,
+          colourInputAllowed: row.colourInputAllowed,
+          colourGroup: row.colourGroup || "",
+        })),
+      };
     }),
 
   /** List saved working drafts for the current user */

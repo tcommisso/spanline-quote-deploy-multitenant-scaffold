@@ -1336,7 +1336,7 @@ function ProductBrowserSection({
           <div className="py-8 text-center text-muted-foreground">
             <Tag className="mx-auto h-10 w-10 opacity-50" />
             <p className="mt-3 text-sm">No tags have been assigned to products yet.</p>
-            <p className="text-xs mt-1">Use the Construction Data Admin to tag products with scopes like Roof, Deck, etc.</p>
+            <p className="text-xs mt-1">Use Component Order Data to tag products with scopes like Roof, Deck, etc.</p>
           </div>
         )}
 

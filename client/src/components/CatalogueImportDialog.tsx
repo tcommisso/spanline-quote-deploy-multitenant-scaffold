@@ -122,7 +122,7 @@ export default function CatalogueImportDialog({ onImportComplete }: CatalogueImp
 
         <TabsContent value="single" className="space-y-4 mt-4">
           <p className="text-sm text-muted-foreground">
-            Search the Construction Data and select individual items to import into Sales Data products.
+            Search the Component Order Data and select individual items to import into Sales Data products.
           </p>
         </TabsContent>
 

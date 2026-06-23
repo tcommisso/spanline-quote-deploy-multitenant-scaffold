@@ -6,10 +6,20 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Loader2, Search, Plus, Pencil, Archive, ArchiveRestore, Upload, Package, Tags, Layers } from "lucide-react";
+import { Loader2, Search, Plus, Pencil, Archive, ArchiveRestore, Upload, Package, Tags, Layers, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type CatalogueProduct = {
@@ -30,6 +40,42 @@ type CatalogueProduct = {
 
 const PAGE_SIZE = 50;
 
+const exportColumns: Array<{ header: string; getValue: (product: CatalogueProduct) => string | number | boolean | undefined }> = [
+  { header: "SPA Code", getValue: (product) => product.spaCode },
+  { header: "Description", getValue: (product) => product.description },
+  { header: "Colour", getValue: (product) => product.colour },
+  { header: "UOM", getValue: (product) => product.uom },
+  { header: "Pack Qty/Sizes", getValue: (product) => product.packQtySizes },
+  { header: "Price", getValue: (product) => product.price },
+  { header: "Category", getValue: (product) => product.category },
+  { header: "Sub-Group", getValue: (product) => product.subGroup },
+  { header: "Tags", getValue: (product) => product.tags },
+  { header: "Colour Group", getValue: (product) => product.colourGroup },
+  { header: "Colour Input Allowed", getValue: (product) => product.colourInputAllowed },
+  { header: "Active", getValue: (product) => product.isActive !== false },
+];
+
+function csvCell(value: string | number | boolean | undefined) {
+  const text = value === undefined || value === null ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename: string, products: CatalogueProduct[]) {
+  const csv = [
+    exportColumns.map((column) => csvCell(column.header)).join(","),
+    ...products.map((product) => exportColumns.map((column) => csvCell(column.getValue(product))).join(",")),
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function ComponentCatalogueAdmin() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
@@ -42,6 +88,7 @@ export default function ComponentCatalogueAdmin() {
   const [showPriceImport, setShowPriceImport] = useState(false);
   const [showBulkTag, setShowBulkTag] = useState(false);
   const [showBulkSubGroup, setShowBulkSubGroup] = useState(false);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const utils = trpc.useUtils();
@@ -112,6 +159,25 @@ export default function ComponentCatalogueAdmin() {
     onError: (err) => toast.error(err.message),
   });
 
+  const bulkDeleteMutation = trpc.smartshop.bulkDeleteCatalogueProducts.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Deleted ${data.deleted} products`);
+      setSelectedIds(new Set());
+      setShowBulkDelete(false);
+      utils.smartshop.fetchProducts.invalidate();
+      utils.products.searchCatalogue.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const exportMutation = trpc.smartshop.exportCatalogueProducts.useMutation({
+    onSuccess: (data) => {
+      downloadCsv("component-order-data.csv", data.products);
+      toast.success(`Exported ${data.products.length} products`);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const allProducts = results?.products ?? [];
   const filteredProducts = useMemo(() => {
     let items = allProducts;
@@ -146,16 +212,34 @@ export default function ComponentCatalogueAdmin() {
     setSelectedIds(newSet);
   };
 
+  const exportFilters = {
+    category: categoryFilter !== "all" ? categoryFilter : undefined,
+    subGroup: subGroupFilter !== "all" ? subGroupFilter : undefined,
+    tag: tagFilter !== "all" ? tagFilter : undefined,
+    search: search.trim() || undefined,
+    includeInactive: showInactive,
+  };
+
   return (
     <div className="container py-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Construction Data</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Component Order Data</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Manage the product catalogue used for Component Orders. {filteredProducts.length} products.
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={exportMutation.isPending}
+            onClick={() => exportMutation.mutate(exportFilters)}
+          >
+            {exportMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Export CSV
+          </Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowPriceImport(true)}>
             <Upload className="h-3.5 w-3.5" /> Price Update CSV
           </Button>
@@ -228,6 +312,9 @@ export default function ComponentCatalogueAdmin() {
           </Button>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setShowBulkSubGroup(true)}>
             <Layers className="h-3.5 w-3.5" /> Set Sub-Group
+          </Button>
+          <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => setShowBulkDelete(true)}>
+            <Trash2 className="h-3.5 w-3.5" /> Delete Selected
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
             Clear Selection
@@ -402,6 +489,28 @@ export default function ComponentCatalogueAdmin() {
         onApply={(subGroup) => bulkSubGroupMutation.mutate({ productIds: Array.from(selectedIds), subGroup })}
         isPending={bulkSubGroupMutation.isPending}
       />
+
+      <AlertDialog open={showBulkDelete} onOpenChange={setShowBulkDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete selected products?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will deactivate {selectedIds.size} product{selectedIds.size === 1 ? "" : "s"} from Component Order Data. Existing orders and history will be preserved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={bulkDeleteMutation.isPending}
+              onClick={() => bulkDeleteMutation.mutate({ productIds: Array.from(selectedIds) })}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {bulkDeleteMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              Delete Products
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
