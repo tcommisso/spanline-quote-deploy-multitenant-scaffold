@@ -23,6 +23,51 @@ const sectionSchema = z.object({
 
 const proposalLibraryItemIdsSchema = z.array(z.number().int().positive()).optional();
 
+const decimalUpdateFields = [
+  "siteClean",
+  "constructionMgmt",
+  "councilFees",
+  "homeWarranty",
+  "approvals",
+  "delivery",
+  "engineering",
+  "demolition",
+  "travel",
+  "plumbing",
+  "electrical",
+  "concrete",
+  "footings",
+  "attachmentToHouse",
+  "gableBrackets",
+  "otherCostAmount",
+  "discountPercent",
+  "discountAmount",
+  "markupPercent",
+  "markupAmount",
+  "depositPercent",
+  "depositAmount",
+  "sectionsSubtotalExGst",
+  "additionalCostsTotal",
+  "adjustmentAmount",
+  "grandTotalExGst",
+  "gstAmount",
+  "grandTotalIncGst",
+] as const;
+
+function normalizeDecimalUpdateValue(value: unknown) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed === "" ? "0" : trimmed;
+}
+
+function normalizeProposalDecimalUpdates(payload: Record<string, unknown>) {
+  for (const field of decimalUpdateFields) {
+    if (payload[field] !== undefined) {
+      payload[field] = normalizeDecimalUpdateValue(payload[field]);
+    }
+  }
+}
+
 async function filterTenantProposalLibraryItemIds(ids: number[] | undefined, tenantId: number) {
   const uniqueIds = Array.from(new Set((ids || []).filter((id) => Number.isInteger(id) && id > 0)));
   if (uniqueIds.length === 0) return [];
@@ -209,9 +254,10 @@ export const proposalRouter = router({
         payload.proposalLibraryItemIds = await filterTenantProposalLibraryItemIds(input.proposalLibraryItemIds, ctx.tenant.id);
       }
       if (otherCost !== undefined) {
-        payload.otherCostAmount = otherCost;
+        payload.otherCostAmount = normalizeDecimalUpdateValue(otherCost);
         payload.otherCostLabel = "Other Cost";
       }
+      normalizeProposalDecimalUpdates(payload);
       const result = await proposalDb.updateProposal(id, payload, ctx.tenant.id);
       if (!result) throw new Error("Proposal not found");
       await proposalDb.logActivity({
