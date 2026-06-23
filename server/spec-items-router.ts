@@ -332,6 +332,7 @@ export const specItemsRouter = router({
             qty: item.qty,
             costRate: item.costRate,
             sellRate: item.sellRate,
+            notes: item.notes,
             sortOrder: idx,
           })),
           ctx.tenant!.id
@@ -623,8 +624,6 @@ export const specItemsRouter = router({
       const TEMPLATES = [
         // ── Roof ──
         { name: "Roof Sheets (LM from coverage)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetLM", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 10 },
-        { name: "Roof Sheets + Waste Factor", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetLM * (1 + wasteFactor / 100)", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 11 },
-        { name: "Roof Sheets (Qty x Length)", tabName: "roof", specField: "specRoofType", condition: "!= ''", productMatch: "specRoofType", qtyFormula: "roofSheetQty * roofSheetLength", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 12 },
         { name: "Polycarbonate Roof Sheets", tabName: "roof", specField: "specPolyType", condition: "!= ''", productMatch: "specPolyType", qtyFormula: "roofSheetLM", description: null, colourField: "specRoofTopColour", bottomColourField: "specRoofBottomColour", uom: "LM", sortOrder: 13 },
         { name: "Angle Cutting (LM)", tabName: "roof", specField: "specAngleCuttingMetres", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specAngleCuttingMetres", description: "Angle Cutting", colourField: "specRoofTopColour", bottomColourField: null, uom: "LM", sortOrder: 14 },
         { name: "Ridge Capping", tabName: "roof", specField: "specRoofType", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specWidth", description: "Ridge Capping", colourField: "specRoofTopColour", bottomColourField: null, uom: "LM", sortOrder: 20 },
@@ -724,9 +723,14 @@ export const specItemsRouter = router({
       // Get existing mapping names to skip duplicates
       const existing = await listSpecMappings(ctx.tenant!.id);
       const existingByName = new Map((existing as any[]).map(m => [m.name, m]));
+      const retiredTemplateNames = [
+        "Roof Sheets + Waste Factor",
+        "Roof Sheets (Qty x Length)",
+      ];
 
       let created = 0;
       let updated = 0;
+      let retired = 0;
       for (const tmpl of TEMPLATES) {
         const existingMapping = existingByName.get(tmpl.name);
         if (existingMapping) {
@@ -756,7 +760,22 @@ export const specItemsRouter = router({
         created++;
       }
 
-      return { created, updated, skipped: TEMPLATES.length - created - updated, total: TEMPLATES.length };
+      for (const name of retiredTemplateNames) {
+        const existingMapping = existingByName.get(name);
+        if (existingMapping && (existingMapping as any).active !== false) {
+          await updateSpecMapping((existingMapping as any).id, { active: false }, ctx.tenant!.id);
+          await logMappingChange({
+            mappingId: (existingMapping as any).id,
+            userId: ctx.user!.id,
+            userName: ctx.user!.name,
+            action: "deactivated",
+            snapshot: { id: (existingMapping as any).id, name, active: false, source: "retired_seed_template" },
+          }, ctx.tenant!.id);
+          retired++;
+        }
+      }
+
+      return { created, updated, retired, skipped: TEMPLATES.length - created - updated, total: TEMPLATES.length };
     }),
 
   // Preview a formula against the most recent quote's spec values

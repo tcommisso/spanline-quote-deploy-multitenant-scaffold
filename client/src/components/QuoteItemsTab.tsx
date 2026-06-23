@@ -300,11 +300,14 @@ export default function QuoteItemsTab({ quoteId }: QuoteItemsTabProps) {
                         </Badge>
                       </td>
                       <td className="px-3 py-1.5 capitalize">{TAB_LABELS[item.tabName] || item.tabName}</td>
-                      <td className="px-3 py-1.5 max-w-[200px] truncate">
-                        <div className="flex items-center gap-1.5">
+                      <td className="px-3 py-1.5 max-w-[260px]">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           {item.needsConfirmation && <AlertTriangle className="h-3 w-3 text-amber-500 shrink-0" />}
-                          {item.description}
+                          <span className="truncate">{item.description}</span>
                         </div>
+                        {item.notes && (
+                          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{item.notes}</p>
+                        )}
                       </td>
                       <td className="px-3 py-1.5">{item.colour || "—"}</td>
                       <td className="px-3 py-1.5">{item.bottomColour || "—"}</td>

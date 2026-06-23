@@ -128,7 +128,11 @@ export default function SpecMappingsAdmin() {
 
   // Seed templates mutation
   const seedTemplatesMutation = (trpc.specItems as any).seedTemplates.useMutation({
-    onSuccess: (data: any) => { toast.success(`Created ${data.created} starter templates, refreshed ${data.updated || 0} (${data.skipped} unchanged)`); utils.specItems.mappings.list.invalidate(); },
+    onSuccess: (data: any) => {
+      const retired = data.retired ? `, retired ${data.retired}` : "";
+      toast.success(`Created ${data.created} starter templates, refreshed ${data.updated || 0}${retired} (${data.skipped} unchanged)`);
+      utils.specItems.mappings.list.invalidate();
+    },
     onError: (e: any) => toast.error(e.message),
   });
 

@@ -52,6 +52,7 @@ export interface GeneratedItem {
   qty: number;
   costRate: number;
   sellRate: number;
+  notes: string | null;
   source: "auto";
 }
 
@@ -60,6 +61,10 @@ export interface MarkupRates {
 }
 
 const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
+
+function formatTakeoffNumber(value: number): string {
+  return value.toFixed(3).replace(/\.?0+$/, "");
+}
 
 function getNumericSpecValue(specValues: SpecValues, key: string): number | null {
   const direct = specValues[key];
@@ -278,6 +283,16 @@ export function generateItemsFromSpec(
     // Calculate rates
     const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
 
+    const roofSheetQty = Number(mappingSpecValues.roofSheetQty || 0);
+    const roofSheetLength = Number(mappingSpecValues.roofSheetLength || 0);
+    const roofSheetLM = Number(mappingSpecValues.roofSheetLM || 0);
+    const isRoofSheetTakeoff = mapping.tabName === "roof"
+      && !!product?.coverageWidth
+      && /\broofSheet(LM|Qty|Length)\b/i.test(mapping.qtyFormula);
+    const notes = isRoofSheetTakeoff && roofSheetQty > 0 && roofSheetLength > 0 && roofSheetLM > 0
+      ? `Roof sheet takeoff: ${roofSheetQty} sheet${roofSheetQty === 1 ? "" : "s"} x ${formatTakeoffNumber(roofSheetLength)}m = ${formatTakeoffNumber(roofSheetLM)} LM (${product!.coverageWidth}mm cover)`
+      : null;
+
     // Get colour from spec
     const colour = mapping.colourField
       ? String(specValues[mapping.colourField] || "")
@@ -301,6 +316,7 @@ export function generateItemsFromSpec(
       qty: Math.round(qty * 1000) / 1000, // Round to 3dp
       costRate,
       sellRate,
+      notes,
       source: "auto",
     });
   }

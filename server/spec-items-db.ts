@@ -135,6 +135,7 @@ export async function createQuoteItem(data: {
   tabName: string;
   description: string;
   colour?: string | null;
+  bottomColour?: string | null;
   uom?: string | null;
   qty: number | string;
   costRate: number | string;
@@ -161,6 +162,7 @@ export async function createQuoteItemsBatch(items: Array<{
   tabName: string;
   description: string;
   colour?: string | null;
+  bottomColour?: string | null;
   uom?: string | null;
   qty: number | string;
   costRate: number | string;
