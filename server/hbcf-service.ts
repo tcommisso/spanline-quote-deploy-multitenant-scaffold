@@ -24,6 +24,16 @@ const NSW_POSTCODE_PATTERN = /^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8
 const ACT_POSTCODE_PATTERN = /^(260[0-9]|261[0-8]|29[0-1][0-9]|2920)$/;
 const ONEGOV_HOST = "api.onegov.nsw.gov.au";
 const HBCF_ISSUED_STATUS_VALUES = ["issued", "current", "active", "valid", "completed", "complete", "open job"];
+const HBCF_STATUS_KEYS = ["status", "Status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"];
+const HBCF_POLICY_NUMBER_KEYS = ["policyNumber", "Policy Number", "Transaction Number / Policy Number", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber", "insurancePolicyNo"];
+const HBCF_CERTIFICATE_NUMBER_KEYS = ["certificateNumber", "Certificate Number", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber", "insuranceCertificateNumber", "insuranceCertificateNo"];
+const HBCF_OWNER_KEYS = ["ownerName", "Home Owner", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName", "clientName", "principalOwner"];
+const HBCF_ADDRESS_KEYS = ["propertyAddress", "Site Address", "address", "siteAddress", "riskAddress", "insuredAddress", "projectAddress"];
+const HBCF_SUBURB_KEYS = ["propertySuburb", "Suburb", "suburb"];
+const HBCF_POSTCODE_KEYS = ["propertyPostcode", "Postcode", "postcode", "postCode"];
+const HBCF_CONTRACT_PRICE_KEYS = ["contractPrice", "Contract Amount", "contractValue", "projectValue", "insuredValue", "insuredAmount", "contractAmount", "constructionCost", "jobValue", "coverAmount", "amountCovered", "sumInsured", "totalInsuredValue"];
+const HBCF_ISSUED_AT_KEYS = ["issuedAt", "Issue Date", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"];
+const HBCF_EXTERNAL_ID_KEYS = ["externalId", "Job Number", "jobNumber", "jobNo", "id", "policyId", "certificateId", "licenceID", "licenceId"];
 
 const oneGovTokenCache = new Map<string, { token: string; expiresAt: number }>();
 
@@ -73,10 +83,12 @@ function asDate(value: unknown): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
   const text = String(value).trim();
-  const australianDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!text || text.toLowerCase() === "null") return null;
+  const australianDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
   if (australianDate) {
     const [, day, month, year] = australianDate;
-    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    const fullYear = year.length === 2 ? 2000 + Number(year) : Number(year);
+    const date = new Date(fullYear, Number(month) - 1, Number(day));
     return Number.isNaN(date.getTime()) ? null : date;
   }
   const date = new Date(text);
@@ -207,11 +219,17 @@ function firstString(record: any, keys: string[]): string | null {
   return null;
 }
 
+function hbcfCertificateNumberFrom(value: unknown) {
+  const text = String(value || "").trim();
+  return /^HBCF/i.test(text) ? text : null;
+}
+
 function normalizeHbcfStatusText(value: unknown) {
   return String(value || "")
     .trim()
     .toLowerCase()
     .replace(/[-_/]+/g, " ")
+    .replace(/[()]+/g, " ")
     .replace(/\s+/g, " ");
 }
 
@@ -220,7 +238,7 @@ function normalizeHbcfStatus(value: unknown) {
   if (!text) return "issued";
   if (["complete", "completed"].includes(text)) return "completed";
   if (["current", "active", "valid", "issued", "open job"].includes(text)) return "issued";
-  if (["application", "applied", "pending", "lodged", "with distributor broker"].includes(text)) return "applied";
+  if (["application", "applied", "pending", "lodged", "with distributor broker", "with distributor"].includes(text)) return "applied";
   if (["cancelled", "canceled", "expired", "suspended", "refused"].includes(text)) return text;
   return text;
 }
@@ -231,7 +249,7 @@ function isIssuedHbcfStatus(value: unknown) {
 }
 
 function normalizedHbcfStatusSql(column: any) {
-  return sql`LOWER(TRIM(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), '-', ' '), '_', ' '), '/', ' ')))`;
+  return sql`LOWER(TRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), '-', ' '), '_', ' '), '/', ' '), '(', ' '), ')', ' ')))`;
 }
 
 function issuedHbcfStatusSql(column: any) {
@@ -331,66 +349,15 @@ function mergeOneGovDetailRow(summary: any, detail: any) {
 function normalizeOneGovPolicy(raw: any): HbcfPolicyLike {
   const detail = isRecord(raw?.licenceDetail) ? raw.licenceDetail : {};
   const licenceNumber = firstString(detail, ["licenceNumber"]) || firstString(raw, ["licenceNumber"]);
-  const status = normalizeHbcfStatus(firstString(detail, ["status"]) || firstString(raw, ["status"]));
-  const address = oneGovBuildingSiteAddress(raw) || firstString(detail, ["address"]) || firstString(raw, ["address"]);
-  const ownerName = firstString(raw, [
-    "ownerName",
-    "owner",
-    "insuredName",
-    "homeOwnerName",
-    "homeownerName",
-    "customerName",
-    "clientName",
-    "principalOwner",
-  ]) || oneGovAssociatedPartyNames(raw);
-  const policyNumber = firstString(raw, [
-    "policyNumber",
-    "policy_number",
-    "policyNo",
-    "policyId",
-    "hbcfPolicyNumber",
-    "insurancePolicyNumber",
-    "insurancePolicyNo",
-  ]) || firstString(detail, ["policyNumber", "insurancePolicyNumber"]) || licenceNumber;
-  const certificateNumber = firstString(raw, [
-    "certificateNumber",
-    "certificate_number",
-    "certificateNo",
-    "certificateOfInsuranceNo",
-    "certificateOfInsuranceNumber",
-    "hbcfCertificateNo",
-    "hbcfCertificateNumber",
-    "hbcfNumber",
-    "insuranceCertificateNumber",
-    "insuranceCertificateNo",
-  ]) || firstString(detail, ["certificateNumber", "insuranceCertificateNumber"]) || licenceNumber;
-  const contractPrice = firstString(raw, [
-    "contractPrice",
-    "contractValue",
-    "projectValue",
-    "insuredValue",
-    "insuredAmount",
-    "contractAmount",
-    "constructionCost",
-    "jobValue",
-    "coverAmount",
-    "amountCovered",
-    "sumInsured",
-    "totalInsuredValue",
-  ]) || oneGovBuildingSiteValue(raw, [
-    "contractPrice",
-    "contractValue",
-    "projectValue",
-    "insuredValue",
-    "insuredAmount",
-    "contractAmount",
-    "constructionCost",
-    "jobValue",
-    "coverAmount",
-    "amountCovered",
-    "sumInsured",
-    "totalInsuredValue",
-  ]);
+  const status = normalizeHbcfStatus(firstString(detail, HBCF_STATUS_KEYS) || firstString(raw, HBCF_STATUS_KEYS));
+  const address = oneGovBuildingSiteAddress(raw) || firstString(detail, ["address"]) || firstString(raw, HBCF_ADDRESS_KEYS);
+  const ownerName = firstString(raw, HBCF_OWNER_KEYS) || oneGovAssociatedPartyNames(raw);
+  const policyNumber = firstString(raw, HBCF_POLICY_NUMBER_KEYS) || firstString(detail, HBCF_POLICY_NUMBER_KEYS) || licenceNumber;
+  const certificateNumber = firstString(raw, HBCF_CERTIFICATE_NUMBER_KEYS) ||
+    firstString(detail, HBCF_CERTIFICATE_NUMBER_KEYS) ||
+    hbcfCertificateNumberFrom(policyNumber) ||
+    licenceNumber;
+  const contractPrice = firstString(raw, HBCF_CONTRACT_PRICE_KEYS) || oneGovBuildingSiteValue(raw, HBCF_CONTRACT_PRICE_KEYS);
 
   return {
     policyNumber,
@@ -404,15 +371,15 @@ function normalizeOneGovPolicy(raw: any): HbcfPolicyLike {
     insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
     ownerName,
     propertyAddress: address,
-    propertySuburb: firstString(raw, ["propertySuburb", "suburb"]) || oneGovBuildingSiteValue(raw, ["suburb"]),
-    propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]) || oneGovBuildingSiteValue(raw, ["postcode", "postCode"]) || firstPostcode(address),
+    propertySuburb: firstString(raw, HBCF_SUBURB_KEYS) || oneGovBuildingSiteValue(raw, HBCF_SUBURB_KEYS),
+    propertyPostcode: firstString(raw, HBCF_POSTCODE_KEYS) || oneGovBuildingSiteValue(raw, HBCF_POSTCODE_KEYS) || firstPostcode(address),
     contractPrice,
-    issuedAt: firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]) ||
+    issuedAt: firstString(raw, HBCF_ISSUED_AT_KEYS) ||
       firstString(detail, ["startDate"]),
     expiresAt: firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]) ||
       firstString(detail, ["expiryDate"]),
     certificateUrl: firstString(raw, ["certificateUrl", "documentUrl", "url"]),
-    externalId: firstString(raw, ["externalId", "id", "policyId", "certificateId", "licenceID", "licenceId"]) ||
+    externalId: firstString(raw, HBCF_EXTERNAL_ID_KEYS) ||
       firstString(detail, ["licenceID", "licenceId"]),
     rawPayload: rawPayloadOrNull(raw),
   };
@@ -420,24 +387,26 @@ function normalizeOneGovPolicy(raw: any): HbcfPolicyLike {
 
 function normalizePolicy(raw: any): HbcfPolicyLike {
   if (isRecord(raw?.licenceDetail)) return normalizeOneGovPolicy(raw);
-  const issuedAt = firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]);
+  const issuedAt = firstString(raw, HBCF_ISSUED_AT_KEYS);
   const expiresAt = firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]);
   return {
-    policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber"]),
-    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber", "licenceNumber"]),
-    status: normalizeHbcfStatus(firstString(raw, ["status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"])),
+    policyNumber: firstString(raw, HBCF_POLICY_NUMBER_KEYS),
+    certificateNumber: firstString(raw, HBCF_CERTIFICATE_NUMBER_KEYS) ||
+      hbcfCertificateNumberFrom(firstString(raw, HBCF_POLICY_NUMBER_KEYS)) ||
+      firstString(raw, ["licenceNumber"]),
+    status: normalizeHbcfStatus(firstString(raw, HBCF_STATUS_KEYS)),
     builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName", "licensee", "businessNames"]),
     builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "builderLicence", "builderLicense"]),
     insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
-    ownerName: firstString(raw, ["ownerName", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName"]),
-    propertyAddress: firstString(raw, ["propertyAddress", "address", "siteAddress", "riskAddress", "insuredAddress", "projectAddress"]),
-    propertySuburb: firstString(raw, ["propertySuburb", "suburb"]),
-    propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]),
-    contractPrice: firstString(raw, ["contractPrice", "contractValue", "projectValue", "insuredValue", "insuredAmount", "contractAmount", "constructionCost", "jobValue", "coverAmount"]),
+    ownerName: firstString(raw, HBCF_OWNER_KEYS),
+    propertyAddress: firstString(raw, HBCF_ADDRESS_KEYS),
+    propertySuburb: firstString(raw, HBCF_SUBURB_KEYS),
+    propertyPostcode: firstString(raw, HBCF_POSTCODE_KEYS),
+    contractPrice: firstString(raw, HBCF_CONTRACT_PRICE_KEYS),
     issuedAt,
     expiresAt,
     certificateUrl: firstString(raw, ["certificateUrl", "documentUrl", "url"]),
-    externalId: firstString(raw, ["externalId", "id", "policyId", "certificateId", "licenceID", "licenceId"]),
+    externalId: firstString(raw, HBCF_EXTERNAL_ID_KEYS),
     rawPayload: rawPayloadOrNull(raw),
   };
 }
@@ -721,7 +690,7 @@ function normalisedPolicyStatusValues(row: any) {
   const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
   const values = [
     row.status,
-    rawPayloadValue(rawPayload, "status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"),
+    rawPayloadValue(rawPayload, ...HBCF_STATUS_KEYS),
     rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus"),
     firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]),
   ];
@@ -735,7 +704,7 @@ function displayHbcfStatus(row: any) {
   const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
   return normalizeHbcfStatus(
     rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus") ||
-    rawPayloadValue(rawPayload, "status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus") ||
+    rawPayloadValue(rawPayload, ...HBCF_STATUS_KEYS) ||
     firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]) ||
     row.status,
   );
