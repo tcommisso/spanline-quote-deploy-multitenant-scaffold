@@ -630,6 +630,7 @@ function projectMatchesCertificate(project: any, certificate: any) {
   const addressMatches = looseAddressMatch(project.propertyAddress, certificate.propertyAddress);
   const ownerMatches = looseTextMatch(project.clientName, certificate.ownerName);
 
+  if (addressMatches && postcodeMatches) return true;
   if (addressMatches && (!project.clientName || !certificate.ownerName || ownerMatches)) return true;
   if (ownerMatches && postcodeMatches) return true;
   return false;
@@ -652,7 +653,12 @@ async function findMatchingProjectHbcfCertificate(
     sql`(${hbcfCertificates.approvalProjectId} IS NULL OR ${hbcfCertificates.approvalProjectId} = ${project.id})`,
   ];
   appendTenantScope(candidateConditions, hbcfCertificates.tenantId, tenantId);
-  if (projectPostcode) candidateConditions.push(eq(hbcfCertificates.propertyPostcode, projectPostcode));
+  if (projectPostcode) {
+    candidateConditions.push(or(
+      eq(hbcfCertificates.propertyPostcode, projectPostcode),
+      like(hbcfCertificates.propertyAddress, `%${projectPostcode}%`),
+    )!);
+  }
   else if (project.crmLeadId) candidateConditions.push(eq(hbcfCertificates.crmLeadId, project.crmLeadId));
 
   const candidates = await db.select()
