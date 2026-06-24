@@ -8,7 +8,7 @@ import { AlertCircle, CheckCircle2, Database, Loader2, RefreshCw, Server, XCircl
 import { toast } from "sonner";
 
 export default function ApiHealthAdmin() {
-  const { data, isLoading, refetch } = trpc.apiHealth.list.useQuery();
+  const { data, isLoading, isFetching, refetch } = trpc.apiHealth.list.useQuery();
   const tenantRepairPreview = trpc.system.tenantDataRepairPreview.useQuery();
   const [results, setResults] = useState<Record<string, { ok: boolean; detail: string; testedAt: string }>>({});
   const testMutation = trpc.apiHealth.test.useMutation({
@@ -17,6 +17,23 @@ export default function ApiHealthAdmin() {
       toast[result.ok ? "success" : "error"](`${result.key} test ${result.ok ? "passed" : "failed"}`);
     },
     onError: (err) => toast.error(err.message),
+  });
+  const testAllMutation = trpc.apiHealth.testAll.useMutation({
+    onSuccess: (items) => {
+      setResults((prev) => {
+        const next = { ...prev };
+        for (const item of items) next[item.key] = item;
+        return next;
+      });
+      const failedCount = items.filter((item) => !item.ok).length;
+      toast[failedCount ? "warning" : "success"](
+        failedCount
+          ? `API health refreshed: ${failedCount} check${failedCount === 1 ? "" : "s"} failed`
+          : "API health refreshed: all checks passed",
+      );
+      refetch();
+    },
+    onError: (err) => toast.error(err.message || "API health refresh failed"),
   });
   const repairTenantData = trpc.system.repairTenantData.useMutation({
     onSuccess: (result) => {
@@ -38,6 +55,7 @@ export default function ApiHealthAdmin() {
       tenantRepairPreview.data?.tenancyMode === "single" ? Number(item.otherTenantRows || 0) : 0;
     return sum + orphanRows + singleTenantCorrections;
   }, 0);
+  const refreshing = isFetching || testAllMutation.isPending;
 
   return (
     <div className="space-y-6">
@@ -51,8 +69,8 @@ export default function ApiHealthAdmin() {
             Production provider configuration, polling status, and manual connectivity checks.
           </p>
         </div>
-        <Button variant="outline" onClick={() => refetch()} disabled={isLoading}>
-          <RefreshCw className="mr-2 h-4 w-4" />
+        <Button variant="outline" onClick={() => testAllMutation.mutate()} disabled={refreshing}>
+          <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </Button>
       </div>
@@ -146,7 +164,7 @@ export default function ApiHealthAdmin() {
                           <Button
                             variant="outline"
                             size="sm"
-                            disabled={testMutation.isPending}
+                            disabled={testMutation.isPending || testAllMutation.isPending}
                             onClick={() => testMutation.mutate({ key: item.key as any })}
                           >
                             {testMutation.isPending ? (

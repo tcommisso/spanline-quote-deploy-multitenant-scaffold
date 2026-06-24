@@ -97,6 +97,11 @@ async function fetchJsonHealth(url: string, init?: RequestInit): Promise<{ ok: b
     const response = await fetch(url, { ...init, signal: controller.signal });
     const detail = `${response.status} ${response.statusText}`;
     return { ok: response.ok, detail };
+  } catch (error: any) {
+    const detail = error?.name === "AbortError"
+      ? "Request timed out after 8 seconds"
+      : error?.cause?.code || error?.cause?.message || error?.message || "Request failed";
+    return { ok: false, detail };
   } finally {
     clearTimeout(timeout);
   }
@@ -248,5 +253,25 @@ export const apiHealthRouter = router({
         testedAt: new Date().toISOString(),
         ...result,
       };
+    }),
+  testAll: tenantAdminProcedure
+    .mutation(async ({ ctx }) => {
+      await ensureDefaultTenantAccess(ctx.tenant!.id);
+      const testedAt = new Date().toISOString();
+      const results = [];
+      for (const check of API_CHECKS) {
+        try {
+          const result = await testApi(check.key, ctx.tenant!.id);
+          results.push({ key: check.key, testedAt, ...result });
+        } catch (error: any) {
+          results.push({
+            key: check.key,
+            testedAt,
+            ok: false,
+            detail: error?.message || String(error || "API test failed"),
+          });
+        }
+      }
+      return results;
     }),
 });
