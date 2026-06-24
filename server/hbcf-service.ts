@@ -68,7 +68,14 @@ function currentApiMonth() {
 function asDate(value: unknown): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
-  const date = new Date(String(value));
+  const text = String(value).trim();
+  const australianDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (australianDate) {
+    const [, day, month, year] = australianDate;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const date = new Date(text);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -178,12 +185,28 @@ function firstPostcode(...values: unknown[]) {
   return extractPostcodes(...values)[0] ?? null;
 }
 
-function firstString(record: any, keys: string[]) {
+function firstString(record: any, keys: string[]): string | null {
+  if (Array.isArray(record)) {
+    for (const item of record) {
+      const value: string | null = firstString(item, keys);
+      if (value) return value;
+    }
+    return null;
+  }
   for (const key of keys) {
     const value = record?.[key];
     if (value != null && String(value).trim() !== "") return String(value).trim();
   }
   return null;
+}
+
+function normalizeHbcfStatus(value: unknown) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "issued";
+  if (["current", "active", "valid", "issued"].includes(text)) return "issued";
+  if (["application", "applied", "pending", "lodged"].includes(text)) return "applied";
+  if (["cancelled", "canceled", "expired", "suspended", "refused"].includes(text)) return text;
+  return text;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -197,15 +220,95 @@ function rawPayloadOrNull(value: unknown): Record<string, any> | null {
   return { value };
 }
 
+function stringValue(value: unknown) {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => isRecord(item)
+        ? firstString(item, ["businessName", "name", "licenceNumber", "address", "description"])
+        : String(item || "").trim())
+      .filter(Boolean)
+      .join(", ") || null;
+  }
+  const text = String(value).trim();
+  return text || null;
+}
+
+function oneGovBusinessNames(raw: any) {
+  return stringValue(raw?.businessNames) || stringValue(raw?.licenceDetail?.businessNames);
+}
+
+function oneGovAssociatedLicenceNumber(raw: any) {
+  const associated = Array.isArray(raw?.associatedLicences) ? raw.associatedLicences : [];
+  return firstString(associated.find((item: any) => item?.licenceNumber), ["licenceNumber"]);
+}
+
+function oneGovBuildingSiteAddress(raw: any) {
+  return firstString(Array.isArray(raw?.buildingSites) ? raw.buildingSites[0] : raw?.buildingSites, ["address"]) ||
+    firstString(Array.isArray(raw?.venues) ? raw.venues[0] : null, ["address"]) ||
+    firstString(Array.isArray(raw?.premises) ? raw.premises[0] : null, ["businessAddress"]);
+}
+
+function oneGovLicenceId(raw: any) {
+  return firstString(raw, ["licenceID", "licenceId", "licenceid", "id"]);
+}
+
+function isOneGovSummaryRow(row: any) {
+  return isRecord(row) && !!oneGovLicenceId(row) && !isRecord(row.licenceDetail);
+}
+
+function mergeOneGovDetailRow(summary: any, detail: any) {
+  if (!isRecord(detail)) return summary;
+  return {
+    ...summary,
+    ...detail,
+    licenceID: oneGovLicenceId(summary) || oneGovLicenceId(detail),
+    searchResult: summary,
+  };
+}
+
+function normalizeOneGovPolicy(raw: any): HbcfPolicyLike {
+  const detail = isRecord(raw?.licenceDetail) ? raw.licenceDetail : {};
+  const licenceNumber = firstString(detail, ["licenceNumber"]) || firstString(raw, ["licenceNumber"]);
+  const status = normalizeHbcfStatus(firstString(detail, ["status"]) || firstString(raw, ["status"]));
+  const address = oneGovBuildingSiteAddress(raw) || firstString(detail, ["address"]) || firstString(raw, ["address"]);
+
+  return {
+    policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber"]),
+    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber"]) || licenceNumber,
+    status,
+    builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName", "licensee"]) ||
+      firstString(detail, ["licensee", "licenceName"]) ||
+      oneGovBusinessNames(raw),
+    builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "builderLicence", "builderLicense"]) ||
+      oneGovAssociatedLicenceNumber(raw),
+    insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
+    ownerName: firstString(raw, ["ownerName", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName"]),
+    propertyAddress: address,
+    propertySuburb: firstString(raw, ["propertySuburb", "suburb"]),
+    propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]) || firstPostcode(address),
+    contractPrice: firstString(raw, ["contractPrice", "contractValue", "projectValue", "insuredValue", "insuredAmount", "contractAmount", "constructionCost", "jobValue", "coverAmount"]),
+    issuedAt: firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]) ||
+      firstString(detail, ["startDate"]),
+    expiresAt: firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]) ||
+      firstString(detail, ["expiryDate"]),
+    certificateUrl: firstString(raw, ["certificateUrl", "documentUrl", "url"]),
+    externalId: firstString(raw, ["externalId", "id", "policyId", "certificateId", "licenceID", "licenceId"]) ||
+      firstString(detail, ["licenceID", "licenceId"]),
+    rawPayload: rawPayloadOrNull(raw),
+  };
+}
+
 function normalizePolicy(raw: any): HbcfPolicyLike {
+  if (isRecord(raw?.licenceDetail)) return normalizeOneGovPolicy(raw);
   const issuedAt = firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]);
   const expiresAt = firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]);
   return {
     policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber"]),
-    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber"]),
-    status: firstString(raw, ["status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"]) || "issued",
+    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber", "licenceNumber"]),
+    status: normalizeHbcfStatus(firstString(raw, ["status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"])),
     builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName", "licensee", "businessNames"]),
-    builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "licenceNumber", "licenseNumber", "licenceName"]),
+    builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "builderLicence", "builderLicense"]),
     insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
     ownerName: firstString(raw, ["ownerName", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName"]),
     propertyAddress: firstString(raw, ["propertyAddress", "address", "siteAddress", "riskAddress", "insuredAddress", "projectAddress"]),
@@ -215,13 +318,13 @@ function normalizePolicy(raw: any): HbcfPolicyLike {
     issuedAt,
     expiresAt,
     certificateUrl: firstString(raw, ["certificateUrl", "documentUrl", "url"]),
-    externalId: firstString(raw, ["externalId", "id", "policyId", "certificateId"]),
+    externalId: firstString(raw, ["externalId", "id", "policyId", "certificateId", "licenceID", "licenceId"]),
     rawPayload: rawPayloadOrNull(raw),
   };
 }
 
-function extractPolicies(payload: any): HbcfPolicyLike[] {
-  const rows = Array.isArray(payload)
+function extractApiRows(payload: any): any[] {
+  return Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.policies)
       ? payload.policies
@@ -234,10 +337,39 @@ function extractPolicies(payload: any): HbcfPolicyLike[] {
             : payload
               ? [payload]
               : [];
-  return rows
+}
+
+function extractPolicies(payload: any): HbcfPolicyLike[] {
+  return extractApiRows(payload)
     .filter((row: unknown) => row != null)
     .map(normalizePolicy)
     .filter((p: HbcfPolicyLike) => p.policyNumber || p.certificateNumber || p.builderName);
+}
+
+async function hydrateOneGovHbcfRows(profile: HbcfBuilderProfile, payload: any) {
+  const rows = extractApiRows(payload);
+  if (!rows.some(isOneGovSummaryRow)) return payload;
+
+  const seen = new Set<string>();
+  const hydrated: any[] = [];
+  for (const row of rows) {
+    if (!isOneGovSummaryRow(row)) {
+      hydrated.push(row);
+      continue;
+    }
+    const licenceId = oneGovLicenceId(row);
+    if (!licenceId || seen.has(licenceId)) continue;
+    seen.add(licenceId);
+    const detail = await hbcfApiRequest(profile, { licenceid: licenceId });
+    hydrated.push(mergeOneGovDetailRow(row, detail));
+  }
+  return hydrated;
+}
+
+async function fetchHbcfPolicies(profile: HbcfBuilderProfile, params: Record<string, string | undefined> = {}) {
+  const payload = await hbcfApiRequest(profile, params);
+  const hydrated = await hydrateOneGovHbcfRows(profile, payload);
+  return extractPolicies(hydrated);
 }
 
 function resolveApiKey(profile: HbcfBuilderProfile) {
@@ -369,8 +501,49 @@ function isOurBuilder(policy: HbcfPolicyLike, profile: HbcfBuilderProfile | null
     .filter(Boolean)
     .map((v) => String(v).toLowerCase());
   const licences = [profile?.licenceNumber].filter(Boolean).map((v) => String(v).toLowerCase());
-  return names.some((name) => builder.includes(name) || name.includes(builder)) ||
-    licences.some((item) => !!item && licence === item);
+  return (!!builder && names.some((name) => builder.includes(name) || name.includes(builder))) ||
+    (!!licence && licences.some((item) => !!item && licence === item));
+}
+
+function hbcfPolicyKey(policy: HbcfPolicyLike) {
+  return [
+    policy.certificateNumber,
+    policy.policyNumber,
+    policy.externalId,
+    policy.propertyAddress && policy.ownerName
+      ? `${normalizeAddress(policy.propertyAddress)}:${normalizeLooseText(policy.ownerName)}`
+      : null,
+  ].find((value) => value && String(value).trim())?.toString().toLowerCase() || null;
+}
+
+function dedupeHbcfPolicies(policies: HbcfPolicyLike[]) {
+  const seen = new Set<string>();
+  const unique: HbcfPolicyLike[] = [];
+  for (const policy of policies) {
+    const key = hbcfPolicyKey(policy);
+    if (!key) {
+      unique.push(policy);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(policy);
+  }
+  return unique;
+}
+
+function hbcfTenantSearchTerms(profile: HbcfBuilderProfile) {
+  const terms = [
+    profile.licenceNumber,
+    profile.builderName,
+    profile.tradingName,
+    profile.abn,
+  ];
+  return Array.from(new Set(
+    terms
+      .map((term) => String(term || "").trim())
+      .filter((term) => term.length >= 3),
+  ));
 }
 
 function firstPresent(...values: unknown[]) {
@@ -943,14 +1116,13 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
   const profile = await getHbcfBuilderProfile(tenantId);
   if (!profile) throw new Error("HBCF builder profile has not been configured");
   try {
-    const payload = await hbcfApiRequest(profile, {
+    const policies = (await fetchHbcfPolicies(profile, {
       address: project.propertyAddress || undefined,
       suburb: project.propertySuburb || undefined,
       postcode: project.propertyPostcode || undefined,
       builderLicenceNumber: profile.licenceNumber || undefined,
       builderName: profile.builderName,
-    });
-    const policies = extractPolicies(payload).filter((p) => isOurBuilder(p, profile) || (!p.builderName && !p.builderLicenceNumber));
+    })).filter((p) => isOurBuilder(p, profile) || (!p.builderName && !p.builderLicenceNumber));
     let imported = 0;
     for (const policy of policies) {
       await createOrUpdateHbcfCertificate({
@@ -1006,12 +1178,16 @@ export async function syncTenantHbcfCertificatesFromApi(tenantId?: number | null
   const logId = (logResult as any)?.insertId as number | undefined;
 
   try {
-    const payload = await hbcfApiRequest(profile, {
-      builderLicenceNumber: profile.licenceNumber || undefined,
-      licenceNumber: profile.licenceNumber || undefined,
-      builderName: profile.builderName,
-    });
-    const policies = extractPolicies(payload)
+    const searchTerms = hbcfTenantSearchTerms(profile);
+    if (!searchTerms.length) {
+      throw new Error("HBCF Builder Profile needs a licence number, builder name, trading name, or ABN before API sync can search the register.");
+    }
+    const foundPolicies: HbcfPolicyLike[] = [];
+    for (const searchText of searchTerms) {
+      const policies = await fetchHbcfPolicies(profile, { searchText });
+      foundPolicies.push(...policies);
+    }
+    const policies = dedupeHbcfPolicies(foundPolicies)
       .filter((policy) => isOurBuilder(policy, profile) || (!policy.builderName && !policy.builderLicenceNumber));
     let updated = 0;
     for (const policy of policies) {
@@ -1055,7 +1231,14 @@ export async function syncTenantHbcfCertificatesFromApi(tenantId?: number | null
         } as any)
         .where(and(...scopedConditions(hbcfSyncLogs, tenantId, eq(hbcfSyncLogs.id, logId))));
     }
-    return { checked: policies.length, updated };
+    return {
+      checked: policies.length,
+      updated,
+      searchTermsChecked: searchTerms.length,
+      message: policies.length === 0
+        ? `HBCF API returned no matching certificate rows for the current Builder Profile search terms (${searchTerms.length} checked). Try syncing an individual NSW project by address, or update the Builder Profile name/licence/ABN.`
+        : null,
+    };
   } catch (error: any) {
     const message = error?.message || String(error);
     await recordProfileSync(profile, "failed", message);
@@ -1122,12 +1305,11 @@ export async function runHbcfCompetitorMatching(options: {
           .limit(1);
         if (existing.length > 0) { skipped++; continue; }
       }
-      const payload = await hbcfApiRequest(profile, {
+      const policies = await fetchHbcfPolicies(profile, {
         address: lead.address,
         suburb: lead.suburb || undefined,
         postcode: lead.postcode || undefined,
       });
-      const policies = extractPolicies(payload);
       for (const policy of policies) {
         const policyAddress = normalizeAddress(policy.propertyAddress);
         const leadAddress = normalizeAddress(lead.address);

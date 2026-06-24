@@ -32,7 +32,11 @@ export default function HbcfCertificates() {
   const { data: certificates, isLoading, refetch, isFetching } = trpc.approvals.hbcf.certificates.list.useQuery();
   const syncAll = trpc.approvals.hbcf.certificates.syncAll.useMutation({
     onSuccess: (result) => {
-      toast.success(`HBCF API sync complete: ${result.updated} updated from ${result.checked} checked`);
+      if (result.checked === 0) {
+        toast.warning(result.message || "HBCF API sync finished but returned no matching certificate rows.");
+      } else {
+        toast.success(`HBCF API sync complete: ${result.updated} updated from ${result.checked} checked`);
+      }
       utils.approvals.hbcf.certificates.list.invalidate();
       utils.approvals.hbcf.profile.get.invalidate();
     },
