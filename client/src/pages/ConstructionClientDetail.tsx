@@ -4537,6 +4537,41 @@ function BaStatusBadge({ status }: { status?: string | null }) {
   );
 }
 
+function formatApprovalDate(value?: string | Date | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function formatApprovalStatus(value?: string | null) {
+  const text = String(value || "").trim();
+  return text ? text.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "—";
+}
+
+function approvalStatusBadge(status?: string | null, tone?: "success" | "warning" | "danger" | "neutral") {
+  const normalized = String(status || "").toLowerCase();
+  const inferredTone = tone ||
+    (["issued", "approved", "passed", "closed", "responded", "completed"].includes(normalized) ? "success" :
+      ["open", "required", "scheduled", "booked", "in_progress", "deferred", "draft", "applied"].includes(normalized) ? "warning" :
+        ["failed", "overdue", "refused", "rejected"].includes(normalized) ? "danger" : "neutral");
+  const className = inferredTone === "success"
+    ? "bg-green-100 text-green-800 border-green-200"
+    : inferredTone === "warning"
+      ? "bg-amber-100 text-amber-800 border-amber-200"
+      : inferredTone === "danger"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : "bg-slate-100 text-slate-700 border-slate-200";
+  return <Badge variant="outline" className={`${className} capitalize`}>{formatApprovalStatus(status)}</Badge>;
+}
+
+function buildInboxComposeUrl(email: string, name?: string | null, subject?: string) {
+  const params = new URLSearchParams({ to: email });
+  if (name) params.set("name", name);
+  if (subject) params.set("subject", subject);
+  return `/inbox/compose?${params.toString()}`;
+}
+
 // ─── Approvals Read-Only Activity View ──────────────────────────────────────
 function BuildingAuthorityReadOnly({ jobId, leadId }: { jobId: number; leadId: number }) {
   const approvalActivity = trpc.constructionClients.approvalActivity.useQuery({ jobId }, { enabled: !!jobId });
@@ -4554,20 +4589,30 @@ function BuildingAuthorityReadOnly({ jobId, leadId }: { jobId: number; leadId: n
   }
 
   if (approvalProject) {
+    const approvalDetails = approvalProject as any;
+    const certifier = approvalDetails.certifierContact || {};
+    const hbcf = approvalDetails.hbcf || {};
+    const commencement = approvalDetails.commencementApproval || {};
+    const rfis = approvalDetails.rfis || [];
+    const inspections = approvalDetails.inspections || [];
+    const certifierEmail = certifier.notificationEmail;
+    const certifierName = certifier.businessName || certifier.contactName || approvalDetails.certifierName || null;
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Building className="h-5 w-5" />
-            Approvals Activity
-            <Badge variant="outline" className="capitalize">{approvalProject.overallStatus}</Badge>
-            <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate(`/approvals/projects/${approvalProject.id}`)}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="flex flex-wrap items-center gap-2">
+              <Building className="h-5 w-5" />
+              Approvals Activity
+              <Badge variant="outline" className="capitalize">{approvalProject.overallStatus}</Badge>
+            </CardTitle>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/approvals/projects/${approvalProject.id}`)}>
               <ExternalLink className="h-3.5 w-3.5 mr-1" />
               Manage in Approvals
             </Button>
-          </CardTitle>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-5">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="text-xs font-medium text-muted-foreground">Project</label>
@@ -4594,6 +4639,198 @@ function BuildingAuthorityReadOnly({ jobId, leadId }: { jobId: number; leadId: n
             <div>
               <label className="text-xs font-medium text-muted-foreground">Client</label>
               <p className="text-sm font-medium">{approvalProject.clientName || "—"}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-medium">
+                  <Shield className="h-4 w-4" />
+                  HBCF Certificate
+                </div>
+                {approvalStatusBadge(hbcf.status || (hbcf.required ? "required" : "not_required"), hbcf.status === "issued" ? "success" : undefined)}
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Certificate / Policy</label>
+                  <p className="font-medium">{hbcf.certificateNumber || hbcf.policyNumber || "—"}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Issued</label>
+                  <p className="font-medium">{formatApprovalDate(hbcf.issuedAt)}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Expiry</label>
+                  <p className="font-medium">{formatApprovalDate(hbcf.expiresAt)}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Sync</label>
+                  <p className="font-medium">{formatApprovalStatus(hbcf.syncStatus)}</p>
+                </div>
+              </div>
+              {hbcf.certificateUrl && (
+                <Button variant="outline" size="sm" onClick={() => window.open(hbcf.certificateUrl, "_blank", "noopener,noreferrer")}>
+                  <ExternalLink className="h-3.5 w-3.5 mr-1" />
+                  Open Certificate
+                </Button>
+              )}
+              {!hbcf.certificateNumber && !hbcf.policyNumber && hbcf.requirementReason && (
+                <p className="text-xs text-muted-foreground">{hbcf.requirementReason}</p>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-medium">
+                  <FileCheck className="h-4 w-4" />
+                  CC / Commencement Approval
+                </div>
+                {approvalStatusBadge(commencement.status || "not recorded")}
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Type</label>
+                  <p className="font-medium">{formatApprovalStatus(commencement.certificateType)}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Reference</label>
+                  <p className="font-medium">{commencement.certificateNumber || "—"}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Approval Date</label>
+                  <p className="font-medium">{formatApprovalDate(commencement.approvalDate)}</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Expiry</label>
+                  <p className="font-medium">
+                    {formatApprovalDate(commencement.expiresAt)}
+                    {commencement.expiryIsEstimated && <span className="ml-1 text-xs text-muted-foreground">(estimate)</span>}
+                  </p>
+                </div>
+              </div>
+              {commencement.issuedBy && (
+                <p className="text-xs text-muted-foreground">Issued by {commencement.issuedBy}</p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg border p-4 space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2 font-medium">
+                  <Building className="h-4 w-4" />
+                  Certifier / PCA
+                </div>
+                <p className="text-sm text-muted-foreground">Booking details for inspections and notifications.</p>
+              </div>
+              {certifierEmail && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(buildInboxComposeUrl(
+                    certifierEmail,
+                    certifierName,
+                    `Inspection booking - ${approvalProject.projectNumber}`,
+                  ))}
+                >
+                  <Mail className="h-3.5 w-3.5 mr-1" />
+                  Compose Email
+                </Button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Business</label>
+                <p className="font-medium">{certifier.businessName || "—"}</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Contact</label>
+                <p className="font-medium">{certifier.contactName || "—"}</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Notification Email</label>
+                <p className="font-medium break-all">{certifierEmail || "—"}</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Phone</label>
+                <p className="font-medium">{certifier.phone || "—"}</p>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs font-medium text-muted-foreground">Address</label>
+                <p className="font-medium">{certifier.address || "—"}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-medium">
+                  <MessageSquare className="h-4 w-4" />
+                  RFIs
+                </div>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">{approvalDetails.rfiSummary?.open || 0} open</Badge>
+                  {(approvalDetails.rfiSummary?.blocking || 0) > 0 && <Badge variant="destructive">{approvalDetails.rfiSummary.blocking} blocking</Badge>}
+                </div>
+              </div>
+              {rfis.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No RFIs recorded.</p>
+              ) : (
+                <div className="divide-y rounded-md border">
+                  {rfis.map((rfi: any) => (
+                    <div key={rfi.id} className="p-3 text-sm space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{rfi.rfiNumber ? `${rfi.rfiNumber} - ` : ""}{rfi.subject}</span>
+                        {approvalStatusBadge(rfi.status)}
+                        {rfi.isBlocking && <Badge variant="destructive">Blocking</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Requested by {rfi.requestedBy || "—"} · Due {formatApprovalDate(rfi.dueAt)} · Assigned {rfi.assignedToName || rfi.assignedToContactName || "—"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(approvalDetails.rfiSummary?.total || 0) > rfis.length && (
+                <p className="text-xs text-muted-foreground">Showing latest {rfis.length} of {approvalDetails.rfiSummary.total} RFIs.</p>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-medium">
+                  <ClipboardCheck className="h-4 w-4" />
+                  Inspections
+                </div>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">{approvalDetails.inspectionSummary?.pending || 0} pending</Badge>
+                  {(approvalDetails.inspectionSummary?.failed || 0) > 0 && <Badge variant="destructive">{approvalDetails.inspectionSummary.failed} failed</Badge>}
+                </div>
+              </div>
+              {inspections.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No inspections recorded.</p>
+              ) : (
+                <div className="divide-y rounded-md border">
+                  {inspections.map((inspection: any) => (
+                    <div key={inspection.id} className="p-3 text-sm space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{inspection.title || formatApprovalStatus(inspection.inspectionType)}</span>
+                        {approvalStatusBadge(inspection.status, inspection.status === "passed" ? "success" : inspection.status === "failed" ? "danger" : undefined)}
+                        {inspection.isBlocking && <Badge variant="destructive">Blocking</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {formatApprovalStatus(inspection.inspectionType)} · {formatApprovalDate(inspection.scheduledDate)}
+                        {inspection.scheduledTime ? ` ${inspection.scheduledTime}` : ""} · Inspector {inspection.inspectorName || "—"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(approvalDetails.inspectionSummary?.total || 0) > inspections.length && (
+                <p className="text-xs text-muted-foreground">Showing latest {inspections.length} of {approvalDetails.inspectionSummary.total} inspections.</p>
+              )}
             </div>
           </div>
         </CardContent>

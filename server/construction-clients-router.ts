@@ -5,7 +5,8 @@ import {
   constructionJobs, constructionProgress, constructionAssignments,
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
-  approvalProjects,
+  approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
+  approvalLodgements, hbcfCertificates,
 } from "../drizzle/schema";
 import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -49,6 +50,28 @@ async function requireJobAccess(db: any, ctx: any, jobId: number) {
 function nullableName(value?: string | null) {
   const trimmed = String(value || "").trim();
   return trimmed || null;
+}
+
+function addYears(date: Date, years: number) {
+  const copy = new Date(date);
+  copy.setFullYear(copy.getFullYear() + years);
+  return copy;
+}
+
+function isCommencementCertificateType(value?: string | null) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["cc", "cdc", "ba", "ccc", "nsw_cc", "nsw_cdc", "act_ba", "act_cou"].includes(normalized) ||
+    /construction certificate|commencement certificate|construction commencement|complying development|building approval/.test(normalized);
+}
+
+function contactDisplayName(lead?: any | null) {
+  if (!lead) return null;
+  return [lead.contactFirstName, lead.contactLastName].filter(Boolean).join(" ") || lead.company || null;
+}
+
+function contactAddress(lead?: any | null) {
+  if (!lead) return null;
+  return [lead.contactAddress, lead.suburb, lead.state, lead.postcode].filter(Boolean).join(", ") || null;
 }
 
 async function resolveProjectTeamRole(db: any, ctx: any, userId?: number | null, manualName?: string | null) {
@@ -705,6 +728,9 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
       const job = await requireJobAccess(db, ctx, input.jobId);
       const tenantId = tenantIdFromContext(ctx);
+      if (!tenantId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required" });
+      }
 
       const matchConditions: any[] = [eq(approvalProjects.crmJobId, job.id)];
       if (job.leadId) matchConditions.push(eq(approvalProjects.crmLeadId, job.leadId));
@@ -724,7 +750,173 @@ export const constructionClientsRouter = router({
         .orderBy(desc(approvalProjects.updatedAt))
         .limit(5);
 
-      return { projects };
+      if (projects.length === 0) {
+        return { projects };
+      }
+
+      const projectIds = projects.map((project) => project.id);
+      const leadIds = Array.from(new Set(projects.map((project) => project.crmLeadId).filter((id): id is number => !!id)));
+      const certifierContactIds = Array.from(new Set(projects.map((project) => project.certifierContactId).filter((id): id is number => !!id)));
+
+      const [rfis, inspections, certificates, lodgements, hbcfRows, certifierContacts] = await Promise.all([
+        db.select({
+          id: approvalRfis.id,
+          projectId: approvalRfis.projectId,
+          rfiNumber: approvalRfis.rfiNumber,
+          subject: approvalRfis.subject,
+          requestedBy: approvalRfis.requestedBy,
+          assignedToName: approvalRfis.assignedToName,
+          assignedToContactName: approvalRfis.assignedToContactName,
+          dueAt: approvalRfis.dueAt,
+          receivedAt: approvalRfis.receivedAt,
+          respondedAt: approvalRfis.respondedAt,
+          status: approvalRfis.status,
+          isBlocking: approvalRfis.isBlocking,
+        })
+          .from(approvalRfis)
+          .where(inArray(approvalRfis.projectId, projectIds))
+          .orderBy(desc(approvalRfis.createdAt)),
+        db.select({
+          id: approvalInspections.id,
+          projectId: approvalInspections.projectId,
+          inspectionType: approvalInspections.inspectionType,
+          title: approvalInspections.title,
+          scheduledDate: approvalInspections.scheduledDate,
+          scheduledTime: approvalInspections.scheduledTime,
+          inspectorName: approvalInspections.inspectorName,
+          status: approvalInspections.status,
+          result: approvalInspections.result,
+          inspectedAt: approvalInspections.inspectedAt,
+          isBlocking: approvalInspections.isBlocking,
+          defectCount: approvalInspections.defectCount,
+        })
+          .from(approvalInspections)
+          .where(inArray(approvalInspections.projectId, projectIds))
+          .orderBy(desc(approvalInspections.createdAt)),
+        db.select().from(approvalCertificates)
+          .where(inArray(approvalCertificates.projectId, projectIds))
+          .orderBy(desc(approvalCertificates.updatedAt)),
+        db.select().from(approvalLodgements)
+          .where(inArray(approvalLodgements.projectId, projectIds))
+          .orderBy(desc(approvalLodgements.updatedAt)),
+        db.select({
+          id: hbcfCertificates.id,
+          approvalProjectId: hbcfCertificates.approvalProjectId,
+          crmLeadId: hbcfCertificates.crmLeadId,
+          certificateNumber: hbcfCertificates.certificateNumber,
+          policyNumber: hbcfCertificates.policyNumber,
+          status: hbcfCertificates.status,
+          builderName: hbcfCertificates.builderName,
+          insurerName: hbcfCertificates.insurerName,
+          contractPrice: hbcfCertificates.contractPrice,
+          issuedAt: hbcfCertificates.issuedAt,
+          expiresAt: hbcfCertificates.expiresAt,
+          certificateUrl: hbcfCertificates.certificateUrl,
+          syncStatus: hbcfCertificates.syncStatus,
+          syncError: hbcfCertificates.syncError,
+          updatedAt: hbcfCertificates.updatedAt,
+        })
+          .from(hbcfCertificates)
+          .where(and(
+            eq(hbcfCertificates.tenantId, tenantId),
+            leadIds.length > 0
+              ? or(inArray(hbcfCertificates.approvalProjectId, projectIds), inArray(hbcfCertificates.crmLeadId, leadIds))
+              : inArray(hbcfCertificates.approvalProjectId, projectIds),
+          ))
+          .orderBy(desc(hbcfCertificates.updatedAt)),
+        certifierContactIds.length > 0
+          ? db.select({
+            id: crmLeads.id,
+            contactFirstName: crmLeads.contactFirstName,
+            contactLastName: crmLeads.contactLastName,
+            company: crmLeads.company,
+            contactPhone: crmLeads.contactPhone,
+            contactEmail: crmLeads.contactEmail,
+            contactAddress: crmLeads.contactAddress,
+            suburb: crmLeads.suburb,
+            state: crmLeads.state,
+            postcode: crmLeads.postcode,
+          })
+            .from(crmLeads)
+            .where(and(
+              eq(crmLeads.tenantId, tenantId),
+              inArray(crmLeads.id, certifierContactIds),
+            ))
+          : Promise.resolve([]),
+      ]);
+
+      const certifierById = new Map((certifierContacts as any[]).map((contact) => [contact.id, contact]));
+
+      const enrichedProjects = projects.map((project) => {
+        const projectRfis = rfis.filter((rfi) => rfi.projectId === project.id);
+        const projectInspections = inspections.filter((inspection) => inspection.projectId === project.id);
+        const commencementCertificate = certificates.find((certificate) =>
+          certificate.projectId === project.id && isCommencementCertificateType(certificate.certificateType)
+        );
+        const commencementLodgement = lodgements.find((lodgement) =>
+          lodgement.projectId === project.id && isCommencementCertificateType(lodgement.lodgementType)
+        );
+        const approvalDate = commencementCertificate?.issuedAt ||
+          commencementLodgement?.determinationAt ||
+          commencementLodgement?.acceptedAt ||
+          null;
+        const sourceExpiry = commencementCertificate?.expiresAt || commencementLodgement?.expiresAt || null;
+        const calculatedExpiry = !sourceExpiry && approvalDate ? addYears(new Date(approvalDate), 5) : null;
+        const hbcfCertificate = hbcfRows.find((certificate) =>
+          certificate.approvalProjectId === project.id ||
+          (!!project.crmLeadId && certificate.crmLeadId === project.crmLeadId)
+        );
+        const certifierContact = project.certifierContactId ? certifierById.get(project.certifierContactId) : null;
+
+        return {
+          ...project,
+          certifierContact: {
+            businessName: certifierContact?.company || project.certifierName || null,
+            contactName: contactDisplayName(certifierContact) || project.certifierName || null,
+            notificationEmail: certifierContact?.contactEmail || null,
+            phone: certifierContact?.contactPhone || null,
+            address: contactAddress(certifierContact),
+          },
+          hbcf: {
+            required: project.hbcfRequired,
+            status: hbcfCertificate?.status || project.hbcfStatus,
+            certificateNumber: hbcfCertificate?.certificateNumber || null,
+            policyNumber: hbcfCertificate?.policyNumber || null,
+            issuedAt: hbcfCertificate?.issuedAt || null,
+            expiresAt: hbcfCertificate?.expiresAt || null,
+            certificateUrl: hbcfCertificate?.certificateUrl || null,
+            syncStatus: hbcfCertificate?.syncStatus || null,
+            syncError: hbcfCertificate?.syncError || null,
+            requirementReason: project.hbcfRequirementReason || null,
+          },
+          commencementApproval: {
+            certificateType: commencementCertificate?.certificateType || commencementLodgement?.lodgementType || null,
+            certificateNumber: commencementCertificate?.certificateNumber || commencementLodgement?.externalReferenceNumber || null,
+            status: commencementCertificate
+              ? "issued"
+              : commencementLodgement?.status || null,
+            issuedBy: commencementCertificate?.issuedBy || commencementLodgement?.authorityName || null,
+            approvalDate,
+            expiresAt: sourceExpiry || calculatedExpiry,
+            expiryIsEstimated: !sourceExpiry && !!calculatedExpiry,
+          },
+          rfis: projectRfis.slice(0, 5),
+          rfiSummary: {
+            total: projectRfis.length,
+            open: projectRfis.filter((rfi) => ["open", "in_progress", "overdue"].includes(String(rfi.status))).length,
+            blocking: projectRfis.filter((rfi) => rfi.isBlocking && !["responded", "closed"].includes(String(rfi.status))).length,
+          },
+          inspections: projectInspections.slice(0, 5),
+          inspectionSummary: {
+            total: projectInspections.length,
+            pending: projectInspections.filter((inspection) => ["required", "scheduled", "booked", "deferred"].includes(String(inspection.status))).length,
+            failed: projectInspections.filter((inspection) => inspection.status === "failed").length,
+            passed: projectInspections.filter((inspection) => inspection.status === "passed").length,
+          },
+        };
+      });
+
+      return { projects: enrichedProjects };
     }),
 
   projectTeamByLeadId: protectedProcedure

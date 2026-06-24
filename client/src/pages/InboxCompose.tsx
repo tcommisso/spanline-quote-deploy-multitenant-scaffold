@@ -151,6 +151,7 @@ function ContactSearchInput({
 export default function InboxCompose() {
   const [, setLocation] = useLocation();
   const fromAddressTouchedRef = useRef(false);
+  const prefillAppliedRef = useRef(false);
   const [toEmails, setToEmails] = useState<string[]>([]);
   const [ccEmails, setCcEmails] = useState<string[]>([]);
   const [recipientNamesByEmail, setRecipientNamesByEmail] = useState<Record<string, string>>({});
@@ -178,6 +179,28 @@ export default function InboxCompose() {
       setFromAddressId(String(composeDefaults.fromAddressId));
     }
   }, [composeDefaults?.fromAddressId]);
+
+  useEffect(() => {
+    if (prefillAppliedRef.current) return;
+    prefillAppliedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const to = params.get("to")?.trim().toLowerCase();
+    const name = params.get("name")?.trim();
+    const subjectParam = params.get("subject")?.trim();
+    const bodyParam = params.get("body")?.trim();
+    if (to) {
+      setToEmails((current) => current.includes(to) ? current : [...current, to]);
+      if (name) {
+        setRecipientNamesByEmail((current) => ({ ...current, [to]: name }));
+      }
+    }
+    if (subjectParam) {
+      setSubject((current) => current.trim() ? current : subjectParam);
+    }
+    if (bodyParam) {
+      setBody((current) => current.trim() ? current : bodyParam);
+    }
+  }, []);
 
   function handleSend() {
     if (toEmails.length === 0) {
