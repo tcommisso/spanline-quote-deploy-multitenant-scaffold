@@ -452,6 +452,7 @@ export default function ComponentCatalogueAdmin() {
       {/* Edit Dialog */}
       <EditProductDialog
         product={editItem}
+        categories={categoryRows}
         subGroups={subGroupRows}
         onClose={() => setEditItem(null)}
         onSave={(data) => updateMutation.mutate(data)}
@@ -539,12 +540,14 @@ export default function ComponentCatalogueAdmin() {
 // ─── Edit Product Dialog ─────────────────────────────────────────────────────
 function EditProductDialog({
   product,
+  categories,
   subGroups,
   onClose,
   onSave,
   isPending,
 }: {
   product: CatalogueProduct | null;
+  categories: string[];
   subGroups: string[];
   onClose: () => void;
   onSave: (data: any) => void;
@@ -557,6 +560,7 @@ function EditProductDialog({
     uom: "",
     packQtySizes: "",
     price: "",
+    category: "",
     subGroup: "",
     tags: "",
     colourInputAllowed: false,
@@ -576,6 +580,7 @@ function EditProductDialog({
       uom: product.uom || "ea",
       packQtySizes: product.packQtySizes || "",
       price: product.price.toString(),
+      category: product.category || "",
       subGroup: product.subGroup || "",
       tags: product.tags || "",
       colourInputAllowed: product.colourInputAllowed ?? false,
@@ -585,7 +590,7 @@ function EditProductDialog({
 
   return (
     <Dialog open={!!product} onOpenChange={() => onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Catalogue Product</DialogTitle>
         </DialogHeader>
@@ -619,6 +624,19 @@ function EditProductDialog({
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Category *</Label>
+              <Select value={form.category} onValueChange={(v) => setForm(f => ({ ...f, category: v }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((cat) => (
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Sub-Group</Label>
               <Select value={form.subGroup || "none"} onValueChange={(v) => setForm(f => ({ ...f, subGroup: v === "none" ? "" : v }))}>
@@ -673,7 +691,7 @@ function EditProductDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            disabled={isPending}
+            disabled={isPending || !form.category}
             onClick={() => onSave({
               id: product!.id,
               spaCode: form.spaCode,
@@ -682,6 +700,7 @@ function EditProductDialog({
               uom: form.uom,
               packQtySizes: form.packQtySizes,
               price: parseFloat(form.price) || 0,
+              category: form.category,
               subGroup: form.subGroup,
               tags: form.tags,
               colourInputAllowed: form.colourInputAllowed,
@@ -723,11 +742,16 @@ function AddProductDialog({
     category: "",
     subGroup: "",
     tags: "",
+    colourInputAllowed: false,
+    colourGroup: "",
   });
+
+  const { data: colourGroupsList } = trpc.colourGroups.getAll.useQuery();
+  const colourGroupRows = useMemo(() => Array.isArray(colourGroupsList) ? colourGroupsList : [], [colourGroupsList]);
 
   return (
     <Dialog open={open} onOpenChange={() => onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add New Catalogue Product</DialogTitle>
         </DialogHeader>
@@ -797,6 +821,33 @@ function AddProductDialog({
               />
             </div>
           </div>
+          <div className="flex items-center gap-2 pt-1">
+            <input
+              type="checkbox"
+              id="addColourInputAllowed"
+              checked={form.colourInputAllowed}
+              onChange={(e) => setForm(f => ({ ...f, colourInputAllowed: e.target.checked }))}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+            <Label htmlFor="addColourInputAllowed" className="text-xs">Colour Input Allowed (show Required Colour field on orders)</Label>
+          </div>
+          <div className="space-y-1 pt-1">
+            <Label className="text-xs">Colour Group</Label>
+            <Select
+              value={form.colourGroup || "__none__"}
+              onValueChange={(val) => setForm(f => ({ ...f, colourGroup: val === "__none__" ? "" : val }))}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue placeholder="Standard Colorbond (default)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Standard Colorbond (default)</SelectItem>
+                {colourGroupRows.map(g => (
+                  <SelectItem key={g.id} value={g.name}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
@@ -812,6 +863,8 @@ function AddProductDialog({
               category: form.category,
               subGroup: form.subGroup,
               tags: form.tags,
+              colourInputAllowed: form.colourInputAllowed,
+              colourGroup: form.colourGroup,
             })}
           >
             {isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
