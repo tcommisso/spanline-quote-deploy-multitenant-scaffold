@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Edit, Save, X, AlertTriangle, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import ClientPicker from "@/components/ClientPicker";
@@ -14,6 +14,16 @@ import SupplierPicker from "@/components/SupplierPicker";
 
 interface ApprovalOverviewTabProps {
   project: any;
+}
+
+function dateInputValue(value?: string | Date | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function isIssuedHbcfStatus(value?: string | null) {
+  return ["issued", "current", "active", "valid"].includes(String(value || "").toLowerCase());
 }
 
 export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
@@ -363,7 +373,12 @@ function HbcfProjectCard({ project }: { project: any }) {
 
   const syncProject = trpc.approvals.hbcf.certificates.syncProject.useMutation({
     onSuccess: (result) => {
-      toast.success(`HBCF sync complete: ${result.imported} certificate${result.imported === 1 ? "" : "s"} imported`);
+      const linked = (result as any).linked || 0;
+      if (linked > 0) {
+        toast.success("HBCF sync complete: linked existing certificate from the register");
+      } else {
+        toast.success(`HBCF sync complete: ${result.imported} certificate${result.imported === 1 ? "" : "s"} imported`);
+      }
       utils.approvals.hbcf.certificates.list.invalidate({ projectId: project.id });
       utils.approvals.hbcf.gateStatus.invalidate({ projectId: project.id });
       utils.approvals.projects.get.invalidate({ id: project.id });
@@ -383,8 +398,26 @@ function HbcfProjectCard({ project }: { project: any }) {
   });
 
   const required = gateStatus?.required || project.hbcfRequired;
-  const issued = gateStatus?.issued || (certificates || []).some((cert: any) => cert.status === "issued");
+  const issued = gateStatus?.issued || (certificates || []).some((cert: any) => isIssuedHbcfStatus(cert.status));
   const statusVariant = !required ? "outline" : issued ? "default" : "destructive";
+  const primaryCertificate = (certificates || [])[0];
+
+  useEffect(() => {
+    if (!primaryCertificate) return;
+    setForm((current) => ({
+      ...current,
+      certificateNumber: current.certificateNumber || primaryCertificate.certificateNumber || "",
+      policyNumber: current.policyNumber || primaryCertificate.policyNumber || "",
+      status: current.status || primaryCertificate.status || "issued",
+      issuedAt: current.issuedAt || dateInputValue(primaryCertificate.issuedAt),
+      expiresAt: current.expiresAt || dateInputValue(primaryCertificate.expiresAt),
+      builderName: current.builderName || primaryCertificate.builderName || "",
+      builderLicenceNumber: current.builderLicenceNumber || primaryCertificate.builderLicenceNumber || "",
+      insurerName: current.insurerName || primaryCertificate.insurerName || "",
+      contractPrice: current.contractPrice || primaryCertificate.contractPrice || project.estimatedCost || "",
+      certificateUrl: current.certificateUrl || primaryCertificate.certificateUrl || "",
+    }));
+  }, [primaryCertificate?.id, project.estimatedCost]);
 
   const handleManualSave = () => {
     if (!form.certificateNumber && !form.policyNumber) {
@@ -460,7 +493,7 @@ function HbcfProjectCard({ project }: { project: any }) {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Status</span>
-                  <p><Badge variant={cert.status === "issued" ? "default" : "outline"}>{cert.status}</Badge></p>
+                  <p><Badge variant={isIssuedHbcfStatus(cert.status) ? "default" : "outline"}>{cert.status}</Badge></p>
                 </div>
               </div>
             ))}

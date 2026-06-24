@@ -151,6 +151,9 @@ function normalizeAddress(value?: string | null) {
     .replace(/\b(avenue|ave)\b/g, "ave")
     .replace(/\b(drive|dr)\b/g, "dr")
     .replace(/\b(crescent|cres)\b/g, "cres")
+    .replace(/\b(close|cl)\b/g, "cl")
+    .replace(/\b(place|pl)\b/g, "pl")
+    .replace(/\b(court|ct)\b/g, "ct")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -207,6 +210,10 @@ function normalizeHbcfStatus(value: unknown) {
   if (["application", "applied", "pending", "lodged"].includes(text)) return "applied";
   if (["cancelled", "canceled", "expired", "suspended", "refused"].includes(text)) return text;
   return text;
+}
+
+function isIssuedHbcfStatus(value: unknown) {
+  return normalizeHbcfStatus(value) === "issued";
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -607,6 +614,79 @@ function sameMoney(left: unknown, right: unknown) {
   const a = asMoney(left);
   const b = asMoney(right);
   return !a || !b || a === b;
+}
+
+function projectMatchesCertificate(project: any, certificate: any) {
+  if (Number(certificate.approvalProjectId) === Number(project.id)) return true;
+  if (project.crmLeadId && Number(certificate.crmLeadId) === Number(project.crmLeadId)) return true;
+
+  const projectPostcode = String(project.propertyPostcode || firstPostcode(project.propertyAddress) || "").trim();
+  const certificatePostcode = String(certificate.propertyPostcode || firstPostcode(certificate.propertyAddress) || "").trim();
+  const postcodeMatches = !!projectPostcode && !!certificatePostcode && projectPostcode === certificatePostcode;
+  const addressMatches = looseAddressMatch(project.propertyAddress, certificate.propertyAddress);
+  const ownerMatches = looseTextMatch(project.clientName, certificate.ownerName);
+
+  if (addressMatches && (!project.clientName || !certificate.ownerName || ownerMatches)) return true;
+  if (ownerMatches && postcodeMatches) return true;
+  return false;
+}
+
+async function findMatchingProjectHbcfCertificate(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  project: any,
+  tenantId: number | null | undefined,
+) {
+  const exactConditions: any[] = [eq(hbcfCertificates.approvalProjectId, project.id)];
+  appendTenantScope(exactConditions, hbcfCertificates.tenantId, tenantId);
+  const [linked] = await db.select().from(hbcfCertificates).where(and(...exactConditions)).limit(1);
+  if (linked) return linked;
+
+  const projectPostcode = String(project.propertyPostcode || firstPostcode(project.propertyAddress) || "").trim();
+  if (!projectPostcode && !project.crmLeadId) return null;
+
+  const candidateConditions: any[] = [
+    sql`(${hbcfCertificates.approvalProjectId} IS NULL OR ${hbcfCertificates.approvalProjectId} = ${project.id})`,
+  ];
+  appendTenantScope(candidateConditions, hbcfCertificates.tenantId, tenantId);
+  if (projectPostcode) candidateConditions.push(eq(hbcfCertificates.propertyPostcode, projectPostcode));
+  if (project.crmLeadId) {
+    candidateConditions.push(or(
+      eq(hbcfCertificates.crmLeadId, project.crmLeadId),
+      sql`${hbcfCertificates.crmLeadId} IS NULL`,
+    )!);
+  }
+
+  const candidates = await db.select()
+    .from(hbcfCertificates)
+    .where(and(...candidateConditions))
+    .orderBy(desc(hbcfCertificates.updatedAt))
+    .limit(100);
+
+  return candidates.find((candidate) => projectMatchesCertificate(project, candidate)) ?? null;
+}
+
+async function linkExistingHbcfCertificateToProject(project: any, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const certificate = await findMatchingProjectHbcfCertificate(db, project, tenantId);
+  if (!certificate) return null;
+
+  const updates: any = {
+    approvalProjectId: project.id,
+    crmLeadId: project.crmLeadId ?? certificate.crmLeadId ?? null,
+    ownerName: hasValue(certificate.ownerName) ? certificate.ownerName : project.clientName ?? null,
+    propertyAddress: hasValue(certificate.propertyAddress) ? certificate.propertyAddress : project.propertyAddress ?? null,
+    propertySuburb: hasValue(certificate.propertySuburb) ? certificate.propertySuburb : project.propertySuburb ?? null,
+    propertyPostcode: hasValue(certificate.propertyPostcode) ? certificate.propertyPostcode : project.propertyPostcode ?? null,
+    contractPrice: hasValue(certificate.contractPrice) ? certificate.contractPrice : asMoney(project.estimatedCost),
+    lastSyncedAt: new Date(),
+  };
+
+  await db.update(hbcfCertificates)
+    .set(updates)
+    .where(and(...scopedConditions(hbcfCertificates, tenantId, eq(hbcfCertificates.id, certificate.id))));
+  await linkCertificateToProject(certificate.id, project.id, certificate.status, tenantId);
+  return { ...certificate, ...updates };
 }
 
 async function findExistingHbcfCertificate(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tenantId: number | null, data: InsertHbcfCertificate) {
@@ -1045,7 +1125,7 @@ async function linkCertificateToProject(
   if (!projectId) return;
   const db = await getDb();
   if (!db) return;
-  const issued = String(status || "").toLowerCase() === "issued";
+  const issued = isIssuedHbcfStatus(status);
   await db.update(approvalProjects)
     .set({
       hbcfRequired: true,
@@ -1092,7 +1172,7 @@ export async function getProjectHbcfGateStatus(projectId: number, tenantId?: num
     .where(and(
       ...scopedConditions(hbcfCertificates, tenantId),
       eq(hbcfCertificates.approvalProjectId, projectId),
-      eq(hbcfCertificates.status, "issued"),
+      sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) IN ('issued', 'current', 'active', 'valid')`,
     ))
     .limit(1);
   return {
@@ -1112,6 +1192,10 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
   if (!project) throw new Error("Project not found");
   if (!isNswHbcfLocation(project)) {
     return { imported: 0, total: 0, skipped: "non_nsw_project" };
+  }
+  const linkedExisting = await linkExistingHbcfCertificateToProject(project, tenantId);
+  if (linkedExisting) {
+    return { imported: 0, linked: 1, total: 1, source: "certificate_register" };
   }
   const profile = await getHbcfBuilderProfile(tenantId);
   if (!profile) throw new Error("HBCF builder profile has not been configured");
@@ -1154,7 +1238,7 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
       imported++;
     }
     await recordProfileSync(profile, "success");
-    return { imported, total: policies.length };
+    return { imported, linked: 0, total: policies.length, source: "api" };
   } catch (error: any) {
     await recordProfileSync(profile, "failed", error?.message || String(error));
     throw error;
