@@ -21,6 +21,7 @@ import {
   listHbcfCompetitorMatches,
   runHbcfCompetitorMatching,
   syncProjectHbcfFromApi,
+  syncTenantHbcfCertificatesFromApi,
   upsertHbcfBuilderProfile,
 } from "./hbcf-service";
 
@@ -44,6 +45,33 @@ function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: n
 function isCommencementCertificateType(certificateType: string) {
   return /^(CC|CDC|BA|CCC)$/i.test(certificateType) ||
     /construction certificate|construction commencement|commencement certificate|complying development|building approval/i.test(certificateType);
+}
+
+function parseConsentConditionsResponse(content: string) {
+  const trimmed = content.trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+  const candidates = [trimmed];
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  let lastError: any = null;
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const message = lastError?.message || "unknown JSON parse error";
+  if (/unterminated|unexpected end|end of json/i.test(message)) {
+    throw new Error("The AI response was incomplete while parsing this consent PDF. Try again, or split a large consent into smaller sections before importing.");
+  }
+  throw new Error(`The AI response was not valid condition JSON: ${message}`);
 }
 
 export const approvalRouter = router({
@@ -781,7 +809,7 @@ export const approvalRouter = router({
           messages: [
             {
               role: "system",
-              content: `You are an expert at reading Australian development consent documents (DA, CDC, CC, S68 approvals). Extract ALL conditions from the document. For each condition, identify:\n- conditionNumber: the condition number as written (e.g. "1", "2a", "3(i)")\n- title: a concise 5-15 word summary of the condition\n- description: the full text of the condition\n- category: one of "pre_commencement", "during_works", "prior_to_occupation", "ongoing", "other" based on when the condition must be satisfied\n- isBlocking: true if the condition must be satisfied before work can proceed (pre-commencement conditions are typically blocking)\n- blockingGate: 1 for pre-commencement, 3 for prior-to-occupation, null for others\n\nReturn ALL conditions found. If the document has sections/headings that indicate timing (e.g. "Prior to Issue of Construction Certificate", "During Construction", "Prior to Occupation"), use those to determine the category.`,
+              content: `You are an expert at reading Australian development consent documents (DA, CDC, CC, S68 approvals). Extract ALL conditions from the document. For each condition, identify:\n- conditionNumber: the condition number as written (e.g. "1", "2a", "3(i)")\n- title: a concise 5-15 word summary of the condition\n- description: the full text of the condition as compact plain text, without markdown or repeated heading boilerplate\n- category: one of "pre_commencement", "during_works", "prior_to_occupation", "ongoing", "other" based on when the condition must be satisfied\n- isBlocking: true if the condition must be satisfied before work can proceed (pre-commencement conditions are typically blocking)\n- blockingGate: 1 for pre-commencement, 3 for prior-to-occupation, null for others\n\nReturn compact JSON only. Return ALL conditions found. If the document has sections/headings that indicate timing (e.g. "Prior to Issue of Construction Certificate", "During Construction", "Prior to Occupation"), use those to determine the category.`,
             },
             {
               role: "user",
@@ -823,12 +851,13 @@ export const approvalRouter = router({
               },
             },
           },
+          maxTokens: 12000,
         });
 
         const content = response.choices?.[0]?.message?.content;
         if (!content) throw new Error("LLM returned no content");
 
-        const parsed = JSON.parse(content as string);
+        const parsed = parseConsentConditionsResponse(content as string);
         return {
           conditions: parsed.conditions || [],
           documentTitle: parsed.documentTitle || input.fileName,
@@ -1291,6 +1320,10 @@ export const approvalRouter = router({
           const project = await approvalDb.getApprovalProjectById(input.projectId, ctx.tenant!.id);
           if (!project) throw new Error("Project not found");
           return syncProjectHbcfFromApi(input.projectId, ctx.tenant!.id, ctx.user.id);
+        }),
+      syncAll: protectedProcedure
+        .mutation(async ({ ctx }) => {
+          return syncTenantHbcfCertificatesFromApi(ctx.tenant!.id, ctx.user.id);
         }),
     }),
 

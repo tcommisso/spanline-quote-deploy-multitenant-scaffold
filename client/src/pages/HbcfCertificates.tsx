@@ -3,8 +3,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { FileCheck, RefreshCw, ShieldCheck } from "lucide-react";
+import { CloudDownload, FileCheck, RefreshCw, ShieldCheck } from "lucide-react";
 import { useLocation } from "wouter";
+import { toast } from "sonner";
 
 function formatDate(value?: string | Date | null) {
   if (!value) return "-";
@@ -27,7 +28,16 @@ function formatCurrency(value?: string | number | null) {
 
 export default function HbcfCertificates() {
   const [, setLocation] = useLocation();
+  const utils = trpc.useUtils();
   const { data: certificates, isLoading, refetch, isFetching } = trpc.approvals.hbcf.certificates.list.useQuery();
+  const syncAll = trpc.approvals.hbcf.certificates.syncAll.useMutation({
+    onSuccess: (result) => {
+      toast.success(`HBCF API sync complete: ${result.updated} updated from ${result.checked} checked`);
+      utils.approvals.hbcf.certificates.list.invalidate();
+      utils.approvals.hbcf.profile.get.invalidate();
+    },
+    onError: (err) => toast.error(err.message || "HBCF API sync failed"),
+  });
 
   return (
     <div className="p-6 space-y-4">
@@ -41,10 +51,16 @@ export default function HbcfCertificates() {
             Issued HBCF certificates recorded from project sync, manual entry, and API import.
           </p>
         </div>
-        <Button variant="outline" onClick={() => refetch()} disabled={isFetching} className="gap-2">
-          <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => refetch()} disabled={isFetching || syncAll.isPending} className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+          <Button variant="brand" onClick={() => syncAll.mutate()} disabled={syncAll.isPending || isFetching} className="gap-2">
+            <CloudDownload className={`h-4 w-4 ${syncAll.isPending ? "animate-spin" : ""}`} />
+            Sync API
+          </Button>
+        </div>
       </div>
 
       <Card>

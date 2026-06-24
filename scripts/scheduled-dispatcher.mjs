@@ -104,6 +104,12 @@ const jobs = [
     due: mondayAt(7, 20),
   },
   {
+    key: "hbcf-sync",
+    endpoint: "/api/scheduled/hbcf-sync",
+    cadence: "Daily 5:30am AEST/AEDT",
+    due: atLocalTime(5, 30),
+  },
+  {
     key: "weather-poll",
     endpoint: "/api/scheduled/weather-poll",
     cadence: "Daily 6am AEST/AEDT",

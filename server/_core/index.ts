@@ -29,6 +29,7 @@ import { registerScheduledRfiDueNotify } from "../scheduled-rfi-due-notify";
 import { registerScheduledConditionDueReminder } from "../scheduled-condition-due-reminder";
 import { registerScheduledDaTrackerPoll } from "../scheduled-da-tracker-poll";
 import { registerScheduledNswDaPoll } from "../scheduled-nsw-da-poll";
+import { registerScheduledHbcfSync } from "../scheduled-hbcf-sync";
 import { registerGriffithDaIngest } from "../griffith-da-ingest";
 import { registerScheduledMsGraphSync } from "../scheduled-msgraph-sync";
 import { registerScheduledVocphoneSync } from "../scheduled-vocphone-sync";
@@ -118,6 +119,8 @@ async function startServer() {
   registerScheduledDaTrackerPoll(app);
   // Scheduled NSW DA poll (daily) + competitor digest
   registerScheduledNswDaPoll(app);
+  // Scheduled HBCF certificate register sync (daily)
+  registerScheduledHbcfSync(app);
   // Griffith DA ingest webhook (push from local VPN machine)
   registerGriffithDaIngest(app);
   // Scheduled Microsoft Graph email sync (every 5 minutes)

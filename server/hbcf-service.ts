@@ -8,6 +8,7 @@ import {
   hbcfBuilderProfiles,
   hbcfCertificates,
   hbcfPolicyMatches,
+  hbcfSyncLogs,
   quoteComponents,
   quotes,
   type HbcfBuilderProfile,
@@ -151,6 +152,25 @@ function normalizeSuburb(value?: string | null) {
     .trim();
 }
 
+function normalizeLooseText(value?: string | null) {
+  return (value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ")
+    .trim();
+}
+
+function looseTextMatch(left?: string | null, right?: string | null) {
+  const a = normalizeLooseText(left);
+  const b = normalizeLooseText(right);
+  return !!a && !!b && (a === b || a.includes(b) || b.includes(a));
+}
+
+function looseAddressMatch(left?: string | null, right?: string | null) {
+  const a = normalizeAddress(left);
+  const b = normalizeAddress(right);
+  return !!a && !!b && (a === b || a.includes(b) || b.includes(a));
+}
+
 function firstPostcode(...values: unknown[]) {
   return extractPostcodes(...values)[0] ?? null;
 }
@@ -175,20 +195,20 @@ function rawPayloadOrNull(value: unknown): Record<string, any> | null {
 }
 
 function normalizePolicy(raw: any): HbcfPolicyLike {
-  const issuedAt = firstString(raw, ["issuedAt", "issueDate", "issued_date", "certificateIssuedDate", "policyIssueDate"]);
-  const expiresAt = firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "policyExpiryDate"]);
+  const issuedAt = firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]);
+  const expiresAt = firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]);
   return {
-    policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "hbcfPolicyNumber"]),
-    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "hbcfCertificateNumber"]),
-    status: firstString(raw, ["status", "policyStatus", "certificateStatus"]) || "issued",
-    builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName"]),
-    builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "licenceNumber", "licenseNumber"]),
+    policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber"]),
+    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber"]),
+    status: firstString(raw, ["status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"]) || "issued",
+    builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName", "licensee", "businessNames"]),
+    builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "licenceNumber", "licenseNumber", "licenceName"]),
     insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
-    ownerName: firstString(raw, ["ownerName", "homeOwnerName", "customerName"]),
-    propertyAddress: firstString(raw, ["propertyAddress", "address", "siteAddress", "riskAddress"]),
+    ownerName: firstString(raw, ["ownerName", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName"]),
+    propertyAddress: firstString(raw, ["propertyAddress", "address", "siteAddress", "riskAddress", "insuredAddress", "projectAddress"]),
     propertySuburb: firstString(raw, ["propertySuburb", "suburb"]),
     propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]),
-    contractPrice: firstString(raw, ["contractPrice", "contractValue", "projectValue", "insuredValue"]),
+    contractPrice: firstString(raw, ["contractPrice", "contractValue", "projectValue", "insuredValue", "insuredAmount", "contractAmount", "constructionCost", "jobValue", "coverAmount"]),
     issuedAt,
     expiresAt,
     certificateUrl: firstString(raw, ["certificateUrl", "documentUrl", "url"]),
@@ -286,6 +306,87 @@ function scopedConditions(table: any, tenantId: number | null | undefined, ...ba
 
 function uniqueIds(values: unknown[]) {
   return Array.from(new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0)));
+}
+
+function hasValue(value: unknown) {
+  return value != null && String(value).trim() !== "";
+}
+
+function sameMoney(left: unknown, right: unknown) {
+  const a = asMoney(left);
+  const b = asMoney(right);
+  return !a || !b || a === b;
+}
+
+async function findExistingHbcfCertificate(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tenantId: number | null, data: InsertHbcfCertificate) {
+  const exactConditions: any[] = [];
+  if (data.policyNumber) exactConditions.push(eq(hbcfCertificates.policyNumber, data.policyNumber));
+  if (data.certificateNumber) exactConditions.push(eq(hbcfCertificates.certificateNumber, data.certificateNumber));
+  if (data.externalId) exactConditions.push(eq(hbcfCertificates.externalId, data.externalId));
+
+  if (exactConditions.length > 0) {
+    const conditions: any[] = [or(...exactConditions)!];
+    appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
+    const [row] = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(1);
+    if (row) return row;
+  }
+
+  const linkConditions: any[] = [];
+  if (data.approvalProjectId) linkConditions.push(eq(hbcfCertificates.approvalProjectId, data.approvalProjectId));
+  if (data.quoteId) linkConditions.push(eq(hbcfCertificates.quoteId, data.quoteId));
+  if (data.crmLeadId) linkConditions.push(eq(hbcfCertificates.crmLeadId, data.crmLeadId));
+  if (linkConditions.length > 0) {
+    const conditions: any[] = [
+      or(...linkConditions)!,
+      sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) <> 'issued'`,
+    ];
+    appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
+    const [row] = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(1);
+    if (row) return row;
+  }
+
+  const targetPostcode = data.propertyPostcode ? String(data.propertyPostcode).trim() : "";
+  const targetAddress = data.propertyAddress ? String(data.propertyAddress) : "";
+  const targetOwner = data.ownerName ? String(data.ownerName) : "";
+  if (!targetPostcode || (!targetAddress && !targetOwner)) return null;
+
+  const conditions: any[] = [
+    eq(hbcfCertificates.propertyPostcode, targetPostcode),
+    sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) <> 'issued'`,
+  ];
+  appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
+  const candidates = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(50);
+  return candidates.find((candidate: any) => {
+    const addressMatches = targetAddress && looseAddressMatch(candidate.propertyAddress, targetAddress);
+    const ownerMatches = targetOwner && looseTextMatch(candidate.ownerName, targetOwner);
+    if (!sameMoney(candidate.contractPrice, data.contractPrice)) return false;
+    return addressMatches && (!targetOwner || ownerMatches) || ownerMatches && !targetAddress;
+  }) ?? null;
+}
+
+function mergeApiCertificateUpdate(existing: any, payload: any) {
+  return {
+    ...payload,
+    approvalProjectId: payload.approvalProjectId ?? existing.approvalProjectId ?? null,
+    quoteId: payload.quoteId ?? existing.quoteId ?? null,
+    crmLeadId: payload.crmLeadId ?? existing.crmLeadId ?? null,
+    certificateNumber: hasValue(payload.certificateNumber) ? payload.certificateNumber : existing.certificateNumber,
+    policyNumber: hasValue(payload.policyNumber) ? payload.policyNumber : existing.policyNumber,
+    builderName: hasValue(payload.builderName) ? payload.builderName : existing.builderName,
+    builderLicenceNumber: hasValue(payload.builderLicenceNumber) ? payload.builderLicenceNumber : existing.builderLicenceNumber,
+    insurerName: hasValue(payload.insurerName) ? payload.insurerName : existing.insurerName,
+    ownerName: hasValue(payload.ownerName) ? payload.ownerName : existing.ownerName,
+    propertyAddress: hasValue(payload.propertyAddress) ? payload.propertyAddress : existing.propertyAddress,
+    propertySuburb: hasValue(payload.propertySuburb) ? payload.propertySuburb : existing.propertySuburb,
+    propertyPostcode: hasValue(payload.propertyPostcode) ? payload.propertyPostcode : existing.propertyPostcode,
+    contractPrice: hasValue(payload.contractPrice) ? payload.contractPrice : existing.contractPrice,
+    issuedAt: payload.issuedAt ?? existing.issuedAt ?? null,
+    expiresAt: payload.expiresAt ?? existing.expiresAt ?? null,
+    certificateUrl: hasValue(payload.certificateUrl) ? payload.certificateUrl : existing.certificateUrl,
+    externalId: hasValue(payload.externalId) ? payload.externalId : existing.externalId,
+    rawPayload: payload.rawPayload ?? existing.rawPayload ?? null,
+    createdByUserId: payload.createdByUserId ?? existing.createdByUserId ?? null,
+  };
 }
 
 async function enrichHbcfCertificates(rows: any[], tenantId: number | null | undefined) {
@@ -579,27 +680,26 @@ export async function createOrUpdateHbcfCertificate(data: InsertHbcfCertificate)
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const tenantId = data.tenantId ?? null;
-  const matchConditions: any[] = [];
-  if (data.policyNumber) matchConditions.push(eq(hbcfCertificates.policyNumber, data.policyNumber));
-  if (data.certificateNumber) matchConditions.push(eq(hbcfCertificates.certificateNumber, data.certificateNumber));
-  let existing: any = null;
-  if (matchConditions.length > 0) {
-    const conditions: any[] = [or(...matchConditions)!];
-    appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
-    const [row] = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(1);
-    existing = row ?? null;
-  }
   const payload = {
     ...data,
     contractPrice: asMoney(data.contractPrice),
     issuedAt: asDate(data.issuedAt),
     expiresAt: asDate(data.expiresAt),
   };
+  const existing = await findExistingHbcfCertificate(db, tenantId, payload as any);
   if (existing) {
+    const updatePayload = payload.source === "api"
+      ? mergeApiCertificateUpdate(existing, payload)
+      : payload;
     await db.update(hbcfCertificates)
-      .set(payload as any)
+      .set(updatePayload as any)
       .where(and(...scopedConditions(hbcfCertificates, tenantId, eq(hbcfCertificates.id, existing.id))));
-    await linkCertificateToProject(existing.id, payload.approvalProjectId ?? null, payload.status, tenantId);
+    await linkCertificateToProject(
+      existing.id,
+      updatePayload.approvalProjectId ?? existing.approvalProjectId ?? null,
+      updatePayload.status,
+      tenantId,
+    );
     return existing.id;
   }
   const [result] = await db.insert(hbcfCertificates).values(payload as any);
@@ -695,7 +795,7 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
       builderLicenceNumber: profile.licenceNumber || undefined,
       builderName: profile.builderName,
     });
-    const policies = extractPolicies(payload).filter((p) => isOurBuilder(p, profile));
+    const policies = extractPolicies(payload).filter((p) => isOurBuilder(p, profile) || (!p.builderName && !p.builderLicenceNumber));
     let imported = 0;
     for (const policy of policies) {
       await createOrUpdateHbcfCertificate({
@@ -730,6 +830,90 @@ export async function syncProjectHbcfFromApi(projectId: number, tenantId?: numbe
     return { imported, total: policies.length };
   } catch (error: any) {
     await recordProfileSync(profile, "failed", error?.message || String(error));
+    throw error;
+  }
+}
+
+export async function syncTenantHbcfCertificatesFromApi(tenantId?: number | null, userId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const profile = await getHbcfBuilderProfile(tenantId);
+  if (!profile) throw new Error("HBCF builder profile has not been configured");
+
+  const startedAt = new Date();
+  const [logResult] = await db.insert(hbcfSyncLogs).values({
+    tenantId: tenantId ?? null,
+    syncType: "certificate_register",
+    startedAt,
+    status: "running",
+    source: "api",
+  } as any);
+  const logId = (logResult as any)?.insertId as number | undefined;
+
+  try {
+    const payload = await hbcfApiRequest(profile, {
+      builderLicenceNumber: profile.licenceNumber || undefined,
+      licenceNumber: profile.licenceNumber || undefined,
+      builderName: profile.builderName,
+    });
+    const policies = extractPolicies(payload)
+      .filter((policy) => isOurBuilder(policy, profile) || (!policy.builderName && !policy.builderLicenceNumber));
+    let updated = 0;
+    for (const policy of policies) {
+      await createOrUpdateHbcfCertificate({
+        tenantId: tenantId ?? null,
+        approvalProjectId: null,
+        quoteId: null,
+        crmLeadId: null,
+        certificateNumber: policy.certificateNumber ?? null,
+        policyNumber: policy.policyNumber ?? null,
+        status: String(policy.status || "issued").toLowerCase(),
+        builderName: policy.builderName ?? profile.builderName,
+        builderLicenceNumber: policy.builderLicenceNumber ?? profile.licenceNumber,
+        insurerName: policy.insurerName ?? profile.insurerName,
+        ownerName: policy.ownerName ?? null,
+        propertyAddress: policy.propertyAddress ?? null,
+        propertySuburb: policy.propertySuburb ?? null,
+        propertyPostcode: policy.propertyPostcode ?? null,
+        contractPrice: asMoney(policy.contractPrice),
+        issuedAt: asDate(policy.issuedAt),
+        expiresAt: asDate(policy.expiresAt),
+        certificateUrl: policy.certificateUrl ?? null,
+        source: "api",
+        externalId: policy.externalId ?? null,
+        rawPayload: policy.rawPayload ?? null,
+        lastSyncedAt: new Date(),
+        syncStatus: "synced",
+        createdByUserId: userId ?? null,
+      } as any);
+      updated++;
+    }
+
+    await recordProfileSync(profile, "success");
+    if (logId) {
+      await db.update(hbcfSyncLogs)
+        .set({
+          certificatesChecked: policies.length,
+          certificatesUpdated: updated,
+          completedAt: new Date(),
+          status: "success",
+        } as any)
+        .where(and(...scopedConditions(hbcfSyncLogs, tenantId, eq(hbcfSyncLogs.id, logId))));
+    }
+    return { checked: policies.length, updated };
+  } catch (error: any) {
+    const message = error?.message || String(error);
+    await recordProfileSync(profile, "failed", message);
+    if (logId) {
+      await db.update(hbcfSyncLogs)
+        .set({
+          completedAt: new Date(),
+          status: "failed",
+          errors: 1,
+          errorDetails: message,
+        } as any)
+        .where(and(...scopedConditions(hbcfSyncLogs, tenantId, eq(hbcfSyncLogs.id, logId))));
+    }
     throw error;
   }
 }
