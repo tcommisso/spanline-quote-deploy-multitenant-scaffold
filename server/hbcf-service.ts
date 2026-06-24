@@ -74,6 +74,7 @@ type HbcfPolicyLike = {
 
 export type HbcfPolicyStatusGroup = "active" | "completed" | "cancelled";
 export type HbcfPolicyStatusFilter = HbcfPolicyStatusGroup | "all";
+const HBCF_POLICY_STATUS_GROUPS: HbcfPolicyStatusGroup[] = ["active", "completed", "cancelled"];
 
 function currentApiMonth() {
   return new Date().toISOString().slice(0, 7);
@@ -734,6 +735,13 @@ function classifyHbcfPolicyStatus(row: any): HbcfPolicyStatusGroup {
   return "active";
 }
 
+function storedPolicyStatusGroup(value: unknown): HbcfPolicyStatusGroup | null {
+  const text = String(value || "").trim().toLowerCase();
+  return HBCF_POLICY_STATUS_GROUPS.includes(text as HbcfPolicyStatusGroup)
+    ? text as HbcfPolicyStatusGroup
+    : null;
+}
+
 function isSparseExternalHbcfRecord(row: any, profile: HbcfBuilderProfile | null) {
   if (row.approvalProjectId || row.quoteId || row.crmLeadId) return false;
   if (row.ownerName || row.propertyAddress || row.contractPrice || row.issuedAt || row.expiresAt) return false;
@@ -1347,6 +1355,25 @@ export async function createOrUpdateHbcfCertificate(data: InsertHbcfCertificate)
   return id;
 }
 
+export async function updateHbcfCertificatePolicyStatus(
+  certificateIds: number[],
+  policyStatusGroup: HbcfPolicyStatusGroup,
+  tenantId?: number | null,
+) {
+  const ids = uniqueIds(certificateIds);
+  if (!ids.length) return { updated: 0 };
+  if (!HBCF_POLICY_STATUS_GROUPS.includes(policyStatusGroup)) {
+    throw new Error("Invalid HBCF policy status");
+  }
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const result = await db.update(hbcfCertificates)
+    .set({ policyStatusGroup } as any)
+    .where(and(...scopedConditions(hbcfCertificates, tenantId, inArray(hbcfCertificates.id, ids))));
+  const updated = Number((result as any)?.affectedRows ?? (result as any)?.rowsAffected ?? ids.length);
+  return { updated };
+}
+
 async function linkCertificateToProject(
   certificateId: number,
   projectId: number | null | undefined,
@@ -1404,9 +1431,11 @@ export async function listHbcfCertificates(filters: {
       ...row,
       status: displayHbcfStatus(row),
     };
+    const manualPolicyStatusGroup = storedPolicyStatusGroup(row.policyStatusGroup);
     return {
       ...normalizedRow,
-      policyStatusGroup: classifyHbcfPolicyStatus(normalizedRow),
+      policyStatusGroup: manualPolicyStatusGroup ?? classifyHbcfPolicyStatus(normalizedRow),
+      policyStatusSource: manualPolicyStatusGroup ? "manual" : "api",
     };
   });
 

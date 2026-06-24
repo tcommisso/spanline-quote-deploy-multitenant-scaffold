@@ -23,6 +23,7 @@ import {
   runHbcfCompetitorMatching,
   syncProjectHbcfFromApi,
   syncTenantHbcfCertificatesFromApi,
+  updateHbcfCertificatePolicyStatus,
   upsertHbcfBuilderProfile,
 } from "./hbcf-service";
 
@@ -1356,6 +1357,14 @@ export const approvalRouter = router({
       syncAll: protectedProcedure
         .mutation(async ({ ctx }) => {
           return syncTenantHbcfCertificatesFromApi(ctx.tenant!.id, ctx.user.id);
+        }),
+      bulkUpdatePolicyStatus: protectedProcedure
+        .input(z.object({
+          certificateIds: z.array(z.number().int().positive()).min(1),
+          policyStatusGroup: z.enum(["active", "completed", "cancelled"]),
+        }))
+        .mutation(async ({ ctx, input }) => {
+          return updateHbcfCertificatePolicyStatus(input.certificateIds, input.policyStatusGroup, ctx.tenant!.id);
         }),
     }),
 

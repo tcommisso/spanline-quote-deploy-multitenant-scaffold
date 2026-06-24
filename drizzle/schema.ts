@@ -6093,6 +6093,7 @@ export const hbcfCertificates = mysqlTable("hbcf_certificates", {
   certificateNumber: varchar("certificateNumber", { length: 128 }),
   policyNumber: varchar("policyNumber", { length: 128 }),
   status: varchar("status", { length: 32 }).default("draft").notNull(),
+  policyStatusGroup: varchar("policyStatusGroup", { length: 32 }),
   builderName: varchar("builderName", { length: 255 }),
   builderLicenceNumber: varchar("builderLicenceNumber", { length: 64 }),
   insurerName: varchar("insurerName", { length: 255 }),
@@ -6121,6 +6122,7 @@ export const hbcfCertificates = mysqlTable("hbcf_certificates", {
   index("idx_hbcf_certificates_lead").on(table.crmLeadId),
   index("idx_hbcf_certificates_policy").on(table.policyNumber),
   index("idx_hbcf_certificates_status").on(table.status),
+  index("idx_hbcf_certificates_policy_status_group").on(table.policyStatusGroup),
 ]);
 export type HbcfCertificate = typeof hbcfCertificates.$inferSelect;
 export type InsertHbcfCertificate = typeof hbcfCertificates.$inferInsert;
