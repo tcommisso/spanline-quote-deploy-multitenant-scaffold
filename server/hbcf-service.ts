@@ -259,6 +259,32 @@ function oneGovBuildingSiteAddress(raw: any) {
     firstString(Array.isArray(raw?.premises) ? raw.premises[0] : null, ["businessAddress"]);
 }
 
+function oneGovBuildingSiteValue(raw: any, keys: string[]) {
+  return firstString(Array.isArray(raw?.buildingSites) ? raw.buildingSites[0] : raw?.buildingSites, keys);
+}
+
+function oneGovAssociatedPartyNames(raw: any) {
+  const parties = Array.isArray(raw?.associatedParties) ? raw.associatedParties : [];
+  const ownerLike = parties.filter((party: any) => {
+    const role = normalizeLooseText(party?.role);
+    if (!role) return false;
+    if (/\b(BUILDER|CONTRACTOR|INSURER|CERTIFIER|AGENT)\b/.test(role)) return false;
+    return /\b(OWNER|HOMEOWNER|INSURED|CLIENT|CUSTOMER|APPLICANT)\b/.test(role);
+  });
+  const fallbackParties = ownerLike.length
+    ? ownerLike
+    : parties.filter((party: any) => {
+      const role = normalizeLooseText(party?.role);
+      return !/\b(BUILDER|CONTRACTOR|INSURER|CERTIFIER|AGENT)\b/.test(role);
+    });
+
+  const names = fallbackParties
+    .map((party: any) => String(party?.name || "").trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(names)).join(" & ") || null;
+}
+
 function oneGovLicenceId(raw: any) {
   return firstString(raw, ["licenceID", "licenceId", "licenceid", "id"]);
 }
@@ -282,22 +308,80 @@ function normalizeOneGovPolicy(raw: any): HbcfPolicyLike {
   const licenceNumber = firstString(detail, ["licenceNumber"]) || firstString(raw, ["licenceNumber"]);
   const status = normalizeHbcfStatus(firstString(detail, ["status"]) || firstString(raw, ["status"]));
   const address = oneGovBuildingSiteAddress(raw) || firstString(detail, ["address"]) || firstString(raw, ["address"]);
+  const ownerName = firstString(raw, [
+    "ownerName",
+    "owner",
+    "insuredName",
+    "homeOwnerName",
+    "homeownerName",
+    "customerName",
+    "clientName",
+    "principalOwner",
+  ]) || oneGovAssociatedPartyNames(raw);
+  const policyNumber = firstString(raw, [
+    "policyNumber",
+    "policy_number",
+    "policyNo",
+    "policyId",
+    "hbcfPolicyNumber",
+    "insurancePolicyNumber",
+    "insurancePolicyNo",
+  ]) || firstString(detail, ["policyNumber", "insurancePolicyNumber"]) || licenceNumber;
+  const certificateNumber = firstString(raw, [
+    "certificateNumber",
+    "certificate_number",
+    "certificateNo",
+    "certificateOfInsuranceNo",
+    "certificateOfInsuranceNumber",
+    "hbcfCertificateNo",
+    "hbcfCertificateNumber",
+    "hbcfNumber",
+    "insuranceCertificateNumber",
+    "insuranceCertificateNo",
+  ]) || firstString(detail, ["certificateNumber", "insuranceCertificateNumber"]) || licenceNumber;
+  const contractPrice = firstString(raw, [
+    "contractPrice",
+    "contractValue",
+    "projectValue",
+    "insuredValue",
+    "insuredAmount",
+    "contractAmount",
+    "constructionCost",
+    "jobValue",
+    "coverAmount",
+    "amountCovered",
+    "sumInsured",
+    "totalInsuredValue",
+  ]) || oneGovBuildingSiteValue(raw, [
+    "contractPrice",
+    "contractValue",
+    "projectValue",
+    "insuredValue",
+    "insuredAmount",
+    "contractAmount",
+    "constructionCost",
+    "jobValue",
+    "coverAmount",
+    "amountCovered",
+    "sumInsured",
+    "totalInsuredValue",
+  ]);
 
   return {
-    policyNumber: firstString(raw, ["policyNumber", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber"]),
-    certificateNumber: firstString(raw, ["certificateNumber", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber"]) || licenceNumber,
+    policyNumber,
+    certificateNumber,
     status,
     builderName: firstString(raw, ["builderName", "builder", "contractorName", "builderTradingName", "licensee"]) ||
-      firstString(detail, ["licensee", "licenceName"]) ||
+      firstString(detail, ["licenceName", "licensee"]) ||
       oneGovBusinessNames(raw),
     builderLicenceNumber: firstString(raw, ["builderLicenceNumber", "builderLicenseNumber", "builderLicence", "builderLicense"]) ||
       oneGovAssociatedLicenceNumber(raw),
     insurerName: firstString(raw, ["insurerName", "insurer", "provider"]),
-    ownerName: firstString(raw, ["ownerName", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName"]),
+    ownerName,
     propertyAddress: address,
-    propertySuburb: firstString(raw, ["propertySuburb", "suburb"]),
-    propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]) || firstPostcode(address),
-    contractPrice: firstString(raw, ["contractPrice", "contractValue", "projectValue", "insuredValue", "insuredAmount", "contractAmount", "constructionCost", "jobValue", "coverAmount"]),
+    propertySuburb: firstString(raw, ["propertySuburb", "suburb"]) || oneGovBuildingSiteValue(raw, ["suburb"]),
+    propertyPostcode: firstString(raw, ["propertyPostcode", "postcode", "postCode"]) || oneGovBuildingSiteValue(raw, ["postcode", "postCode"]) || firstPostcode(address),
+    contractPrice,
     issuedAt: firstString(raw, ["issuedAt", "issueDate", "issued_date", "dateIssued", "dateOfIssue", "certificateIssuedDate", "policyIssueDate"]) ||
       firstString(detail, ["startDate"]),
     expiresAt: firstString(raw, ["expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate"]) ||
@@ -370,8 +454,15 @@ async function hydrateOneGovHbcfRows(profile: HbcfBuilderProfile, payload: any) 
     const licenceId = oneGovLicenceId(row);
     if (!licenceId || seen.has(licenceId)) continue;
     seen.add(licenceId);
-    const detail = await hbcfApiRequest(profile, { licenceid: licenceId });
-    hydrated.push(mergeOneGovDetailRow(row, detail));
+    try {
+      const detail = await hbcfApiRequest(profile, { licenceid: licenceId });
+      hydrated.push(mergeOneGovDetailRow(row, detail));
+    } catch (error: any) {
+      hydrated.push({
+        ...row,
+        detailSyncError: error?.message || String(error),
+      });
+    }
   }
   return hydrated;
 }
