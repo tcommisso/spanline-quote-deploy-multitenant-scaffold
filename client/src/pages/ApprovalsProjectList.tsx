@@ -24,6 +24,13 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: "Cancelled",
 };
 
+function approvalProjectIdentifier(project: any) {
+  const clientName = String(project.clientName || "").trim();
+  const accountNumber = String(project.accountNumber || project.clientAccountNumber || "").trim();
+  if (clientName && accountNumber) return `${clientName} — ${accountNumber}`;
+  return clientName || accountNumber || project.name;
+}
+
 export default function ApprovalsProjectList() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -129,7 +136,7 @@ export default function ApprovalsProjectList() {
                           </Badge>
                         )}
                       </div>
-                      <h3 className="font-semibold text-base truncate">{project.name}</h3>
+                      <h3 className="font-semibold text-base truncate">{approvalProjectIdentifier(project)}</h3>
                       <div className="flex flex-wrap items-center gap-4 mt-2 text-sm text-muted-foreground">
                         {project.propertyAddress && (
                           <span className="flex items-center gap-1">

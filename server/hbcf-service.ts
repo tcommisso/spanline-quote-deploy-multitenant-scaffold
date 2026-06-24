@@ -244,6 +244,21 @@ function resolveApiKey(profile: HbcfBuilderProfile) {
   return process.env[ref] || ref;
 }
 
+function hbcfEndpointLabel(url: URL) {
+  return `${url.origin}${url.pathname}`;
+}
+
+function hbcfFetchFailureMessage(error: any) {
+  if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+    return "request timed out after 15 seconds";
+  }
+  return error?.cause?.code ||
+    error?.code ||
+    error?.cause?.message ||
+    error?.message ||
+    String(error || "unknown network error");
+}
+
 function isOurBuilder(policy: HbcfPolicyLike, profile: HbcfBuilderProfile | null) {
   const builder = (policy.builderName || "").toLowerCase();
   const licence = (policy.builderLicenceNumber || "").toLowerCase();
@@ -488,21 +503,48 @@ async function hbcfApiRequest(profile: HbcfBuilderProfile, params: Record<string
   if (!profile.apiEnabled || !profile.apiBaseUrl) {
     throw new Error("HBCF API is not enabled or no API endpoint is configured");
   }
-  await chargeApiCall(profile);
-  const url = new URL(profile.apiBaseUrl);
+  let url: URL;
+  try {
+    url = new URL(profile.apiBaseUrl);
+  } catch {
+    throw new Error("HBCF API base URL is invalid. Check the API base URL in HBCF Builder Profile.");
+  }
   for (const [key, value] of Object.entries(params)) {
     if (value) url.searchParams.set(key, value);
   }
   const headers: Record<string, string> = { Accept: "application/json" };
   const key = resolveApiKey(profile);
-  if (key) headers.Authorization = `Bearer ${key}`;
-  const response = await fetch(url, { headers });
-  if (!response.ok) {
-    throw new Error(`HBCF API returned ${response.status}: ${await response.text()}`);
+  if (profile.apiKeyRef?.trim().startsWith("env:") && !key) {
+    throw new Error(`HBCF API key environment variable ${profile.apiKeyRef.trim().slice(4)} is not available on this server.`);
   }
-  const text = await response.text();
+  if (key) headers.Authorization = `Bearer ${key}`;
+
+  await chargeApiCall(profile);
+
+  let response: Response;
+  try {
+    response = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+  } catch (error: any) {
+    throw new Error(`HBCF API request failed for ${hbcfEndpointLabel(url)}: ${hbcfFetchFailureMessage(error)}. Check the API base URL, server network access, and authentication settings in HBCF Builder Profile.`);
+  }
+
+  let text = "";
+  try {
+    text = await response.text();
+  } catch (error: any) {
+    throw new Error(`HBCF API response could not be read from ${hbcfEndpointLabel(url)}: ${hbcfFetchFailureMessage(error)}.`);
+  }
+
+  if (!response.ok) {
+    const body = text.trim().slice(0, 600);
+    throw new Error(`HBCF API returned ${response.status} from ${hbcfEndpointLabel(url)}${body ? `: ${body}` : ""}`);
+  }
   if (!text.trim()) return null;
-  return JSON.parse(text);
+  try {
+    return JSON.parse(text);
+  } catch (error: any) {
+    throw new Error(`HBCF API returned invalid JSON from ${hbcfEndpointLabel(url)}: ${error?.message || String(error)}`);
+  }
 }
 
 export async function getHbcfBuilderProfile(tenantId?: number | null) {

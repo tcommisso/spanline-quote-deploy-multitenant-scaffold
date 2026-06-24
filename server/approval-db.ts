@@ -5,7 +5,7 @@ import {
   approvalDocuments, approvalDocumentVersions, approvalRfis,
   approvalConditions, approvalTasks, approvalInspections,
   approvalInspectionDefects, approvalFees, approvalCertificates,
-  approvalAuditLog, approvalPathwayAssessments,
+  approvalAuditLog, approvalPathwayAssessments, constructionJobs, crmLeads,
   type InsertApprovalProject, type InsertApprovalLodgement,
   type InsertApprovalDocument, type InsertApprovalDocumentVersion,
   type InsertApprovalRfi, type InsertApprovalCondition,
@@ -44,6 +44,62 @@ async function getRowProjectId<T extends { projectId: number }>(
   if (!db) throw new Error("Database not available");
   const [row] = await db.select({ projectId: table.projectId }).from(table).where(eq(idColumn, id)).limit(1);
   return (row as T | undefined)?.projectId ?? null;
+}
+
+async function enrichApprovalProjectsWithAccountNumbers<T extends {
+  crmJobId?: number | null;
+  crmLeadId?: number | null;
+}>(projects: T[], tenantId?: number | null) {
+  const db = await getDb();
+  if (!db || projects.length === 0) return projects;
+
+  const jobIds = Array.from(new Set(projects.map((project) => project.crmJobId).filter(Boolean).map(Number)));
+  const jobConditions: any[] = [];
+  if (jobIds.length) {
+    jobConditions.push(inArray(constructionJobs.id, jobIds));
+    appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
+  }
+  const jobs = jobConditions.length
+    ? await db.select({
+      id: constructionJobs.id,
+      leadId: constructionJobs.leadId,
+    })
+      .from(constructionJobs)
+      .where(and(...jobConditions))
+    : [];
+  const jobLeadById = new Map(jobs.map((job) => [Number(job.id), job.leadId ? Number(job.leadId) : null]));
+
+  const leadIds = Array.from(new Set([
+    ...projects.map((project) => project.crmLeadId).filter(Boolean).map(Number),
+    ...jobs.map((job) => job.leadId).filter(Boolean).map(Number),
+  ]));
+  const leadConditions: any[] = [];
+  if (leadIds.length) {
+    leadConditions.push(inArray(crmLeads.id, leadIds));
+    appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
+  }
+  const leads = leadConditions.length
+    ? await db.select({
+      id: crmLeads.id,
+      clientNumber: crmLeads.clientNumber,
+    })
+      .from(crmLeads)
+      .where(and(...leadConditions))
+    : [];
+  const accountNumberByLeadId = new Map(leads.map((lead) => [Number(lead.id), lead.clientNumber || null]));
+
+  return projects.map((project) => {
+    const directLeadId = project.crmLeadId ? Number(project.crmLeadId) : null;
+    const jobLeadId = project.crmJobId ? jobLeadById.get(Number(project.crmJobId)) : null;
+    const accountNumber = (directLeadId ? accountNumberByLeadId.get(directLeadId) : null) ||
+      (jobLeadId ? accountNumberByLeadId.get(jobLeadId) : null) ||
+      null;
+    return {
+      ...project,
+      accountNumber,
+      clientAccountNumber: accountNumber,
+    };
+  });
 }
 
 // ─── Project Number Generator ───────────────────────────────────────────────
@@ -89,16 +145,19 @@ export async function getApprovalProjects(filters?: { status?: string; jurisdict
       like(approvalProjects.propertyAddress, term),
     ));
   }
-  return db.select().from(approvalProjects)
+  const projects = await db.select().from(approvalProjects)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(approvalProjects.updatedAt));
+  return enrichApprovalProjectsWithAccountNumbers(projects, tenantId);
 }
 
 export async function getApprovalProjectById(id: number, tenantId?: number | null) {
   const db = await getDb();
   if (!db) return null;
   const [project] = await db.select().from(approvalProjects).where(approvalProjectScope(id, tenantId)).limit(1);
-  return project || null;
+  if (!project) return null;
+  const [enrichedProject] = await enrichApprovalProjectsWithAccountNumbers([project], tenantId);
+  return enrichedProject || null;
 }
 
 export async function updateApprovalProject(id: number, data: Partial<InsertApprovalProject>, tenantId?: number | null) {

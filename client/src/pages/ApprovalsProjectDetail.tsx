@@ -26,6 +26,13 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
 };
 
+function approvalProjectIdentifier(project: any) {
+  const clientName = String(project.clientName || "").trim();
+  const accountNumber = String(project.accountNumber || project.clientAccountNumber || "").trim();
+  if (clientName && accountNumber) return `${clientName} — ${accountNumber}`;
+  return clientName || accountNumber || project.name;
+}
+
 export default function ApprovalsProjectDetail() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
@@ -91,7 +98,7 @@ export default function ApprovalsProjectDetail() {
                 <Badge variant="secondary">{project.recommendedPathway}</Badge>
               )}
             </div>
-            <h1 className="text-xl font-bold mt-1">{project.name}</h1>
+            <h1 className="text-xl font-bold mt-1">{approvalProjectIdentifier(project)}</h1>
             {project.propertyAddress && (
               <p className="text-sm text-muted-foreground">{project.propertyAddress}, {project.propertySuburb}</p>
             )}
