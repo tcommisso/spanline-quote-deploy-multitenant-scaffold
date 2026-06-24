@@ -23,7 +23,12 @@ function dateInputValue(value?: string | Date | null) {
 }
 
 function isIssuedHbcfStatus(value?: string | null) {
-  return ["issued", "current", "active", "valid"].includes(String(value || "").toLowerCase());
+  const status = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-_/]+/g, " ")
+    .replace(/\s+/g, " ");
+  return !status || ["issued", "current", "active", "valid", "completed", "complete", "open job"].includes(status);
 }
 
 export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {

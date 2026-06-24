@@ -207,21 +207,27 @@ function firstString(record: any, keys: string[]): string | null {
   return null;
 }
 
-function normalizeHbcfStatus(value: unknown) {
-  const text = String(value || "")
+function normalizeHbcfStatusText(value: unknown) {
+  return String(value || "")
     .trim()
     .toLowerCase()
     .replace(/[-_/]+/g, " ")
     .replace(/\s+/g, " ");
+}
+
+function normalizeHbcfStatus(value: unknown) {
+  const text = normalizeHbcfStatusText(value);
   if (!text) return "issued";
-  if (HBCF_ISSUED_STATUS_VALUES.includes(text)) return "issued";
+  if (["complete", "completed"].includes(text)) return "completed";
+  if (["current", "active", "valid", "issued", "open job"].includes(text)) return "issued";
   if (["application", "applied", "pending", "lodged", "with distributor broker"].includes(text)) return "applied";
   if (["cancelled", "canceled", "expired", "suspended", "refused"].includes(text)) return text;
   return text;
 }
 
 function isIssuedHbcfStatus(value: unknown) {
-  return normalizeHbcfStatus(value) === "issued";
+  const text = normalizeHbcfStatusText(value);
+  return !text || HBCF_ISSUED_STATUS_VALUES.includes(text);
 }
 
 function normalizedHbcfStatusSql(column: any) {
@@ -702,6 +708,8 @@ const CANCELLED_HBCF_STATUSES = new Set([
 ]);
 
 const COMPLETED_HBCF_STATUSES = new Set([
+  "complete",
+  "completed",
   "closed",
   "expired",
   "finalised",
@@ -721,6 +729,16 @@ function normalisedPolicyStatusValues(row: any) {
   return values
     .map((value) => normalizeHbcfStatus(value))
     .filter(Boolean);
+}
+
+function displayHbcfStatus(row: any) {
+  const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
+  return normalizeHbcfStatus(
+    rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus") ||
+    rawPayloadValue(rawPayload, "status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus") ||
+    firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]) ||
+    row.status,
+  );
 }
 
 function rowExpiryDate(row: any) {
@@ -1408,7 +1426,7 @@ export async function listHbcfCertificates(filters: {
   const rowsWithPolicyStatus = enrichedRows.map((row) => {
     const normalizedRow = {
       ...row,
-      status: normalizeHbcfStatus(row.status),
+      status: displayHbcfStatus(row),
     };
     return {
       ...normalizedRow,
