@@ -1272,6 +1272,7 @@ export const approvalRouter = router({
           projectId: z.number().optional(),
           quoteId: z.number().optional(),
           leadId: z.number().optional(),
+          policyStatus: z.enum(["all", "active", "completed", "cancelled"]).optional(),
         }).optional())
         .query(async ({ ctx, input }) => {
           return listHbcfCertificates({
@@ -1279,6 +1280,7 @@ export const approvalRouter = router({
             projectId: input?.projectId,
             quoteId: input?.quoteId,
             leadId: input?.leadId,
+            policyStatus: input?.policyStatus,
           });
         }),
       manualUpsert: protectedProcedure

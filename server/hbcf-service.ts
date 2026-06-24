@@ -61,6 +61,9 @@ type HbcfPolicyLike = {
   rawPayload?: Record<string, any> | null;
 };
 
+export type HbcfPolicyStatusGroup = "active" | "completed" | "cancelled";
+export type HbcfPolicyStatusFilter = HbcfPolicyStatusGroup | "all";
+
 function currentApiMonth() {
   return new Date().toISOString().slice(0, 7);
 }
@@ -574,6 +577,63 @@ function rawPayloadValue(rawPayload: unknown, ...keys: string[]) {
     if (value != null && String(value).trim() !== "") return value;
   }
   return null;
+}
+
+const CANCELLED_HBCF_STATUSES = new Set([
+  "cancelled",
+  "canceled",
+  "refused",
+  "revoked",
+  "suspended",
+  "void",
+  "voided",
+  "withdrawn",
+]);
+
+const COMPLETED_HBCF_STATUSES = new Set([
+  "complete",
+  "completed",
+  "closed",
+  "expired",
+  "finalised",
+  "finalized",
+  "inactive",
+]);
+
+function normalisedPolicyStatusValues(row: any) {
+  const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
+  const values = [
+    row.status,
+    rawPayloadValue(rawPayload, "status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"),
+    rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus"),
+    firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]),
+  ];
+
+  return values
+    .map((value) => normalizeHbcfStatus(value))
+    .filter(Boolean);
+}
+
+function rowExpiryDate(row: any) {
+  const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
+  return asDate(row.expiresAt) ||
+    asDate(rawPayloadValue(rawPayload, "expiresAt", "expiryDate", "expiry_date", "expiry", "dateExpired", "periodEndDate", "policyExpiryDate")) ||
+    asDate(rawPayloadValue(rawPayload?.licenceDetail, "expiryDate", "periodEndDate"));
+}
+
+function classifyHbcfPolicyStatus(row: any): HbcfPolicyStatusGroup {
+  const statuses = normalisedPolicyStatusValues(row);
+  if (statuses.some((status) => CANCELLED_HBCF_STATUSES.has(status))) return "cancelled";
+  if (statuses.some((status) => COMPLETED_HBCF_STATUSES.has(status))) return "completed";
+
+  const expiryDate = rowExpiryDate(row);
+  if (expiryDate) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (expiryDate < today) return "completed";
+  }
+
+  return "active";
 }
 
 function isSparseExternalHbcfRecord(row: any, profile: HbcfBuilderProfile | null) {
@@ -1209,6 +1269,7 @@ export async function listHbcfCertificates(filters: {
   projectId?: number;
   quoteId?: number;
   leadId?: number;
+  policyStatus?: HbcfPolicyStatusFilter;
 }) {
   const db = await getDb();
   if (!db) return [];
@@ -1234,7 +1295,17 @@ export async function listHbcfCertificates(filters: {
   }
   const profile = await getHbcfBuilderProfile(filters.tenantId);
   const certificateRows = rows.filter((row) => !isSparseExternalHbcfRecord(row, profile));
-  return enrichHbcfCertificates(certificateRows, filters.tenantId);
+  const enrichedRows = await enrichHbcfCertificates(certificateRows, filters.tenantId);
+  const rowsWithPolicyStatus = enrichedRows.map((row) => ({
+    ...row,
+    policyStatusGroup: classifyHbcfPolicyStatus(row),
+  }));
+
+  if (filters.policyStatus && filters.policyStatus !== "all") {
+    return rowsWithPolicyStatus.filter((row) => row.policyStatusGroup === filters.policyStatus);
+  }
+
+  return rowsWithPolicyStatus;
 }
 
 export async function getProjectHbcfGateStatus(projectId: number, tenantId?: number | null) {

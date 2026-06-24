@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { CloudDownload, FileCheck, RefreshCw, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -26,10 +27,26 @@ function formatCurrency(value?: string | number | null) {
   }).format(amount);
 }
 
+const POLICY_STATUS_FILTERS = [
+  { value: "active", label: "Active" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+  { value: "all", label: "All" },
+] as const;
+
+type PolicyStatusFilter = typeof POLICY_STATUS_FILTERS[number]["value"];
+
+function policyStatusBadgeVariant(status?: string | null) {
+  if (status === "cancelled") return "destructive";
+  if (status === "completed") return "secondary";
+  return "default";
+}
+
 export default function HbcfCertificates() {
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
-  const { data: certificates, isLoading, refetch, isFetching } = trpc.approvals.hbcf.certificates.list.useQuery();
+  const [policyStatus, setPolicyStatus] = useState<PolicyStatusFilter>("active");
+  const { data: certificates, isLoading, refetch, isFetching } = trpc.approvals.hbcf.certificates.list.useQuery({ policyStatus });
   const syncAll = trpc.approvals.hbcf.certificates.syncAll.useMutation({
     onSuccess: (result) => {
       if (result.checked === 0) {
@@ -67,11 +84,27 @@ export default function HbcfCertificates() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-2 rounded-lg border bg-card p-2">
+        {POLICY_STATUS_FILTERS.map((option) => (
+          <Button
+            key={option.value}
+            type="button"
+            size="sm"
+            variant={policyStatus === option.value ? "brand" : "outline"}
+            onClick={() => setPolicyStatus(option.value)}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Certificate Register</CardTitle>
           <CardDescription>
-            {certificates?.length ? `${certificates.length} certificate${certificates.length === 1 ? "" : "s"} found.` : "No HBCF certificates found yet."}
+            {certificates?.length
+              ? `${certificates.length} ${policyStatus === "all" ? "" : `${policyStatus} `}certificate${certificates.length === 1 ? "" : "s"} found.`
+              : `No ${policyStatus === "all" ? "" : `${policyStatus} `}HBCF certificates found.`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -105,9 +138,14 @@ export default function HbcfCertificates() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={cert.status === "issued" ? "default" : "outline"}>
-                          {cert.status}
-                        </Badge>
+                        <div className="flex flex-col gap-1">
+                          <Badge variant={cert.status === "issued" ? "default" : "outline"}>
+                            {cert.status}
+                          </Badge>
+                          <Badge variant={policyStatusBadgeVariant(cert.policyStatusGroup)}>
+                            {cert.policyStatusGroup || "active"}
+                          </Badge>
+                        </div>
                       </TableCell>
                       <TableCell>{formatDate(cert.issuedAt)}</TableCell>
                       <TableCell>{formatDate(cert.expiresAt)}</TableCell>
