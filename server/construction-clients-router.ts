@@ -6,7 +6,7 @@ import {
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
   approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
-  approvalLodgements, hbcfCertificates,
+  approvalLodgements, hbcfCertificates, suppliers,
 } from "../drizzle/schema";
 import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -62,16 +62,6 @@ function isCommencementCertificateType(value?: string | null) {
   const normalized = String(value || "").trim().toLowerCase();
   return ["cc", "cdc", "ba", "ccc", "nsw_cc", "nsw_cdc", "act_ba", "act_cou"].includes(normalized) ||
     /construction certificate|commencement certificate|construction commencement|complying development|building approval/.test(normalized);
-}
-
-function contactDisplayName(lead?: any | null) {
-  if (!lead) return null;
-  return [lead.contactFirstName, lead.contactLastName].filter(Boolean).join(" ") || lead.company || null;
-}
-
-function contactAddress(lead?: any | null) {
-  if (!lead) return null;
-  return [lead.contactAddress, lead.suburb, lead.state, lead.postcode].filter(Boolean).join(", ") || null;
 }
 
 async function resolveProjectTeamRole(db: any, ctx: any, userId?: number | null, manualName?: string | null) {
@@ -826,21 +816,19 @@ export const constructionClientsRouter = router({
           .orderBy(desc(hbcfCertificates.updatedAt)),
         certifierContactIds.length > 0
           ? db.select({
-            id: crmLeads.id,
-            contactFirstName: crmLeads.contactFirstName,
-            contactLastName: crmLeads.contactLastName,
-            company: crmLeads.company,
-            contactPhone: crmLeads.contactPhone,
-            contactEmail: crmLeads.contactEmail,
-            contactAddress: crmLeads.contactAddress,
-            suburb: crmLeads.suburb,
-            state: crmLeads.state,
-            postcode: crmLeads.postcode,
+            id: suppliers.id,
+            name: suppliers.name,
+            contactName: suppliers.contactName,
+            phone: suppliers.phone,
+            email: suppliers.email,
+            address: suppliers.address,
+            category: suppliers.category,
           })
-            .from(crmLeads)
+            .from(suppliers)
             .where(and(
-              eq(crmLeads.tenantId, tenantId),
-              inArray(crmLeads.id, certifierContactIds),
+              eq(suppliers.tenantId, tenantId),
+              eq(suppliers.supplierScope, "construction"),
+              inArray(suppliers.id, certifierContactIds),
             ))
           : Promise.resolve([]),
       ]);
@@ -871,11 +859,12 @@ export const constructionClientsRouter = router({
         return {
           ...project,
           certifierContact: {
-            businessName: certifierContact?.company || project.certifierName || null,
-            contactName: contactDisplayName(certifierContact) || project.certifierName || null,
-            notificationEmail: certifierContact?.contactEmail || null,
-            phone: certifierContact?.contactPhone || null,
-            address: contactAddress(certifierContact),
+            businessName: certifierContact?.name || project.certifierName || null,
+            contactName: certifierContact?.contactName || project.certifierName || null,
+            notificationEmail: certifierContact?.email || null,
+            phone: certifierContact?.phone || null,
+            address: certifierContact?.address || null,
+            category: certifierContact?.category || null,
           },
           hbcf: {
             required: project.hbcfRequired,

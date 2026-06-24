@@ -1,10 +1,10 @@
 // Service Worker for Altaspan PWA
-const CACHE_NAME = 'altaspan-v2';
+const CACHE_NAME = 'altaspan-v3';
 const OFFLINE_URL = '/offline.html';
 
-// Assets to pre-cache for app shell
+// Keep navigations network-only so deploys cannot leave users on stale HTML
+// that points at removed hashed JS chunks.
 const PRECACHE_ASSETS = [
-  '/',
   '/offline.html',
 ];
 
@@ -95,26 +95,20 @@ self.addEventListener('fetch', (event) => {
   // get redirected by the platform auth gate — let the browser handle them natively
   if (url.pathname === '/manifest.json' || url.pathname === '/sw.js') return;
 
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+      .catch(async () => {
+        const cached = await caches.match(OFFLINE_URL);
+        return cached || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+      })
+    );
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
-      .then((response) => {
-        // Don't cache redirect responses (e.g. auth redirects)
-        if (response.ok && event.request.mode === 'navigate') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, clone);
-          });
-        }
-        return response;
-      })
       .catch(async () => {
-        // If navigation request fails, show offline page
-        if (event.request.mode === 'navigate') {
-          const cached = await caches.match(OFFLINE_URL);
-          // Always return a valid Response — never return null/undefined
-          return cached || new Response('Offline', { status: 503, headers: { 'Content-Type': 'text/plain' } });
-        }
-        // For other requests, try cache — if not found, return a proper error response
         const cached = await caches.match(event.request);
         return cached || new Response('', { status: 404 });
       })

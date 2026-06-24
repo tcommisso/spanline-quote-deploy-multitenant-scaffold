@@ -11,6 +11,7 @@ import { useLocation } from "wouter";
 import { ArrowLeft, Save, Link2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import ClientPicker from "@/components/ClientPicker";
+import SupplierPicker from "@/components/SupplierPicker";
 
 interface ContactSelection {
   id?: number | null;
@@ -444,16 +445,18 @@ export default function ApprovalsProjectNew() {
             </div>
             <div>
               <Label className="mb-2 block">Certifier / PCA</Label>
-              <ClientPicker
-                selectedClientId={certifier.id}
-                onClientSelect={(c) => setCertifier({ id: c.id, name: c.name })}
-                onClientClear={() => setCertifier({ name: "" })}
-                clientName={certifier.name}
+              <SupplierPicker
+                selectedSupplierId={certifier.id}
+                onSupplierSelect={(supplier) => setCertifier({ id: supplier.id, name: supplier.name })}
+                onSupplierClear={() => setCertifier({ name: "" })}
+                supplierName={certifier.name}
+                supplierScope="construction"
+                placeholder="Search construction suppliers for certifier / PCA..."
               />
               {!certifier.id && (
                 <div className="mt-2">
                   <Input
-                    placeholder="Certifier name (if not in CRM)"
+                    placeholder="Certifier name (if not in suppliers)"
                     value={certifier.name}
                     onChange={(e) => setCertifier({ name: e.target.value })}
                   />

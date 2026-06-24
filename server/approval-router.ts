@@ -9,9 +9,10 @@ import { storagePut } from "./storage";
 import { randomBytes } from "crypto";
 import { ALL_TEMPLATES } from "./seed-workflow-templates";
 import { getDb } from "./db";
-import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections, crmLeads, quotes } from "../drizzle/schema";
+import { constructionScheduleEvents, constructionJobs, approvalProjects, approvalConditions, approvalDocuments, approvalDocumentVersions, approvalTasks, approvalRfis, approvalInspections, crmLeads, quotes, suppliers } from "../drizzle/schema";
 import { eq, desc, isNull, and, ne, sql } from "drizzle-orm";
 import { appendTenantScope } from "./_core/tenant-scope";
+import { TRPCError } from "@trpc/server";
 import {
   HBCF_REQUIRED_THRESHOLD,
   createOrUpdateHbcfCertificate,
@@ -36,6 +37,28 @@ function hbcfFlagForValue(value?: string | null) {
     };
   }
   return {};
+}
+
+async function validateConstructionSupplierId(supplierId: number | null | undefined, tenantId: number) {
+  if (!supplierId) return;
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+
+  const [supplier] = await db.select({ id: suppliers.id })
+    .from(suppliers)
+    .where(and(
+      eq(suppliers.id, supplierId),
+      eq(suppliers.tenantId, tenantId),
+      eq(suppliers.supplierScope, "construction"),
+    ))
+    .limit(1);
+
+  if (!supplier) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Certifier / PCA must be selected from this tenant's construction suppliers",
+    });
+  }
 }
 
 function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
@@ -127,6 +150,7 @@ export const approvalRouter = router({
         riskFlags: z.any().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        await validateConstructionSupplierId(input.certifierContactId, ctx.tenant!.id);
         const projectNumber = await approvalDb.generateProjectNumber();
         const id = await approvalDb.createApprovalProject({
           ...input,
@@ -154,6 +178,12 @@ export const approvalRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const updates = { ...input.data } as any;
+        if (updates.certifierContactId !== undefined) {
+          const existingProject = await approvalDb.getApprovalProjectById(input.id, ctx.tenant!.id);
+          if (existingProject?.certifierContactId !== updates.certifierContactId) {
+            await validateConstructionSupplierId(updates.certifierContactId, ctx.tenant!.id);
+          }
+        }
         if (updates.estimatedCost !== undefined) {
           Object.assign(updates, hbcfFlagForValue(updates.estimatedCost));
           if (Number(updates.estimatedCost || 0) < HBCF_REQUIRED_THRESHOLD && updates.hbcfRequired !== true) {

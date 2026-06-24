@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Edit, Save, X, AlertTriangle, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import ClientPicker from "@/components/ClientPicker";
+import SupplierPicker from "@/components/SupplierPicker";
 
 interface ApprovalOverviewTabProps {
   project: any;
@@ -247,7 +248,7 @@ export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
                 <span className="text-muted-foreground">Certifier / PCA:</span>
                 <p className="font-medium">{project.certifierName || "—"}</p>
                 {project.certifierContactId && (
-                  <Badge variant="outline" className="text-xs mt-1">Linked to CRM</Badge>
+                  <Badge variant="outline" className="text-xs mt-1">Linked to Supplier</Badge>
                 )}
               </div>
               <div>
@@ -295,16 +296,18 @@ export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
               </div>
               <div>
                 <Label className="mb-2 block">Certifier / PCA</Label>
-                <ClientPicker
-                  selectedClientId={certifierContact.id}
-                  onClientSelect={(c) => setCertifierContact({ id: c.id, name: c.name })}
-                  onClientClear={() => setCertifierContact({ name: "" })}
-                  clientName={certifierContact.name}
+                <SupplierPicker
+                  selectedSupplierId={certifierContact.id}
+                  onSupplierSelect={(supplier) => setCertifierContact({ id: supplier.id, name: supplier.name })}
+                  onSupplierClear={() => setCertifierContact({ name: "" })}
+                  supplierName={certifierContact.name}
+                  supplierScope="construction"
+                  placeholder="Search construction suppliers for certifier / PCA..."
                 />
                 {!certifierContact.id && (
                   <div className="mt-2">
                     <Input
-                      placeholder="Certifier name (if not in CRM)"
+                      placeholder="Certifier name (if not in suppliers)"
                       value={certifierContact.name}
                       onChange={(e) => setCertifierContact({ name: e.target.value })}
                     />
