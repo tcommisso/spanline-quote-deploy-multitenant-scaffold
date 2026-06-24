@@ -502,7 +502,8 @@ function isOneGovHbcfUrl(url: URL) {
 }
 
 function oneGovHbcfSearchText(params: Record<string, string | undefined>) {
-  return params.searchText ||
+  return params.SearchText ||
+    params.searchText ||
     [params.address, params.suburb, params.postcode].filter(Boolean).join(" ").trim() ||
     params.builderName ||
     params.licenceNumber ||
@@ -539,7 +540,7 @@ function buildHbcfRequestUrl(profile: HbcfBuilderProfile, params: Record<string,
   } else if (path.endsWith("/verify")) {
     url.searchParams.set("licenceNumber", licenceNumber || "");
   } else {
-    url.searchParams.set("searchText", oneGovHbcfSearchText(params));
+    url.searchParams.set("SearchText", oneGovHbcfSearchText(params));
   }
   return { url, oneGov: true };
 }
