@@ -23,6 +23,7 @@ const NSW_POSTCODE_REGEX = "^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8][
 const NSW_POSTCODE_PATTERN = /^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8][0-9]{2}|292[1-9]|29[3-9][0-9])$/;
 const ACT_POSTCODE_PATTERN = /^(260[0-9]|261[0-8]|29[0-1][0-9]|2920)$/;
 const ONEGOV_HOST = "api.onegov.nsw.gov.au";
+const HBCF_ISSUED_STATUS_VALUES = ["issued", "current", "active", "valid", "completed", "complete", "open job"];
 
 const oneGovTokenCache = new Map<string, { token: string; expiresAt: number }>();
 
@@ -207,16 +208,34 @@ function firstString(record: any, keys: string[]): string | null {
 }
 
 function normalizeHbcfStatus(value: unknown) {
-  const text = String(value || "").trim().toLowerCase();
+  const text = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-_/]+/g, " ")
+    .replace(/\s+/g, " ");
   if (!text) return "issued";
-  if (["current", "active", "valid", "issued"].includes(text)) return "issued";
-  if (["application", "applied", "pending", "lodged"].includes(text)) return "applied";
+  if (HBCF_ISSUED_STATUS_VALUES.includes(text)) return "issued";
+  if (["application", "applied", "pending", "lodged", "with distributor broker"].includes(text)) return "applied";
   if (["cancelled", "canceled", "expired", "suspended", "refused"].includes(text)) return text;
   return text;
 }
 
 function isIssuedHbcfStatus(value: unknown) {
   return normalizeHbcfStatus(value) === "issued";
+}
+
+function normalizedHbcfStatusSql(column: any) {
+  return sql`LOWER(TRIM(REPLACE(REPLACE(REPLACE(COALESCE(${column}, ''), '-', ' '), '_', ' '), '/', ' ')))`;
+}
+
+function issuedHbcfStatusSql(column: any) {
+  const normalized = normalizedHbcfStatusSql(column);
+  return sql`(${normalized} = '' OR ${normalized} IN (${sql.join(HBCF_ISSUED_STATUS_VALUES.map((status) => sql`${status}`), sql`,`)}))`;
+}
+
+function notIssuedHbcfStatusSql(column: any) {
+  const normalized = normalizedHbcfStatusSql(column);
+  return sql`(${normalized} <> '' AND ${normalized} NOT IN (${sql.join(HBCF_ISSUED_STATUS_VALUES.map((status) => sql`${status}`), sql`,`)}))`;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -683,8 +702,6 @@ const CANCELLED_HBCF_STATUSES = new Set([
 ]);
 
 const COMPLETED_HBCF_STATUSES = new Set([
-  "complete",
-  "completed",
   "closed",
   "expired",
   "finalised",
@@ -876,7 +893,7 @@ async function findExistingHbcfCertificate(db: NonNullable<Awaited<ReturnType<ty
   if (linkConditions.length > 0) {
     const conditions: any[] = [
       or(...linkConditions)!,
-      sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) <> 'issued'`,
+      notIssuedHbcfStatusSql(hbcfCertificates.status),
     ];
     appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
     const [row] = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(1);
@@ -890,7 +907,7 @@ async function findExistingHbcfCertificate(db: NonNullable<Awaited<ReturnType<ty
 
   const conditions: any[] = [
     eq(hbcfCertificates.propertyPostcode, targetPostcode),
-    sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) <> 'issued'`,
+    notIssuedHbcfStatusSql(hbcfCertificates.status),
   ];
   appendTenantScope(conditions, hbcfCertificates.tenantId, tenantId);
   const candidates = await db.select().from(hbcfCertificates).where(and(...conditions)).limit(50);
@@ -1147,7 +1164,7 @@ export async function getHbcfBuilderProfile(tenantId?: number | null) {
 
   const annualLimitYear = profile.annualLimitYear ?? new Date().getFullYear();
   const certificateConditions: any[] = [
-    eq(hbcfCertificates.status, "issued"),
+    issuedHbcfStatusSql(hbcfCertificates.status),
     sql`(
       ${hbcfCertificates.ownerName} IS NOT NULL
       OR ${hbcfCertificates.propertyAddress} IS NOT NULL
@@ -1388,10 +1405,16 @@ export async function listHbcfCertificates(filters: {
   const profile = await getHbcfBuilderProfile(filters.tenantId);
   const certificateRows = rows.filter((row) => !isSparseExternalHbcfRecord(row, profile));
   const enrichedRows = await enrichHbcfCertificates(certificateRows, filters.tenantId);
-  const rowsWithPolicyStatus = enrichedRows.map((row) => ({
-    ...row,
-    policyStatusGroup: classifyHbcfPolicyStatus(row),
-  }));
+  const rowsWithPolicyStatus = enrichedRows.map((row) => {
+    const normalizedRow = {
+      ...row,
+      status: normalizeHbcfStatus(row.status),
+    };
+    return {
+      ...normalizedRow,
+      policyStatusGroup: classifyHbcfPolicyStatus(normalizedRow),
+    };
+  });
 
   if (filters.policyStatus && filters.policyStatus !== "all") {
     return rowsWithPolicyStatus.filter((row) => row.policyStatusGroup === filters.policyStatus);
@@ -1415,7 +1438,7 @@ export async function getProjectHbcfGateStatus(projectId: number, tenantId?: num
     .where(and(
       ...scopedConditions(hbcfCertificates, tenantId),
       eq(hbcfCertificates.approvalProjectId, projectId),
-      sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) IN ('issued', 'current', 'active', 'valid')`,
+      issuedHbcfStatusSql(hbcfCertificates.status),
     ))
     .limit(1);
   if (issued.length === 0) {
