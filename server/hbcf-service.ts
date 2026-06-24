@@ -606,6 +606,10 @@ function uniqueIds(values: unknown[]) {
   return Array.from(new Set(values.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0)));
 }
 
+function uniqueStrings(values: unknown[]) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
 function hasValue(value: unknown) {
   return value != null && String(value).trim() !== "";
 }
@@ -649,12 +653,7 @@ async function findMatchingProjectHbcfCertificate(
   ];
   appendTenantScope(candidateConditions, hbcfCertificates.tenantId, tenantId);
   if (projectPostcode) candidateConditions.push(eq(hbcfCertificates.propertyPostcode, projectPostcode));
-  if (project.crmLeadId) {
-    candidateConditions.push(or(
-      eq(hbcfCertificates.crmLeadId, project.crmLeadId),
-      sql`${hbcfCertificates.crmLeadId} IS NULL`,
-    )!);
-  }
+  else if (project.crmLeadId) candidateConditions.push(eq(hbcfCertificates.crmLeadId, project.crmLeadId));
 
   const candidates = await db.select()
     .from(hbcfCertificates)
@@ -768,8 +767,9 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
   const projectIds = uniqueIds(rows.map((row) => row.approvalProjectId));
   const leadIds = uniqueIds(rows.map((row) => row.crmLeadId));
   const quoteIds = uniqueIds(rows.map((row) => row.quoteId));
+  const rowPostcodes = uniqueStrings(rows.map((row) => row.propertyPostcode || firstPostcode(row.propertyAddress)));
 
-  const [projects, leads, quoteRows] = await Promise.all([
+  const [projects, leads, quoteRows, candidateProjects] = await Promise.all([
     projectIds.length
       ? db.select({
         id: approvalProjects.id,
@@ -802,14 +802,39 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
       }).from(quotes)
         .where(and(...scopedConditions(quotes, tenantId, inArray(quotes.id, quoteIds))))
       : [],
+    rowPostcodes.length
+      ? db.select({
+        id: approvalProjects.id,
+        clientName: approvalProjects.clientName,
+        propertyAddress: approvalProjects.propertyAddress,
+        propertySuburb: approvalProjects.propertySuburb,
+        propertyPostcode: approvalProjects.propertyPostcode,
+        estimatedCost: approvalProjects.estimatedCost,
+      }).from(approvalProjects)
+        .where(and(...scopedConditions(approvalProjects, tenantId, inArray(approvalProjects.propertyPostcode, rowPostcodes))))
+      : [],
   ]);
 
   const projectById = new Map(projects.map((project: any) => [Number(project.id), project]));
   const leadById = new Map(leads.map((lead: any) => [Number(lead.id), lead]));
   const quoteById = new Map(quoteRows.map((quote: any) => [Number(quote.id), quote]));
+  const candidateProjectsByPostcode = new Map<string, any[]>();
+  for (const project of candidateProjects) {
+    const postcode = String(project.propertyPostcode || firstPostcode(project.propertyAddress) || "").trim();
+    if (!postcode) continue;
+    const list = candidateProjectsByPostcode.get(postcode) || [];
+    list.push(project);
+    candidateProjectsByPostcode.set(postcode, list);
+  }
+
+  const findDisplayProject = (row: any) => {
+    const postcode = String(row.propertyPostcode || firstPostcode(row.propertyAddress) || "").trim();
+    const candidates = postcode ? candidateProjectsByPostcode.get(postcode) || [] : [];
+    return candidates.find((project: any) => projectMatchesCertificate(project, row)) ?? null;
+  };
 
   return rows.map((row) => {
-    const project = projectById.get(Number(row.approvalProjectId));
+    const project = projectById.get(Number(row.approvalProjectId)) || findDisplayProject(row);
     const lead = leadById.get(Number(row.crmLeadId));
     const quote = quoteById.get(Number(row.quoteId));
     const address = firstPresent(row.propertyAddress, project?.propertyAddress, lead?.contactAddress, quote?.siteAddress);
@@ -818,6 +843,7 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
 
     return {
       ...row,
+      approvalProjectId: row.approvalProjectId ?? project?.id ?? null,
       ownerName: firstPresent(row.ownerName, project?.clientName, leadDisplayName(lead), quote?.clientName),
       propertyAddress: address,
       propertySuburb: suburb,
@@ -1152,6 +1178,18 @@ export async function listHbcfCertificates(filters: {
   const rows = await db.select().from(hbcfCertificates)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(hbcfCertificates.updatedAt));
+  if (filters.projectId) {
+    const [project] = await db.select()
+      .from(approvalProjects)
+      .where(and(...scopedConditions(approvalProjects, filters.tenantId, eq(approvalProjects.id, filters.projectId))))
+      .limit(1);
+    if (project) {
+      const match = await findMatchingProjectHbcfCertificate(db, project, filters.tenantId);
+      if (match && !rows.some((row) => Number(row.id) === Number(match.id))) {
+        rows.unshift(match);
+      }
+    }
+  }
   const profile = await getHbcfBuilderProfile(filters.tenantId);
   const certificateRows = rows.filter((row) => !isSparseExternalHbcfRecord(row, profile));
   return enrichHbcfCertificates(certificateRows, filters.tenantId);
@@ -1175,6 +1213,12 @@ export async function getProjectHbcfGateStatus(projectId: number, tenantId?: num
       sql`LOWER(COALESCE(${hbcfCertificates.status}, '')) IN ('issued', 'current', 'active', 'valid')`,
     ))
     .limit(1);
+  if (issued.length === 0) {
+    const match = await findMatchingProjectHbcfCertificate(db, project, tenantId);
+    if (match && isIssuedHbcfStatus(match.status)) {
+      return { required: true, issued: true, blockers: [] as string[] };
+    }
+  }
   return {
     required: true,
     issued: issued.length > 0,
