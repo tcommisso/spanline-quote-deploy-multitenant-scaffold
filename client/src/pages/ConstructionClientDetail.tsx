@@ -484,7 +484,7 @@ export default function ConstructionClientDetail() {
         {/* Approvals Tab */}
         <TabsContent value="building-authority" className="space-y-4">
           {job.leadId ? (
-            <BuildingAuthorityReadOnly leadId={job.leadId} />
+            <BuildingAuthorityReadOnly jobId={jobId} leadId={job.leadId} />
           ) : (
             <Card><CardContent className="p-6 text-center text-muted-foreground">No linked lead — Approvals tracking requires a lead association.</CardContent></Card>
           )}
@@ -4538,11 +4538,78 @@ function BaStatusBadge({ status }: { status?: string | null }) {
 }
 
 // ─── Approvals Read-Only Activity View ──────────────────────────────────────
-function BuildingAuthorityReadOnly({ leadId }: { leadId: number }) {
-  const { data } = trpc.crm.buildingAuthority.get.useQuery({ leadId });
+function BuildingAuthorityReadOnly({ jobId, leadId }: { jobId: number; leadId: number }) {
+  const approvalActivity = trpc.constructionClients.approvalActivity.useQuery({ jobId }, { enabled: !!jobId });
+  const legacyBa = trpc.crm.buildingAuthority.get.useQuery({ leadId }, { enabled: !!leadId });
   const [, navigate] = useLocation();
+  const approvalProject = approvalActivity.data?.projects?.[0];
+  const data = legacyBa.data;
 
-  if (!data) return <Card><CardContent className="p-6 text-center text-muted-foreground">Loading approvals data...</CardContent></Card>;
+  if (approvalActivity.isLoading || legacyBa.isLoading) {
+    return <Card><CardContent className="p-6 text-center text-muted-foreground">Loading approvals data...</CardContent></Card>;
+  }
+
+  if (approvalActivity.error) {
+    return <Card><CardContent className="p-6 text-center text-destructive">{approvalActivity.error.message}</CardContent></Card>;
+  }
+
+  if (approvalProject) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building className="h-5 w-5" />
+            Approvals Activity
+            <Badge variant="outline" className="capitalize">{approvalProject.overallStatus}</Badge>
+            <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate(`/approvals/projects/${approvalProject.id}`)}>
+              <ExternalLink className="h-3.5 w-3.5 mr-1" />
+              Manage in Approvals
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Project</label>
+              <p className="text-sm font-medium">{approvalProject.projectNumber}</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Current State</label>
+              <p className="text-sm font-medium capitalize">{approvalProject.currentState || "—"}</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Current Gate</label>
+              <p className="text-sm font-medium">{approvalProject.currentGate != null ? `Gate ${approvalProject.currentGate}` : "—"}</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Pathway</label>
+              <p className="text-sm font-medium">{approvalProject.confirmedPathway || approvalProject.recommendedPathway || "—"}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Project Name</label>
+              <p className="text-sm font-medium">{approvalProject.name}</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Client</label>
+              <p className="text-sm font-medium">{approvalProject.clientName || "—"}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center text-muted-foreground">
+          No approvals activity is linked to this client yet.
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>
@@ -4551,8 +4618,9 @@ function BuildingAuthorityReadOnly({ leadId }: { leadId: number }) {
           <Building className="h-5 w-5" />
           Approvals Activity
           <BaStatusBadge status={data?.status} />
-          <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate("/construction/ba-calendar")}>
-            Manage in Approvals →
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => navigate("/approvals/projects")}>
+            <ExternalLink className="h-3.5 w-3.5 mr-1" />
+            Manage in Approvals
           </Button>
         </CardTitle>
       </CardHeader>

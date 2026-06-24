@@ -5,6 +5,7 @@ import {
   constructionJobs, constructionProgress, constructionAssignments,
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
+  approvalProjects,
 } from "../drizzle/schema";
 import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -696,6 +697,34 @@ export const constructionClientsRouter = router({
         progressPercent,
         progressSource,
       };
+    }),
+
+  approvalActivity: protectedProcedure
+    .input(z.object({ jobId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const job = await requireJobAccess(db, ctx, input.jobId);
+      const tenantId = tenantIdFromContext(ctx);
+
+      const matchConditions: any[] = [eq(approvalProjects.crmJobId, job.id)];
+      if (job.leadId) matchConditions.push(eq(approvalProjects.crmLeadId, job.leadId));
+      if (job.clientName && job.siteAddress) {
+        matchConditions.push(and(
+          eq(approvalProjects.clientName, job.clientName),
+          eq(approvalProjects.propertyAddress, job.siteAddress),
+        ));
+      }
+
+      const conditions: any[] = [];
+      appendTenantScope(conditions, approvalProjects.tenantId, tenantId);
+      conditions.push(or(...matchConditions));
+
+      const projects = await db.select().from(approvalProjects)
+        .where(and(...conditions))
+        .orderBy(desc(approvalProjects.updatedAt))
+        .limit(5);
+
+      return { projects };
     }),
 
   projectTeamByLeadId: protectedProcedure
