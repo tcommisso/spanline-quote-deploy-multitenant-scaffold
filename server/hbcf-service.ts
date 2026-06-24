@@ -24,7 +24,7 @@ const NSW_POSTCODE_PATTERN = /^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8
 const ACT_POSTCODE_PATTERN = /^(260[0-9]|261[0-8]|29[0-1][0-9]|2920)$/;
 const ONEGOV_HOST = "api.onegov.nsw.gov.au";
 const HBCF_ISSUED_STATUS_VALUES = ["issued", "current", "active", "valid", "completed", "complete", "open job"];
-const HBCF_STATUS_KEYS = ["status", "Status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"];
+const HBCF_STATUS_KEYS = ["status", "Status", "licenceStatus", "licenseStatus", "Licence Status", "License Status", "applicationStatus", "policyStatus", "certificateStatus", "insuranceStatus"];
 const HBCF_POLICY_NUMBER_KEYS = ["policyNumber", "Policy Number", "Transaction Number / Policy Number", "policy_number", "policyNo", "policyId", "hbcfPolicyNumber", "insurancePolicyNumber", "insurancePolicyNo"];
 const HBCF_CERTIFICATE_NUMBER_KEYS = ["certificateNumber", "Certificate Number", "certificate_number", "certificateNo", "certificateOfInsuranceNo", "certificateOfInsuranceNumber", "hbcfCertificateNo", "hbcfCertificateNumber", "hbcfNumber", "insuranceCertificateNumber", "insuranceCertificateNo"];
 const HBCF_OWNER_KEYS = ["ownerName", "Home Owner", "owner", "insuredName", "homeOwnerName", "homeownerName", "customerName", "clientName", "principalOwner"];
@@ -691,8 +691,9 @@ function normalisedPolicyStatusValues(row: any) {
   const values = [
     row.status,
     rawPayloadValue(rawPayload, ...HBCF_STATUS_KEYS),
-    rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus"),
-    firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]),
+    rawPayloadValue(rawPayload?.searchResult, ...HBCF_STATUS_KEYS),
+    rawPayloadValue(rawPayload?.licenceDetail, ...HBCF_STATUS_KEYS),
+    firstString(rawPayload?.associatedLicences, HBCF_STATUS_KEYS),
   ];
 
   return values
@@ -703,9 +704,10 @@ function normalisedPolicyStatusValues(row: any) {
 function displayHbcfStatus(row: any) {
   const rawPayload = isRecord(row.rawPayload) ? row.rawPayload : null;
   return normalizeHbcfStatus(
-    rawPayloadValue(rawPayload?.licenceDetail, "status", "licenceStatus") ||
+    rawPayloadValue(rawPayload?.licenceDetail, ...HBCF_STATUS_KEYS) ||
     rawPayloadValue(rawPayload, ...HBCF_STATUS_KEYS) ||
-    firstString(rawPayload?.associatedLicences, ["status", "licenceStatus"]) ||
+    rawPayloadValue(rawPayload?.searchResult, ...HBCF_STATUS_KEYS) ||
+    firstString(rawPayload?.associatedLicences, HBCF_STATUS_KEYS) ||
     row.status,
   );
 }
@@ -914,6 +916,7 @@ function mergeApiCertificateUpdate(existing: any, payload: any) {
     crmLeadId: payload.crmLeadId ?? existing.crmLeadId ?? null,
     certificateNumber: hasValue(payload.certificateNumber) ? payload.certificateNumber : existing.certificateNumber,
     policyNumber: hasValue(payload.policyNumber) ? payload.policyNumber : existing.policyNumber,
+    status: hasValue(payload.status) ? payload.status : existing.status,
     builderName: hasValue(payload.builderName) ? payload.builderName : existing.builderName,
     builderLicenceNumber: hasValue(payload.builderLicenceNumber) ? payload.builderLicenceNumber : existing.builderLicenceNumber,
     insurerName: hasValue(payload.insurerName) ? payload.insurerName : existing.insurerName,
@@ -925,8 +928,12 @@ function mergeApiCertificateUpdate(existing: any, payload: any) {
     issuedAt: payload.issuedAt ?? existing.issuedAt ?? null,
     expiresAt: payload.expiresAt ?? existing.expiresAt ?? null,
     certificateUrl: hasValue(payload.certificateUrl) ? payload.certificateUrl : existing.certificateUrl,
+    source: hasValue(payload.source) ? payload.source : existing.source,
     externalId: hasValue(payload.externalId) ? payload.externalId : existing.externalId,
     rawPayload: payload.rawPayload ?? existing.rawPayload ?? null,
+    lastSyncedAt: payload.lastSyncedAt ?? existing.lastSyncedAt ?? null,
+    syncStatus: hasValue(payload.syncStatus) ? payload.syncStatus : existing.syncStatus,
+    syncError: payload.syncError ?? null,
     createdByUserId: payload.createdByUserId ?? existing.createdByUserId ?? null,
   };
 }

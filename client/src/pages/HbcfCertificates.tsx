@@ -29,7 +29,7 @@ function formatCurrency(value?: string | number | null) {
 
 const POLICY_STATUS_FILTERS = [
   { value: "active", label: "Active" },
-  { value: "completed", label: "Completed" },
+  { value: "completed", label: "Completed / closed" },
   { value: "cancelled", label: "Cancelled" },
   { value: "all", label: "All" },
 ] as const;
@@ -40,6 +40,12 @@ function policyStatusBadgeVariant(status?: string | null) {
   if (status === "cancelled") return "destructive";
   if (status === "completed") return "secondary";
   return "default";
+}
+
+function policyStatusLabel(status?: string | null) {
+  if (status === "completed") return "Completed / closed";
+  if (status === "cancelled") return "Cancelled";
+  return "Active";
 }
 
 export default function HbcfCertificates() {
@@ -118,7 +124,7 @@ export default function HbcfCertificates() {
                     <TableHead>Certificate</TableHead>
                     <TableHead>Policy</TableHead>
                     <TableHead>Owner / Property</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>Policy lifecycle</TableHead>
                     <TableHead>Issued</TableHead>
                     <TableHead>Expires</TableHead>
                     <TableHead className="text-right">Contract</TableHead>
@@ -139,12 +145,17 @@ export default function HbcfCertificates() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
-                          <Badge variant={cert.status === "issued" ? "default" : "outline"}>
-                            {cert.status}
-                          </Badge>
                           <Badge variant={policyStatusBadgeVariant(cert.policyStatusGroup)}>
-                            {cert.policyStatusGroup || "active"}
+                            {policyStatusLabel(cert.policyStatusGroup)}
                           </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            API status: {cert.status || "-"}
+                          </span>
+                          {cert.syncStatus ? (
+                            <span className="text-xs text-muted-foreground">
+                              Sync: {cert.syncStatus}
+                            </span>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell>{formatDate(cert.issuedAt)}</TableCell>
