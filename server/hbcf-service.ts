@@ -636,6 +636,16 @@ function projectMatchesCertificate(project: any, certificate: any) {
   return false;
 }
 
+function leadMatchesCertificate(lead: any, certificate: any) {
+  if (Number(certificate.crmLeadId) === Number(lead.id)) return true;
+
+  const leadPostcode = String(lead.postcode || firstPostcode(lead.contactAddress) || "").trim();
+  const certificatePostcode = String(certificate.propertyPostcode || firstPostcode(certificate.propertyAddress) || "").trim();
+  const postcodeMatches = !!leadPostcode && !!certificatePostcode && leadPostcode === certificatePostcode;
+  const addressMatches = looseAddressMatch(lead.contactAddress, certificate.propertyAddress);
+  return addressMatches && postcodeMatches;
+}
+
 async function findMatchingProjectHbcfCertificate(
   db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
   project: any,
@@ -775,7 +785,7 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
   const quoteIds = uniqueIds(rows.map((row) => row.quoteId));
   const rowPostcodes = uniqueStrings(rows.map((row) => row.propertyPostcode || firstPostcode(row.propertyAddress)));
 
-  const [projects, leads, quoteRows, candidateProjects] = await Promise.all([
+  const [projects, leads, quoteRows, candidateProjects, candidateLeads] = await Promise.all([
     projectIds.length
       ? db.select({
         id: approvalProjects.id,
@@ -819,6 +829,18 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
       }).from(approvalProjects)
         .where(and(...scopedConditions(approvalProjects, tenantId, inArray(approvalProjects.propertyPostcode, rowPostcodes))))
       : [],
+    rowPostcodes.length
+      ? db.select({
+        id: crmLeads.id,
+        contactFirstName: crmLeads.contactFirstName,
+        contactLastName: crmLeads.contactLastName,
+        company: crmLeads.company,
+        contactAddress: crmLeads.contactAddress,
+        suburb: crmLeads.suburb,
+        postcode: crmLeads.postcode,
+      }).from(crmLeads)
+        .where(and(...scopedConditions(crmLeads, tenantId, inArray(crmLeads.postcode, rowPostcodes))))
+      : [],
   ]);
 
   const projectById = new Map(projects.map((project: any) => [Number(project.id), project]));
@@ -832,16 +854,29 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
     list.push(project);
     candidateProjectsByPostcode.set(postcode, list);
   }
+  const candidateLeadsByPostcode = new Map<string, any[]>();
+  for (const lead of candidateLeads) {
+    const postcode = String(lead.postcode || firstPostcode(lead.contactAddress) || "").trim();
+    if (!postcode) continue;
+    const list = candidateLeadsByPostcode.get(postcode) || [];
+    list.push(lead);
+    candidateLeadsByPostcode.set(postcode, list);
+  }
 
   const findDisplayProject = (row: any) => {
     const postcode = String(row.propertyPostcode || firstPostcode(row.propertyAddress) || "").trim();
     const candidates = postcode ? candidateProjectsByPostcode.get(postcode) || [] : [];
     return candidates.find((project: any) => projectMatchesCertificate(project, row)) ?? null;
   };
+  const findDisplayLead = (row: any) => {
+    const postcode = String(row.propertyPostcode || firstPostcode(row.propertyAddress) || "").trim();
+    const candidates = postcode ? candidateLeadsByPostcode.get(postcode) || [] : [];
+    return candidates.find((lead: any) => leadMatchesCertificate(lead, row)) ?? null;
+  };
 
   return rows.map((row) => {
     const project = projectById.get(Number(row.approvalProjectId)) || findDisplayProject(row);
-    const lead = leadById.get(Number(row.crmLeadId));
+    const lead = leadById.get(Number(row.crmLeadId)) || findDisplayLead(row);
     const quote = quoteById.get(Number(row.quoteId));
     const address = firstPresent(row.propertyAddress, project?.propertyAddress, lead?.contactAddress, quote?.siteAddress);
     const suburb = firstPresent(row.propertySuburb, project?.propertySuburb, lead?.suburb, quote?.suburb);
@@ -850,6 +885,7 @@ async function enrichHbcfCertificates(rows: any[], tenantId: number | null | und
     return {
       ...row,
       approvalProjectId: row.approvalProjectId ?? project?.id ?? null,
+      crmLeadId: row.crmLeadId ?? lead?.id ?? null,
       ownerName: firstPresent(row.ownerName, project?.clientName, leadDisplayName(lead), quote?.clientName),
       propertyAddress: address,
       propertySuburb: suburb,
