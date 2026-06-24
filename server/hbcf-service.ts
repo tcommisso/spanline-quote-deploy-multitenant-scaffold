@@ -22,6 +22,9 @@ const DEFAULT_API_MONTHLY_LIMIT = 2500;
 const NSW_POSTCODE_REGEX = "^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8][0-9]{2}|292[1-9]|29[3-9][0-9])$";
 const NSW_POSTCODE_PATTERN = /^(1[0-9]{3}|2[0-5][0-9]{2}|2619|26[2-9][0-9]|2[7-8][0-9]{2}|292[1-9]|29[3-9][0-9])$/;
 const ACT_POSTCODE_PATTERN = /^(260[0-9]|261[0-8]|29[0-1][0-9]|2920)$/;
+const ONEGOV_HOST = "api.onegov.nsw.gov.au";
+
+const oneGovTokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 type HbcfLocationLike = {
   jurisdiction?: string | null;
@@ -242,6 +245,106 @@ function resolveApiKey(profile: HbcfBuilderProfile) {
   if (!ref) return null;
   if (ref.startsWith("env:")) return process.env[ref.slice(4)] || null;
   return process.env[ref] || ref;
+}
+
+function apiKeyRefEnvName(profile: HbcfBuilderProfile) {
+  const ref = profile.apiKeyRef?.trim();
+  if (!ref) return null;
+  return ref.startsWith("env:") ? ref.slice(4) : ref;
+}
+
+function resolveOneGovApiSecret(profile: HbcfBuilderProfile) {
+  const keyRef = apiKeyRefEnvName(profile);
+  const candidates = [
+    keyRef ? process.env[`${keyRef}_SECRET`] : null,
+    keyRef?.endsWith("_KEY") ? process.env[`${keyRef.slice(0, -4)}_SECRET`] : null,
+    process.env.HBCF_API_SECRET,
+    process.env.ONEGOV_API_SECRET,
+  ];
+  return candidates.find((value) => value && value.trim()) || null;
+}
+
+function isOneGovHbcfUrl(url: URL) {
+  return url.hostname === ONEGOV_HOST || url.pathname.startsWith("/hbccheckregister/");
+}
+
+function oneGovHbcfSearchText(params: Record<string, string | undefined>) {
+  return params.searchText ||
+    [params.address, params.suburb, params.postcode].filter(Boolean).join(" ").trim() ||
+    params.builderName ||
+    params.licenceNumber ||
+    params.builderLicenceNumber ||
+    "";
+}
+
+function buildHbcfRequestUrl(profile: HbcfBuilderProfile, params: Record<string, string | undefined>) {
+  const configured = new URL(profile.apiBaseUrl!);
+  if (!isOneGovHbcfUrl(configured)) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value) configured.searchParams.set(key, value);
+    }
+    return { url: configured, oneGov: false };
+  }
+
+  const origin = configured.hostname === ONEGOV_HOST
+    ? configured.origin
+    : `https://${ONEGOV_HOST}`;
+  const hasAddressSearch = !!(params.searchText || params.address || params.suburb || params.postcode);
+  const licenceNumber = params.licenceNumber || params.builderLicenceNumber;
+  const licenceId = params.licenceid || params.licenceId;
+
+  let path = "/hbccheckregister/v1/browse";
+  if (licenceId && !hasAddressSearch) {
+    path = "/hbccheckregister/v1/details";
+  } else if (licenceNumber && !hasAddressSearch) {
+    path = "/hbccheckregister/v1/verify";
+  }
+
+  const url = new URL(path, origin);
+  if (path.endsWith("/details")) {
+    url.searchParams.set("licenceid", licenceId || "");
+  } else if (path.endsWith("/verify")) {
+    url.searchParams.set("licenceNumber", licenceNumber || "");
+  } else {
+    url.searchParams.set("searchText", oneGovHbcfSearchText(params));
+  }
+  return { url, oneGov: true };
+}
+
+async function getOneGovAccessToken(origin: string, apiKey: string, apiSecret: string) {
+  const cacheKey = `${origin}:${apiKey}`;
+  const cached = oneGovTokenCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now + 30_000) return cached.token;
+
+  const url = new URL("/oauth/client_credential/accesstoken", origin);
+  url.searchParams.set("grant_type", "client_credentials");
+  const basic = Buffer.from(`${apiKey}:${apiSecret}`).toString("base64");
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Basic ${basic}`,
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`HBCF OneGov token request returned ${response.status}${text.trim() ? `: ${text.trim().slice(0, 300)}` : ""}`);
+  }
+  let payload: any;
+  try {
+    payload = JSON.parse(text);
+  } catch (error: any) {
+    throw new Error(`HBCF OneGov token response was not valid JSON: ${error?.message || String(error)}`);
+  }
+  const token = payload.access_token || payload.accessToken;
+  if (!token) throw new Error("HBCF OneGov token response did not include access_token");
+  const expiresIn = Number(payload.expires_in || payload.expiresIn || 3600);
+  oneGovTokenCache.set(cacheKey, {
+    token,
+    expiresAt: now + Math.max(60, expiresIn - 60) * 1000,
+  });
+  return token;
 }
 
 function hbcfEndpointLabel(url: URL) {
@@ -504,20 +607,30 @@ async function hbcfApiRequest(profile: HbcfBuilderProfile, params: Record<string
     throw new Error("HBCF API is not enabled or no API endpoint is configured");
   }
   let url: URL;
+  let oneGov = false;
   try {
-    url = new URL(profile.apiBaseUrl);
+    const request = buildHbcfRequestUrl(profile, params);
+    url = request.url;
+    oneGov = request.oneGov;
   } catch {
     throw new Error("HBCF API base URL is invalid. Check the API base URL in HBCF Builder Profile.");
-  }
-  for (const [key, value] of Object.entries(params)) {
-    if (value) url.searchParams.set(key, value);
   }
   const headers: Record<string, string> = { Accept: "application/json" };
   const key = resolveApiKey(profile);
   if (profile.apiKeyRef?.trim().startsWith("env:") && !key) {
     throw new Error(`HBCF API key environment variable ${profile.apiKeyRef.trim().slice(4)} is not available on this server.`);
   }
-  if (key) headers.Authorization = `Bearer ${key}`;
+  if (oneGov) {
+    if (!key) throw new Error("HBCF OneGov API key is not configured.");
+    const secret = resolveOneGovApiSecret(profile);
+    if (!secret) {
+      throw new Error("HBCF OneGov API secret is not configured. Set HBCF_API_SECRET in Railway or use a matching *_SECRET variable for the API key reference.");
+    }
+    headers.apikey = key;
+    headers.Authorization = `Bearer ${await getOneGovAccessToken(url.origin, key, secret)}`;
+  } else if (key) {
+    headers.Authorization = `Bearer ${key}`;
+  }
 
   await chargeApiCall(profile);
 

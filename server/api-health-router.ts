@@ -61,7 +61,7 @@ type ApiCheck = {
 
 const API_CHECKS: ApiCheck[] = [
   { key: "hbcf_onegov", name: "HBCF OneGov", category: "Government", baseUrl: "https://api.onegov.nsw.gov.au", configured: true, schedule: "Daily 5:30am + on demand" },
-  { key: "hbcf_direct", name: "HBCF Direct", category: "Government", baseUrl: "https://api.hbcf.nsw.gov.au/api/v1/certificates/", configured: true, schedule: "Daily 5:30am + on demand" },
+  { key: "hbcf_direct", name: "HBC Check Register", category: "Government", baseUrl: "https://api.onegov.nsw.gov.au/hbccheckregister/v1", configured: true, schedule: "Daily 5:30am + on demand" },
   { key: "act_active_das", name: "ACT Active DAs", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_ACTIVE_DEVELOPMENT_APPLICATIONS/FeatureServer/0", configured: true, schedule: "Every 6 hours" },
   { key: "act_dafinder", name: "ACT DAFINDER", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_DAFINDER_LIST_VIEW/FeatureServer/0", configured: true, schedule: "On demand + competitor scans" },
   { key: "act_blocks", name: "ACT Blocks", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query", configured: true, schedule: "On demand parcel lookup" },
