@@ -270,6 +270,8 @@ export const LEGACY_SPEC_FIELD_ALIASES: Record<string, string> = {
   specSpanliteType: "specSpanlitesType",
   specSpanliteColour: "specSpanlitesFinish",
   specSpanliteEntries: "specSpanlitesType",
+  specSkylightType: "specSpanlitesType",
+  specSkylightFinish: "specSpanlitesFinish",
   specFlooringColour: "specFloorFinish",
 };
 
@@ -392,6 +394,17 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
     formulaExamples: ["roofSheetLM"],
     notes: "Use as the bottom colour field for roof sheet products that have separate underside colour.",
   },
+  specSpanlitesType: {
+    term: "Skylight product type",
+    formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
+    productMatchField: "specSpanlitesType",
+    notes: "Current specsheet field for the selected skylight/spanlite product. Use this as the product match field so the generated quote item uses the selected skylight name and rates.",
+  },
+  specSpanlitesFinish: {
+    term: "Skylight finish",
+    formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
+    notes: "Current specsheet field for skylight/spanlite finish. Use as the colour field only when the finish should appear on the generated quote item.",
+  },
   specSkylightQty: {
     term: "Skylight quantity",
     formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
@@ -403,10 +416,15 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
     notes: "Lineal metres per skylight entry.",
   },
   specSkylightType: {
-    term: "Skylight product type",
+    term: "Skylight product type legacy alias",
     formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
-    productMatchField: "specSkylightType",
-    notes: "Use as product match when skylight type selects the costed item.",
+    productMatchField: "specSpanlitesType",
+    notes: "Compatibility alias populated from specSpanlitesType when blank. Prefer specSpanlitesType for new mappings.",
+  },
+  specSkylightFinish: {
+    term: "Skylight finish legacy alias",
+    formulaExamples: ["specSkylightQty", "specSkylightQty * specSkylightLm"],
+    notes: "Compatibility alias populated from specSpanlitesFinish when blank. Prefer specSpanlitesFinish for new mappings.",
   },
   specBoxGutter: {
     term: "Total gutter length",
