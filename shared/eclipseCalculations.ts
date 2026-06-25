@@ -330,7 +330,11 @@ export function validateUnit(unit: UnitInput, unitIndex: number): ValidationErro
     errors.push({ field: "length", message: `${label}: Length ${unit.length}mm is below minimum ${ECLIPSE_LIMITS.length.min}mm`, severity: "error" });
   }
   if (unit.length > ECLIPSE_LIMITS.length.max) {
-    errors.push({ field: "length", message: `${label}: Length ${unit.length}mm exceeds maximum ${ECLIPSE_LIMITS.length.max}mm`, severity: "error" });
+    errors.push({
+      field: "length",
+      message: `${label}: Length ${unit.length}mm exceeds standard ${ECLIPSE_LIMITS.length.max}mm Eclipse beam length — confirm engineering solution such as an extra post, double beams, or an I-beam insert`,
+      severity: "warning",
+    });
   }
 
   // Height validation
@@ -361,8 +365,8 @@ export function validateUnit(unit: UnitInput, unitIndex: number): ValidationErro
   // Length vs beam size check
   if (unit.length > 0) {
     const maxBeam = BEAM_SIZES[BEAM_SIZES.length - 1]; // 6500
-    if (unit.length > maxBeam) {
-      errors.push({ field: "length", message: `${label}: Length ${unit.length}mm exceeds maximum beam size ${maxBeam}mm`, severity: "error" });
+    if (unit.length > maxBeam && maxBeam !== ECLIPSE_LIMITS.length.max) {
+      errors.push({ field: "length", message: `${label}: Length ${unit.length}mm exceeds maximum beam size ${maxBeam}mm — engineering review required`, severity: "warning" });
     }
   }
 

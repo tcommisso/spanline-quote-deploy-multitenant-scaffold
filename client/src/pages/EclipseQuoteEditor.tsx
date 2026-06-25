@@ -90,9 +90,9 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm, canE
   const update = (partial: Partial<UnitInput>) => onChange({ ...unit, ...partial });
   const numChange = (field: keyof UnitInput) => (e: React.ChangeEvent<HTMLInputElement>) => {
     let val = parseFloat(e.target.value) || 0;
-    // Clamp dimension fields to engineering limits
+    // Lengths above the standard beam length are allowed with an engineering advisory.
     const limits = ECLIPSE_LIMITS[field as keyof typeof ECLIPSE_LIMITS];
-    if (limits && val > limits.max) val = limits.max;
+    if (limits && field !== "length" && val > limits.max) val = limits.max;
     update({ [field]: val } as any);
   };
   const attachmentMethod = normaliseEclipseAttachmentMethod(unit.attachmentMethod);
@@ -188,18 +188,19 @@ function UnitCard({ unitNumber, unit, onChange, onRemove, onDuplicate, sqm, canE
                 )}
               </div>
               <div className="space-y-1">
-                <Label className={`text-xs ${unit.length > ECLIPSE_LIMITS.length.max || (unit.length > 0 && unit.length < ECLIPSE_LIMITS.length.min) ? "text-red-600 font-medium" : "text-muted-foreground"}`}>Length (mm)</Label>
+                <Label className={`text-xs ${unit.length > 0 && unit.length < ECLIPSE_LIMITS.length.min ? "text-red-600 font-medium" : unit.length > ECLIPSE_LIMITS.length.max ? "text-amber-700 font-medium" : "text-muted-foreground"}`}>Length (mm)</Label>
                 <Input
                   type="number"
                   value={unit.length || ""}
                   onChange={numChange("length")}
                   placeholder="e.g. 4000"
                   min={ECLIPSE_LIMITS.length.min}
-                  max={ECLIPSE_LIMITS.length.max}
-                  className={`h-8 text-sm ${unit.length > ECLIPSE_LIMITS.length.max || (unit.length > 0 && unit.length < ECLIPSE_LIMITS.length.min) ? "border-red-500 bg-red-50 text-red-900 focus-visible:ring-red-500" : ""}`}
+                  className={`h-8 text-sm ${unit.length > 0 && unit.length < ECLIPSE_LIMITS.length.min ? "border-red-500 bg-red-50 text-red-900 focus-visible:ring-red-500" : unit.length > ECLIPSE_LIMITS.length.max ? "border-amber-500 bg-amber-50 text-amber-900 focus-visible:ring-amber-500" : ""}`}
                 />
                 {unit.length > ECLIPSE_LIMITS.length.max && (
-                  <p className="text-[10px] text-red-600 font-medium">Max {ECLIPSE_LIMITS.length.max}mm</p>
+                  <p className="text-[10px] text-amber-700 font-medium">
+                    Engineering review: over standard {ECLIPSE_LIMITS.length.max}mm beam length
+                  </p>
                 )}
                 {unit.length > 0 && unit.length < ECLIPSE_LIMITS.length.min && (
                   <p className="text-[10px] text-red-600 font-medium">Min {ECLIPSE_LIMITS.length.min}mm</p>

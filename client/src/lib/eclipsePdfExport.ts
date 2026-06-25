@@ -1000,7 +1000,8 @@ function drawValidationSummaryPage(doc: jsPDF, units: UnitInput[]) {
 
     // Dimension checks
     const u = units[i];
-    const dimStatus = (u.bladeWidth >= 1500 && u.bladeWidth <= 4200 && u.length >= 1500 && u.length <= 6500 && u.height >= 2100 && u.height <= 3600) ? "\u2713 Pass" : "\u2717 Fail";
+    const hasDimensionError = u.bladeWidth < 1500 || u.bladeWidth > 4200 || u.length < 1500 || u.height < 2100 || u.height > 3600;
+    const dimStatus = hasDimensionError ? "\u2717 Fail" : u.length > 6500 ? "\u26A0 Review" : "\u2713 Pass";
     const bracketStatus = (u.attachmentMethod === "None" || ((u.fasciaBrackets || 0) + (u.extendaBrackets || 0) + (u.gableBracketsQty || 0) + (u.popupBrackets || 0) + (u.wallFixingBeam || 0) + (u.wallFixingBracket || 0)) > 0) ? "\u2713 Pass" : "\u26A0 Review";
     const postStatus = (u.mountType === "Freestanding" && u.posts < 4) ? "\u26A0 Review" : "\u2713 Pass";
     const overallStatus = unitErrorCount > 0 ? `\u2717 ${unitErrorCount} Error(s)` : unitWarningCount > 0 ? `\u26A0 ${unitWarningCount} Warning(s)` : "\u2713 Pass";
