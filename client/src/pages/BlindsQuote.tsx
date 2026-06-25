@@ -461,39 +461,39 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item, presentat
   const visibleFabricColours = selectedFabricColour && !fabricColourOptions.some((colour: any) => colour.id === selectedFabricColour.id)
     ? [...fabricColourOptions, selectedFabricColour]
     : fabricColourOptions;
-  const productOptionSections = (() => {
-    const sortOrder = new Map<string, number>(BLIND_OPTION_CATEGORIES.map((category, index) => [category.value, index]));
-    const sections = new Map<string, { category: string; label: string; sortIndex: number; options: any[] }>();
+  const productOptionBrandGroups = (() => {
+    const categorySortOrder = new Map<string, number>(BLIND_OPTION_CATEGORIES.map((category, index) => [category.value, index]));
+    const brandGroups = new Map<string, { key: string; label: string; sections: Map<string, { category: string; label: string; sortIndex: number; options: any[] }> }>();
     productOptions.forEach((option: any) => {
+      const brandLabel = String(option.brand || "").trim() || "Unbranded";
+      const brandKey = brandLabel.toLowerCase();
+      const brandGroup = brandGroups.get(brandKey) || {
+        key: brandKey,
+        label: brandLabel,
+        sections: new Map<string, { category: string; label: string; sortIndex: number; options: any[] }>(),
+      };
       const category = String(option.category || "other");
-      const section = sections.get(category) || {
+      const section = brandGroup.sections.get(category) || {
         category,
         label: blindOptionCategoryLabel(category),
-        sortIndex: sortOrder.get(category) ?? 999,
+        sortIndex: categorySortOrder.get(category) ?? 999,
         options: [],
       };
       section.options.push(option);
-      sections.set(category, section);
+      brandGroup.sections.set(category, section);
+      brandGroups.set(brandKey, brandGroup);
     });
-    return Array.from(sections.values()).sort((a, b) => a.sortIndex - b.sortIndex || a.label.localeCompare(b.label));
+    return Array.from(brandGroups.values())
+      .map((group) => ({
+        ...group,
+        sections: Array.from(group.sections.values()).sort((a, b) => a.sortIndex - b.sortIndex || a.label.localeCompare(b.label)),
+      }))
+      .sort((a, b) => {
+        if (a.label === "Unbranded") return 1;
+        if (b.label === "Unbranded") return -1;
+        return a.label.localeCompare(b.label);
+      });
   })();
-  const productOptionGroups = [
-    {
-      key: "accessories",
-      label: "Accessories",
-      sections: productOptionSections.filter((section) => section.category.startsWith("accessory_")),
-    },
-    {
-      key: "motorisation",
-      label: "Motorisation",
-      sections: productOptionSections.filter((section) => section.category.startsWith("motorisation_")),
-    },
-    {
-      key: "other",
-      label: "Other Options",
-      sections: productOptionSections.filter((section) => !section.category.startsWith("accessory_") && !section.category.startsWith("motorisation_")),
-    },
-  ].filter((group) => group.sections.length > 0);
   const selectedOptionTotal = productOptions.reduce((total: number, option: any) => {
     const selected = form.selectedOptions.find((itemOption) => itemOption.productOptionId === option.id);
     if (!selected) return total;
@@ -678,11 +678,12 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item, presentat
                 <div className="space-y-6 p-4 sm:p-5">
                   {productOptions.length === 0 ? (
                     <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">No options configured</p>
-                  ) : productOptionGroups.map((group) => (
+                  ) : productOptionBrandGroups.map((group) => (
                     <div key={group.key} className="space-y-3">
                       <div className="flex items-center gap-3">
                         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h4>
                         <div className="h-px flex-1 bg-border" />
+                        <Badge variant="outline">{group.sections.reduce((total, section) => total + section.options.length, 0)}</Badge>
                       </div>
                       <div className="space-y-4">
                         {group.sections.map((section) => (
@@ -703,7 +704,7 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item, presentat
                                     <input type="checkbox" checked={isSelected} onChange={() => toggleOption(opt.id)} className="mt-1 rounded" />
                                     <div className="min-w-0">
                                       <p className="text-sm font-medium leading-snug">{opt.name}</p>
-                                      <p className="mt-1 text-xs text-muted-foreground">{opt.brand ? `${opt.brand} — ` : ""}{opt.orderCode || "No code"}</p>
+                                      <p className="mt-1 text-xs text-muted-foreground">{opt.orderCode || "No code"}</p>
                                     </div>
                                     <div className="text-right text-sm">
                                       <p className="font-semibold">{money(sellPrice)}</p>
