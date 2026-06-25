@@ -60,12 +60,22 @@ function normalizeMergeFields(value: string) {
   return value.replace(/(?<!\{)\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}(?!\})/g, "{{$1}}");
 }
 
+function cleanHtmlTemplateBody(value: unknown) {
+  let html = String(value ?? "").replace(/\r\n/g, "\n").trim();
+  const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) html = bodyMatch[1].trim();
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .trim();
+}
+
 function normalizeImportRow(row: EmailTemplateImportInput) {
   const letterType = cleanText(row.templateId);
   const category = cleanText(row.category) || "General";
   const channel = cleanText(row.channel || "Email") || "Email";
   const subject = normalizeMergeFields(cleanText(row.subject));
-  const body = normalizeMergeFields(String(row.body ?? "").replace(/\r\n/g, "\n").trim());
+  const body = normalizeMergeFields(cleanHtmlTemplateBody(row.body));
   const triggerKey = cleanOptionalText(row.autoTrigger) || cleanOptionalText(row.status);
 
   return {
@@ -81,6 +91,7 @@ function normalizeImportRow(row: EmailTemplateImportInput) {
 
 export async function upsertTemplate(data: EmailTemplateUpsertInput, tenantId?: number | null) {
   const existing = await getTemplate(data.letterType, tenantId);
+  const body = normalizeMergeFields(cleanHtmlTemplateBody(data.body));
   if (existing) {
     const conditions: any[] = [eq(emailTemplates.id, existing.id)];
     appendTenantScope(conditions, emailTemplates.tenantId, tenantId);
@@ -88,7 +99,7 @@ export async function upsertTemplate(data: EmailTemplateUpsertInput, tenantId?: 
     await db.update(emailTemplates)
       .set({
         subject: data.subject,
-        body: data.body,
+        body,
         category: data.category ?? existing.category,
         triggerKey: nextTriggerKey,
         attachmentUrl: data.attachmentUrl ?? null,
@@ -98,7 +109,7 @@ export async function upsertTemplate(data: EmailTemplateUpsertInput, tenantId?: 
     return {
       ...existing,
       subject: data.subject,
-      body: data.body,
+      body,
       category: data.category ?? existing.category,
       triggerKey: nextTriggerKey,
       attachmentUrl: data.attachmentUrl,
@@ -109,13 +120,13 @@ export async function upsertTemplate(data: EmailTemplateUpsertInput, tenantId?: 
       tenantId,
       letterType: data.letterType,
       subject: data.subject,
-      body: data.body,
+      body,
       category: data.category ?? "general",
       triggerKey: data.triggerKey ?? null,
       attachmentUrl: data.attachmentUrl ?? null,
       attachmentName: data.attachmentName ?? null,
     });
-    return { id: (result as any)[0].insertId, ...data };
+    return { id: (result as any)[0].insertId, ...data, body };
   }
 }
 

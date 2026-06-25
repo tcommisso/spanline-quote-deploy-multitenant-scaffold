@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertCircle, FileSpreadsheet, Save, RotateCcw, Mail, Eye, Plus, Pencil, Trash2, Upload, Wrench, ShoppingBag } from "lucide-react";
+import { AlertCircle, Code2, FileCode2, FileSpreadsheet, Save, RotateCcw, Mail, Eye, Plus, Pencil, Trash2, Upload, Wrench, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import { isAdminRole } from "@shared/const";
 const RichTextEditor = lazy(() => import("@/components/RichTextEditor"));
@@ -95,11 +95,86 @@ function normalizeMergeFields(value: string) {
   return value.replace(/(?<!\{)\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}(?!\})/g, "{{$1}}");
 }
 
+function slugifyTemplateName(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 48);
+}
+
+function titleFromFileName(fileName: string) {
+  return fileName
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim();
+}
+
+function cleanHtmlTemplateBody(value: string) {
+  let html = value.replace(/\r\n/g, "\n").trim();
+  const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) html = bodyMatch[1].trim();
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .trim();
+}
+
+function extractHtmlTitle(value: string) {
+  const match = value.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return match?.[1]?.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() || "";
+}
+
 function formatTemplateLabel(letterType: string) {
   return letterType
     .replace(/^(sales_|construction_)/i, "")
     .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function TemplateBodyEditor({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (html: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <Tabs defaultValue="visual" className="w-full">
+      <TabsList className="mb-2">
+        <TabsTrigger value="visual" className="gap-1.5">
+          <Mail className="h-3.5 w-3.5" /> Visual
+        </TabsTrigger>
+        <TabsTrigger value="html" className="gap-1.5">
+          <Code2 className="h-3.5 w-3.5" /> HTML Source
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="visual" className="mt-0">
+        <Suspense fallback={<div className="h-[200px] border rounded-md flex items-center justify-center text-muted-foreground text-sm">Loading editor...</div>}>
+          <RichTextEditor
+            content={value}
+            onChange={onChange}
+            placeholder={placeholder}
+          />
+        </Suspense>
+      </TabsContent>
+      <TabsContent value="html" className="mt-0">
+        <Textarea
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="<table>...</table>"
+          className="min-h-[260px] font-mono text-xs"
+        />
+        <p className="text-xs text-muted-foreground mt-1">
+          Paste complete HTML or body-only HTML. Script tags and inline event handlers are removed when saved.
+        </p>
+      </TabsContent>
+    </Tabs>
+  );
 }
 
 async function parseTemplateWorkbook(file: File) {
@@ -154,6 +229,55 @@ async function parseTemplateWorkbook(file: File) {
   return { rows, skipped, sheetName: worksheet === workbook.Sheets.Templates ? "Templates" : workbook.SheetNames[0] };
 }
 
+async function parseHtmlTemplateFiles(files: File[], category: string, prefix: string) {
+  const rows: ImportedTemplateRow[] = [];
+  const skipped: SkippedImportRow[] = [];
+  const seen = new Set<string>();
+  const normalizedPrefix = slugifyTemplateName(prefix || category || "template") || "template";
+
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const rowNumber = index + 1;
+    if (!/\.html?$/i.test(file.name)) {
+      skipped.push({ rowNumber, reason: `Unsupported file type: ${file.name}` });
+      continue;
+    }
+
+    const rawHtml = await file.text();
+    const body = normalizeMergeFields(cleanHtmlTemplateBody(rawHtml));
+    const baseId = slugifyTemplateName(file.name);
+    const templateId = `${normalizedPrefix}_${baseId}`.slice(0, 64);
+    const subject = normalizeMergeFields(extractHtmlTitle(rawHtml) || titleFromFileName(file.name)).slice(0, 500);
+
+    if (!baseId || !templateId) {
+      skipped.push({ rowNumber, reason: "Could not derive Template ID from file name" });
+      continue;
+    }
+    if (seen.has(templateId)) {
+      skipped.push({ rowNumber, templateId, reason: "Duplicate Template ID" });
+      continue;
+    }
+    seen.add(templateId);
+    if (!body) {
+      skipped.push({ rowNumber, templateId, reason: "No HTML body content found" });
+      continue;
+    }
+
+    rows.push({
+      templateId,
+      category,
+      channel: "Email",
+      status: "",
+      subject,
+      body,
+      autoTrigger: "",
+      rowNumber,
+    });
+  }
+
+  return { rows, skipped };
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 export default function AdminEmailTemplates() {
   const { user } = useAuth();
@@ -173,6 +297,7 @@ export default function AdminEmailTemplates() {
       </div>
 
       <TemplateSpreadsheetImport />
+      <HtmlTemplateImport />
 
       <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as any)}>
         <TabsList>
@@ -369,6 +494,196 @@ function TemplateSpreadsheetImport() {
   );
 }
 
+function HtmlTemplateImport() {
+  const utils = trpc.useUtils();
+  const { data: allTemplates } = trpc.crm.emailTemplates.list.useQuery();
+  const importMut = trpc.crm.emailTemplates.importRows.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Imported ${result.created + result.updated} HTML template${result.created + result.updated === 1 ? "" : "s"}`);
+      utils.crm.emailTemplates.list.invalidate();
+      setImportResult(result);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const [category, setCategory] = useState<string>("Sales");
+  const [prefix, setPrefix] = useState<string>("sales");
+  const [fileNames, setFileNames] = useState<string[]>([]);
+  const [rows, setRows] = useState<ImportedTemplateRow[]>([]);
+  const [skippedRows, setSkippedRows] = useState<SkippedImportRow[]>([]);
+  const [importResult, setImportResult] = useState<any>(null);
+
+  const existingLetterTypes = useMemo(
+    () => new Set((allTemplates || []).map((template: any) => template.letterType)),
+    [allTemplates],
+  );
+
+  const previewRows = useMemo(() => rows.map((row) => ({
+    ...row,
+    action: existingLetterTypes.has(row.templateId) ? "Update" : "Create",
+  })), [existingLetterTypes, rows]);
+
+  const previewCounts = useMemo(() => previewRows.reduce((counts, row) => {
+    if (row.action === "Update") counts.update++;
+    else counts.create++;
+    return counts;
+  }, { create: 0, update: 0 }), [previewRows]);
+
+  function handleCategoryChange(nextCategory: string) {
+    setCategory(nextCategory);
+    if (nextCategory === "Sales") setPrefix("sales");
+    else if (prefix === "sales" || prefix === "construction") setPrefix("construction");
+  }
+
+  async function handleFileChange(fileList?: FileList | null) {
+    setImportResult(null);
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    try {
+      const parsed = await parseHtmlTemplateFiles(files, category, prefix);
+      setFileNames(files.map((file) => file.name));
+      setRows(parsed.rows);
+      setSkippedRows(parsed.skipped);
+      if (!parsed.rows.length) {
+        toast.error("No importable HTML templates found");
+      } else {
+        toast.success(`Parsed ${parsed.rows.length} HTML template${parsed.rows.length === 1 ? "" : "s"}`);
+      }
+    } catch (err: any) {
+      setRows([]);
+      setSkippedRows([]);
+      setFileNames(files.map((file) => file.name));
+      toast.error(err?.message || "Unable to read HTML templates");
+    }
+  }
+
+  function handleImport() {
+    if (!rows.length) {
+      toast.error("Select HTML files first");
+      return;
+    }
+    importMut.mutate({ rows });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <FileCode2 className="h-5 w-5" />
+              Import HTML Templates
+            </CardTitle>
+            <CardDescription>
+              Upload one or more HTML files. File names become template IDs, and each file is stored as a tenant-owned email template.
+            </CardDescription>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[180px_180px_280px_auto] lg:items-end">
+            <div className="space-y-1">
+              <Label className="text-xs">Category</Label>
+              <Select value={category} onValueChange={handleCategoryChange}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TEMPLATE_CATEGORIES.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Template ID prefix</Label>
+              <Input value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="sales" />
+            </div>
+            <div className="space-y-1 sm:col-span-2 lg:col-span-1">
+              <Label className="text-xs">HTML files</Label>
+              <Input
+                type="file"
+                accept=".html,.htm,text/html"
+                multiple
+                onChange={(event) => handleFileChange(event.target.files)}
+              />
+            </div>
+            <Button onClick={handleImport} disabled={!rows.length || importMut.isPending} className="sm:col-span-2 lg:col-span-1">
+              <Upload className="h-4 w-4 mr-1" />
+              {importMut.isPending ? "Importing..." : "Import HTML"}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      {(fileNames.length > 0 || rows.length > 0 || skippedRows.length > 0 || importResult) && (
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {fileNames.slice(0, 3).map((name) => <Badge key={name} variant="outline">{name}</Badge>)}
+            {fileNames.length > 3 && <Badge variant="outline">+{fileNames.length - 3} files</Badge>}
+            <Badge variant="secondary">{rows.length} ready</Badge>
+            <Badge variant="secondary">{previewCounts.create} create</Badge>
+            <Badge variant="secondary">{previewCounts.update} update</Badge>
+            {skippedRows.length > 0 && <Badge variant="destructive">{skippedRows.length} skipped</Badge>}
+            {importResult && (
+              <Badge variant="outline">
+                Applied: {importResult.created} created, {importResult.updated} updated
+              </Badge>
+            )}
+          </div>
+
+          {skippedRows.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertCircle className="h-4 w-4" />
+                Skipped HTML files
+              </div>
+              <div className="mt-2 grid gap-1">
+                {skippedRows.slice(0, 5).map((row) => (
+                  <div key={`${row.rowNumber}-${row.templateId || row.reason}`}>
+                    File {row.rowNumber}{row.templateId ? ` (${row.templateId})` : ""}: {row.reason}
+                  </div>
+                ))}
+                {skippedRows.length > 5 && <div>{skippedRows.length - 5} more skipped files</div>}
+              </div>
+            </div>
+          )}
+
+          {previewRows.length > 0 && (
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-muted/60 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Template ID</th>
+                    <th className="px-3 py-2 text-left font-medium">Category</th>
+                    <th className="px-3 py-2 text-left font-medium">Action</th>
+                    <th className="px-3 py-2 text-left font-medium">Subject</th>
+                    <th className="px-3 py-2 text-left font-medium">HTML</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.slice(0, 12).map((row) => (
+                    <tr key={`${row.rowNumber}-${row.templateId}`} className="border-t">
+                      <td className="px-3 py-2 font-medium">{row.templateId}</td>
+                      <td className="px-3 py-2">{row.category}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={row.action === "Create" ? "default" : "secondary"}>{row.action}</Badge>
+                      </td>
+                      <td className="px-3 py-2">{row.subject}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{row.body.length.toLocaleString()} chars</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {previewRows.length > 12 && (
+                <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+                  Showing 12 of {previewRows.length} templates.
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
 // ─── CRM Letters Tab ─────────────────────────────────────────────────────────
 function CrmLettersTab() {
   const utils = trpc.useUtils();
@@ -494,13 +809,11 @@ function CrmLettersTab() {
               </div>
               <div>
                 <label className="text-sm font-medium mb-1 block">Email Body</label>
-                <Suspense fallback={<div className="h-[200px] border rounded-md flex items-center justify-center text-muted-foreground text-sm">Loading editor...</div>}>
-                  <RichTextEditor
-                    content={forms[key]?.body || ""}
-                    onChange={(html) => setForms(prev => ({ ...prev, [key]: { ...prev[key], body: html } }))}
-                    placeholder="Compose your email body..."
-                  />
-                </Suspense>
+                <TemplateBodyEditor
+                  value={forms[key]?.body || ""}
+                  onChange={(html) => setForms(prev => ({ ...prev, [key]: { ...prev[key], body: html } }))}
+                  placeholder="Compose your email body..."
+                />
                 <p className="text-xs text-muted-foreground mt-1">
                   The greeting "Dear [Client Name]," is added automatically before the body.
                 </p>
@@ -758,13 +1071,11 @@ function ConstructionTemplatesTab() {
             </div>
             <div className="space-y-2">
               <Label>Body</Label>
-              <Suspense fallback={<div className="h-[200px] border rounded-md flex items-center justify-center text-muted-foreground text-sm">Loading editor...</div>}>
-                <RichTextEditor
-                  content={form.body}
-                  onChange={(html) => setForm(prev => ({ ...prev, body: html }))}
-                  placeholder="Compose your email body..."
-                />
-              </Suspense>
+              <TemplateBodyEditor
+                value={form.body}
+                onChange={(html) => setForm(prev => ({ ...prev, body: html }))}
+                placeholder="Compose your email body..."
+              />
               <div className="p-2 bg-muted/50 rounded border">
                 <p className="text-xs text-muted-foreground">
                   Available placeholders: <code className="bg-muted px-1 rounded">{'{{clientName}}'}</code>, <code className="bg-muted px-1 rounded">{'{{siteAddress}}'}</code>, <code className="bg-muted px-1 rounded">{'{{quoteNumber}}'}</code>, <code className="bg-muted px-1 rounded">{'{{tradeName}}'}</code>
@@ -928,13 +1239,11 @@ function SalesTemplatesTab() {
             </div>
             <div className="space-y-2">
               <Label>Body</Label>
-              <Suspense fallback={<div className="h-[200px] border rounded-md flex items-center justify-center text-muted-foreground text-sm">Loading editor...</div>}>
-                <RichTextEditor
-                  content={form.body}
-                  onChange={(html) => setForm(prev => ({ ...prev, body: html }))}
-                  placeholder="Compose your sales email body..."
-                />
-              </Suspense>
+              <TemplateBodyEditor
+                value={form.body}
+                onChange={(html) => setForm(prev => ({ ...prev, body: html }))}
+                placeholder="Compose your sales email body..."
+              />
               <div className="p-2 bg-muted/50 rounded border">
                 <p className="text-xs text-muted-foreground">
                   Available placeholders: <code className="bg-muted px-1 rounded">{'{{clientName}}'}</code>, <code className="bg-muted px-1 rounded">{'{{designAdvisor}}'}</code>, <code className="bg-muted px-1 rounded">{'{{siteAddress}}'}</code>, <code className="bg-muted px-1 rounded">{'{{productType}}'}</code>, <code className="bg-muted px-1 rounded">{'{{quoteNumber}}'}</code>
