@@ -29,6 +29,18 @@ function appendQuoteTenantScope(
   conditions.push(eq(column, tenantId));
 }
 
+function buildQuoteSearchCondition(search?: string) {
+  const term = search?.trim();
+  if (!term) return undefined;
+  const likeTerm = `%${term}%`;
+  return or(
+    like(quotes.clientName, likeTerm),
+    like(quotes.quoteNumber, likeTerm),
+    like(quotes.clientEmail, likeTerm),
+    like(quotes.siteAddress, likeTerm),
+  );
+}
+
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -294,7 +306,8 @@ export async function getQuotesByUser(userId: number, search?: string, status?: 
   const conditions: any[] = [eq(quotes.userId, userId)];
   appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
-  if (search) conditions.push(like(quotes.clientName, `%${search}%`));
+  const searchCondition = buildQuoteSearchCondition(search);
+  if (searchCondition) conditions.push(searchCondition);
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
@@ -305,7 +318,8 @@ export async function getAllQuotes(search?: string, status?: string, tenantId?: 
   const conditions: any[] = [];
   appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
-  if (search) conditions.push(like(quotes.clientName, `%${search}%`));
+  const searchCondition = buildQuoteSearchCondition(search);
+  if (searchCondition) conditions.push(searchCondition);
   const rows = await db.select().from(quotes).where(conditions.length ? and(...conditions) : undefined).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
@@ -318,7 +332,8 @@ export async function getQuotesByDesignAdviser(adviserName: string, search?: str
   const conditions: any[] = [ownerOrAdvisor];
   appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
   if (status && status !== "all") conditions.push(eq(quotes.status, status as any));
-  if (search) conditions.push(like(quotes.clientName, `%${search}%`));
+  const searchCondition = buildQuoteSearchCondition(search);
+  if (searchCondition) conditions.push(searchCondition);
   const rows = await db.select().from(quotes).where(and(...conditions)).orderBy(desc(quotes.updatedAt));
   return mergeQuoteDetails(db, rows);
 }
@@ -935,22 +950,89 @@ export async function calculateTabProductRates(tabName: string, region: string =
 }
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
-export async function getQuoteStats(userId?: number, tenantId?: number | null, options?: QuoteTenantScopeOptions) {
+function num(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sumQuoteLineItems(lineItems: unknown): number {
+  if (!Array.isArray(lineItems)) return 0;
+  return lineItems.reduce((sum, item: any) => sum + num(item?.qty) * num(item?.sellRate), 0);
+}
+
+function calculateStructureQuoteTotalExGst(
+  quote: typeof quotes.$inferSelect,
+  componentSell: number,
+  skyluxSell: number,
+  eclipseSell: number,
+): number {
+  const subtotalSell = componentSell + skyluxSell + eclipseSell;
+  const delivery = quote.includeDelivery ? num(quote.deliveryAmount) : 0;
+  const travel = quote.includeTravelAllowance ? num(quote.travelAllowance) : 0;
+  const smallJob = quote.includeSmallJobSurcharge ? num(quote.smallJobSurcharge) : 0;
+  const constructionMgmt = quote.includeConstructionMgmt ? num(quote.constructionMgmtAmount) : 0;
+  const complexity = num(quote.complexityLoading) / 100;
+  const discount = num(quote.discountPercent) / 100;
+  const council = num(quote.councilFees);
+  const warranty = num(quote.homeWarranty);
+
+  const adjustedSell = subtotalSell + delivery + travel + smallJob + constructionMgmt;
+  const afterComplexity = adjustedSell * (1 + complexity);
+  const afterDiscount = afterComplexity * (1 - discount);
+  return afterDiscount + council + warranty;
+}
+
+export async function getQuoteStats(userId?: number, tenantId?: number | null, options?: QuoteTenantScopeOptions, adviserName?: string | null) {
   const db = await getDb();
   if (!db) return { total: 0, draft: 0, sent: 0, accepted: 0, lost: 0, totalValue: 0, draftValue: 0, sentValue: 0, acceptedValue: 0, lostValue: 0 };
   const conditions: any[] = [];
   appendQuoteTenantScope(conditions, quotes.tenantId, tenantId, options);
-  if (userId) conditions.push(eq(quotes.userId, userId));
+  if (userId && adviserName) conditions.push(or(eq(quotes.userId, userId), eq(quotes.designAdvisor, adviserName)));
+  else if (userId) conditions.push(eq(quotes.userId, userId));
   const condition = conditions.length ? and(...conditions) : undefined;
-  const all = await db.select({ status: quotes.status, count: sql<number>`COUNT(*)`, value: sql<number>`COALESCE(SUM(total_price), 0)` })
-    .from(quotes).where(condition).groupBy(quotes.status);
   const stats = { total: 0, draft: 0, sent: 0, accepted: 0, lost: 0, totalValue: 0, draftValue: 0, sentValue: 0, acceptedValue: 0, lostValue: 0 };
-  for (const row of all) {
-    stats[row.status as keyof typeof stats] = row.count;
-    stats.total += row.count;
-    const valKey = `${row.status}Value` as keyof typeof stats;
-    if (valKey in stats) (stats as any)[valKey] = Number(row.value) || 0;
-    stats.totalValue += Number(row.value) || 0;
+  const quoteRows = await db.select().from(quotes).where(condition);
+  if (quoteRows.length === 0) return stats;
+
+  const quoteIds = quoteRows.map((q) => q.id);
+  const components = await db.select().from(quoteComponents).where(inArray(quoteComponents.quoteId, quoteIds));
+  const skylux = await db.select().from(skyluxEntries).where(inArray(skyluxEntries.quoteId, quoteIds));
+  const eclipse = await db.select().from(eclipseEntries).where(inArray(eclipseEntries.quoteId, quoteIds));
+
+  const componentSellByQuote = new Map<number, number>();
+  for (const component of components) {
+    if (component.included === false) continue;
+    componentSellByQuote.set(
+      component.quoteId,
+      (componentSellByQuote.get(component.quoteId) || 0) + sumQuoteLineItems(component.lineItems),
+    );
+  }
+
+  const skyluxSellByQuote = new Map<number, number>();
+  for (const entry of skylux) {
+    if (entry.included === false) continue;
+    skyluxSellByQuote.set(entry.quoteId, (skyluxSellByQuote.get(entry.quoteId) || 0) + num(entry.sellPrice));
+  }
+
+  const eclipseSellByQuote = new Map<number, number>();
+  for (const entry of eclipse) {
+    if (entry.included === false) continue;
+    eclipseSellByQuote.set(entry.quoteId, (eclipseSellByQuote.get(entry.quoteId) || 0) + num(entry.totalSell));
+  }
+
+  for (const quote of quoteRows) {
+    const status = quote.status as keyof Pick<typeof stats, "draft" | "sent" | "accepted" | "lost">;
+    const totalExGst = calculateStructureQuoteTotalExGst(
+      quote,
+      componentSellByQuote.get(quote.id) || 0,
+      skyluxSellByQuote.get(quote.id) || 0,
+      eclipseSellByQuote.get(quote.id) || 0,
+    );
+    stats[status] += 1;
+    stats.total += 1;
+    const valueKey = `${status}Value` as keyof typeof stats;
+    stats[valueKey] += totalExGst;
+    stats.totalValue += totalExGst;
   }
   return stats;
 }

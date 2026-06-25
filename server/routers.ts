@@ -849,8 +849,13 @@ export const appRouter = router({
 
      stats: protectedProcedure.query(async ({ ctx }) => {
       const tenantId = tenantIdFromContext(ctx);
-      if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes) return db.getQuoteStats(undefined, tenantId, quoteScopeOptionsForContext(ctx));
-      return db.getQuoteStats(ctx.user.id, tenantId);
+      if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes || canViewAllTenantStructureQuotes(ctx)) {
+        return db.getQuoteStats(undefined, tenantId, quoteScopeOptionsForContext(ctx));
+      }
+      if (ctx.user.role === "design_adviser" && ctx.user.name) {
+        return db.getQuoteStats(ctx.user.id, tenantId, quoteScopeOptionsForContext(ctx), ctx.user.name);
+      }
+      return db.getQuoteStats(ctx.user.id, tenantId, quoteScopeOptionsForContext(ctx));
     }),
 
     recentRevisions: protectedProcedure

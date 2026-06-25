@@ -4,8 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Plus, TrendingUp, Clock, CheckCircle2, XCircle, PenLine, History, AlertTriangle, Star } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { FileText, Plus, TrendingUp, Clock, CheckCircle2, XCircle, PenLine, AlertTriangle, Star, Search } from "lucide-react";
 import { useLocation, Redirect } from "wouter";
+import { useState } from "react";
 import { isAdminRole } from "@shared/const";
 
 const statusConfig = {
@@ -18,8 +20,12 @@ const statusConfig = {
 export default function Home() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const [draftSearch, setDraftSearch] = useState("");
   const { data: stats, isLoading: statsLoading } = trpc.quotes.stats.useQuery();
-  const { data: recentQuotes, isLoading: quotesLoading } = trpc.quotes.list.useQuery({ status: "all" });
+  const { data: draftQuotes, isLoading: draftsLoading } = trpc.quotes.list.useQuery({
+    status: "draft",
+    search: draftSearch.trim() || undefined,
+  });
 
   // Role-based redirect: construction users go to Construction Dashboard
   if (user?.role === "construction_user") {
@@ -28,7 +34,7 @@ export default function Home() {
 
   // design_adviser, admin, office_user, super_admin all stay on Sales Dashboard (this page)
 
-  const recent = recentQuotes?.slice(0, 5) || [];
+  const visibleDrafts = draftQuotes?.slice(0, draftSearch.trim() ? 12 : 6) || [];
 
   return (
     <div className="space-y-8">
@@ -67,28 +73,41 @@ export default function Home() {
       {/* Low-Rated Suppliers Alert (admin only) */}
       {user && isAdminRole(user.role) && <LowRatedSuppliersWidget />}
 
-      {/* Recent Activity */}
-      <RecentActivityWidget />
-
-      {/* Recent Quotes */}
+      {/* Draft Quotes */}
       <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-medium">Recent Quotes</h2>
-          <Button variant="ghost" size="sm" onClick={() => setLocation("/quotes")} className="text-xs">
-            View all
-          </Button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-medium">Draft Quotes</h2>
+            <p className="text-xs text-muted-foreground">Find an existing draft by client, quote number, address, or email.</p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <div className="relative sm:w-80">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={draftSearch}
+                onChange={(event) => setDraftSearch(event.target.value)}
+                placeholder="Search draft quotes..."
+                className="pl-9 h-9"
+              />
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setLocation("/quotes?status=draft")} className="text-xs justify-start sm:justify-center">
+              View all drafts
+            </Button>
+          </div>
         </div>
-        {quotesLoading ? (
+        {draftsLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (
               <Card key={i}><CardContent className="p-4"><Skeleton className="h-5 w-full" /></CardContent></Card>
             ))}
           </div>
-        ) : recent.length === 0 ? (
+        ) : visibleDrafts.length === 0 ? (
           <Card>
             <CardContent className="p-8 text-center">
               <FileText className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
-              <p className="text-sm text-muted-foreground">No quotes yet. Create your first quote to get started.</p>
+              <p className="text-sm text-muted-foreground">
+                {draftSearch.trim() ? "No draft quotes match that search." : "No draft quotes waiting for action."}
+              </p>
               <Button onClick={() => setLocation("/quotes?new=1")} variant="outline" size="sm" className="mt-4">
                 Create Quote
               </Button>
@@ -96,7 +115,7 @@ export default function Home() {
           </Card>
         ) : (
           <div className="space-y-2">
-            {recent.map(q => {
+            {visibleDrafts.map(q => {
               const cfg = statusConfig[q.status as keyof typeof statusConfig];
               return (
                 <Card
@@ -140,75 +159,6 @@ export default function Home() {
             })}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function RecentActivityWidget() {
-  const { data: revisions, isLoading } = trpc.quotes.recentRevisions.useQuery({ limit: 5 });
-  const [, setLocation] = useLocation();
-
-  const actionLabels: Record<string, { label: string; color: string; bgColor: string }> = {
-    financial_update: { label: "Financials Updated", color: "text-blue-600", bgColor: "bg-blue-100 dark:bg-blue-900/30" },
-    status_change: { label: "Status Changed", color: "text-purple-600", bgColor: "bg-purple-100 dark:bg-purple-900/30" },
-    spec_update: { label: "Spec Updated", color: "text-teal-600", bgColor: "bg-teal-100 dark:bg-teal-900/30" },
-    recalculate: { label: "Recalculated", color: "text-amber-600", bgColor: "bg-amber-100 dark:bg-amber-900/30" },
-    revert: { label: "Reverted", color: "text-red-600", bgColor: "bg-red-100 dark:bg-red-900/30" },
-  };
-
-  if (isLoading) {
-    return (
-      <div>
-        <h2 className="text-lg font-medium mb-4">Recent Activity</h2>
-        <div className="space-y-2">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Card key={i}><CardContent className="p-3"><Skeleton className="h-4 w-full" /></CardContent></Card>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (!revisions || revisions.length === 0) return null;
-
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-4">
-        <History className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-lg font-medium">Recent Activity</h2>
-      </div>
-      <div className="space-y-1.5">
-        {revisions.map((rev) => {
-          const actionInfo = actionLabels[rev.action] || { label: rev.action, color: "text-muted-foreground" };
-          const changesCount = (rev.changes as any[])?.length || 0;
-          return (
-            <Card
-              key={rev.id}
-              className="hover:shadow-sm transition-shadow cursor-pointer"
-              onClick={() => setLocation(`/quotes/${rev.quoteId}`)}
-            >
-              <CardContent className="p-3 flex items-center gap-3">
-                <div className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 ${actionInfo.bgColor || "bg-muted"}`}>
-                  <History className={`h-3.5 w-3.5 ${actionInfo.color || "text-muted-foreground"}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs font-medium ${actionInfo.color}`}>{actionInfo.label}</span>
-                    <span className="text-[10px] text-muted-foreground">· {rev.quoteNumber}</span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground truncate">
-                    {rev.userName || "Unknown"} · {rev.clientName}
-                    {changesCount > 0 && ` · ${changesCount} field${changesCount > 1 ? "s" : ""}`}
-                  </p>
-                </div>
-                <span className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0">
-                  {new Date(rev.createdAt).toLocaleDateString()}
-                </span>
-              </CardContent>
-            </Card>
-          );
-        })}
       </div>
     </div>
   );
