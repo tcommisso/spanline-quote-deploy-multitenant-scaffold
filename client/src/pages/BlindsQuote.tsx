@@ -357,7 +357,7 @@ function ConfigDiagram({ productType, handleSide, hingeSide, openingDirection }:
 
 // ─── Add Item Dialog ────────────────────────────────────────────────────────
 
-function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quoteId: number; open: boolean; onOpenChange: (v: boolean) => void; onSuccess: () => void; item?: any | null }) {
+function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item, presentation = "dialog" }: { quoteId: number; open: boolean; onOpenChange: (v: boolean) => void; onSuccess: () => void; item?: any | null; presentation?: "dialog" | "page" }) {
   const utils = trpc.useUtils();
   const { data: colours = [] } = trpc.blinds.colours.list.useQuery();
   const { data: productOptions = [] } = trpc.blinds.productOptions.list.useQuery();
@@ -537,11 +537,20 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
     }
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[calc(100vh-1rem)] w-[calc(100vw-1rem)] max-w-[1320px] flex-col overflow-hidden p-0 sm:h-[calc(100vh-2rem)] sm:w-[calc(100vw-2rem)]">
+  if (!open) return null;
+
+  const editorTitle = isEditing ? "Edit Blind Item" : "Add Blind Item";
+  const editorShell = (
+      <div className={presentation === "page"
+        ? "flex min-h-[calc(100vh-9rem)] flex-col overflow-hidden rounded-xl border bg-background shadow-sm"
+        : "flex h-[calc(100vh-1rem)] w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-lg border bg-background shadow-lg sm:h-[calc(100vh-2rem)] sm:w-[calc(100vw-2rem)]"
+      }>
         <DialogHeader className="border-b px-6 py-4">
-          <DialogTitle>{isEditing ? "Edit Blind Item" : "Add Blind Item"}</DialogTitle>
+          {presentation === "page" ? (
+            <h2 className="text-lg font-semibold leading-none">{editorTitle}</h2>
+          ) : (
+            <DialogTitle>{editorTitle}</DialogTitle>
+          )}
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
@@ -864,6 +873,15 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
             {addItemMutation.isPending || updateItemMutation.isPending ? "Saving..." : isEditing ? "Save Changes" : "Add Item"}
           </Button>
         </div>
+      </div>
+  );
+
+  if (presentation === "page") return editorShell;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[calc(100vw-1rem)] p-0 sm:max-w-[1320px]" showCloseButton={false}>
+        {editorShell}
       </DialogContent>
     </Dialog>
   );
@@ -978,6 +996,35 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
   const resolvedQuote = quote ?? (matchedQuote ? { ...matchedQuote, items: [], costAdditions: [] } : null);
   if (!resolvedQuote) return <div className="text-center py-8 text-muted-foreground">Quote not found</div>;
   const quoteCostAdditions = resolvedQuote.costAdditions || [];
+  const closeItemEditor = () => {
+    setAddItemOpen(false);
+    setEditingItem(null);
+  };
+  const itemEditorOpen = addItemOpen || Boolean(editingItem);
+
+  if (itemEditorOpen) {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <Button variant="ghost" size="sm" onClick={closeItemEditor}><ArrowLeft className="h-4 w-4 mr-1" /> Back to quote</Button>
+            <h2 className="text-xl font-bold mt-2">{resolvedQuote.quoteNumber}</h2>
+            <p className="text-muted-foreground">{resolvedQuote.clientName} — {resolvedQuote.siteAddress || "No address"}</p>
+          </div>
+        </div>
+        <AddItemDialog
+          quoteId={quoteId}
+          open={itemEditorOpen}
+          item={editingItem}
+          presentation="page"
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) closeItemEditor();
+          }}
+          onSuccess={refreshQuote}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -1190,16 +1237,6 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
         </CardContent>
       </Card>
 
-      <AddItemDialog quoteId={quoteId} open={addItemOpen} onOpenChange={setAddItemOpen} onSuccess={() => utils.blinds.quotes.getById.invalidate({ id: quoteId })} />
-      <AddItemDialog
-        quoteId={quoteId}
-        open={Boolean(editingItem)}
-        item={editingItem}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setEditingItem(null);
-        }}
-        onSuccess={() => utils.blinds.quotes.getById.invalidate({ id: quoteId })}
-      />
       <Dialog open={Boolean(editingCost)} onOpenChange={(nextOpen) => { if (!nextOpen) setEditingCost(null); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>Edit Additional Cost</DialogTitle></DialogHeader>
