@@ -520,8 +520,8 @@ function MainRouter() {
         <Route path="/admin/supplier-feedback">{() => <AdminRoute><SupplierFeedback /></AdminRoute>}</Route>
         <Route path="/admin/component-catalogue">{() => <AdminRoute><ComponentCatalogueAdmin /></AdminRoute>}</Route>
         <Route path="/admin/manufacturing-data">{() => <AdminRoute><ManufacturingDataAdmin /></AdminRoute>}</Route>
-        <Route path="/admin/security-screens">{() => <AdminRoute><AdminSecurityScreens /></AdminRoute>}</Route>
-        <Route path="/admin/blinds">{() => <AdminRoute><AdminBlinds /></AdminRoute>}</Route>
+        <Route path="/admin/security-screens">{() => <MasterDataPage><AdminSecurityScreens /></MasterDataPage>}</Route>
+        <Route path="/admin/blinds">{() => <MasterDataPage><AdminBlinds /></MasterDataPage>}</Route>
         <Route path="/admin/text-blocks">{() => <AdminRoute><AdminTextBlocks /></AdminRoute>}</Route>
         <Route path="/admin/order-templates">{() => <AdminRoute><TemplateManager /></AdminRoute>}</Route>
         <Route path="/admin/checklist-pricing">{() => <AdminRoute><AdminChecklistPricing /></AdminRoute>}</Route>

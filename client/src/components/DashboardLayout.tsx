@@ -290,8 +290,6 @@ const adminGroups: AdminGroup[] = [
       { icon: Database, label: "Sales Data", path: "/admin/master-data" },
       { icon: Package, label: "Component Order Data", path: "/admin/component-catalogue" },
       { icon: Factory, label: "Manufacturing Data", path: "/admin/manufacturing-data" },
-      { icon: ShieldCheck, label: "Security Screen Data", path: "/admin/security-screens" },
-      { icon: Layers, label: "Blinds Data", path: "/admin/blinds" },
       { icon: Sun, label: "Eclipse Diagnostics", path: "/admin/eclipse-diagnostics" },
       { icon: Tag, label: "Supplier Categories", path: "/admin/master-data/general/supplier-categories" },
       { icon: ListFilter, label: "CRM Dropdowns", path: "/admin/master-data/general/crm-dropdowns" },

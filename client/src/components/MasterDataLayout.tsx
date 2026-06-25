@@ -21,6 +21,8 @@ import {
   Menu,
   X,
   ListChecks,
+  ShieldCheck,
+  Layers,
 } from "lucide-react";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -60,6 +62,14 @@ const menuGroups: MenuGroup[] = [
     label: "Eclipse Data",
     icon: Sun,
     path: "/admin/master-data/eclipse",
+  },
+  {
+    label: "Quote Product Data",
+    icon: ShieldCheck,
+    items: [
+      { label: "Security Screen Data", path: "/admin/security-screens", icon: ShieldCheck },
+      { label: "Blinds Data", path: "/admin/blinds", icon: Layers },
+    ],
   },
   {
     label: "Pricing Settings",
