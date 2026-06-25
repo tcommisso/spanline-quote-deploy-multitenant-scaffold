@@ -15,6 +15,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { loadCompanyDetails, loadCustomLogo } from "@/lib/proposalStore";
 import {
   BLIND_FABRIC_CATEGORIES,
+  BLIND_OPTION_CATEGORIES,
   BLIND_PRODUCT_TYPES,
   blindFabricCategoryLabel,
   blindFabricCategoryNumber,
@@ -97,6 +98,20 @@ function escapeHtml(value: unknown) {
 
 function blindColourValue(colour: any) {
   return String(colour?.name || colour?.key || colour?.value || colour?.id || "");
+}
+
+function blindTypeImage(productType: unknown) {
+  const type = String(productType || "");
+  if (type === "zipguideawnings" || type === "zipguideextremeawnings") {
+    return { src: "/assets/blinds/zip-guide.jpg", alt: "Zip Guide blind type" };
+  }
+  if (type === "wireguideawnings" || type === "wireguideextremeawnings") {
+    return { src: "/assets/blinds/wire-guide.jpg", alt: "Wire Guide blind type" };
+  }
+  if (type === "straightdropawnings") {
+    return { src: "/assets/blinds/straight-drop.jpg", alt: "Straight Drop blind type" };
+  }
+  return null;
 }
 
 function colourSwatchStyle(colour: any) {
@@ -446,6 +461,45 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
   const visibleFabricColours = selectedFabricColour && !fabricColourOptions.some((colour: any) => colour.id === selectedFabricColour.id)
     ? [...fabricColourOptions, selectedFabricColour]
     : fabricColourOptions;
+  const productOptionSections = (() => {
+    const sortOrder = new Map<string, number>(BLIND_OPTION_CATEGORIES.map((category, index) => [category.value, index]));
+    const sections = new Map<string, { category: string; label: string; sortIndex: number; options: any[] }>();
+    productOptions.forEach((option: any) => {
+      const category = String(option.category || "other");
+      const section = sections.get(category) || {
+        category,
+        label: blindOptionCategoryLabel(category),
+        sortIndex: sortOrder.get(category) ?? 999,
+        options: [],
+      };
+      section.options.push(option);
+      sections.set(category, section);
+    });
+    return Array.from(sections.values()).sort((a, b) => a.sortIndex - b.sortIndex || a.label.localeCompare(b.label));
+  })();
+  const productOptionGroups = [
+    {
+      key: "accessories",
+      label: "Accessories",
+      sections: productOptionSections.filter((section) => section.category.startsWith("accessory_")),
+    },
+    {
+      key: "motorisation",
+      label: "Motorisation",
+      sections: productOptionSections.filter((section) => section.category.startsWith("motorisation_")),
+    },
+    {
+      key: "other",
+      label: "Other Options",
+      sections: productOptionSections.filter((section) => !section.category.startsWith("accessory_") && !section.category.startsWith("motorisation_")),
+    },
+  ].filter((group) => group.sections.length > 0);
+  const selectedOptionTotal = productOptions.reduce((total: number, option: any) => {
+    const selected = form.selectedOptions.find((itemOption) => itemOption.productOptionId === option.id);
+    if (!selected) return total;
+    return total + Number(option.sellPrice || 0) * Number(selected.quantity || 1);
+  }, 0);
+  const selectedBlindTypeImage = blindTypeImage(form.productType);
 
   const handleDialogPhotoUpload = (file: File | undefined) => {
     if (!file) return;
@@ -485,226 +539,298 @@ function AddItemDialog({ quoteId, open, onOpenChange, onSuccess, item }: { quote
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[96vw] max-w-6xl md:min-w-[720px] max-h-[92vh] overflow-auto resize">
-        <DialogHeader><DialogTitle>{isEditing ? "Edit Blind Item" : "Add Blind Item"}</DialogTitle></DialogHeader>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Left column - Product & Size */}
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Fabric Category</Label><Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v, glassInfillId: "", fabricColourId: "none", fabricColourName: "" })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent></Select></div>
-              <div><Label>Blind Type</Label><Select value={form.productType} onValueChange={(v) => setForm({ ...form, productType: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{BLIND_PRODUCT_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}</SelectContent></Select></div>
-            </div>
+      <DialogContent className="flex h-[calc(100vh-1rem)] w-[calc(100vw-1rem)] max-w-[1320px] flex-col overflow-hidden p-0 sm:h-[calc(100vh-2rem)] sm:w-[calc(100vw-2rem)]">
+        <DialogHeader className="border-b px-6 py-4">
+          <DialogTitle>{isEditing ? "Edit Blind Item" : "Add Blind Item"}</DialogTitle>
+        </DialogHeader>
 
-            <div className="grid grid-cols-3 gap-4">
-              <div><Label>Width (mm)</Label><Input type="number" value={form.widthMm} onChange={(e) => setForm({ ...form, widthMm: e.target.value })} placeholder="e.g. 900" /></div>
-              <div><Label>Height (mm)</Label><Input type="number" value={form.heightMm} onChange={(e) => setForm({ ...form, heightMm: e.target.value })} placeholder="e.g. 2100" /></div>
-              <div><Label>Qty</Label><Input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></div>
-            </div>
-
-            {/* Live price */}
-            {priceQuery.data && priceQuery.data.adjustedPrice !== null && (
-              <Card className="bg-green-50 border-green-200">
-                <CardContent className="p-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-green-800">Base price (ex GST):</span>
-                    <span className="text-lg font-bold text-green-900">${priceQuery.data.adjustedPrice.toFixed(2)}</span>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <main className="space-y-6">
+              <section className="rounded-lg border bg-card p-4 shadow-sm sm:p-5">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold">Product & Measurements</h3>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label>Fabric Category</Label>
+                    <Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v, glassInfillId: "", fabricColourId: "none", fabricColourName: "" })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{BLIND_FABRIC_CATEGORIES.map((category) => <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>)}</SelectContent>
+                    </Select>
                   </div>
-                  <p className="text-xs text-green-700 mt-1">
-                    Matrix ex GST ${priceQuery.data.basePrice?.toFixed(2)} × {priceQuery.data.factor.toFixed(4)} adjustment × {((priceQuery.data.markupPercent || 0) / 100 + 1).toFixed(4)} markup
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-            {priceQuery.data?.warnings?.length ? (
-              <Card className="bg-amber-50 border-amber-200">
-                <CardContent className="p-3">
-                  <div className="flex gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-700 mt-0.5 flex-shrink-0" />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium text-amber-900">Check measurements</p>
-                      {priceQuery.data.warnings.map((warning: string, index: number) => (
-                        <p key={index} className="text-xs text-amber-800">{warning}</p>
-                      ))}
+                  <div>
+                    <Label>Blind Type</Label>
+                    <Select value={form.productType} onValueChange={(v) => setForm({ ...form, productType: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>{BLIND_PRODUCT_TYPES.map((type) => <SelectItem key={type.value} value={type.value}>{type.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div><Label>Width (mm)</Label><Input type="number" value={form.widthMm} onChange={(e) => setForm({ ...form, widthMm: e.target.value })} placeholder="e.g. 900" /></div>
+                  <div><Label>Height (mm)</Label><Input type="number" value={form.heightMm} onChange={(e) => setForm({ ...form, heightMm: e.target.value })} placeholder="e.g. 2100" /></div>
+                  <div><Label>Qty</Label><Input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} /></div>
+                </div>
+              </section>
+
+              <section className="rounded-lg border bg-card p-4 shadow-sm sm:p-5">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold">Colours & Fabric</h3>
+                </div>
+                <div>
+                  <Label>Colour</Label>
+                  <div className="mt-2 grid max-h-64 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-4 lg:grid-cols-6">
+                    {colours.map((c: any) => {
+                      const colourValue = blindColourValue(c);
+                      return (
+                        <button
+                          key={`${c.id}-${colourValue}`}
+                          type="button"
+                          className={`flex min-h-24 flex-col items-center justify-center gap-2 rounded border p-2 transition-all ${form.colourId === colourValue ? "border-primary bg-primary/5 ring-2 ring-primary/30" : "border-border hover:border-primary/50"}`}
+                          onClick={() => setForm({ ...form, colourId: colourValue })}
+                        >
+                          <div className="h-7 w-7 rounded-full border shadow-sm" style={{ backgroundColor: colourSwatchStyle(c) }} />
+                          <span className="text-center text-[11px] leading-tight">{colourValue}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedColour && parseFloat(selectedColour.surchargePercent || "0") > 0 && (
+                    <p className="mt-2 text-xs text-amber-600">+{selectedColour.surchargePercent}% colour surcharge applies</p>
+                  )}
+                </div>
+
+                <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div>
+                    <Label>Fabric / Material (optional)</Label>
+                    <Select value={form.glassInfillId} onValueChange={(v) => setForm({ ...form, glassInfillId: v, fabricColourId: "none", fabricColourName: "" })}>
+                      <SelectTrigger><SelectValue placeholder="No fabric infill" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No fabric infill</SelectItem>
+                        {fabricOptions.map((g: any) => <SelectItem key={g.id} value={String(g.id)}>{g.glassType}{g.fabricBrand ? ` — ${g.fabricBrand}` : ""}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Fabric Colour (optional)</Label>
+                    <Select
+                      value={form.fabricColourId}
+                      onValueChange={(v) => {
+                        const nextColour = allFabricColours.find((colour: any) => String(colour.id) === v);
+                        setForm({
+                          ...form,
+                          fabricColourId: v,
+                          fabricColourName: v === "custom" ? form.fabricColourName : nextColour?.name || "",
+                        });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="No fabric colour" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No fabric colour</SelectItem>
+                        {visibleFabricColours.map((colour: any) => (
+                          <SelectItem key={colour.id} value={String(colour.id)}>
+                            <span className="inline-flex items-center gap-2">
+                              <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(colour)} />
+                              <span>{colour.name}{colour.fabricRangeName ? ` — ${colour.fabricRangeName}` : ""}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="custom">Custom fabric colour</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {form.fabricColourId === "custom" ? (
+                      <Input
+                        className="mt-2"
+                        value={form.fabricColourName}
+                        onChange={(event) => setForm({ ...form, fabricColourName: event.target.value })}
+                        placeholder="Enter fabric colour"
+                      />
+                    ) : selectedFabricColour ? (
+                      <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(selectedFabricColour)} />
+                        <span>{selectedFabricColour.fabricRangeName || "Fabric colour option"}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-lg border bg-card shadow-sm">
+                <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+                  <div>
+                    <h3 className="text-lg font-semibold">Product Options</h3>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-sm">
+                    <Badge variant="outline">{form.selectedOptions.length} selected</Badge>
+                    <Badge variant="secondary">{money(selectedOptionTotal)} ex GST</Badge>
+                  </div>
+                </div>
+                <div className="space-y-6 p-4 sm:p-5">
+                  {productOptions.length === 0 ? (
+                    <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">No options configured</p>
+                  ) : productOptionGroups.map((group) => (
+                    <div key={group.key} className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h4>
+                        <div className="h-px flex-1 bg-border" />
+                      </div>
+                      <div className="space-y-4">
+                        {group.sections.map((section) => (
+                          <div key={section.category} className="rounded-lg border bg-muted/20">
+                            <div className="flex items-center justify-between border-b bg-background/70 px-4 py-3">
+                              <h5 className="font-semibold">{section.label}</h5>
+                              <Badge variant="outline">{section.options.length}</Badge>
+                            </div>
+                            <div className="grid grid-cols-1 gap-2 p-3 md:grid-cols-2 2xl:grid-cols-3">
+                              {section.options.map((opt: any) => {
+                                const isSelected = form.selectedOptions.some((o) => o.productOptionId === opt.id);
+                                const sellPrice = Number(opt.sellPrice || 0);
+                                return (
+                                  <label
+                                    key={opt.id}
+                                    className={`grid cursor-pointer grid-cols-[auto_1fr_auto] items-start gap-3 rounded-md border bg-background p-3 transition-all ${isSelected ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border hover:border-primary/40"}`}
+                                  >
+                                    <input type="checkbox" checked={isSelected} onChange={() => toggleOption(opt.id)} className="mt-1 rounded" />
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium leading-snug">{opt.name}</p>
+                                      <p className="mt-1 text-xs text-muted-foreground">{opt.brand ? `${opt.brand} — ` : ""}{opt.orderCode || "No code"}</p>
+                                    </div>
+                                    <div className="text-right text-sm">
+                                      <p className="font-semibold">{money(sellPrice)}</p>
+                                      {opt.priceUnit ? <p className="text-xs text-muted-foreground">/{opt.priceUnit}</p> : null}
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {/* Colour selection */}
-            <div>
-              <Label>Colour</Label>
-              <div className="grid grid-cols-4 gap-2 mt-2 max-h-[120px] overflow-y-auto">
-                {colours.map((c: any) => {
-                  const colourValue = blindColourValue(c);
-                  return (
-                  <button
-                    key={`${c.id}-${colourValue}`}
-                    type="button"
-                    className={`flex flex-col items-center gap-1 p-2 rounded border transition-all ${form.colourId === colourValue ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "border-border hover:border-primary/50"}`}
-                    onClick={() => setForm({ ...form, colourId: colourValue })}
-                  >
-                    <div className="w-6 h-6 rounded-full border shadow-sm" style={{ backgroundColor: colourSwatchStyle(c) }} />
-                    <span className="text-[10px] text-center leading-tight">{colourValue}</span>
-                  </button>
-                  );
-                })}
-              </div>
-              {selectedColour && parseFloat(selectedColour.surchargePercent || "0") > 0 && (
-                <p className="text-xs text-amber-600 mt-1">+{selectedColour.surchargePercent}% colour surcharge applies</p>
-              )}
-            </div>
-
-            {/* Fabric infill */}
-            <div>
-              <Label>Fabric / Material (optional)</Label>
-              <Select value={form.glassInfillId} onValueChange={(v) => setForm({ ...form, glassInfillId: v, fabricColourId: "none", fabricColourName: "" })}>
-                <SelectTrigger><SelectValue placeholder="No fabric infill" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No fabric infill</SelectItem>
-                  {fabricOptions.map((g: any) => <SelectItem key={g.id} value={String(g.id)}>{g.glassType}{g.fabricBrand ? ` — ${g.fabricBrand}` : ""}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label>Fabric Colour (optional)</Label>
-              <Select
-                value={form.fabricColourId}
-                onValueChange={(v) => {
-                  const nextColour = allFabricColours.find((colour: any) => String(colour.id) === v);
-                  setForm({
-                    ...form,
-                    fabricColourId: v,
-                    fabricColourName: v === "custom" ? form.fabricColourName : nextColour?.name || "",
-                  });
-                }}
-              >
-                <SelectTrigger><SelectValue placeholder="No fabric colour" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No fabric colour</SelectItem>
-                  {visibleFabricColours.map((colour: any) => (
-                    <SelectItem key={colour.id} value={String(colour.id)}>
-                      <span className="inline-flex items-center gap-2">
-                        <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(colour)} />
-                        <span>{colour.name}{colour.fabricRangeName ? ` — ${colour.fabricRangeName}` : ""}</span>
-                      </span>
-                    </SelectItem>
                   ))}
-                  <SelectItem value="custom">Custom fabric colour</SelectItem>
-                </SelectContent>
-              </Select>
-              {form.fabricColourId === "custom" ? (
-                <Input
-                  className="mt-2"
-                  value={form.fabricColourName}
-                  onChange={(event) => setForm({ ...form, fabricColourName: event.target.value })}
-                  placeholder="Enter fabric colour"
-                />
-              ) : selectedFabricColour ? (
-                <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="h-5 w-7 rounded border bg-cover bg-center" style={fabricSwatchStyle(selectedFabricColour)} />
-                  <span>{selectedFabricColour.fabricRangeName || "Fabric colour option"}</span>
                 </div>
-              ) : null}
-            </div>
+              </section>
+            </main>
 
-            <div><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Additional notes for this item..." rows={2} /></div>
-          </div>
-
-          {/* Right column - Configuration & Options */}
-          <div className="space-y-4">
-            {/* Visual configuration */}
-            {form.productType === "vertical_blind" && (
+            <aside className="space-y-4 xl:sticky xl:top-0 xl:self-start">
               <Card>
-                <CardHeader className="pb-2"><CardTitle className="text-sm">Vertical Blind Configuration</CardTitle></CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><Label className="text-xs">Handle Side</Label><Select value={form.handleSide} onValueChange={(v) => setForm({ ...form, handleSide: v, hingeSide: v === "left" ? "right" : "left" })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="left">Left</SelectItem><SelectItem value="right">Right</SelectItem></SelectContent></Select></div>
-                    <div><Label className="text-xs">Hinge Side</Label><Select value={form.hingeSide} onValueChange={(v) => setForm({ ...form, hingeSide: v, handleSide: v === "left" ? "right" : "left" })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="left">Left</SelectItem><SelectItem value="right">Right</SelectItem></SelectContent></Select></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div><Label className="text-xs">Opening Direction</Label><Select value={form.openingDirection} onValueChange={(v) => setForm({ ...form, openingDirection: v })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="inward">Inward</SelectItem><SelectItem value="outward">Outward</SelectItem></SelectContent></Select></div>
-                    <div><Label className="text-xs">Hinge Position</Label><Select value={form.hingePosition} onValueChange={(v) => setForm({ ...form, hingePosition: v })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="offset">Offset</SelectItem><SelectItem value="centre">Centre</SelectItem></SelectContent></Select></div>
-                  </div>
-                  <ConfigDiagram productType={form.productType} handleSide={form.handleSide} hingeSide={form.hingeSide} openingDirection={form.openingDirection} />
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Product options */}
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">Product Options</CardTitle></CardHeader>
-              <CardContent>
-                <div className="space-y-2 max-h-[200px] overflow-y-auto">
-                  {productOptions.length === 0 ? <p className="text-xs text-muted-foreground">No options configured</p>
-                  : productOptions.map((opt: any) => {
-                    const isSelected = form.selectedOptions.some((o) => o.productOptionId === opt.id);
-                    return (
-                      <label key={opt.id} className={`flex items-center gap-2 p-2 rounded border cursor-pointer transition-all ${isSelected ? "border-primary bg-primary/5" : "border-border hover:border-primary/30"}`}>
-                        <input type="checkbox" checked={isSelected} onChange={() => toggleOption(opt.id)} className="rounded" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{opt.name}</p>
-                          <p className="text-xs text-muted-foreground">{opt.brand ? `${opt.brand} — ` : ""}${parseFloat(opt.sellPrice).toFixed(2)}{opt.priceUnit ? `/${opt.priceUnit}` : ""}</p>
-                        </div>
-                        <Badge variant="outline" className="text-[10px]">{blindOptionCategoryLabel(opt.category)}</Badge>
-                      </label>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Photo upload placeholder */}
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">Photo</CardTitle></CardHeader>
-              <CardContent>
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(event) => {
-                    handleDialogPhotoUpload(event.target.files?.[0]);
-                    event.currentTarget.value = "";
-                  }}
-                />
-                <div className="space-y-3">
-                  {photoPreviewUrl ? (
-                    <div className="overflow-hidden rounded-lg border bg-muted">
-                      <img src={photoPreviewUrl} alt="Blind quote item" className="h-40 w-full object-cover" />
+                <CardHeader className="pb-2"><CardTitle className="text-sm">Blind Type</CardTitle></CardHeader>
+                <CardContent>
+                  {selectedBlindTypeImage ? (
+                    <div className="overflow-hidden rounded-lg border bg-white">
+                      <img src={selectedBlindTypeImage.src} alt={selectedBlindTypeImage.alt} className="h-56 w-full object-contain p-3" />
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      className="w-full rounded-lg border-2 border-dashed p-4 text-center text-muted-foreground transition-colors hover:border-primary hover:text-primary disabled:hover:border-border disabled:hover:text-muted-foreground"
-                      disabled={!isEditing}
-                      onClick={() => photoInputRef.current?.click()}
-                    >
-                      <Camera className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      <span className="text-xs">{isEditing ? "Upload item photo" : "Save item before adding a photo"}</span>
-                    </button>
+                    <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                      No type image configured
+                    </div>
                   )}
-                  {isEditing ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      disabled={uploadPhotoMutation.isPending}
-                      onClick={() => photoInputRef.current?.click()}
-                    >
-                      <Camera className="h-4 w-4 mr-2" />
-                      {uploadPhotoMutation.isPending ? "Uploading..." : photoPreviewUrl ? "Change Photo" : "Upload Photo"}
-                    </Button>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
+                  <p className="mt-3 text-sm font-medium">{blindProductTypeLabel(form.productType)}</p>
+                </CardContent>
+              </Card>
+
+              {priceQuery.data && priceQuery.data.adjustedPrice !== null && (
+                <Card className="border-green-200 bg-green-50">
+                  <CardContent className="p-4">
+                    <div className="flex justify-between gap-4">
+                      <span className="text-sm text-green-800">Base price (ex GST):</span>
+                      <span className="text-lg font-bold text-green-900">${priceQuery.data.adjustedPrice.toFixed(2)}</span>
+                    </div>
+                    <p className="mt-2 text-xs text-green-700">
+                      Matrix ex GST ${priceQuery.data.basePrice?.toFixed(2)} × {priceQuery.data.factor.toFixed(4)} adjustment × {((priceQuery.data.markupPercent || 0) / 100 + 1).toFixed(4)} markup
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+              {priceQuery.data?.warnings?.length ? (
+                <Card className="border-amber-200 bg-amber-50">
+                  <CardContent className="p-4">
+                    <div className="flex gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-amber-900">Check measurements</p>
+                        {priceQuery.data.warnings.map((warning: string, index: number) => (
+                          <p key={index} className="text-xs text-amber-800">{warning}</p>
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              {form.productType === "vertical_blind" && (
+                <Card>
+                  <CardHeader className="pb-2"><CardTitle className="text-sm">Vertical Blind Configuration</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><Label className="text-xs">Handle Side</Label><Select value={form.handleSide} onValueChange={(v) => setForm({ ...form, handleSide: v, hingeSide: v === "left" ? "right" : "left" })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="left">Left</SelectItem><SelectItem value="right">Right</SelectItem></SelectContent></Select></div>
+                      <div><Label className="text-xs">Hinge Side</Label><Select value={form.hingeSide} onValueChange={(v) => setForm({ ...form, hingeSide: v, handleSide: v === "left" ? "right" : "left" })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="left">Left</SelectItem><SelectItem value="right">Right</SelectItem></SelectContent></Select></div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><Label className="text-xs">Opening Direction</Label><Select value={form.openingDirection} onValueChange={(v) => setForm({ ...form, openingDirection: v })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="inward">Inward</SelectItem><SelectItem value="outward">Outward</SelectItem></SelectContent></Select></div>
+                      <div><Label className="text-xs">Hinge Position</Label><Select value={form.hingePosition} onValueChange={(v) => setForm({ ...form, hingePosition: v })}><SelectTrigger className="h-8"><SelectValue placeholder="Select" /></SelectTrigger><SelectContent><SelectItem value="standard">Standard</SelectItem><SelectItem value="offset">Offset</SelectItem><SelectItem value="centre">Centre</SelectItem></SelectContent></Select></div>
+                    </div>
+                    <ConfigDiagram productType={form.productType} handleSide={form.handleSide} hingeSide={form.hingeSide} openingDirection={form.openingDirection} />
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">Photo</CardTitle></CardHeader>
+                <CardContent>
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => {
+                      handleDialogPhotoUpload(event.target.files?.[0]);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <div className="space-y-3">
+                    {photoPreviewUrl ? (
+                      <div className="overflow-hidden rounded-lg border bg-muted">
+                        <img src={photoPreviewUrl} alt="Blind quote item" className="h-48 w-full object-contain" />
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="w-full rounded-lg border-2 border-dashed p-6 text-center text-muted-foreground transition-colors hover:border-primary hover:text-primary disabled:hover:border-border disabled:hover:text-muted-foreground"
+                        disabled={!isEditing}
+                        onClick={() => photoInputRef.current?.click()}
+                      >
+                        <Camera className="mx-auto mb-2 h-8 w-8 opacity-50" />
+                        <span className="text-xs">{isEditing ? "Upload item photo" : "Save item before adding a photo"}</span>
+                      </button>
+                    )}
+                    {isEditing ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        disabled={uploadPhotoMutation.isPending}
+                        onClick={() => photoInputRef.current?.click()}
+                      >
+                        <Camera className="mr-2 h-4 w-4" />
+                        {uploadPhotoMutation.isPending ? "Uploading..." : photoPreviewUrl ? "Change Photo" : "Upload Photo"}
+                      </Button>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <section className="rounded-lg border bg-card p-4 shadow-sm">
+                <Label>Notes</Label>
+                <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Additional notes for this item..." rows={4} />
+              </section>
+            </aside>
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 pt-4 border-t">
+        <div className="flex justify-end gap-2 border-t bg-background px-6 py-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button
             disabled={!form.widthMm || !form.heightMm || addItemMutation.isPending || updateItemMutation.isPending}
@@ -906,12 +1032,21 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
             <TableBody>
               {(!resolvedQuote.items || resolvedQuote.items.length === 0) ? (
                 <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">No items yet. Click "Add Item" to start building the quote.</TableCell></TableRow>
-              ) : resolvedQuote.items.map((item: any) => (
+              ) : resolvedQuote.items.map((item: any) => {
+                const typeImage = blindTypeImage(item.productType);
+                return (
                 <TableRow key={item.id}>
                   <TableCell className="font-mono">{item.itemNumber}</TableCell>
                   <TableCell>
-                    <div><span className="font-medium">{blindFabricCategoryLabel(item.brand)}</span> <Badge variant="outline" className="text-xs">{blindProductTypeLabel(item.productType)}</Badge></div>
-                    {item.handleSide && <p className="text-xs text-muted-foreground mt-0.5">Handle: {item.handleSide}, Hinge: {item.hingeSide}, Opens: {item.openingDirection}</p>}
+                    <div className="flex items-center gap-3">
+                      {typeImage ? (
+                        <img src={typeImage.src} alt={typeImage.alt} className="h-12 w-12 rounded border bg-white object-contain p-1" />
+                      ) : null}
+                      <div className="min-w-0">
+                        <div><span className="font-medium">{blindFabricCategoryLabel(item.brand)}</span> <Badge variant="outline" className="text-xs">{blindProductTypeLabel(item.productType)}</Badge></div>
+                        {item.handleSide && <p className="text-xs text-muted-foreground mt-0.5">Handle: {item.handleSide}, Hinge: {item.hingeSide}, Opens: {item.openingDirection}</p>}
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell className="font-mono">{item.widthMm}×{item.heightMm}</TableCell>
                   <TableCell>
@@ -936,7 +1071,8 @@ function QuoteDetail({ quoteRef }: { quoteRef: BlindQuoteIdentifier }) {
                     <Button variant="ghost" size="icon" onClick={() => removeItemMutation.mutate({ itemId: item.id, quoteId })}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>
