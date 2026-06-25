@@ -21,10 +21,11 @@ export default function Home() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
   const [draftSearch, setDraftSearch] = useState("");
-  const { data: stats, isLoading: statsLoading } = trpc.quotes.stats.useQuery();
-  const { data: draftQuotes, isLoading: draftsLoading } = trpc.quotes.list.useQuery({
-    status: "draft",
+  const [showAllDrafts, setShowAllDrafts] = useState(false);
+  const { data: stats, isLoading: statsLoading } = trpc.quotes.allProductStats.useQuery();
+  const { data: draftQuotes, isLoading: draftsLoading } = trpc.quotes.allProductDrafts.useQuery({
     search: draftSearch.trim() || undefined,
+    limit: 200,
   });
 
   // Role-based redirect: construction users go to Construction Dashboard
@@ -34,7 +35,7 @@ export default function Home() {
 
   // design_adviser, admin, office_user, super_admin all stay on Sales Dashboard (this page)
 
-  const visibleDrafts = draftQuotes?.slice(0, draftSearch.trim() ? 12 : 6) || [];
+  const visibleDrafts = draftQuotes?.slice(0, draftSearch.trim() || showAllDrafts ? 200 : 6) || [];
 
   return (
     <div className="space-y-8">
@@ -62,10 +63,10 @@ export default function Home() {
           ))
         ) : (
           <>
-            <StatCard title="Total Quotes" value={stats?.total ?? 0} icon={FileText} onClick={() => setLocation("/quotes")} subValue={stats?.totalValue ? `$${Math.round(stats.totalValue / 1000)}k` : undefined} />
-            <StatCard title="Drafts" value={stats?.draft ?? 0} icon={Clock} accent="text-muted-foreground" onClick={() => setLocation("/quotes?status=draft")} subValue={stats?.draftValue ? `$${Math.round(stats.draftValue / 1000)}k` : undefined} />
-            <StatCard title="Accepted" value={stats?.accepted ?? 0} icon={CheckCircle2} accent="text-emerald-600" onClick={() => setLocation("/quotes?status=accepted")} subValue={stats?.acceptedValue ? `$${Math.round(stats.acceptedValue / 1000)}k` : undefined} />
-            <StatCard title="Sent" value={stats?.sent ?? 0} icon={TrendingUp} accent="text-blue-600" onClick={() => setLocation("/quotes?status=sent")} subValue={stats?.sentValue ? `$${Math.round(stats.sentValue / 1000)}k` : undefined} />
+            <StatCard title="Total Quotes" value={stats?.total ?? 0} icon={FileText} subValue={stats?.totalValue ? `$${Math.round(stats.totalValue / 1000)}k` : undefined} />
+            <StatCard title="Drafts" value={stats?.draft ?? 0} icon={Clock} accent="text-muted-foreground" subValue={stats?.draftValue ? `$${Math.round(stats.draftValue / 1000)}k` : undefined} />
+            <StatCard title="Accepted" value={stats?.accepted ?? 0} icon={CheckCircle2} accent="text-emerald-600" subValue={stats?.acceptedValue ? `$${Math.round(stats.acceptedValue / 1000)}k` : undefined} />
+            <StatCard title="Sent" value={stats?.sent ?? 0} icon={TrendingUp} accent="text-blue-600" subValue={stats?.sentValue ? `$${Math.round(stats.sentValue / 1000)}k` : undefined} />
           </>
         )}
       </div>
@@ -90,9 +91,11 @@ export default function Home() {
                 className="pl-9 h-9"
               />
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setLocation("/quotes?status=draft")} className="text-xs justify-start sm:justify-center">
-              View all drafts
-            </Button>
+            {(draftQuotes?.length || 0) > 6 && !draftSearch.trim() && (
+              <Button variant="ghost" size="sm" onClick={() => setShowAllDrafts((value) => !value)} className="text-xs justify-start sm:justify-center">
+                {showAllDrafts ? "Show fewer" : "View all drafts"}
+              </Button>
+            )}
           </div>
         </div>
         {draftsLoading ? (
@@ -119,9 +122,9 @@ export default function Home() {
               const cfg = statusConfig[q.status as keyof typeof statusConfig];
               return (
                 <Card
-                  key={q.id}
+                  key={`${q.type}-${q.id}`}
                   className="hover:shadow-sm transition-shadow cursor-pointer"
-                  onClick={() => setLocation(`/quotes/${q.id}`)}
+                  onClick={() => setLocation(q.path)}
                 >
                   <CardContent className="p-4 flex items-center justify-between">
                     <div className="flex items-center gap-4 min-w-0">
@@ -130,7 +133,7 @@ export default function Home() {
                       </div>
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{q.clientName}</p>
-                        <p className="text-xs text-muted-foreground">{q.quoteNumber} &middot; {new Date(q.updatedAt).toLocaleDateString()}</p>
+                        <p className="text-xs text-muted-foreground">{q.quoteNumber} &middot; {q.typeLabel} &middot; {new Date(q.updatedAt).toLocaleDateString()}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -149,6 +152,9 @@ export default function Home() {
                           <XCircle className="h-3 w-3" /> Declined
                         </Badge>
                       )}
+                      <Badge variant="secondary" className="text-[10px]">
+                        {q.typeLabel}
+                      </Badge>
                       <Badge variant="outline" className={`text-[11px] ${cfg?.class || ""}`}>
                         {cfg?.label || q.status}
                       </Badge>

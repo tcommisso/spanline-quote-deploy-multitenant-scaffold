@@ -1,6 +1,6 @@
 /**
  * QuotePreview — Web preview of a compiled quote for a lead (client).
- * Aggregates all quotes (OPQ, Deck, Eclipse) linked to a lead
+ * Aggregates quotes linked to a lead
  * and renders an HTML version matching the PDF structure.
  * Includes download PDF and email-to-client actions.
  */
@@ -37,21 +37,41 @@ export default function QuotePreview() {
   const { data: opqQuotes } = trpc.quotes.list.useQuery(undefined);
   const { data: deckQuotes } = trpc.deck.quotes.list.useQuery();
   const { data: eclipseQuotes } = trpc.eclipseRoof.quotes.list.useQuery();
+  const { data: screenQuotes } = trpc.securityScreens.quotes.list.useQuery();
+  const { data: blindQuotes } = trpc.blinds.quotes.list.useQuery();
 
   const [generating, setGenerating] = useState(false);
 
   // Filter quotes belonging to this lead
+  const matchesLead = (q: any) => {
+    if (q.clientId === id || q.leadId === id) return true;
+    const leadEmail = lead?.contactEmail?.trim().toLowerCase();
+    const quoteEmail = q.clientEmail?.trim().toLowerCase();
+    if (leadEmail && quoteEmail && leadEmail === quoteEmail) return true;
+    const leadPhone = (lead?.contactPhone || "").replace(/\D/g, "");
+    const quotePhone = (q.clientPhone || "").replace(/\D/g, "");
+    return !!leadPhone && !!quotePhone && leadPhone === quotePhone;
+  };
+
   const clientOpqQuotes = useMemo(() =>
-    (opqQuotes || []).filter((q: any) => q.clientId === id),
-    [opqQuotes, id]
+    (opqQuotes || []).filter(matchesLead),
+    [opqQuotes, id, lead?.contactEmail, lead?.contactPhone]
   );
   const clientDeckQuotes = useMemo(() =>
-    (deckQuotes || []).filter((q: any) => q.clientId === id),
-    [deckQuotes, id]
+    (deckQuotes || []).filter(matchesLead),
+    [deckQuotes, id, lead?.contactEmail, lead?.contactPhone]
   );
   const clientEclipseQuotes = useMemo(() =>
-    (eclipseQuotes || []).filter((q: any) => q.clientId === id),
-    [eclipseQuotes, id]
+    (eclipseQuotes || []).filter(matchesLead),
+    [eclipseQuotes, id, lead?.contactEmail, lead?.contactPhone]
+  );
+  const clientScreenQuotes = useMemo(() =>
+    (screenQuotes || []).filter(matchesLead),
+    [screenQuotes, id, lead?.contactEmail, lead?.contactPhone]
+  );
+  const clientBlindQuotes = useMemo(() =>
+    (blindQuotes || []).filter(matchesLead),
+    [blindQuotes, id, lead?.contactEmail, lead?.contactPhone]
   );
 
   const company = loadCompanyDetails();
@@ -183,13 +203,17 @@ export default function QuotePreview() {
     );
   }
 
-  const hasQuotes = clientOpqQuotes.length > 0 || clientDeckQuotes.length > 0 || clientEclipseQuotes.length > 0;
+  const hasQuotes = clientOpqQuotes.length > 0 || clientDeckQuotes.length > 0 || clientEclipseQuotes.length > 0 || clientScreenQuotes.length > 0 || clientBlindQuotes.length > 0;
   const grandTotalExGst =
     clientDeckQuotes.reduce((s: number, q: any) => s + parseFloat(q.sellPriceExGst || "0"), 0) +
-    clientEclipseQuotes.reduce((s: number, q: any) => s + parseFloat(q.totalSellPriceEx || "0"), 0);
+    clientEclipseQuotes.reduce((s: number, q: any) => s + parseFloat(q.totalSellPriceEx || "0"), 0) +
+    clientScreenQuotes.reduce((s: number, q: any) => s + parseFloat(q.subtotalExGst || "0"), 0) +
+    clientBlindQuotes.reduce((s: number, q: any) => s + parseFloat(q.subtotalExGst || "0"), 0);
   const grandTotalGst =
     clientDeckQuotes.reduce((s: number, q: any) => s + parseFloat(q.gstAmount || "0"), 0) +
-    clientEclipseQuotes.reduce((s: number, q: any) => s + parseFloat(q.totalGST || "0"), 0);
+    clientEclipseQuotes.reduce((s: number, q: any) => s + parseFloat(q.totalGST || "0"), 0) +
+    clientScreenQuotes.reduce((s: number, q: any) => s + parseFloat(q.gstAmount || "0"), 0) +
+    clientBlindQuotes.reduce((s: number, q: any) => s + parseFloat(q.gstAmount || "0"), 0);
   const grandTotalIncGst = grandTotalExGst + grandTotalGst;
 
   return (
@@ -334,6 +358,56 @@ export default function QuotePreview() {
                 </div>
                 <div className="text-right">
                   <p className="font-bold">{fmt(parseFloat(q.totalRRPInc || "0"))}</p>
+                  <p className="text-xs text-muted-foreground">inc GST</p>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Security Screen Quotes */}
+      {clientScreenQuotes.length > 0 && (
+        <Card>
+          <CardHeader className="bg-slate-900 text-white rounded-t-lg">
+            <CardTitle className="text-base">Security Screens</CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 space-y-3">
+            {clientScreenQuotes.map((q: any) => (
+              <div key={q.id} className="flex justify-between items-center py-2 border-b last:border-0">
+                <div>
+                  <Link href={`/security-screens/quote/${encodeURIComponent(q.quoteNumber || String(q.id))}`}>
+                    <p className="font-medium text-sm hover:underline">{q.quoteNumber}</p>
+                  </Link>
+                  <p className="text-xs text-muted-foreground">{q.siteAddress || q.status}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-bold">{fmt(parseFloat(q.totalIncGst || "0"))}</p>
+                  <p className="text-xs text-muted-foreground">inc GST</p>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Blind Quotes */}
+      {clientBlindQuotes.length > 0 && (
+        <Card>
+          <CardHeader className="bg-slate-900 text-white rounded-t-lg">
+            <CardTitle className="text-base">Blinds</CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 space-y-3">
+            {clientBlindQuotes.map((q: any) => (
+              <div key={q.id} className="flex justify-between items-center py-2 border-b last:border-0">
+                <div>
+                  <Link href={`/blinds/quote/${encodeURIComponent(q.quoteNumber || String(q.id))}`}>
+                    <p className="font-medium text-sm hover:underline">{q.quoteNumber}</p>
+                  </Link>
+                  <p className="text-xs text-muted-foreground">{q.siteAddress || q.status}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-bold">{fmt(parseFloat(q.totalIncGst || "0"))}</p>
                   <p className="text-xs text-muted-foreground">inc GST</p>
                 </div>
               </div>

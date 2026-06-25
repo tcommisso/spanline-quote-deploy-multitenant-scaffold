@@ -847,6 +847,209 @@ export const appRouter = router({
         return { id: newId, quoteNumber };
       }),
 
+    allProductStats: protectedProcedure.query(async ({ ctx }) => {
+      const tenantId = tenantIdFromContext(ctx);
+      const canViewAll =
+        isAdminRole(ctx.user.role) ||
+        !!ctx.user.canViewAllQuotes ||
+        canViewAllTenantStructureQuotes(ctx);
+
+      const stats = canViewAll
+        ? await db.getQuoteStats(undefined, tenantId, quoteScopeOptionsForContext(ctx))
+        : ctx.user.role === "design_adviser" && ctx.user.name
+          ? await db.getQuoteStats(ctx.user.id, tenantId, quoteScopeOptionsForContext(ctx), ctx.user.name)
+          : await db.getQuoteStats(ctx.user.id, tenantId, quoteScopeOptionsForContext(ctx));
+
+      const drizzleDb = await db.getDb();
+      if (!drizzleDb) return stats;
+
+      const { deckQuotes, eclipseQuotes, ssQuotes, blindQuotes } = await import("../drizzle/schema");
+      const { and, eq, or } = await import("drizzle-orm");
+      const baseStats: any = { ...stats };
+
+      const addStatus = (rawStatus: unknown, rawValue: unknown) => {
+        const status = String(rawStatus || "draft").toLowerCase();
+        const normalized = status === "declined" || status === "expired" ? "lost" : status;
+        if (!["draft", "sent", "accepted", "lost"].includes(normalized)) return;
+        const value = Number(rawValue || 0) || 0;
+        baseStats.total += 1;
+        baseStats.totalValue += value;
+        baseStats[normalized] = (baseStats[normalized] || 0) + 1;
+        baseStats[`${normalized}Value`] = (baseStats[`${normalized}Value`] || 0) + value;
+      };
+
+      const tenantCondition = (column: any) => tenantScoped(column, tenantId);
+      const userScopedConditions = (table: any, userColumn?: any, advisorColumn?: any) => {
+        const conditions: any[] = [];
+        const scoped = tenantCondition(table.tenantId);
+        if (scoped) conditions.push(scoped);
+        if (!canViewAll && userColumn) {
+          if (ctx.user.role === "design_adviser" && ctx.user.name && advisorColumn) {
+            conditions.push(or(eq(userColumn, ctx.user.id), eq(advisorColumn, ctx.user.name)));
+          } else {
+            conditions.push(eq(userColumn, ctx.user.id));
+          }
+        }
+        return conditions.length ? and(...conditions) : undefined;
+      };
+
+      const deckRows = await drizzleDb.select().from(deckQuotes).where(userScopedConditions(deckQuotes, deckQuotes.userId, deckQuotes.designAdvisor));
+      const eclipseRows = await drizzleDb.select().from(eclipseQuotes).where(userScopedConditions(eclipseQuotes, eclipseQuotes.userId, eclipseQuotes.designAdvisor));
+      const screenRows = await drizzleDb.select().from(ssQuotes).where(userScopedConditions(ssQuotes));
+      const blindRows = await drizzleDb.select().from(blindQuotes).where(userScopedConditions(blindQuotes));
+
+      for (const quote of deckRows) addStatus(quote.status, quote.sellPriceExGst);
+      for (const quote of eclipseRows) addStatus(quote.status, quote.totalSellPriceEx);
+      for (const quote of screenRows) addStatus(quote.status, quote.subtotalExGst);
+      for (const quote of blindRows) addStatus(quote.status, quote.subtotalExGst);
+
+      return baseStats;
+    }),
+
+    allProductDrafts: protectedProcedure
+      .input(z.object({ search: z.string().optional(), limit: z.number().min(1).max(200).optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const tenantId = tenantIdFromContext(ctx);
+        const quoteScopeOptions = quoteScopeOptionsForContext(ctx);
+        const canViewAll =
+          isAdminRole(ctx.user.role) ||
+          !!ctx.user.canViewAllQuotes ||
+          canViewAllTenantStructureQuotes(ctx);
+        const search = input?.search?.trim();
+        const limit = input?.limit ?? 100;
+
+        const structureQuotes = canViewAll
+          ? await db.getAllQuotes(search, "draft", tenantId, quoteScopeOptions)
+          : ctx.user.role === "design_adviser" && ctx.user.name
+            ? await db.getQuotesByDesignAdviser(ctx.user.name, search, "draft", tenantId, ctx.user.id, quoteScopeOptions)
+            : await db.getQuotesByUser(ctx.user.id, search, "draft", tenantId, quoteScopeOptions);
+
+        const rows: Array<{
+          id: number;
+          type: "structure" | "deck" | "eclipse" | "security_screen" | "blind";
+          typeLabel: string;
+          quoteNumber: string;
+          clientName: string;
+          clientEmail?: string | null;
+          siteAddress?: string | null;
+          status: string;
+          updatedAt: Date;
+          totalExGst: number;
+          path: string;
+        }> = structureQuotes
+          .filter((quote) => canAccessQuoteTenantRecord(ctx, quote))
+          .map((quote: any) => ({
+            id: quote.id,
+            type: "structure",
+            typeLabel: "Structure",
+            quoteNumber: quote.quoteNumber,
+            clientName: quote.clientName,
+            clientEmail: quote.clientEmail,
+            siteAddress: quote.siteAddress,
+            status: quote.status,
+            updatedAt: quote.updatedAt,
+            totalExGst: 0,
+            path: `/quotes/${quote.id}`,
+          }));
+
+        const drizzleDb = await db.getDb();
+        if (!drizzleDb) return rows;
+
+        const { deckQuotes, eclipseQuotes, ssQuotes, blindQuotes } = await import("../drizzle/schema");
+        const { and, desc, eq, like, or, sql } = await import("drizzle-orm");
+
+        const productSearchCondition = (table: any) => {
+          if (!search) return undefined;
+          const term = `%${search.toLowerCase()}%`;
+          return or(
+            like(sql`LOWER(${table.quoteNumber})`, term),
+            like(sql`LOWER(${table.clientName})`, term),
+            like(sql`LOWER(${table.clientEmail})`, term),
+            like(sql`LOWER(${table.siteAddress ?? table.clientAddress})`, term),
+          );
+        };
+
+        const productConditions = (table: any, userColumn?: any, advisorColumn?: any) => {
+          const conditions: any[] = [eq(table.status, "draft" as any)];
+          const scoped = tenantScoped(table.tenantId, tenantId);
+          if (scoped) conditions.push(scoped);
+          if (!canViewAll && userColumn) {
+            if (ctx.user.role === "design_adviser" && ctx.user.name && advisorColumn) {
+              conditions.push(or(eq(userColumn, ctx.user.id), eq(advisorColumn, ctx.user.name)));
+            } else {
+              conditions.push(eq(userColumn, ctx.user.id));
+            }
+          }
+          const searchCondition = productSearchCondition(table);
+          if (searchCondition) conditions.push(searchCondition);
+          return and(...conditions);
+        };
+
+        const deckRows = await drizzleDb.select().from(deckQuotes).where(productConditions(deckQuotes, deckQuotes.userId, deckQuotes.designAdvisor)).orderBy(desc(deckQuotes.updatedAt));
+        const eclipseRows = await drizzleDb.select().from(eclipseQuotes).where(productConditions(eclipseQuotes, eclipseQuotes.userId, eclipseQuotes.designAdvisor)).orderBy(desc(eclipseQuotes.updatedAt));
+        const screenRows = await drizzleDb.select().from(ssQuotes).where(productConditions(ssQuotes)).orderBy(desc(ssQuotes.updatedAt));
+        const blindRows = await drizzleDb.select().from(blindQuotes).where(productConditions(blindQuotes)).orderBy(desc(blindQuotes.updatedAt));
+
+        rows.push(
+          ...deckRows.map((quote) => ({
+            id: quote.id,
+            type: "deck" as const,
+            typeLabel: "Deck",
+            quoteNumber: quote.quoteNumber,
+            clientName: quote.clientName,
+            clientEmail: quote.clientEmail,
+            siteAddress: quote.siteAddress,
+            status: quote.status,
+            updatedAt: quote.updatedAt,
+            totalExGst: Number(quote.sellPriceExGst || 0) || 0,
+            path: `/deck-quotes/${quote.id}`,
+          })),
+          ...eclipseRows.map((quote) => ({
+            id: quote.id,
+            type: "eclipse" as const,
+            typeLabel: "Eclipse",
+            quoteNumber: quote.quoteNumber,
+            clientName: quote.clientName,
+            clientEmail: quote.clientEmail,
+            siteAddress: quote.clientAddress,
+            status: quote.status,
+            updatedAt: quote.updatedAt,
+            totalExGst: Number(quote.totalSellPriceEx || 0) || 0,
+            path: `/eclipse-quotes/${quote.id}`,
+          })),
+          ...screenRows.map((quote) => ({
+            id: quote.id,
+            type: "security_screen" as const,
+            typeLabel: "Security Screens",
+            quoteNumber: quote.quoteNumber,
+            clientName: quote.clientName,
+            clientEmail: quote.clientEmail,
+            siteAddress: quote.siteAddress,
+            status: quote.status,
+            updatedAt: quote.updatedAt,
+            totalExGst: Number(quote.subtotalExGst || 0) || 0,
+            path: `/security-screens/quote/${encodeURIComponent(quote.quoteNumber || String(quote.id))}`,
+          })),
+          ...blindRows.map((quote) => ({
+            id: quote.id,
+            type: "blind" as const,
+            typeLabel: "Blinds",
+            quoteNumber: quote.quoteNumber,
+            clientName: quote.clientName,
+            clientEmail: quote.clientEmail,
+            siteAddress: quote.siteAddress,
+            status: quote.status,
+            updatedAt: quote.updatedAt,
+            totalExGst: Number(quote.subtotalExGst || 0) || 0,
+            path: `/blinds/quote/${encodeURIComponent(quote.quoteNumber || String(quote.id))}`,
+          })),
+        );
+
+        return rows
+          .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+          .slice(0, limit);
+      }),
+
      stats: protectedProcedure.query(async ({ ctx }) => {
       const tenantId = tenantIdFromContext(ctx);
       if (isAdminRole(ctx.user.role) || ctx.user.canViewAllQuotes || canViewAllTenantStructureQuotes(ctx)) {

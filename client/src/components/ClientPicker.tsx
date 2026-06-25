@@ -3,7 +3,8 @@ import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Search, X, User, Building2, Phone, Mail, MapPin } from "lucide-react";
+import { Search, X, User, Building2, Phone, Mail, MapPin, ExternalLink } from "lucide-react";
+import { Link } from "wouter";
 
 interface ClientData {
   id: number;
@@ -114,11 +115,19 @@ export default function ClientPicker({
                 )}
               </div>
             </div>
-            {onClientClear && (
-              <Button variant="ghost" size="icon" onClick={onClientClear} className="h-8 w-8">
-                <X className="w-4 h-4" />
-              </Button>
-            )}
+            <div className="flex items-center gap-1 shrink-0">
+              <Link href={`/crm/leads/${displayClient.id}/preview`}>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Quotes
+                </Button>
+              </Link>
+              {onClientClear && (
+                <Button variant="ghost" size="icon" onClick={onClientClear} className="h-8 w-8">
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
