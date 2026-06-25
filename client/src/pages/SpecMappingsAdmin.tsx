@@ -210,7 +210,7 @@ export default function SpecMappingsAdmin() {
     }
     const payload = {
       ...form,
-      productId: form.productId || null,
+      productId: form.productMatch ? null : form.productId || null,
       productMatch: form.productMatch || null,
       description: form.description || null,
       colourField: form.colourField || null,
@@ -557,8 +557,8 @@ export default function SpecMappingsAdmin() {
                     <p className="font-semibold mb-1">Available Computed Variables:</p>
                     <p><code>roofRunWidth</code> — Dimension perpendicular to fall (m)</p>
                     <p><code>roofSheetLength</code> — Dimension parallel to fall (m)</p>
-                    <p><code>roofSheetQty</code> — Roof sheet count from product cover</p>
-                    <p><code>roofSheetLM</code> — Total roof LM (auto-calc with product cover)</p>
+                    <p><code>roofSheetQty</code> — Roof sheet count for takeoff/display</p>
+                    <p><code>roofSheetLM</code> — Roof sheet LM from roof area ÷ product cover</p>
                     <p><code>productCover</code> — Product coverage width (mm)</p>
                     <p><code>area</code> — specWidth × specLength (m²)</p>
                     <p><code>perimeter</code> — 2 × (specWidth + specLength) (m)</p>
@@ -568,8 +568,8 @@ export default function SpecMappingsAdmin() {
                     <p>+, -, *, /, Math.ceil(), Math.floor(), Math.round()</p>
                     <p className="font-semibold mt-2 mb-1">Examples:</p>
                     <p><code>roofSheetLM</code></p>
-                    <p><code>roofSheetQty * roofSheetLength</code></p>
-                    <p><code>Math.ceil(roofRunWidth / (productCover / 1000)) * roofSheetLength</code></p>
+                    <p><code>roofArea / (productCover / 1000)</code></p>
+                    <p><code>roofSheetQty</code> for per-sheet products only</p>
                     <p><code>roofSheetLM * (1 + wasteFactor / 100)</code></p>
                     <p><code>specWidth * specLength</code></p>
                   </TooltipContent>
@@ -613,7 +613,7 @@ export default function SpecMappingsAdmin() {
                           — No product (manual rates) —
                         </CommandItem>
                         {productRows.map((p: any) => (
-                          <CommandItem key={p.id} value={String(p.id)} onSelect={(v) => setForm(prev => ({ ...prev, productId: Number(v) }))}>
+                          <CommandItem key={p.id} value={String(p.id)} onSelect={(v) => setForm(prev => ({ ...prev, productId: Number(v), productMatch: "" }))}>
                             <Check className={`mr-1 h-3 w-3 ${form.productId === p.id ? "opacity-100" : "opacity-0"}`} />
                             <span className="truncate">{p.name}</span>
                             <span className="ml-auto text-xs text-muted-foreground">{p.tabName}</span>
@@ -662,7 +662,7 @@ export default function SpecMappingsAdmin() {
                         return Object.entries(sections).map(([section, fields]) => (
                           <CommandGroup key={section} heading={section}>
                             {fields.map(f => (
-                              <CommandItem key={f.value} value={f.value} onSelect={(v) => setForm(p => ({ ...p, productMatch: v }))}>
+                              <CommandItem key={f.value} value={f.value} onSelect={(v) => setForm(p => ({ ...p, productMatch: v, productId: null }))}>
                                 <Check className={`mr-1 h-3 w-3 ${form.productMatch === f.value ? "opacity-100" : "opacity-0"}`} />
                                 <span className="truncate">{f.label}</span>
                                 <span className="ml-auto text-[10px] text-muted-foreground font-mono">{f.value}</span>

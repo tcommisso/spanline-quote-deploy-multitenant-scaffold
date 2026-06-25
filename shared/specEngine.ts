@@ -60,10 +60,53 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
-const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
 
 function formatTakeoffNumber(value: number): string {
   return value.toFixed(3).replace(/\.?0+$/, "");
+}
+
+function normalizeMatchValue(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getProductTabName(value: string) {
+  return normalizeMatchValue(value);
+}
+
+function findProductBySpecMatch(
+  products: ProductLookup[],
+  tabName: string,
+  matchValue: unknown
+): ProductLookup | null {
+  const normalizedMatch = normalizeMatchValue(matchValue);
+  if (!normalizedMatch) return null;
+
+  const candidates = products.filter(p => getProductTabName(p.tabName) === getProductTabName(tabName));
+  const exact = candidates.find(p => normalizeMatchValue(p.name) === normalizedMatch);
+  if (exact) return exact;
+
+  const containing = candidates.find(p => {
+    const name = normalizeMatchValue(p.name);
+    return name.includes(normalizedMatch) || normalizedMatch.includes(name);
+  });
+  if (containing) return containing;
+
+  const tokens = normalizedMatch.split(" ").filter(token => token.length > 1);
+  if (tokens.length === 0) return null;
+  return candidates.find(p => {
+    const name = normalizeMatchValue(p.name);
+    return tokens.every(token => name.includes(token));
+  }) || null;
+}
+
+function isLinearMetreUom(value: string | null | undefined): boolean {
+  return /^(lm|l\/m|linear metres?|linear meters?|metres?|meters?|m)$/i.test(String(value || "").trim());
 }
 
 function getNumericSpecValue(specValues: SpecValues, key: string): number | null {
@@ -249,35 +292,52 @@ export function generateItemsFromSpec(
 
     // Find the product FIRST so we can inject its cover width into formula evaluation
     let product: ProductLookup | null = null;
-    if (mapping.productId) {
-      product = products.find(p => p.id === mapping.productId) || null;
-    } else if (mapping.productMatch) {
+    if (mapping.productMatch) {
       // Match product by name using the spec field value
-      const matchValue = String(specValues[mapping.productMatch] || fieldValue || "").toLowerCase();
-      product = products.find(p =>
-        p.tabName === mapping.tabName &&
-        p.name.toLowerCase().includes(matchValue)
-      ) || null;
+      const matchValue = specValues[mapping.productMatch] || fieldValue || "";
+      product = findProductBySpecMatch(products, mapping.tabName, matchValue);
+    } else if (mapping.productId) {
+      product = products.find(p => p.id === mapping.productId) || null;
     }
 
     // Build per-mapping spec values with product-specific variables injected
     const mappingSpecValues = { ...specValues };
     if (product?.coverageWidth) {
       mappingSpecValues.productCover = product.coverageWidth;
-      // roofSheetLM = Math.ceil(roofRunWidth / (coverMM / 1000)) * roofSheetLength
-      const runWidth = parseFloat(String(specValues.roofRunWidth || 0));
-      const sheetLength = parseFloat(String(specValues.roofSheetLength || 0));
+      // roofSheetLM is the pricing quantity: roof area divided by product cover.
+      // Sheet count is still retained for takeoff/display notes.
+      const runWidth = getNumericSpecValue(specValues, "roofRunWidth") || 0;
+      const sheetLength = getNumericSpecValue(specValues, "roofSheetLength") || 0;
+      const roofArea =
+        getNumericSpecValue(specValues, "specRoofArea")
+        ?? getNumericSpecValue(specValues, "roofArea")
+        ?? (runWidth > 0 && sheetLength > 0 ? runWidth * sheetLength : 0);
       const coverM = product.coverageWidth / 1000;
-      if (runWidth > 0 && sheetLength > 0 && coverM > 0) {
-        const sheetQty = Math.ceil(runWidth / coverM);
+      if (roofArea > 0 && coverM > 0) {
+        const roofSheetLM = roofArea / coverM;
+        const sheetQty = sheetLength > 0
+          ? Math.ceil(roofSheetLM / sheetLength)
+          : (runWidth > 0 ? Math.ceil(runWidth / coverM) : 0);
         mappingSpecValues.roofSheetQty = sheetQty;
         mappingSpecValues.specRoofSheetQty = sheetQty;
-        mappingSpecValues.roofSheetLM = sheetQty * sheetLength;
+        mappingSpecValues.roofSheetLM = roofSheetLM;
       }
     }
 
     // Calculate quantity (now with product cover available)
-    const qty = evaluateFormula(mapping.qtyFormula, mappingSpecValues);
+    const resolvedUom = mapping.uom || product?.uom || "ea";
+    let qty = evaluateFormula(mapping.qtyFormula, mappingSpecValues);
+    const formulaUsesSheetCount = /\broofSheetQty\b/i.test(mapping.qtyFormula);
+    const roofSheetLMValue = Number(mappingSpecValues.roofSheetLM || 0);
+    if (
+      formulaUsesSheetCount
+      && roofSheetLMValue > 0
+      && mapping.tabName === "roof"
+      && product?.coverageWidth
+      && isLinearMetreUom(resolvedUom)
+    ) {
+      qty = roofSheetLMValue;
+    }
     if (qty <= 0) continue; // No quantity, skip
 
     // Calculate rates
@@ -286,11 +346,12 @@ export function generateItemsFromSpec(
     const roofSheetQty = Number(mappingSpecValues.roofSheetQty || 0);
     const roofSheetLength = Number(mappingSpecValues.roofSheetLength || 0);
     const roofSheetLM = Number(mappingSpecValues.roofSheetLM || 0);
+    const roofArea = Number(mappingSpecValues.specRoofArea || mappingSpecValues.roofArea || 0);
     const isRoofSheetTakeoff = mapping.tabName === "roof"
       && !!product?.coverageWidth
       && /\broofSheet(LM|Qty|Length)\b/i.test(mapping.qtyFormula);
     const notes = isRoofSheetTakeoff && roofSheetQty > 0 && roofSheetLength > 0 && roofSheetLM > 0
-      ? `Roof sheet takeoff: ${roofSheetQty} sheet${roofSheetQty === 1 ? "" : "s"} x ${formatTakeoffNumber(roofSheetLength)}m = ${formatTakeoffNumber(roofSheetLM)} LM (${product!.coverageWidth}mm cover)`
+      ? `Roof sheet takeoff: ${roofSheetQty} sheet${roofSheetQty === 1 ? "" : "s"} x ${formatTakeoffNumber(roofSheetLength)}m nominal; ${formatTakeoffNumber(roofArea)}m² / ${product!.coverageWidth}mm cover = ${formatTakeoffNumber(roofSheetLM)} LM`
       : null;
 
     // Get colour from spec
@@ -312,7 +373,7 @@ export function generateItemsFromSpec(
       description,
       colour,
       bottomColour,
-      uom: mapping.uom || product?.uom || "ea",
+      uom: resolvedUom,
       qty: Math.round(qty * 1000) / 1000, // Round to 3dp
       costRate,
       sellRate,

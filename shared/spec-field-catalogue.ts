@@ -333,42 +333,42 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
   },
   specRoofRunWidth: {
     term: "Roof run width",
-    formulaExamples: ["specRoofRunWidth", "Math.ceil(roofRunWidth / (productCover / 1000))"],
+    formulaExamples: ["specRoofRunWidth", "roofSheetQty"],
     notes: "Computed dimension perpendicular to roof sheet fall direction.",
   },
   roofRunWidth: {
     term: "Roof run width formula alias",
-    formulaExamples: ["roofRunWidth", "Math.ceil(roofRunWidth / (productCover / 1000))"],
+    formulaExamples: ["roofRunWidth", "roofSheetQty"],
     notes: "Formula-only alias for the roof run width.",
   },
   specRoofSheetLength: {
     term: "Roof sheet length",
-    formulaExamples: ["specRoofSheetLength", "roofSheetQty * roofSheetLength"],
+    formulaExamples: ["specRoofSheetLength", "roofSheetLM"],
     notes: "Computed dimension parallel to fall direction.",
   },
   roofSheetLength: {
     term: "Roof sheet length formula alias",
-    formulaExamples: ["roofSheetLength", "roofSheetQty * roofSheetLength"],
+    formulaExamples: ["roofSheetLength", "roofSheetLM"],
     notes: "Formula-only alias for the computed sheet length.",
   },
   specRoofSheetQty: {
     term: "Roof sheet quantity",
-    formulaExamples: ["specRoofSheetQty", "roofSheetQty * roofSheetLength"],
-    notes: "Computed from roof run width and selected product coverage width.",
+    formulaExamples: ["specRoofSheetQty", "roofSheetQty"],
+    notes: "Computed sheet count from roof sheet LM divided by sheet length. Use for display/takeoff, not LM pricing.",
   },
   roofSheetQty: {
     term: "Roof sheet quantity formula alias",
-    formulaExamples: ["roofSheetQty", "roofSheetQty * roofSheetLength"],
-    notes: "Formula-only alias for the computed sheet count. Use with roofSheetLength when you want the calculation to read explicitly.",
+    formulaExamples: ["roofSheetQty"],
+    notes: "Formula-only alias for the computed sheet count. Use for display/takeoff or per-sheet products, not LM pricing.",
   },
   roofSheetLM: {
     term: "Roof sheet linear metres",
-    formulaExamples: ["roofSheetLM", "roofSheetLM * (1 + wasteFactor / 100)"],
-    notes: "Total roof sheet LM already equals roofSheetQty multiplied by roofSheetLength.",
+    formulaExamples: ["roofSheetLM", "specRoofArea / (productCover / 1000)", "roofSheetLM * (1 + wasteFactor / 100)"],
+    notes: "Pricing quantity for roof sheets. It equals pitch-adjusted roof area divided by the matched product cover width.",
   },
   productCover: {
     term: "Product cover width",
-    formulaExamples: ["Math.ceil(roofRunWidth / (productCover / 1000))", "roofSheetLM"],
+    formulaExamples: ["specRoofArea / (productCover / 1000)", "roofSheetLM"],
     notes: "Coverage width in millimetres from the matched product. Only available when a product with coverage is matched.",
   },
   wasteFactor: {
