@@ -1,8 +1,16 @@
 /**
  * Inbox Compose — New email composition page with contact search autocomplete
  */
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
+import {
+  appendTemplateBody,
+  formatEmailTemplateLabel,
+  formatTemplateKey,
+  messageBodyToHtml,
+  messageBodyToText,
+  renderTemplateVariables,
+} from "@/lib/email-template-utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -161,10 +169,25 @@ export default function InboxCompose() {
   const [fromAddressId, setFromAddressId] = useState<string>("default");
   const [includeSignature, setIncludeSignature] = useState(true);
   const [includeRateUs, setIncludeRateUs] = useState(false);
+  const [emailTemplateCategory, setEmailTemplateCategory] = useState("all");
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
   const { data: composeDefaults } = trpc.inbox.composeDefaults.useQuery();
   const { data: defaultSig } = trpc.inbox.signatures.getDefault.useQuery();
   const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
+  const { data: emailTemplates = [] } = trpc.crm.emailTemplates.list.useQuery();
+  const emailTemplateCategories = useMemo(() => {
+    const categories = new Set<string>();
+    for (const template of emailTemplates as any[]) {
+      const category = String(template.category || "General").trim() || "General";
+      categories.add(category);
+    }
+    return Array.from(categories).sort((a, b) => a.localeCompare(b));
+  }, [emailTemplates]);
+  const filteredEmailTemplates = useMemo(() => {
+    const templates = emailTemplates as any[];
+    if (emailTemplateCategory === "all") return templates;
+    return templates.filter((template) => (String(template.category || "General").trim() || "General") === emailTemplateCategory);
+  }, [emailTemplates, emailTemplateCategory]);
   const composeMut = trpc.inbox.compose.useMutation({
     onSuccess: () => {
       toast.success("Email sent");
@@ -215,8 +238,8 @@ export default function InboxCompose() {
       toAddress: toEmails[0],
       ccAddresses: [...toEmails.slice(1), ...ccEmails].length > 0 ? [...toEmails.slice(1), ...ccEmails] : undefined,
       subject: subject.trim(),
-      htmlBody: body.replace(/\n/g, "<br/>"),
-      textBody: body,
+      htmlBody: messageBodyToHtml(body),
+      textBody: messageBodyToText(body),
       includeSignature,
       includeRateUs,
       fromAddressId: fromAddressId !== "default" ? parseInt(fromAddressId) : undefined,
@@ -242,20 +265,32 @@ export default function InboxCompose() {
   function applyTemplateVariables(value: string) {
     const primaryEmail = toEmails[0] || "";
     const clientName = recipientNamesByEmail[primaryEmail] || "";
-    return value
-      .replace(/\{\{\s*ticketSubject\s*\}\}/g, subject)
-      .replace(/\{\{\s*clientName\s*\}\}/g, clientName)
-      .replace(/\{\{\s*(jobNumber|branch|constructionManager)\s*\}\}/g, "");
+    return renderTemplateVariables(value, {
+      ticketSubject: subject,
+      clientName,
+      jobNumber: "",
+      branch: "",
+      constructionManager: "",
+    });
   }
 
-  function applyTemplate(templateId: string) {
+  function applyReplyTemplate(templateId: string) {
     const template = replyTemplates.find((item: any) => String(item.id) === templateId);
     if (!template) return;
     const rawBody = template.bodyText || String(template.bodyHtml || "").replace(/<[^>]+>/g, "");
     const rendered = applyTemplateVariables(rawBody);
-    setBody((current) => current.trim() ? `${current.trim()}\n\n${rendered.trim()}` : rendered.trim());
+    setBody((current) => appendTemplateBody(current, rendered));
     if (!subject && template.subject) setSubject(applyTemplateVariables(template.subject));
     toast.success(`Inserted "${template.name}"`);
+  }
+
+  function applyEmailTemplate(templateId: string) {
+    const template = (emailTemplates as any[]).find((item) => String(item.id) === templateId);
+    if (!template) return;
+    const rendered = applyTemplateVariables(template.body || "");
+    setBody((current) => appendTemplateBody(current, rendered));
+    if (!subject.trim() && template.subject) setSubject(applyTemplateVariables(template.subject));
+    toast.success(`Inserted "${formatEmailTemplateLabel(template)}"`);
   }
 
   return (
@@ -335,10 +370,10 @@ export default function InboxCompose() {
           {/* Body */}
           {replyTemplates.length > 0 && (
             <div className="flex items-center gap-3">
-              <Label className="w-16 text-sm text-muted-foreground shrink-0">Template</Label>
-              <Select onValueChange={applyTemplate}>
+              <Label className="w-28 text-sm text-muted-foreground shrink-0">Reply Templates</Label>
+              <Select onValueChange={applyReplyTemplate}>
                 <SelectTrigger className="flex-1">
-                  <SelectValue placeholder="Insert canned reply" />
+                  <SelectValue placeholder="Insert reply template" />
                 </SelectTrigger>
                 <SelectContent>
                   {replyTemplates.map((template: any) => (
@@ -348,6 +383,38 @@ export default function InboxCompose() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {emailTemplates.length > 0 && (
+            <div className="flex items-start gap-3">
+              <Label className="w-28 text-sm text-muted-foreground shrink-0 pt-2">Templates</Label>
+              <div className="flex-1 grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)]">
+                <Select value={emailTemplateCategory} onValueChange={setEmailTemplateCategory}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All categories</SelectItem>
+                    {emailTemplateCategories.map((category) => (
+                      <SelectItem key={category} value={category}>{category}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select onValueChange={applyEmailTemplate}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Insert email template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {filteredEmailTemplates.map((template: any) => (
+                      <SelectItem key={template.id} value={String(template.id)}>
+                        {formatEmailTemplateLabel(template)}
+                        {template.letterType ? ` (${formatTemplateKey(template.letterType)})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           )}
 
@@ -421,9 +488,16 @@ export default function InboxCompose() {
                     <p className="text-sm"><span className="font-medium text-muted-foreground">Subject:</span> {subject || "(no subject)"}</p>
                   </div>
                   {/* Email body */}
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                    {body || <span className="text-muted-foreground italic">No message body</span>}
-                  </div>
+                  {body ? (
+                    <div
+                      className="prose prose-sm max-w-none text-sm leading-relaxed"
+                      dangerouslySetInnerHTML={{ __html: messageBodyToHtml(body) }}
+                    />
+                  ) : (
+                    <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                      <span className="text-muted-foreground italic">No message body</span>
+                    </div>
+                  )}
                   {/* Signature */}
                   {includeSignature && defaultSig && (
                     <div className="mt-6 pt-4 border-t">

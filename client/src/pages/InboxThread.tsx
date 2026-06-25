@@ -4,6 +4,14 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import {
+  appendTemplateBody,
+  formatEmailTemplateLabel,
+  formatTemplateKey,
+  messageBodyToHtml,
+  messageBodyToText,
+  renderTemplateVariables,
+} from "@/lib/email-template-utils";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,6 +76,7 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [resolutionNotes, setResolutionNotes] = useState("");
   const [internalNote, setInternalNote] = useState("");
+  const [emailTemplateCategory, setEmailTemplateCategory] = useState("all");
   const replyRef = useRef<HTMLTextAreaElement>(null);
 
   const threadQueryInput = messageLookupId ? { messageId: messageLookupId } : { threadId: initialThreadId };
@@ -84,6 +93,20 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
     { enabled: Boolean(threadId) },
   );
   const { data: replyTemplates = [] } = trpc.inbox.templates.list.useQuery();
+  const { data: emailTemplates = [] } = trpc.crm.emailTemplates.list.useQuery();
+  const emailTemplateCategories = useMemo(() => {
+    const categories = new Set<string>();
+    for (const template of emailTemplates as any[]) {
+      const category = String(template.category || "General").trim() || "General";
+      categories.add(category);
+    }
+    return Array.from(categories).sort((a, b) => a.localeCompare(b));
+  }, [emailTemplates]);
+  const filteredEmailTemplates = useMemo(() => {
+    const templates = emailTemplates as any[];
+    if (emailTemplateCategory === "all") return templates;
+    return templates.filter((template) => (String(template.category || "General").trim() || "General") === emailTemplateCategory);
+  }, [emailTemplates, emailTemplateCategory]);
   const { data: presence = [] } = trpc.inbox.presence.list.useQuery(
     { threadId },
     { enabled: Boolean(threadId), refetchInterval: 30000 }
@@ -203,7 +226,7 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
       branch: ticket?.queue ? String(ticket.queue).replace(/_/g, " ") : "",
       constructionManager: ticket?.assignedToName || firstMsg?.assignedToName || "",
     };
-    return value.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (_match, key) => replacements[key] ?? "");
+    return renderTemplateVariables(value, replacements);
   }
 
   function applyReplyTemplate(templateId: string) {
@@ -211,9 +234,18 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
     if (!template) return;
     const rawBody = template.bodyText || String(template.bodyHtml || "").replace(/<[^>]+>/g, "");
     const rendered = applyTemplateVariables(rawBody).trim();
-    setReplyHtml((current) => current.trim() ? `${current.trim()}\n\n${rendered}` : rendered);
+    setReplyHtml((current) => appendTemplateBody(current, rendered));
     setReplyOpen(true);
     toast.success(`Inserted "${template.name}"`);
+  }
+
+  function applyEmailTemplate(templateId: string) {
+    const template = (emailTemplates as any[]).find((item) => String(item.id) === templateId);
+    if (!template) return;
+    const rendered = applyTemplateVariables(template.body || "");
+    setReplyHtml((current) => appendTemplateBody(current, rendered));
+    setReplyOpen(true);
+    toast.success(`Inserted "${formatEmailTemplateLabel(template)}"`);
   }
 
   function formatDate(date: string | Date) {
@@ -230,8 +262,8 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
     if (!targetMsg) return;
     replyMut.mutate({
       inReplyToMessageId: targetMsg.id,
-      htmlBody: replyHtml.replace(/\n/g, "<br/>"),
-      textBody: replyHtml,
+      htmlBody: messageBodyToHtml(replyHtml),
+      textBody: messageBodyToText(replyHtml),
       includeSignature,
       includeRateUs,
     });
@@ -668,37 +700,73 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
                 className="min-h-[120px] mb-3"
               />
 
-              <div className="flex items-center justify-between">
-                <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex flex-col gap-3">
                   {replyTemplates.length > 0 && (
-                    <Select onValueChange={applyReplyTemplate}>
-                      <SelectTrigger className="h-8 w-[220px]">
-                        <SelectValue placeholder="Insert template" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {replyTemplates.map((template: any) => (
-                          <SelectItem key={template.id} value={String(template.id)}>
-                            {template.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label className="w-28 text-xs text-muted-foreground">Reply Templates</Label>
+                      <Select onValueChange={applyReplyTemplate}>
+                        <SelectTrigger className="h-8 w-[260px] max-w-full">
+                          <SelectValue placeholder="Insert reply template" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {replyTemplates.map((template: any) => (
+                            <SelectItem key={template.id} value={String(template.id)}>
+                              {template.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      id="include-sig"
-                      checked={includeSignature}
-                      onCheckedChange={setIncludeSignature}
-                    />
-                    <Label htmlFor="include-sig" className="text-xs">Signature</Label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch
-                      id="include-rateus"
-                      checked={includeRateUs}
-                      onCheckedChange={setIncludeRateUs}
-                    />
-                    <Label htmlFor="include-rateus" className="text-xs">Rate Us</Label>
+
+                  {emailTemplates.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label className="w-28 text-xs text-muted-foreground">Templates</Label>
+                      <Select value={emailTemplateCategory} onValueChange={setEmailTemplateCategory}>
+                        <SelectTrigger className="h-8 w-[180px] max-w-full">
+                          <SelectValue placeholder="Category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All categories</SelectItem>
+                          {emailTemplateCategories.map((category) => (
+                            <SelectItem key={category} value={category}>{category}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select onValueChange={applyEmailTemplate}>
+                        <SelectTrigger className="h-8 w-[260px] max-w-full">
+                          <SelectValue placeholder="Insert email template" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {filteredEmailTemplates.map((template: any) => (
+                            <SelectItem key={template.id} value={String(template.id)}>
+                              {formatEmailTemplateLabel(template)}
+                              {template.letterType ? ` (${formatTemplateKey(template.letterType)})` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="include-sig"
+                        checked={includeSignature}
+                        onCheckedChange={setIncludeSignature}
+                      />
+                      <Label htmlFor="include-sig" className="text-xs">Signature</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="include-rateus"
+                        checked={includeRateUs}
+                        onCheckedChange={setIncludeRateUs}
+                      />
+                      <Label htmlFor="include-rateus" className="text-xs">Rate Us</Label>
+                    </div>
                   </div>
                 </div>
 
@@ -743,9 +811,16 @@ export default function InboxThread({ threadId: rawThreadId, messageId }: { thre
                       <div className="border-b pb-3 mb-4">
                         <p className="text-sm"><span className="font-medium text-muted-foreground">Subject:</span> Re: {firstMsg?.subject || "(no subject)"}</p>
                       </div>
-                      <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {replyHtml || <span className="text-muted-foreground italic">No message body</span>}
-                      </div>
+                      {replyHtml ? (
+                        <div
+                          className="prose prose-sm max-w-none text-sm leading-relaxed"
+                          dangerouslySetInnerHTML={{ __html: messageBodyToHtml(replyHtml) }}
+                        />
+                      ) : (
+                        <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                          <span className="text-muted-foreground italic">No message body</span>
+                        </div>
+                      )}
                       {includeSignature && defaultSig && (
                         <div className="mt-6 pt-4 border-t">
                           <div dangerouslySetInnerHTML={{ __html: defaultSig.htmlContent }} />

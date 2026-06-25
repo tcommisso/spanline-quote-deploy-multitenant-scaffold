@@ -1053,7 +1053,7 @@ function ReplyTemplateSettings() {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
-          <CardTitle>Canned Reply Templates</CardTitle>
+          <CardTitle>Reply Templates</CardTitle>
           <CardDescription>Shared replies for common customer, trade, and internal ticket responses</CardDescription>
         </div>
         <Button size="sm" onClick={() => { resetForm(); setDialogOpen(true); }}>
