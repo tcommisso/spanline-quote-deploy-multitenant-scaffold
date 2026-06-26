@@ -92,6 +92,8 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 80, y: 120 }, { x: 95, y: 120 }, { x: 95, y: 220 }, { x: 245, y: 220 }, { x: 260, y: 220 }],
       {
         segmentLengths: { "segment-1": 15, "segment-2": 100, "segment-3": 150, "segment-4": 15 },
+        segmentAngles: { "segment-1": 0, "segment-2": 90, "segment-3": 0, "segment-4": 0 },
+        foldAngles: { "fold-1": 126, "fold-2": 92, "fold-3": 126 },
         foldTypes: { "fold-1": "crush", "fold-2": "standard", "fold-3": "crush" },
         foldNotes: { "fold-1": "126 degrees", "fold-2": "92 degrees", "fold-3": "126 degrees" },
       },
@@ -107,6 +109,7 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 70, y: 180 }, { x: 80, y: 180 }, { x: 265, y: 105 }, { x: 450, y: 180 }, { x: 460, y: 180 }],
       {
         segmentLengths: { "segment-1": 10, "segment-2": 200, "segment-3": 200, "segment-4": 10 },
+        foldAngles: { "fold-1": 20, "fold-2": 44, "fold-3": 20 },
         foldTypes: { "fold-1": "standard", "fold-2": "standard", "fold-3": "standard" },
         foldNotes: { "fold-1": "20 degrees", "fold-2": "44 degrees", "fold-3": "20 degrees" },
       },
@@ -131,7 +134,8 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 90, y: 180 }, { x: 150, y: 120 }, { x: 300, y: 120 }, { x: 320, y: 140 }, { x: 520, y: 140 }, { x: 540, y: 160 }],
       {
         segmentLengths: { "segment-1": 60, "segment-2": 150, "segment-3": 20, "segment-4": 200, "segment-5": 20 },
-        foldNotes: { "fold-1": "45 degrees", "fold-2": "80/67 degrees", "fold-3": "126 degrees" },
+        foldAngles: { "fold-1": 45, "fold-2": 80, "fold-3": 67, "fold-4": 126 },
+        foldNotes: { "fold-1": "45 degrees", "fold-2": "80 degrees", "fold-3": "67 degrees", "fold-4": "126 degrees" },
       },
     ),
   },
@@ -144,6 +148,7 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 80, y: 160 }, { x: 130, y: 135 }, { x: 380, y: 135 }, { x: 380, y: 285 }, { x: 395, y: 285 }],
       {
         segmentLengths: { "segment-1": 50, "segment-2": 250, "segment-3": 150, "segment-4": 15 },
+        foldAngles: { "fold-1": 126, "fold-2": 92, "fold-3": 30 },
         foldTypes: { "fold-1": "crush", "fold-2": "standard", "fold-3": "standard" },
         foldNotes: { "fold-1": "126 degrees", "fold-2": "92 degrees", "fold-3": "30 degrees" },
       },
@@ -158,6 +163,7 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 80, y: 170 }, { x: 140, y: 120 }, { x: 340, y: 120 }, { x: 360, y: 140 }],
       {
         segmentLengths: { "segment-1": 60, "segment-2": 200, "segment-3": 20 },
+        foldAngles: { "fold-1": 45, "fold-2": 126 },
         foldNotes: { "fold-1": "45 degrees", "fold-2": "126 degrees" },
       },
     ),
@@ -292,6 +298,7 @@ const standardFlashingTemplates: StandardFlashingTemplate[] = [
       [{ x: 100, y: 170 }, { x: 335, y: 255 }, { x: 335, y: 105 }, { x: 380, y: 105 }],
       {
         segmentLengths: { "segment-1": 250, "segment-2": 150 },
+        foldAngles: { "fold-1": 70 },
         foldNotes: { "fold-1": "70 degrees" },
         endTreatments: { start: "hook" },
         endTreatmentLengths: { start: 10 },

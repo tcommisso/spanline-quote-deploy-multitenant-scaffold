@@ -8,6 +8,7 @@ import { FlashingProfile3DPreview } from "@/components/flashing/FlashingProfile3
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
   Camera,
@@ -37,6 +38,8 @@ type Geometry = {
 
 type FoldDetails = {
   segmentLengths?: Record<string, number>;
+  segmentAngles?: Record<string, number>;
+  foldAngles?: Record<string, number>;
   foldTypes?: Record<string, string>;
   foldNotes?: Record<string, string>;
   endTreatments?: Record<string, string>;
@@ -61,6 +64,8 @@ type FlashingLineDraft = {
   manufacturingNotes: string;
   status: string;
 };
+
+type WorkflowSectionKey = "overview" | "design" | "lines" | "photo" | "templates" | "timeline";
 
 type FlashingAttachment = {
   type?: string;
@@ -126,6 +131,8 @@ const DEFAULT_GEOMETRY: Geometry = {
 
 const DEFAULT_FOLD_DETAILS: FoldDetails = {
   segmentLengths: {},
+  segmentAngles: {},
+  foldAngles: {},
   foldTypes: {},
   foldNotes: {},
   endTreatments: {},
@@ -196,6 +203,116 @@ function round(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function normaliseAngle(value: unknown, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return ((number % 360) + 360) % 360;
+}
+
+function angleBetween(from: Point, to: Point) {
+  return normaliseAngle((Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI);
+}
+
+function angleDistance(a: number, b: number) {
+  const delta = Math.abs(normaliseAngle(a) - normaliseAngle(b));
+  return Math.min(delta, 360 - delta);
+}
+
+function signedAngleDelta(from: number, to: number) {
+  return ((normaliseAngle(to) - normaliseAngle(from) + 540) % 360) - 180;
+}
+
+function rotatePoint(point: Point, pivot: Point, degrees: number) {
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - pivot.x;
+  const dy = point.y - pivot.y;
+  return {
+    x: round(pivot.x + dx * cos - dy * sin),
+    y: round(pivot.y + dx * sin + dy * cos),
+  };
+}
+
+function straightenToAxis(origin: Point, point: Point) {
+  const dx = point.x - origin.x;
+  const dy = point.y - origin.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { x: point.x, y: origin.y };
+  }
+  return { x: origin.x, y: point.y };
+}
+
+function parseAngleNote(value?: string) {
+  const match = String(value || "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  return normaliseAngle(Number(match[0]));
+}
+
+function getSegmentAngle(details: FoldDetails, geometry: Geometry, index: number) {
+  const key = segmentKey(index);
+  const stored = details.segmentAngles?.[key];
+  if (Number.isFinite(stored)) return normaliseAngle(stored);
+  const start = geometry.points[index];
+  const end = geometry.points[index + 1];
+  return start && end ? angleBetween(start, end) : 0;
+}
+
+function getFoldAngle(details: FoldDetails, pointIndex: number) {
+  const key = foldKey(pointIndex);
+  const stored = details.foldAngles?.[key];
+  if (Number.isFinite(stored)) return normaliseAngle(stored);
+  return parseAngleNote(details.foldNotes?.[key]) ?? 90;
+}
+
+function updateGeometrySegmentAngle(geometry: Geometry, segmentIndex: number, nextAngle: number, nextLength?: number) {
+  const start = geometry.points[segmentIndex];
+  const end = geometry.points[segmentIndex + 1];
+  if (!start || !end) return geometry;
+  const length = Number.isFinite(nextLength) && Number(nextLength) > 0 ? Number(nextLength) : distance(start, end);
+  if (!Number.isFinite(length) || length <= 0) return geometry;
+
+  const radians = (normaliseAngle(nextAngle) * Math.PI) / 180;
+  const targetEnd = {
+    x: round(start.x + Math.cos(radians) * length),
+    y: round(start.y + Math.sin(radians) * length),
+  };
+  const delta = { x: targetEnd.x - end.x, y: targetEnd.y - end.y };
+  return {
+    ...geometry,
+    points: geometry.points.map((point, index) => {
+      if (index <= segmentIndex) return point;
+      if (index === segmentIndex + 1) return targetEnd;
+      return { x: round(point.x + delta.x), y: round(point.y + delta.y) };
+    }),
+  };
+}
+
+function updateGeometryFoldAngle(geometry: Geometry, pointIndex: number, nextAngle: number) {
+  const previous = geometry.points[pointIndex - 1];
+  const pivot = geometry.points[pointIndex];
+  const next = geometry.points[pointIndex + 1];
+  if (!previous || !pivot || !next) return geometry;
+
+  const incomingAngle = angleBetween(previous, pivot);
+  const currentOutgoingAngle = angleBetween(pivot, next);
+  const internalAngle = clamp(normaliseAngle(nextAngle), 0, 180);
+  const clockwiseTarget = normaliseAngle(incomingAngle + 180 - internalAngle);
+  const counterTarget = normaliseAngle(incomingAngle + 180 + internalAngle);
+  const targetAngle = angleDistance(currentOutgoingAngle, clockwiseTarget) <= angleDistance(currentOutgoingAngle, counterTarget)
+    ? clockwiseTarget
+    : counterTarget;
+  const delta = signedAngleDelta(currentOutgoingAngle, targetAngle);
+  if (Math.abs(delta) < 0.001) return geometry;
+
+  return {
+    ...geometry,
+    points: geometry.points.map((point, index) => (
+      index > pointIndex ? rotatePoint(point, pivot, delta) : point
+    )),
+  };
+}
+
 function segmentKey(index: number) {
   return `segment-${index + 1}`;
 }
@@ -246,6 +363,16 @@ function normaliseFoldDetails(value: any): FoldDetails {
         .map(([key, length]) => [key, Number(length)])
         .filter(([, length]) => Number.isFinite(length)),
     ),
+    segmentAngles: Object.fromEntries(
+      Object.entries(value?.segmentAngles || {})
+        .map(([key, angle]) => [key, normaliseAngle(angle)])
+        .filter(([, angle]) => Number.isFinite(angle)),
+    ),
+    foldAngles: Object.fromEntries(
+      Object.entries(value?.foldAngles || {})
+        .map(([key, angle]) => [key, clamp(normaliseAngle(angle), 0, 180)])
+        .filter(([, angle]) => Number.isFinite(angle)),
+    ),
     foldTypes: { ...(value?.foldTypes || {}) },
     foldNotes: { ...(value?.foldNotes || {}) },
     endTreatments: { ...(value?.endTreatments || {}) },
@@ -263,6 +390,8 @@ function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
   const segmentCount = Math.max(0, points.length - 1);
   const foldCount = getFoldCount(points);
   const nextSegmentLengths: Record<string, number> = {};
+  const nextSegmentAngles: Record<string, number> = {};
+  const nextFoldAngles: Record<string, number> = {};
   const nextFoldTypes: Record<string, string> = {};
   const nextFoldNotes: Record<string, string> = {};
   const nextEndTreatments: Record<string, string> = {};
@@ -272,9 +401,11 @@ function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
   for (let index = 0; index < segmentCount; index += 1) {
     const key = segmentKey(index);
     if (details.segmentLengths?.[key] !== undefined) nextSegmentLengths[key] = details.segmentLengths[key];
+    if (details.segmentAngles?.[key] !== undefined) nextSegmentAngles[key] = details.segmentAngles[key];
   }
   for (let index = 1; index <= foldCount; index += 1) {
     const key = foldKey(index);
+    if (details.foldAngles?.[key] !== undefined) nextFoldAngles[key] = details.foldAngles[key];
     if (details.foldTypes?.[key]) nextFoldTypes[key] = details.foldTypes[key];
     if (details.foldNotes?.[key]) nextFoldNotes[key] = details.foldNotes[key];
   }
@@ -290,6 +421,8 @@ function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
 
   return {
     segmentLengths: nextSegmentLengths,
+    segmentAngles: nextSegmentAngles,
+    foldAngles: nextFoldAngles,
     foldTypes: nextFoldTypes,
     foldNotes: nextFoldNotes,
     endTreatments: nextEndTreatments,
@@ -457,10 +590,19 @@ function drawProfilePdf(doc: any, geometry: Geometry, foldDetails: FoldDetails, 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(7);
   doc.setTextColor(15, 23, 42);
+  const details = normaliseFoldDetails(foldDetails);
   geometry.points.slice(1).forEach((point, index) => {
     const previous = geometry.points[index];
     const mid = mapPoint({ x: (previous.x + point.x) / 2, y: (previous.y + point.y) / 2 });
-    doc.text(`${Math.round(distance(previous, point))} mm`, mid.x + 1.5, mid.y - 1.5);
+    doc.text(`${Math.round(distance(previous, point))} mm @ ${Math.round(getSegmentAngle(details, geometry, index))}°`, mid.x + 1.5, mid.y - 1.5);
+  });
+  geometry.points.slice(1, -1).forEach((point, index) => {
+    const mapped = mapPoint(point);
+    const pointIndex = index + 1;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(146, 64, 14);
+    doc.text(`${Math.round(getFoldAngle(details, pointIndex))}°`, mapped.x + 3, mapped.y + 5);
   });
 
   annotations.forEach((annotation) => {
@@ -487,30 +629,6 @@ function drawProfilePdf(doc: any, geometry: Geometry, foldDetails: FoldDetails, 
     doc.setTextColor(71, 85, 105);
     doc.text(String(index + 1), mapped.x + 2.6, mapped.y + 1.6);
   });
-}
-
-function resizeSegment(geometry: Geometry, segmentIndex: number, nextLength: number): Geometry {
-  const start = geometry.points[segmentIndex];
-  const end = geometry.points[segmentIndex + 1];
-  if (!start || !end || !Number.isFinite(nextLength) || nextLength <= 0) return geometry;
-
-  const currentLength = distance(start, end);
-  if (currentLength <= 0) return geometry;
-
-  const targetEnd = {
-    x: start.x + ((end.x - start.x) / currentLength) * nextLength,
-    y: start.y + ((end.y - start.y) / currentLength) * nextLength,
-  };
-  const delta = { x: targetEnd.x - end.x, y: targetEnd.y - end.y };
-
-  return {
-    ...geometry,
-    points: geometry.points.map((point, index) => (
-      index > segmentIndex
-        ? { x: round(point.x + delta.x), y: round(point.y + delta.y) }
-        : point
-    )),
-  };
 }
 
 function cloneGeometry(value: any): Geometry {
@@ -557,14 +675,43 @@ function ProfileDesigner({
   };
 
   const updatePoint = (index: number, point: Point) => {
-    const next = geometry.points.map((existing, i) => (i === index ? point : existing));
-    onChange({ ...geometry, points: next });
+    const currentPoint = geometry.points[index];
+    if (!currentPoint) return;
+
+    if (index === 0) {
+      const delta = { x: point.x - currentPoint.x, y: point.y - currentPoint.y };
+      onChange({
+        ...geometry,
+        points: geometry.points.map((existing) => ({ x: round(existing.x + delta.x), y: round(existing.y + delta.y) })),
+      });
+      return;
+    }
+
+    const previous = geometry.points[index - 1];
+    const nextPoint = straightenToAxis(previous, point);
+    const delta = { x: nextPoint.x - currentPoint.x, y: nextPoint.y - currentPoint.y };
+    onChange({
+      ...geometry,
+      points: geometry.points.map((existing, i) => {
+        if (i < index) return existing;
+        if (i === index) return nextPoint;
+        return { x: round(existing.x + delta.x), y: round(existing.y + delta.y) };
+      }),
+    });
   };
 
   const addPoint = (event: React.PointerEvent<SVGSVGElement>) => {
     if (dragIndex !== null) return;
     if (event.target !== svgRef.current) return;
-    onChange({ ...geometry, points: [...geometry.points, localPoint(event)] });
+    const rawPoint = localPoint(event);
+    const previous = geometry.points[geometry.points.length - 1];
+    const nextPoint = previous
+      ? straightenToAxis(previous, rawPoint)
+      : rawPoint;
+    const point = previous && distance(previous, nextPoint) < gridSize
+      ? { x: previous.x + gridSize * 4, y: previous.y }
+      : nextPoint;
+    onChange({ ...geometry, points: [...geometry.points, point] });
   };
 
   const gridLines = [];
@@ -583,7 +730,7 @@ function ProfileDesigner({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-sm font-semibold">Grid Profile Designer</p>
-          <p className="text-xs text-muted-foreground">Tap the grid to add points. Drag points to refine the shape.</p>
+          <p className="text-xs text-muted-foreground">Tap to add points. Lines default to straight 0/90 degree runs; use the table below for precise angle changes.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -673,9 +820,28 @@ function ProfileDesigner({
             const previous = geometry.points[index];
             const midX = (previous.x + point.x) / 2;
             const midY = (previous.y + point.y) / 2;
+            const details = normaliseFoldDetails(foldDetails);
+            const segmentAngle = Math.round(getSegmentAngle(details, geometry, index));
             return (
               <text key={`label-${index}`} x={midX + 8} y={midY - 8} fill="#F8FAFC" fontSize="13" fontWeight="600">
-                {Math.round(distance(previous, point))} mm
+                {Math.round(distance(previous, point))} mm @ {segmentAngle}°
+              </text>
+            );
+          })}
+          {geometry.points.slice(1, -1).map((point, index) => {
+            const pointIndex = index + 1;
+            const details = normaliseFoldDetails(foldDetails);
+            const foldAngle = Math.round(getFoldAngle(details, pointIndex));
+            return (
+              <text
+                key={`fold-angle-${pointIndex}`}
+                x={point.x + 12}
+                y={point.y + 22}
+                fill="#FDE68A"
+                fontSize="13"
+                fontWeight="700"
+              >
+                {foldAngle}°
               </text>
             );
           })}
@@ -757,12 +923,40 @@ function FoldDimensionTable({
     const nextLength = Number(rawValue);
     if (!Number.isFinite(nextLength) || nextLength <= 0) return;
     const key = segmentKey(index);
+    const angle = getSegmentAngle(details, geometry, index);
     const nextDetails = {
       ...details,
       segmentLengths: { ...(details.segmentLengths || {}), [key]: nextLength },
     };
     onFoldDetailsChange(nextDetails);
-    onGeometryChange(resizeSegment(geometry, index, nextLength));
+    onGeometryChange(updateGeometrySegmentAngle(geometry, index, angle, nextLength));
+  };
+
+  const updateSegmentAngle = (index: number, rawValue: string) => {
+    const nextAngle = Number(rawValue);
+    if (!Number.isFinite(nextAngle)) return;
+    const key = segmentKey(index);
+    const length = details.segmentLengths?.[key] ?? distance(geometry.points[index], geometry.points[index + 1]);
+    const cleanAngle = normaliseAngle(nextAngle);
+    const nextDetails = {
+      ...details,
+      segmentAngles: { ...(details.segmentAngles || {}), [key]: cleanAngle },
+    };
+    onFoldDetailsChange(nextDetails);
+    onGeometryChange(updateGeometrySegmentAngle(geometry, index, cleanAngle, length));
+  };
+
+  const updateFoldAngle = (pointIndex: number, rawValue: string) => {
+    const nextAngle = Number(rawValue);
+    if (!Number.isFinite(nextAngle)) return;
+    const key = foldKey(pointIndex);
+    const cleanAngle = clamp(normaliseAngle(nextAngle), 0, 180);
+    const nextDetails = {
+      ...details,
+      foldAngles: { ...(details.foldAngles || {}), [key]: cleanAngle },
+    };
+    onFoldDetailsChange(nextDetails);
+    onGeometryChange(updateGeometryFoldAngle(geometry, pointIndex, cleanAngle));
   };
 
   const updateFoldType = (pointIndex: number, value: string) => {
@@ -843,12 +1037,13 @@ function FoldDimensionTable({
         </p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="w-full min-w-[900px] text-sm">
           <thead className="bg-muted/40 text-muted-foreground">
             <tr>
               <th className="px-3 py-2 text-left">Item</th>
               <th className="px-3 py-2 text-left">Point / Segment</th>
               <th className="px-3 py-2 text-right">Dimension</th>
+              <th className="px-3 py-2 text-right">Angle</th>
               <th className="px-3 py-2 text-left">Fold / Treatment Type</th>
               <th className="px-3 py-2 text-left">Notes</th>
             </tr>
@@ -856,6 +1051,7 @@ function FoldDimensionTable({
           <tbody>
             {segments.map((segment) => {
               const key = segmentKey(segment.index);
+              const segmentAngle = getSegmentAngle(details, geometry, segment.index);
               return (
                 <tr key={key} className="border-t">
                   <td className="px-3 py-2 font-medium">Segment {segment.index + 1}</td>
@@ -875,19 +1071,48 @@ function FoldDimensionTable({
                       <span className="text-xs text-muted-foreground">mm</span>
                     </div>
                   </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <Input
+                        key={`${key}-angle-${Math.round(segmentAngle)}`}
+                        type="number"
+                        min={0}
+                        max={359}
+                        defaultValue={Math.round(segmentAngle)}
+                        onBlur={(event) => updateSegmentAngle(segment.index, event.target.value)}
+                        className="h-9 w-24 text-right"
+                      />
+                      <span className="text-xs text-muted-foreground">deg</span>
+                    </div>
+                  </td>
                   <td className="px-3 py-2 text-muted-foreground">-</td>
-                  <td className="px-3 py-2 text-muted-foreground">Segment length for manufacture</td>
+                  <td className="px-3 py-2 text-muted-foreground">Straight run angle for manufacture</td>
                 </tr>
               );
             })}
             {folds.map((fold) => {
               const key = foldKey(fold.pointIndex);
+              const foldAngle = getFoldAngle(details, fold.pointIndex);
               return (
                 <tr key={key} className="border-t bg-muted/10">
                   <td className="px-3 py-2 font-medium">Fold {fold.foldNumber}</td>
                   <td className="px-3 py-2 text-muted-foreground">Point {fold.pointIndex + 1}</td>
                   <td className="px-3 py-2 text-right text-muted-foreground">
                     {Math.round(fold.point.x)}, {Math.round(fold.point.y)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <Input
+                        key={`${key}-angle-${Math.round(foldAngle)}`}
+                        type="number"
+                        min={0}
+                        max={180}
+                        defaultValue={Math.round(foldAngle)}
+                        onBlur={(event) => updateFoldAngle(fold.pointIndex, event.target.value)}
+                        className="h-9 w-24 text-right"
+                      />
+                      <span className="text-xs text-muted-foreground">deg</span>
+                    </div>
                   </td>
                   <td className="px-3 py-2">
                     <select
@@ -928,6 +1153,7 @@ function FoldDimensionTable({
                     <span className="text-xs text-muted-foreground">mm</span>
                   </div>
                 </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">-</td>
                 <td className="px-3 py-2">
                   <select
                     className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -997,6 +1223,7 @@ export default function FlashingOrderDetail() {
     onSuccess: () => {
       toast.success("Flashing line saved");
       setLine(DEFAULT_LINE);
+      setActiveSection("lines");
       utils.flashing.getOrder.invalidate({ id: orderId });
       utils.flashing.listOrders.invalidate();
     },
@@ -1039,6 +1266,7 @@ export default function FlashingOrderDetail() {
     internalNotes: "",
   });
   const [line, setLine] = useState(DEFAULT_LINE);
+  const [activeSection, setActiveSection] = useState<WorkflowSectionKey>("design");
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const subjectPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const { data: allColourGroups } = trpc.colourGroups.getAll.useQuery();
@@ -1235,7 +1463,7 @@ export default function FlashingOrderDetail() {
         drawProfilePdf(doc, geometry, foldDetails, margin, y, contentWidth, drawingHeight);
         y += drawingHeight + 6;
 
-        const rows: Array<[string, string, string, string]> = [];
+        const rows: Array<[string, string, string, string, string]> = [];
         geometry.points.slice(1).forEach((point, segmentIndex) => {
           const key = segmentKey(segmentIndex);
           const length = foldDetails.segmentLengths?.[key] ?? distance(geometry.points[segmentIndex], point);
@@ -1243,6 +1471,7 @@ export default function FlashingOrderDetail() {
             `Segment ${segmentIndex + 1}`,
             `Point ${segmentIndex + 1} to ${segmentIndex + 2}`,
             `${formatPdfNumber(length)} mm`,
+            `${formatPdfNumber(getSegmentAngle(foldDetails, geometry, segmentIndex))}°`,
             "Manufacture length",
           ]);
         });
@@ -1253,6 +1482,7 @@ export default function FlashingOrderDetail() {
             `Fold ${foldIndex + 1}`,
             `Point ${pointIndex + 1}`,
             foldTypeLabel(foldDetails.foldTypes?.[key]),
+            `${formatPdfNumber(getFoldAngle(foldDetails, pointIndex))}°`,
             foldDetails.foldNotes?.[key] || "-",
           ]);
         });
@@ -1263,6 +1493,7 @@ export default function FlashingOrderDetail() {
             key === "start" ? "Start end" : "End end",
             key === "start" ? "Point 1" : `Point ${geometry.points.length}`,
             `${treatmentLabel(treatment)} ${foldDetails.endTreatmentLengths?.[key] ? `${formatPdfNumber(foldDetails.endTreatmentLengths[key])} mm` : ""}`.trim(),
+            "-",
             foldDetails.endTreatmentNotes?.[key] || "-",
           ]);
         });
@@ -1275,9 +1506,10 @@ export default function FlashingOrderDetail() {
         doc.setFontSize(7.5);
         doc.setTextColor(51, 65, 85);
         doc.text("Item", margin + 2, y + 4.8);
-        doc.text("Location", margin + 44, y + 4.8);
-        doc.text("Dimension / Type", margin + 86, y + 4.8);
-        doc.text("Notes", margin + 132, y + 4.8);
+        doc.text("Location", margin + 38, y + 4.8);
+        doc.text("Dimension / Type", margin + 76, y + 4.8);
+        doc.text("Angle", margin + 118, y + 4.8);
+        doc.text("Notes", margin + 138, y + 4.8);
         y += 7;
         doc.setFont("helvetica", "normal");
         rows.forEach((row) => {
@@ -1287,9 +1519,10 @@ export default function FlashingOrderDetail() {
           doc.setFontSize(7.2);
           doc.setTextColor(51, 65, 85);
           doc.text(row[0], margin + 2, y + 5);
-          doc.text(row[1], margin + 44, y + 5);
-          doc.text(row[2], margin + 86, y + 5);
-          doc.text(doc.splitTextToSize(row[3], 52), margin + 132, y + 5);
+          doc.text(row[1], margin + 38, y + 5);
+          doc.text(row[2], margin + 76, y + 5);
+          doc.text(row[3], margin + 118, y + 5);
+          doc.text(doc.splitTextToSize(row[4], 44), margin + 138, y + 5);
           y += 8;
         });
 
@@ -1334,6 +1567,48 @@ export default function FlashingOrderDetail() {
   }
 
   const subjectAreaPhoto = getSubjectAreaPhoto(order.attachments);
+  const workflowSections: Array<{
+    key: WorkflowSectionKey;
+    label: string;
+    detail: string;
+    count?: string;
+  }> = [
+    {
+      key: "overview",
+      label: "Order",
+      detail: order.supplierName || order.requestedDeliveryAt ? "Details recorded" : "Delivery and notes",
+    },
+    {
+      key: "design",
+      label: "Design",
+      detail: line.id ? "Editing saved line" : "Draw profile",
+      count: `${lineFoldCount} folds`,
+    },
+    {
+      key: "lines",
+      label: "Lines",
+      detail: lines.length === 1 ? "1 profile saved" : `${lines.length} profiles saved`,
+      count: String(lines.length),
+    },
+    {
+      key: "photo",
+      label: "Site Photo",
+      detail: subjectAreaPhoto?.url ? "Suitability photo attached" : "Add suitability photo",
+      count: subjectAreaPhoto?.url ? "1" : undefined,
+    },
+    {
+      key: "templates",
+      label: "Templates",
+      detail: "Reuse common profiles",
+      count: String(templates.length),
+    },
+    {
+      key: "timeline",
+      label: "Timeline",
+      detail: "Status history",
+      count: String(history.length),
+    },
+  ];
 
   const handleSubjectPhotoUpload = (file?: File | null) => {
     if (!file) return;
@@ -1408,6 +1683,7 @@ export default function FlashingOrderDetail() {
       manufacturingNotes: existing.manufacturingNotes || "",
       status: existing.status || "draft",
     });
+    setActiveSection("design");
   };
 
   const loadTemplate = (template: any) => {
@@ -1424,6 +1700,7 @@ export default function FlashingOrderDetail() {
       geometry: cloneGeometry(template.geometry),
       foldDetails: normaliseFoldDetails((template.geometry as any)?.foldDetails),
     });
+    setActiveSection("design");
   };
 
   return (
@@ -1492,9 +1769,51 @@ export default function FlashingOrderDetail() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6">
-        <div className="space-y-6">
-          <Card>
+      <div className="rounded-lg border bg-card p-2 shadow-sm">
+        <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Flashing order workflow sections">
+          {workflowSections.map((section, index) => {
+            const isActive = activeSection === section.key;
+            return (
+              <button
+                key={section.key}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveSection(section.key)}
+                className={cn(
+                  "min-w-[150px] flex-1 rounded-md border px-3 py-3 text-left transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  isActive
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-transparent bg-muted/35 hover:bg-muted",
+                )}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide opacity-75">
+                    {index + 1}
+                  </span>
+                  {section.count && (
+                    <span className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                      isActive ? "bg-primary-foreground/20 text-primary-foreground" : "bg-background text-muted-foreground",
+                    )}>
+                      {section.count}
+                    </span>
+                  )}
+                </span>
+                <span className="mt-1 block text-sm font-semibold leading-tight">{section.label}</span>
+                <span className={cn("mt-0.5 block truncate text-xs", isActive ? "text-primary-foreground/80" : "text-muted-foreground")}>
+                  {section.detail}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6">
+        <div className={cn("space-y-6", !["design", "lines"].includes(activeSection) && "hidden")}>
+          <Card className={cn(activeSection !== "design" && "hidden")}>
             <CardHeader>
               <CardTitle className="text-base">Profile Line Designer</CardTitle>
             </CardHeader>
@@ -1646,7 +1965,7 @@ export default function FlashingOrderDetail() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className={cn(activeSection !== "lines" && "hidden")}>
             <CardHeader>
               <CardTitle className="text-base">Order Lines</CardTitle>
             </CardHeader>
@@ -1710,8 +2029,8 @@ export default function FlashingOrderDetail() {
           </Card>
         </div>
 
-        <div className="space-y-6">
-          <Card>
+        <div className={cn("space-y-6", !["overview", "photo", "templates", "timeline"].includes(activeSection) && "hidden")}>
+          <Card className={cn(activeSection !== "overview" && "hidden")}>
             <CardHeader>
               <CardTitle className="text-base">Order Details</CardTitle>
             </CardHeader>
@@ -1752,7 +2071,7 @@ export default function FlashingOrderDetail() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className={cn(activeSection !== "photo" && "hidden")}>
             <CardHeader className="space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-base">Subject Area Photo</CardTitle>
@@ -1786,7 +2105,7 @@ export default function FlashingOrderDetail() {
                     <img
                       src={subjectAreaPhoto.url}
                       alt="Subject area for flashing order"
-                      className="h-52 w-full object-cover"
+                      className="max-h-[560px] w-full object-contain"
                     />
                   </a>
                   <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -1849,7 +2168,7 @@ export default function FlashingOrderDetail() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className={cn(activeSection !== "templates" && "hidden")}>
             <CardHeader className="flex flex-row items-center justify-between gap-3">
               <CardTitle className="text-base">Profile Templates</CardTitle>
               <Button
@@ -1863,7 +2182,7 @@ export default function FlashingOrderDetail() {
                 Seed Standards
               </Button>
             </CardHeader>
-            <CardContent className="space-y-2 max-h-[360px] overflow-auto">
+            <CardContent className="space-y-2">
               {templates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Saved profiles will appear here. Seed the standard flashing profiles to start from the order guide templates.</p>
               ) : templates.map((template: any) => (
@@ -1885,18 +2204,24 @@ export default function FlashingOrderDetail() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className={cn(activeSection !== "timeline" && "hidden")}>
             <CardHeader>
               <CardTitle className="text-base">Status Timeline</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {history.map((item: any) => (
-                <div key={item.id} className="border-l-2 border-muted pl-3">
-                  <p className="text-sm font-medium">{STATUS_LABELS[item.toStatus] || item.toStatus}</p>
-                  <p className="text-xs text-muted-foreground">{formatDateTime(item.createdAt)} by {item.changedByName || "System"}</p>
-                  {item.notes && <p className="text-xs mt-1">{item.notes}</p>}
+              {history.length === 0 ? (
+                <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  No status changes recorded yet.
                 </div>
-              ))}
+              ) : (
+                history.map((item: any) => (
+                  <div key={item.id} className="border-l-2 border-muted pl-3">
+                    <p className="text-sm font-medium">{STATUS_LABELS[item.toStatus] || item.toStatus}</p>
+                    <p className="text-xs text-muted-foreground">{formatDateTime(item.createdAt)} by {item.changedByName || "System"}</p>
+                    {item.notes && <p className="text-xs mt-1">{item.notes}</p>}
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>
