@@ -18,7 +18,11 @@ type LineDraft = {
   conditionIndicator: CountCondition;
   colour: string;
   actualSize: string;
+  actualWidth: string;
+  actualHeight: string;
   sourceFullLength: string;
+  sourceFullWidth: string;
+  sourceFullHeight: string;
 };
 
 const conditionOptions: Array<{ value: CountCondition; label: string }> = [
@@ -109,14 +113,36 @@ export default function StocktakeDetail() {
   const lineCondition = (line: any): CountCondition => line.conditionIndicator || line.stockItem?.conditionIndicator || "new";
   const lineColour = (line: any) => line.colour || line.stockItem?.catalogueColour || "";
   const lineActualSize = (line: any) => numberText(line.actualSize ?? line.stockItem?.actualSize);
+  const lineActualWidth = (line: any) => numberText(line.actualWidth ?? line.stockItem?.actualWidth);
+  const lineActualHeight = (line: any) => numberText(line.actualHeight ?? line.stockItem?.actualHeight);
   const lineSourceFullLength = (line: any) => numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength);
+  const lineSourceFullWidth = (line: any) => numberText(line.sourceFullWidth ?? line.stockItem?.sourceFullWidth);
+  const lineSourceFullHeight = (line: any) => numberText(line.sourceFullHeight ?? line.stockItem?.sourceFullHeight);
+  const measurementText = (line: any) => {
+    const actual = [
+      lineActualSize(line) ? `L ${lineActualSize(line)}m` : "",
+      lineActualWidth(line) ? `W ${lineActualWidth(line)}m` : "",
+      lineActualHeight(line) ? `H ${lineActualHeight(line)}m` : "",
+    ].filter(Boolean).join(" x ");
+    const source = [
+      lineSourceFullLength(line) ? `L ${lineSourceFullLength(line)}m` : "",
+      lineSourceFullWidth(line) ? `W ${lineSourceFullWidth(line)}m` : "",
+      lineSourceFullHeight(line) ? `H ${lineSourceFullHeight(line)}m` : "",
+    ].filter(Boolean).join(" x ");
+    if (actual && source) return `${actual} of ${source}`;
+    return actual || (source ? `Source ${source}` : "");
+  };
   const defaultLineDraft = (line: any): LineDraft => ({
     qty: line.countedQty !== null ? String(line.countedQty) : "",
     notes: line.notes || "",
     conditionIndicator: lineCondition(line),
     colour: lineColour(line),
     actualSize: lineActualSize(line),
+    actualWidth: lineActualWidth(line),
+    actualHeight: lineActualHeight(line),
     sourceFullLength: lineSourceFullLength(line),
+    sourceFullWidth: lineSourceFullWidth(line),
+    sourceFullHeight: lineSourceFullHeight(line),
   });
   const lineDraft = (line: any) => counts[line.id] || defaultLineDraft(line);
   const setLineDraft = (line: any, patch: Partial<LineDraft>) => {
@@ -131,8 +157,7 @@ export default function StocktakeDetail() {
   const itemDetails = (line: any) => [
     lineColour(line),
     lineCondition(line).replace(/_/g, " "),
-    lineActualSize(line) ? `${lineActualSize(line)}m actual` : null,
-    lineSourceFullLength(line) ? `${lineSourceFullLength(line)}m source` : null,
+    measurementText(line),
     line.notes,
   ].filter(Boolean).join(" · ");
   const itemSearchText = (line: any) => [
@@ -145,7 +170,11 @@ export default function StocktakeDetail() {
     lineColour(line),
     lineCondition(line),
     lineActualSize(line),
+    lineActualWidth(line),
+    lineActualHeight(line),
     lineSourceFullLength(line),
+    lineSourceFullWidth(line),
+    lineSourceFullHeight(line),
     line.notes,
   ].filter(Boolean).join(" ").toLowerCase();
 
@@ -215,7 +244,11 @@ export default function StocktakeDetail() {
         conditionIndicator: v.conditionIndicator,
         colour: v.colour || null,
         actualSize: v.actualSize || null,
+        actualWidth: v.actualWidth || null,
+        actualHeight: v.actualHeight || null,
         sourceFullLength: v.sourceFullLength || null,
+        sourceFullWidth: v.sourceFullWidth || null,
+        sourceFullHeight: v.sourceFullHeight || null,
       })),
     });
   };
@@ -229,7 +262,11 @@ export default function StocktakeDetail() {
       conditionIndicator: conditionIndicator || draft.conditionIndicator,
       colour: draft.colour || undefined,
       actualSize: draft.actualSize || undefined,
+      actualWidth: draft.actualWidth || undefined,
+      actualHeight: draft.actualHeight || undefined,
       sourceFullLength: draft.sourceFullLength || undefined,
+      sourceFullWidth: draft.sourceFullWidth || undefined,
+      sourceFullHeight: draft.sourceFullHeight || undefined,
       notes: isOffcut ? "Off cut count line" : "Additional count line",
     });
   };
@@ -420,7 +457,7 @@ export default function StocktakeDetail() {
                   <th className="px-4 py-3 text-left font-medium">Sub-Group</th>
                   <th className="px-4 py-3 text-left font-medium">Count Type</th>
                   <th className="px-4 py-3 text-left font-medium">Colour</th>
-                  <th className="px-4 py-3 text-left font-medium">Actual Size</th>
+                  <th className="px-4 py-3 text-left font-medium">Measurements</th>
                   <th className="px-4 py-3 text-right font-medium">System Qty</th>
                   <th className="px-4 py-3 text-right font-medium">Counted Qty</th>
                   <th className="px-4 py-3 text-right font-medium">Variance</th>
@@ -478,32 +515,22 @@ export default function StocktakeDetail() {
                           <span>{lineColour(line) || "-"}</span>
                         )}
                       </td>
-                      <td className="px-4 py-2 min-w-[230px]">
+                      <td className="px-4 py-2 min-w-[360px]">
                         {isEditable ? (
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              step="0.01"
-                              className="h-8 w-24"
-                              placeholder="Actual m"
-                              value={draft.actualSize}
-                              onChange={(event) => setLineDraft(line, { actualSize: event.target.value })}
-                            />
-                            <span className="text-xs text-muted-foreground">of</span>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              className="h-8 w-24"
-                              placeholder="Full m"
-                              value={draft.sourceFullLength}
-                              onChange={(event) => setLineDraft(line, { sourceFullLength: event.target.value })}
-                            />
+                          <div className="space-y-1">
+                            <div className="grid grid-cols-3 gap-1">
+                              <Input type="number" step="0.01" className="h-8" placeholder="Actual L" value={draft.actualSize} onChange={(event) => setLineDraft(line, { actualSize: event.target.value })} />
+                              <Input type="number" step="0.01" className="h-8" placeholder="Actual W" value={draft.actualWidth} onChange={(event) => setLineDraft(line, { actualWidth: event.target.value })} />
+                              <Input type="number" step="0.01" className="h-8" placeholder="Actual H" value={draft.actualHeight} onChange={(event) => setLineDraft(line, { actualHeight: event.target.value })} />
+                            </div>
+                            <div className="grid grid-cols-3 gap-1">
+                              <Input type="number" step="0.01" className="h-8" placeholder="Source L" value={draft.sourceFullLength} onChange={(event) => setLineDraft(line, { sourceFullLength: event.target.value })} />
+                              <Input type="number" step="0.01" className="h-8" placeholder="Source W" value={draft.sourceFullWidth} onChange={(event) => setLineDraft(line, { sourceFullWidth: event.target.value })} />
+                              <Input type="number" step="0.01" className="h-8" placeholder="Source H" value={draft.sourceFullHeight} onChange={(event) => setLineDraft(line, { sourceFullHeight: event.target.value })} />
+                            </div>
                           </div>
                         ) : (
-                          <span className="text-muted-foreground">
-                            {lineActualSize(line) ? `${lineActualSize(line)}m` : "-"}
-                            {lineSourceFullLength(line) ? ` of ${lineSourceFullLength(line)}m` : ""}
-                          </span>
+                          <span className="text-muted-foreground">{measurementText(line) || "-"}</span>
                         )}
                       </td>
                       <td className="px-4 py-2 text-right font-medium">{Number(line.systemQty).toFixed(1)}</td>

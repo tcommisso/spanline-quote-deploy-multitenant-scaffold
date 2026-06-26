@@ -18,7 +18,11 @@ type LineAttributeDraft = {
   conditionIndicator: CountCondition;
   colour: string;
   actualSize: string;
+  actualWidth: string;
+  actualHeight: string;
   sourceFullLength: string;
+  sourceFullWidth: string;
+  sourceFullHeight: string;
   notes: string;
 };
 
@@ -30,7 +34,11 @@ type StocktakeLineView = {
   conditionIndicator?: CountCondition | null;
   colour?: string | null;
   actualSize?: number | string | null;
+  actualWidth?: number | string | null;
+  actualHeight?: number | string | null;
   sourceFullLength?: number | string | null;
+  sourceFullWidth?: number | string | null;
+  sourceFullHeight?: number | string | null;
   notes?: string | null;
   countedAt?: string | Date | null;
   stockItem?: {
@@ -43,7 +51,11 @@ type StocktakeLineView = {
     unitType?: string | null;
     conditionIndicator?: CountCondition | null;
     actualSize?: number | string | null;
+    actualWidth?: number | string | null;
+    actualHeight?: number | string | null;
     sourceFullLength?: number | string | null;
+    sourceFullWidth?: number | string | null;
+    sourceFullHeight?: number | string | null;
     catalogueColour?: string | null;
   } | null;
 };
@@ -146,17 +158,52 @@ export default function StocktakeMobileCount() {
     return numberText(line.actualSize ?? line.stockItem?.actualSize);
   }, []);
 
+  const lineActualWidth = useCallback((line: StocktakeLineView) => {
+    return numberText(line.actualWidth ?? line.stockItem?.actualWidth);
+  }, []);
+
+  const lineActualHeight = useCallback((line: StocktakeLineView) => {
+    return numberText(line.actualHeight ?? line.stockItem?.actualHeight);
+  }, []);
+
   const lineSourceFullLength = useCallback((line: StocktakeLineView) => {
     return numberText(line.sourceFullLength ?? line.stockItem?.sourceFullLength);
   }, []);
+
+  const lineSourceFullWidth = useCallback((line: StocktakeLineView) => {
+    return numberText(line.sourceFullWidth ?? line.stockItem?.sourceFullWidth);
+  }, []);
+
+  const lineSourceFullHeight = useCallback((line: StocktakeLineView) => {
+    return numberText(line.sourceFullHeight ?? line.stockItem?.sourceFullHeight);
+  }, []);
+
+  const measurementText = useCallback((line: StocktakeLineView) => {
+    const actual = [
+      lineActualSize(line) ? `L ${lineActualSize(line)}m` : "",
+      lineActualWidth(line) ? `W ${lineActualWidth(line)}m` : "",
+      lineActualHeight(line) ? `H ${lineActualHeight(line)}m` : "",
+    ].filter(Boolean).join(" x ");
+    const source = [
+      lineSourceFullLength(line) ? `L ${lineSourceFullLength(line)}m` : "",
+      lineSourceFullWidth(line) ? `W ${lineSourceFullWidth(line)}m` : "",
+      lineSourceFullHeight(line) ? `H ${lineSourceFullHeight(line)}m` : "",
+    ].filter(Boolean).join(" x ");
+    if (actual && source) return `${actual} of ${source}`;
+    return actual || (source ? `Source ${source}` : "");
+  }, [lineActualHeight, lineActualSize, lineActualWidth, lineSourceFullHeight, lineSourceFullLength, lineSourceFullWidth]);
 
   const defaultAttributeDraft = useCallback((line: StocktakeLineView): LineAttributeDraft => ({
     conditionIndicator: lineCondition(line),
     colour: lineColour(line),
     actualSize: lineActualSize(line),
+    actualWidth: lineActualWidth(line),
+    actualHeight: lineActualHeight(line),
     sourceFullLength: lineSourceFullLength(line),
+    sourceFullWidth: lineSourceFullWidth(line),
+    sourceFullHeight: lineSourceFullHeight(line),
     notes: line.notes || "",
-  }), [lineActualSize, lineColour, lineCondition, lineSourceFullLength]);
+  }), [lineActualHeight, lineActualSize, lineActualWidth, lineColour, lineCondition, lineSourceFullHeight, lineSourceFullLength, lineSourceFullWidth]);
 
   const getAttributeDraft = useCallback((line: StocktakeLineView) => {
     return attributeDrafts[line.id] || defaultAttributeDraft(line);
@@ -177,9 +224,13 @@ export default function StocktakeMobileCount() {
     return lineCondition(line) !== "new"
       || Boolean(lineColour(line))
       || Boolean(lineActualSize(line))
+      || Boolean(lineActualWidth(line))
+      || Boolean(lineActualHeight(line))
       || Boolean(lineSourceFullLength(line))
+      || Boolean(lineSourceFullWidth(line))
+      || Boolean(lineSourceFullHeight(line))
       || Boolean(line.notes);
-  }, [lineActualSize, lineColour, lineCondition, lineSourceFullLength]);
+  }, [lineActualHeight, lineActualSize, lineActualWidth, lineColour, lineCondition, lineSourceFullHeight, lineSourceFullLength, lineSourceFullWidth]);
 
   const getDraftOrCount = useCallback((line: StocktakeLineView) => {
     if (draftCounts[line.id] !== undefined) return draftCounts[line.id];
@@ -226,7 +277,11 @@ export default function StocktakeMobileCount() {
         || String(attributes.colour || "").toLowerCase().includes(query)
         || String(attributes.conditionIndicator || "").replace(/_/g, " ").toLowerCase().includes(query)
         || String(attributes.actualSize || "").toLowerCase().includes(query)
-        || String(attributes.sourceFullLength || "").toLowerCase().includes(query);
+        || String(attributes.actualWidth || "").toLowerCase().includes(query)
+        || String(attributes.actualHeight || "").toLowerCase().includes(query)
+        || String(attributes.sourceFullLength || "").toLowerCase().includes(query)
+        || String(attributes.sourceFullWidth || "").toLowerCase().includes(query)
+        || String(attributes.sourceFullHeight || "").toLowerCase().includes(query);
       if (!matchesSearch) return false;
       if (filter === "uncounted") {
         // Keep locally edited rows visible until autosave succeeds so mobile controls do not appear to move rows.
@@ -422,7 +477,11 @@ export default function StocktakeMobileCount() {
           conditionIndicator: draft.conditionIndicator,
           colour: draft.colour || null,
           actualSize: draft.actualSize || null,
+          actualWidth: draft.actualWidth || null,
+          actualHeight: draft.actualHeight || null,
           sourceFullLength: draft.sourceFullLength || null,
+          sourceFullWidth: draft.sourceFullWidth || null,
+          sourceFullHeight: draft.sourceFullHeight || null,
           notes: draft.notes,
         }],
       },
@@ -453,7 +512,11 @@ export default function StocktakeMobileCount() {
         conditionIndicator: nextCondition,
         colour: draft.colour || undefined,
         actualSize: draft.actualSize || undefined,
+        actualWidth: draft.actualWidth || undefined,
+        actualHeight: draft.actualHeight || undefined,
         sourceFullLength: draft.sourceFullLength || undefined,
+        sourceFullWidth: draft.sourceFullWidth || undefined,
+        sourceFullHeight: draft.sourceFullHeight || undefined,
         notes: isOffcut ? "Off cut count line" : "Additional count line",
       },
       {
@@ -631,7 +694,7 @@ export default function StocktakeMobileCount() {
                     </div>
                     {lineHasAttributes(line) && (
                       <div className="mt-1 text-xs text-muted-foreground">
-                        {[conditionLabel, attributes.colour, attributes.actualSize ? `${attributes.actualSize}m actual` : "", attributes.sourceFullLength ? `${attributes.sourceFullLength}m source` : ""].filter(Boolean).join(" · ")}
+                        {[conditionLabel, attributes.colour, measurementText(line)].filter(Boolean).join(" · ")}
                       </div>
                     )}
                   </div>
@@ -800,8 +863,10 @@ export default function StocktakeMobileCount() {
                           onChange={(event) => setAttributeDraft(line, { colour: event.target.value })}
                         />
                       </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
                       <div className="space-y-1">
-                        <label className="text-xs font-medium text-muted-foreground">Actual size (m)</label>
+                        <label className="text-xs font-medium text-muted-foreground">Actual L (m)</label>
                         <Input
                           type="number"
                           inputMode="decimal"
@@ -813,7 +878,33 @@ export default function StocktakeMobileCount() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-xs font-medium text-muted-foreground">Full length (m)</label>
+                        <label className="text-xs font-medium text-muted-foreground">Actual W (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.actualWidth}
+                          placeholder="e.g. 1.2"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { actualWidth: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Actual H (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.actualHeight}
+                          placeholder="e.g. 0.9"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { actualHeight: event.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Source L (m)</label>
                         <Input
                           type="number"
                           inputMode="decimal"
@@ -822,6 +913,30 @@ export default function StocktakeMobileCount() {
                           placeholder="e.g. 6.5"
                           className="h-10"
                           onChange={(event) => setAttributeDraft(line, { sourceFullLength: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Source W (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.sourceFullWidth}
+                          placeholder="e.g. 2.4"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { sourceFullWidth: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">Source H (m)</label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={attributes.sourceFullHeight}
+                          placeholder="e.g. 1.2"
+                          className="h-10"
+                          onChange={(event) => setAttributeDraft(line, { sourceFullHeight: event.target.value })}
                         />
                       </div>
                     </div>

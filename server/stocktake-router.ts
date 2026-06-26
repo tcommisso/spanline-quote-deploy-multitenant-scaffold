@@ -69,7 +69,13 @@ function stocktakeLineDescriptor(line: typeof stocktakeLines.$inferSelect): stri
   if (line.conditionIndicator) parts.push(`condition: ${line.conditionIndicator.replace("_", " ")}`);
   if (line.colour) parts.push(`colour: ${line.colour}`);
   if (line.actualSize) parts.push(`actual size: ${line.actualSize}m`);
+  if (line.actualWidth || line.actualHeight) {
+    parts.push(`actual dimensions: ${line.actualWidth || "-"}m x ${line.actualHeight || "-"}m`);
+  }
   if (line.sourceFullLength) parts.push(`source length: ${line.sourceFullLength}m`);
+  if (line.sourceFullWidth || line.sourceFullHeight) {
+    parts.push(`source dimensions: ${line.sourceFullWidth || "-"}m x ${line.sourceFullHeight || "-"}m`);
+  }
   return parts.join("; ");
 }
 
@@ -101,7 +107,11 @@ function stocktakeLineNeedsVariant(line: typeof stocktakeLines.$inferSelect, ite
   return variantFieldChanged(line.conditionIndicator || "new", item.conditionIndicator || "new")
     || variantFieldChanged(lineColour, itemColour)
     || variantDecimalChanged(line.actualSize, item.actualSize)
-    || variantDecimalChanged(line.sourceFullLength, item.sourceFullLength);
+    || variantDecimalChanged(line.actualWidth, item.actualWidth)
+    || variantDecimalChanged(line.actualHeight, item.actualHeight)
+    || variantDecimalChanged(line.sourceFullLength, item.sourceFullLength)
+    || variantDecimalChanged(line.sourceFullWidth, item.sourceFullWidth)
+    || variantDecimalChanged(line.sourceFullHeight, item.sourceFullHeight);
 }
 
 function stableVariantHash(input: string) {
@@ -115,34 +125,78 @@ function stocktakeVariantCode(baseCode: string, line: typeof stocktakeLines.$inf
     line.conditionIndicator || "new",
     normalizeVariantText(line.colour) || "",
     normalizeVariantDecimal(line.actualSize) || "",
+    normalizeVariantDecimal(line.actualWidth) || "",
+    normalizeVariantDecimal(line.actualHeight) || "",
     normalizeVariantDecimal(line.sourceFullLength) || "",
+    normalizeVariantDecimal(line.sourceFullWidth) || "",
+    normalizeVariantDecimal(line.sourceFullHeight) || "",
   ].join("|");
   const suffix = stableVariantHash(variantKey);
   return `${baseCode}`.slice(0, Math.max(1, 49 - suffix.length)) + `-${suffix}`;
 }
 
 function stocktakeVariantName(baseName: string, line: typeof stocktakeLines.$inferSelect) {
+  const dimensions = line.actualWidth && line.actualHeight
+    ? `${line.actualWidth}m x ${line.actualHeight}m`
+    : line.actualSize ? `${line.actualSize}m` : null;
   const details = [
     line.conditionIndicator === "off_cut" ? "Off cut" : line.conditionIndicator === "damaged" ? "Damaged" : null,
     normalizeVariantText(line.colour),
-    line.actualSize ? `${line.actualSize}m` : null,
+    dimensions,
   ].filter(Boolean);
   return details.length ? `${baseName} (${details.join(", ")})` : baseName;
+}
+
+function proRataUnitCost(input: {
+  baseCost: number | null;
+  conditionIndicator?: string | null;
+  actualSize?: unknown;
+  sourceFullLength?: unknown;
+  actualWidth?: unknown;
+  actualHeight?: unknown;
+  sourceFullWidth?: unknown;
+  sourceFullHeight?: unknown;
+}) {
+  if (input.baseCost == null) return null;
+  if (input.conditionIndicator !== "off_cut") return input.baseCost.toFixed(2);
+
+  const actualWidth = decimalToNumber(input.actualWidth);
+  const actualHeight = decimalToNumber(input.actualHeight);
+  const sourceFullWidth = decimalToNumber(input.sourceFullWidth);
+  const sourceFullHeight = decimalToNumber(input.sourceFullHeight);
+  if (
+    actualWidth != null && actualWidth > 0 &&
+    actualHeight != null && actualHeight > 0 &&
+    sourceFullWidth != null && sourceFullWidth > 0 &&
+    sourceFullHeight != null && sourceFullHeight > 0
+  ) {
+    const ratio = (actualWidth * actualHeight) / (sourceFullWidth * sourceFullHeight);
+    return (input.baseCost * Math.min(ratio, 1)).toFixed(2);
+  }
+
+  const actualSize = decimalToNumber(input.actualSize);
+  const sourceFullLength = decimalToNumber(input.sourceFullLength);
+  if (actualSize != null && sourceFullLength != null && sourceFullLength > 0) {
+    return (input.baseCost * Math.min(actualSize / sourceFullLength, 1)).toFixed(2);
+  }
+
+  return input.baseCost.toFixed(2);
 }
 
 function lineUnitCost(line: typeof stocktakeLines.$inferSelect, item: typeof inventoryStockItems.$inferSelect) {
   const stocktakeCost = decimalToNumber(line.unitCost);
   const itemCost = decimalToNumber(item.costPrice);
   const baseCost = itemCost ?? stocktakeCost;
-  if (baseCost == null) return null;
-
-  const actualSize = decimalToNumber(line.actualSize);
-  const sourceFullLength = decimalToNumber(line.sourceFullLength);
-  if (line.conditionIndicator === "off_cut" && actualSize != null && sourceFullLength != null && sourceFullLength > 0) {
-    return (baseCost * Math.min(actualSize / sourceFullLength, 1)).toFixed(2);
-  }
-
-  return baseCost.toFixed(2);
+  return proRataUnitCost({
+    baseCost,
+    conditionIndicator: line.conditionIndicator,
+    actualSize: line.actualSize,
+    sourceFullLength: line.sourceFullLength,
+    actualWidth: line.actualWidth,
+    actualHeight: line.actualHeight,
+    sourceFullWidth: line.sourceFullWidth,
+    sourceFullHeight: line.sourceFullHeight,
+  });
 }
 
 function stocktakeVariantDescription(item: typeof inventoryStockItems.$inferSelect, line: typeof stocktakeLines.$inferSelect) {
@@ -153,7 +207,9 @@ function stocktakeVariantDescription(item: typeof inventoryStockItems.$inferSele
     lineColour && lineColour.toLowerCase() !== itemColour?.toLowerCase() ? `Colour: ${lineColour}` : "",
     line.conditionIndicator ? `Condition: ${line.conditionIndicator.replace("_", " ")}` : "",
     line.actualSize ? `Actual size: ${line.actualSize}m` : "",
+    line.actualWidth || line.actualHeight ? `Actual dimensions: ${line.actualWidth || "-"}m x ${line.actualHeight || "-"}m` : "",
     line.sourceFullLength ? `Source length: ${line.sourceFullLength}m` : "",
+    line.sourceFullWidth || line.sourceFullHeight ? `Source dimensions: ${line.sourceFullWidth || "-"}m x ${line.sourceFullHeight || "-"}m` : "",
   ].filter(Boolean);
   return details.length ? details.join("\n") : null;
 }
@@ -231,7 +287,11 @@ async function resolveStocktakeMovementStockItem(db: any, ctx: any, line: typeof
     branchId,
     conditionIndicator: line.conditionIndicator || item.conditionIndicator || "new",
     actualSize: line.actualSize || null,
+    actualWidth: line.actualWidth || null,
+    actualHeight: line.actualHeight || null,
     sourceFullLength: line.sourceFullLength || item.sourceFullLength || null,
+    sourceFullWidth: line.sourceFullWidth || item.sourceFullWidth || null,
+    sourceFullHeight: line.sourceFullHeight || item.sourceFullHeight || null,
     description: stocktakeVariantDescription(item, line),
     supplier: item.supplier || null,
     costPrice: lineUnitCost(line, item),
@@ -338,7 +398,11 @@ export const stocktakeRouter = router({
       lines: lines.map(l => ({
         ...l,
         actualSize: decimalToNumber(l.actualSize),
+        actualWidth: decimalToNumber(l.actualWidth),
+        actualHeight: decimalToNumber(l.actualHeight),
         sourceFullLength: decimalToNumber(l.sourceFullLength),
+        sourceFullWidth: decimalToNumber(l.sourceFullWidth),
+        sourceFullHeight: decimalToNumber(l.sourceFullHeight),
         systemQty: decimalToNumber(l.systemQty) ?? 0,
         countedQty: decimalToNumber(l.countedQty),
         variance: decimalToNumber(l.variance) ?? 0,
@@ -372,7 +436,11 @@ export const stocktakeRouter = router({
       conditionIndicator: "new" | "damaged" | "off_cut";
       colour: string | null;
       actualSize: string | null;
+      actualWidth: string | null;
+      actualHeight: string | null;
       sourceFullLength: string | null;
+      sourceFullWidth: string | null;
+      sourceFullHeight: string | null;
       systemQty: string;
       unitCost: string;
     }> = [];
@@ -392,7 +460,11 @@ export const stocktakeRouter = router({
         conditionIndicator: item.conditionIndicator || "new",
         colour: stockItemBaseColour(item),
         actualSize: item.actualSize || null,
+        actualWidth: item.actualWidth || null,
+        actualHeight: item.actualHeight || null,
         sourceFullLength: item.sourceFullLength || null,
+        sourceFullWidth: item.sourceFullWidth || null,
+        sourceFullHeight: item.sourceFullHeight || null,
         systemQty: String(onHand),
         unitCost: item.costPrice || "0",
       });
@@ -420,7 +492,11 @@ export const stocktakeRouter = router({
         conditionIndicator: l.conditionIndicator,
         colour: l.colour,
         actualSize: l.actualSize,
+        actualWidth: l.actualWidth,
+        actualHeight: l.actualHeight,
         sourceFullLength: l.sourceFullLength,
+        sourceFullWidth: l.sourceFullWidth,
+        sourceFullHeight: l.sourceFullHeight,
         systemQty: l.systemQty,
         unitCost: l.unitCost,
       })));
@@ -436,7 +512,11 @@ export const stocktakeRouter = router({
     conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
     colour: z.string().nullable().optional(),
     actualSize: z.string().nullable().optional(),
+    actualWidth: z.string().nullable().optional(),
+    actualHeight: z.string().nullable().optional(),
     sourceFullLength: z.string().nullable().optional(),
+    sourceFullWidth: z.string().nullable().optional(),
+    sourceFullHeight: z.string().nullable().optional(),
   })).mutation(async ({ input, ctx }) => {
     const db = await requireDb();
     const stocktake = await requireStocktakeAccess(db, ctx, input.stocktakeId);
@@ -457,7 +537,11 @@ export const stocktakeRouter = router({
       conditionIndicator: input.conditionIndicator || sourceLine.conditionIndicator || "new",
       colour: input.colour !== undefined ? nullableText(input.colour) : sourceLine.colour || null,
       actualSize: input.actualSize !== undefined ? nullableDecimal(input.actualSize) : sourceLine.actualSize || null,
+      actualWidth: input.actualWidth !== undefined ? nullableDecimal(input.actualWidth) : sourceLine.actualWidth || null,
+      actualHeight: input.actualHeight !== undefined ? nullableDecimal(input.actualHeight) : sourceLine.actualHeight || null,
       sourceFullLength: input.sourceFullLength !== undefined ? nullableDecimal(input.sourceFullLength) : sourceLine.sourceFullLength || null,
+      sourceFullWidth: input.sourceFullWidth !== undefined ? nullableDecimal(input.sourceFullWidth) : sourceLine.sourceFullWidth || null,
+      sourceFullHeight: input.sourceFullHeight !== undefined ? nullableDecimal(input.sourceFullHeight) : sourceLine.sourceFullHeight || null,
       systemQty: "0",
       unitCost: sourceLine.unitCost || "0",
       notes: input.notes || "Additional count line",
@@ -480,7 +564,11 @@ export const stocktakeRouter = router({
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
       colour: z.string().nullable().optional(),
       actualSize: z.string().nullable().optional(),
+      actualWidth: z.string().nullable().optional(),
+      actualHeight: z.string().nullable().optional(),
       sourceFullLength: z.string().nullable().optional(),
+      sourceFullWidth: z.string().nullable().optional(),
+      sourceFullHeight: z.string().nullable().optional(),
     })),
   })).mutation(async ({ input, ctx }) => {
     const db = await requireDb();
@@ -510,12 +598,20 @@ export const stocktakeRouter = router({
       if (count.conditionIndicator !== undefined) updates.conditionIndicator = count.conditionIndicator;
       if (count.colour !== undefined) updates.colour = nullableText(count.colour);
       if (count.actualSize !== undefined) updates.actualSize = nullableDecimal(count.actualSize);
+      if (count.actualWidth !== undefined) updates.actualWidth = nullableDecimal(count.actualWidth);
+      if (count.actualHeight !== undefined) updates.actualHeight = nullableDecimal(count.actualHeight);
       if (count.sourceFullLength !== undefined) updates.sourceFullLength = nullableDecimal(count.sourceFullLength);
+      if (count.sourceFullWidth !== undefined) updates.sourceFullWidth = nullableDecimal(count.sourceFullWidth);
+      if (count.sourceFullHeight !== undefined) updates.sourceFullHeight = nullableDecimal(count.sourceFullHeight);
 
       const shouldRecalculateVariance = updates.countedQty !== undefined
         || updates.conditionIndicator !== undefined
         || updates.actualSize !== undefined
-        || updates.sourceFullLength !== undefined;
+        || updates.actualWidth !== undefined
+        || updates.actualHeight !== undefined
+        || updates.sourceFullLength !== undefined
+        || updates.sourceFullWidth !== undefined
+        || updates.sourceFullHeight !== undefined;
       const nextCountedQty = updates.countedQty !== undefined
         ? decimalToNumber(updates.countedQty)
         : shouldRecalculateVariance
@@ -524,12 +620,18 @@ export const stocktakeRouter = router({
       if (nextCountedQty != null) {
         const variance = nextCountedQty - (decimalToNumber(line.systemQty) ?? 0);
         const nextCondition = updates.conditionIndicator ?? line.conditionIndicator;
-        const actualSize = decimalToNumber(updates.actualSize ?? line.actualSize);
-        const sourceFullLength = decimalToNumber(updates.sourceFullLength ?? line.sourceFullLength);
         let unitCost = decimalToNumber(line.unitCost) ?? 0;
-        if (nextCondition === "off_cut" && actualSize != null && sourceFullLength != null && sourceFullLength > 0) {
-          unitCost *= Math.min(actualSize / sourceFullLength, 1);
-        }
+        const nextUnitCost = decimalToNumber(proRataUnitCost({
+          baseCost: unitCost,
+          conditionIndicator: nextCondition,
+          actualSize: updates.actualSize ?? line.actualSize,
+          actualWidth: updates.actualWidth ?? line.actualWidth,
+          actualHeight: updates.actualHeight ?? line.actualHeight,
+          sourceFullLength: updates.sourceFullLength ?? line.sourceFullLength,
+          sourceFullWidth: updates.sourceFullWidth ?? line.sourceFullWidth,
+          sourceFullHeight: updates.sourceFullHeight ?? line.sourceFullHeight,
+        }));
+        if (nextUnitCost != null) unitCost = nextUnitCost;
         updates.variance = variance.toFixed(4);
         updates.varianceValue = (variance * unitCost).toFixed(4);
       }
