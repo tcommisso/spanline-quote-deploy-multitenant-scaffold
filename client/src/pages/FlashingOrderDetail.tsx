@@ -4,12 +4,14 @@ import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { FlashingProfile3DPreview } from "@/components/flashing/FlashingProfile3DPreview";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
+  Archive,
   ArrowLeft,
   Camera,
   Copy,
@@ -17,6 +19,7 @@ import {
   ExternalLink,
   FlipHorizontal,
   Image as ImageIcon,
+  Pencil,
   Plus,
   RotateCcw,
   Save,
@@ -63,6 +66,19 @@ type FlashingLineDraft = {
   foldDetails: FoldDetails;
   manufacturingNotes: string;
   status: string;
+};
+
+type TemplateEditForm = {
+  name: string;
+  category: string;
+  defaultMaterialType: string;
+  defaultGauge: string;
+  defaultColour: string;
+  defaultColourSide: string;
+  defaultQuantity: string;
+  defaultLengthMm: string;
+  notes: string;
+  tags: string;
 };
 
 type WorkflowSectionKey = "overview" | "design" | "lines" | "photo" | "templates" | "timeline";
@@ -156,6 +172,19 @@ const DEFAULT_LINE: FlashingLineDraft = {
   foldDetails: DEFAULT_FOLD_DETAILS,
   manufacturingNotes: "",
   status: "draft",
+};
+
+const DEFAULT_TEMPLATE_FORM: TemplateEditForm = {
+  name: "",
+  category: "custom",
+  defaultMaterialType: "Colorbond",
+  defaultGauge: "0.55 BMT",
+  defaultColour: "",
+  defaultColourSide: "outside",
+  defaultQuantity: "1",
+  defaultLengthMm: "6500",
+  notes: "",
+  tags: "",
 };
 
 function formatDateInput(value?: string | Date | null) {
@@ -1244,6 +1273,29 @@ export default function FlashingOrderDetail() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const updateTemplate = trpc.flashing.updateTemplate.useMutation({
+    onSuccess: () => {
+      toast.success("Template updated");
+      setEditingTemplate(null);
+      setTemplateForm(DEFAULT_TEMPLATE_FORM);
+      utils.flashing.getOrder.invalidate({ id: orderId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const archiveTemplate = trpc.flashing.archiveTemplate.useMutation({
+    onSuccess: () => {
+      toast.success("Template archived");
+      utils.flashing.getOrder.invalidate({ id: orderId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const duplicateTemplate = trpc.flashing.duplicateTemplate.useMutation({
+    onSuccess: () => {
+      toast.success("Template duplicated");
+      utils.flashing.getOrder.invalidate({ id: orderId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const seedTemplates = trpc.flashing.seedStandardTemplates.useMutation({
     onSuccess: (result) => {
       toast.success(`Standard templates ready: ${result.created} added, ${result.updated} updated`);
@@ -1268,6 +1320,8 @@ export default function FlashingOrderDetail() {
   const [line, setLine] = useState(DEFAULT_LINE);
   const [activeSection, setActiveSection] = useState<WorkflowSectionKey>("design");
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<any | null>(null);
+  const [templateForm, setTemplateForm] = useState<TemplateEditForm>(DEFAULT_TEMPLATE_FORM);
   const subjectPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const { data: allColourGroups } = trpc.colourGroups.getAll.useQuery();
   const { data: allColourMembers } = trpc.colourGroups.getAllMembers.useQuery();
@@ -1305,6 +1359,11 @@ export default function FlashingOrderDetail() {
     if (!line.colour || colourbondColours.includes(line.colour)) return colourbondColours;
     return [line.colour, ...colourbondColours];
   }, [colourbondColours, line.colour]);
+
+  const templateColourOptions = useMemo(() => {
+    if (!templateForm.defaultColour || colourbondColours.includes(templateForm.defaultColour)) return colourbondColours;
+    return [templateForm.defaultColour, ...colourbondColours];
+  }, [colourbondColours, templateForm.defaultColour]);
 
   const updateLineGeometry = (geometry: Geometry) => {
     setLine((current) => ({
@@ -1701,6 +1760,53 @@ export default function FlashingOrderDetail() {
       foldDetails: normaliseFoldDetails((template.geometry as any)?.foldDetails),
     });
     setActiveSection("design");
+  };
+
+  const openTemplateEditor = (template: any) => {
+    setEditingTemplate(template);
+    setTemplateForm({
+      name: template.name || "",
+      category: template.category || "custom",
+      defaultMaterialType: template.defaultMaterialType || "Colorbond",
+      defaultGauge: template.defaultGauge || "0.55 BMT",
+      defaultColour: template.defaultColour || "",
+      defaultColourSide: template.defaultColourSide || "outside",
+      defaultQuantity: String(template.defaultQuantity || 1),
+      defaultLengthMm: String(Number(template.defaultLengthMm || 0)),
+      notes: template.notes || "",
+      tags: template.tags || "",
+    });
+  };
+
+  const submitTemplateEdit = () => {
+    if (!editingTemplate?.id) return;
+    const quantity = Math.max(1, Math.floor(Number(templateForm.defaultQuantity) || 1));
+    const lengthMm = Math.max(0, Number(templateForm.defaultLengthMm) || 0);
+    const geometry = {
+      ...cloneGeometry(editingTemplate.geometry),
+      foldDetails: (editingTemplate.geometry as any)?.foldDetails || {},
+    };
+
+    updateTemplate.mutate({
+      id: Number(editingTemplate.id),
+      name: templateForm.name,
+      category: templateForm.category || "custom",
+      geometry,
+      defaultMaterialType: templateForm.defaultMaterialType || null,
+      defaultGauge: templateForm.defaultGauge || null,
+      defaultColour: templateForm.defaultColour || null,
+      defaultColourSide: templateForm.defaultColourSide as any,
+      defaultQuantity: quantity,
+      defaultLengthMm: lengthMm,
+      notes: templateForm.notes || null,
+      tags: templateForm.tags || null,
+    });
+  };
+
+  const closeTemplateEditor = () => {
+    if (updateTemplate.isPending) return;
+    setEditingTemplate(null);
+    setTemplateForm(DEFAULT_TEMPLATE_FORM);
   };
 
   return (
@@ -2201,20 +2307,58 @@ export default function FlashingOrderDetail() {
               {templates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Saved profiles will appear here. Seed the standard flashing profiles to start from the order guide templates.</p>
               ) : templates.map((template: any) => (
-                <button
+                <div
                   key={template.id}
-                  type="button"
-                  onClick={() => loadTemplate(template)}
-                  className="w-full rounded-md border p-3 text-left hover:bg-muted/40"
+                  className="rounded-md border bg-background"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{template.name}</span>
-                    <Badge variant="outline">{template.category || "custom"}</Badge>
+                  <button
+                    type="button"
+                    onClick={() => loadTemplate(template)}
+                    className="w-full p-3 text-left hover:bg-muted/40"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">{template.name}</span>
+                      <Badge variant="outline">{template.category || "custom"}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {template.defaultMaterialType || "Material not set"} - {Number(template.defaultLengthMm || 0).toFixed(0)} mm
+                    </p>
+                    {template.notes && (
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.notes}</p>
+                    )}
+                  </button>
+                  <div className="flex flex-wrap items-center justify-end gap-2 border-t p-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => openTemplateEditor(template)}>
+                      <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={duplicateTemplate.isPending}
+                      onClick={() => duplicateTemplate.mutate({ id: Number(template.id), name: `${template.name} copy` })}
+                    >
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                      Duplicate
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive hover:text-destructive"
+                      disabled={archiveTemplate.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Archive template "${template.name}"?`)) {
+                          archiveTemplate.mutate({ id: Number(template.id) });
+                        }
+                      }}
+                    >
+                      <Archive className="mr-1.5 h-3.5 w-3.5" />
+                      Archive
+                    </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {template.defaultMaterialType || "Material not set"} - {Number(template.defaultLengthMm || 0).toFixed(0)} mm
-                  </p>
-                </button>
+                </div>
               ))}
             </CardContent>
           </Card>
@@ -2241,6 +2385,128 @@ export default function FlashingOrderDetail() {
           </Card>
         </div>
       </div>
+
+      <Dialog open={!!editingTemplate} onOpenChange={(open) => { if (!open) closeTemplateEditor(); }}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Profile Template</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Template Name</label>
+                <Input
+                  value={templateForm.name}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, name: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Category</label>
+                <Input
+                  value={templateForm.category}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, category: event.target.value }))}
+                  placeholder="apron, capping, gutter..."
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Material</label>
+                <Input
+                  value={templateForm.defaultMaterialType}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultMaterialType: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Gauge / Thickness</label>
+                <Input
+                  value={templateForm.defaultGauge}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultGauge: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Colour Side</label>
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={templateForm.defaultColourSide}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultColourSide: event.target.value }))}
+                >
+                  <option value="outside">Outside</option>
+                  <option value="inside">Inside</option>
+                  <option value="both">Both</option>
+                  <option value="unspecified">Unspecified</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Default Colour</label>
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={templateForm.defaultColour}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultColour: event.target.value }))}
+                >
+                  <option value="">No default colour</option>
+                  {templateColourOptions.map((colour) => (
+                    <option key={colour} value={colour}>{colour}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Default Qty</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={templateForm.defaultQuantity}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultQuantity: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Default Length (mm)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={templateForm.defaultLengthMm}
+                  onChange={(event) => setTemplateForm((current) => ({ ...current, defaultLengthMm: event.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Description / Notes</label>
+              <Textarea
+                value={templateForm.notes}
+                onChange={(event) => setTemplateForm((current) => ({ ...current, notes: event.target.value }))}
+                placeholder="Manufacturing notes, common use, supplier notes..."
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Tags</label>
+              <Input
+                value={templateForm.tags}
+                onChange={(event) => setTemplateForm((current) => ({ ...current, tags: event.target.value }))}
+                placeholder="comma separated"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={closeTemplateEditor} disabled={updateTemplate.isPending}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={submitTemplateEdit}
+              disabled={updateTemplate.isPending || !templateForm.name.trim()}
+            >
+              {updateTemplate.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Save className="mr-1.5 h-4 w-4" />}
+              Save Template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

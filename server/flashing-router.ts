@@ -921,4 +921,107 @@ export const flashingRouter = router({
       });
       return { id: Number(result.insertId) };
     }),
+
+  updateTemplate: tenantProcedure
+    .input(z.object({
+      id: z.number(),
+      name: z.string().trim().min(1).max(255),
+      category: z.string().trim().max(128).default("custom"),
+      geometry: profileGeometrySchema,
+      defaultMaterialType: z.string().trim().max(128).nullish(),
+      defaultGauge: z.string().trim().max(64).nullish(),
+      defaultColour: z.string().trim().max(128).nullish(),
+      defaultColourSide: z.enum(colourSides).default("unspecified"),
+      defaultQuantity: z.number().int().min(1).default(1),
+      defaultLengthMm: z.number().min(0).default(0),
+      notes: z.string().nullish(),
+      tags: z.string().nullish(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdOrThrow(ctx);
+      const [existing] = await db.select({ id: flashingProfileTemplates.id })
+        .from(flashingProfileTemplates)
+        .where(and(eq(flashingProfileTemplates.id, input.id), eq(flashingProfileTemplates.tenantId, tenantId)))
+        .limit(1);
+
+      if (!existing?.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
+      }
+
+      await db.update(flashingProfileTemplates)
+        .set({
+          name: input.name,
+          category: input.category,
+          geometry: input.geometry,
+          defaultMaterialType: input.defaultMaterialType ?? null,
+          defaultGauge: input.defaultGauge ?? null,
+          defaultColour: input.defaultColour ?? null,
+          defaultColourSide: input.defaultColourSide,
+          defaultQuantity: input.defaultQuantity,
+          defaultLengthMm: input.defaultLengthMm.toFixed(2),
+          notes: input.notes ?? null,
+          tags: input.tags ?? null,
+        })
+        .where(and(eq(flashingProfileTemplates.id, input.id), eq(flashingProfileTemplates.tenantId, tenantId)));
+
+      return { success: true };
+    }),
+
+  archiveTemplate: tenantProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdOrThrow(ctx);
+      const [existing] = await db.select({ id: flashingProfileTemplates.id })
+        .from(flashingProfileTemplates)
+        .where(and(eq(flashingProfileTemplates.id, input.id), eq(flashingProfileTemplates.tenantId, tenantId)))
+        .limit(1);
+
+      if (!existing?.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
+      }
+
+      await db.update(flashingProfileTemplates)
+        .set({ isActive: false })
+        .where(and(eq(flashingProfileTemplates.id, input.id), eq(flashingProfileTemplates.tenantId, tenantId)));
+
+      return { success: true };
+    }),
+
+  duplicateTemplate: tenantProcedure
+    .input(z.object({ id: z.number(), name: z.string().trim().min(1).max(255).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const tenantId = tenantIdOrThrow(ctx);
+      const [template] = await db.select()
+        .from(flashingProfileTemplates)
+        .where(and(eq(flashingProfileTemplates.id, input.id), eq(flashingProfileTemplates.tenantId, tenantId)))
+        .limit(1);
+
+      if (!template?.id) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Template not found" });
+      }
+
+      const [result] = await db.insert(flashingProfileTemplates).values({
+        tenantId,
+        name: input.name || `${template.name} copy`,
+        category: template.category || "custom",
+        geometry: template.geometry,
+        defaultMaterialType: template.defaultMaterialType,
+        defaultGauge: template.defaultGauge,
+        defaultColour: template.defaultColour,
+        defaultColourSide: template.defaultColourSide,
+        defaultQuantity: template.defaultQuantity,
+        defaultLengthMm: String(template.defaultLengthMm || "0.00"),
+        supplierCompatibility: template.supplierCompatibility,
+        notes: template.notes,
+        tags: template.tags,
+        version: template.version,
+        isActive: true,
+        createdBy: ctx.user.id,
+      });
+
+      return { id: Number(result.insertId) };
+    }),
 });
