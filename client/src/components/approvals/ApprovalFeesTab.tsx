@@ -35,6 +35,7 @@ export function ApprovalFeesTab({ projectId }: Props) {
       toast.success("Fee updated");
       utils.approvals.fees.list.invalidate({ projectId });
     },
+    onError: (err) => toast.error(err.message),
   });
 
   const handleCreate = () => {
@@ -143,7 +144,12 @@ export function ApprovalFeesTab({ projectId }: Props) {
                       <CheckCircle2 className="h-3 w-3 mr-1" /> Paid
                     </Badge>
                   ) : (
-                    <Button variant="outline" size="sm" onClick={() => markPaid(fee)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => markPaid(fee)}
+                      disabled={updateFee.isPending}
+                    >
                       Mark Paid
                     </Button>
                   )}

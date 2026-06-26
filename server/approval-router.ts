@@ -18,6 +18,7 @@ import {
   createOrUpdateHbcfCertificate,
   getHbcfBuilderProfile,
   getProjectHbcfGateStatus,
+  hbcfRequirementFieldsForAmount,
   listHbcfCertificates,
   listHbcfCompetitorMatches,
   runHbcfCompetitorMatching,
@@ -27,17 +28,35 @@ import {
   upsertHbcfBuilderProfile,
 } from "./hbcf-service";
 
-function hbcfFlagForValue(value?: string | null) {
-  const amount = Number(value || 0);
-  if (Number.isFinite(amount) && amount >= HBCF_REQUIRED_THRESHOLD) {
+function hbcfFlagForValue(value?: string | null, location?: Record<string, unknown> | null) {
+  const requirement = hbcfRequirementFieldsForAmount(value, "Project", location as any);
+  if (requirement.hbcfRequired) {
+    const amount = Number(value || 0);
     return {
       hbcfRequired: true,
       hbcfStatus: "required",
-      hbcfRequirementReason: `Project value $${amount.toFixed(2)} is at or above the $${HBCF_REQUIRED_THRESHOLD.toLocaleString()} HBCF threshold`,
+      hbcfRequirementReason: requirement.hbcfRequirementReason ||
+        `Project value $${amount.toFixed(2)} is at or above the $${HBCF_REQUIRED_THRESHOLD.toLocaleString()} HBCF threshold`,
       hbcfFlaggedAt: new Date(),
     };
   }
-  return {};
+  return {
+    hbcfRequired: false,
+    hbcfStatus: "not_required",
+    hbcfCertificateId: null,
+    hbcfRequirementReason: null,
+    hbcfFlaggedAt: null,
+  };
+}
+
+function coerceDateFields(data: Record<string, any>, fields: string[]) {
+  const next: Record<string, any> = { ...data };
+  for (const field of fields) {
+    if (typeof next[field] === "string" && next[field]) {
+      next[field] = new Date(next[field]);
+    }
+  }
+  return next;
 }
 
 async function validateConstructionSupplierId(supplierId: number | null | undefined, tenantId: number) {
@@ -156,7 +175,7 @@ export const approvalRouter = router({
         const id = await approvalDb.createApprovalProject({
           ...input,
           tenantId: ctx.tenant!.id,
-          ...hbcfFlagForValue(input.estimatedCost),
+          ...hbcfFlagForValue(input.estimatedCost, input),
           projectNumber,
           createdByUserId: ctx.user.id,
         });
@@ -179,14 +198,14 @@ export const approvalRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const updates = { ...input.data } as any;
+        const existingProject = await approvalDb.getApprovalProjectById(input.id, ctx.tenant!.id);
         if (updates.certifierContactId !== undefined) {
-          const existingProject = await approvalDb.getApprovalProjectById(input.id, ctx.tenant!.id);
           if (existingProject?.certifierContactId !== updates.certifierContactId) {
             await validateConstructionSupplierId(updates.certifierContactId, ctx.tenant!.id);
           }
         }
         if (updates.estimatedCost !== undefined) {
-          Object.assign(updates, hbcfFlagForValue(updates.estimatedCost));
+          Object.assign(updates, hbcfFlagForValue(updates.estimatedCost, { ...existingProject, ...updates }));
           if (Number(updates.estimatedCost || 0) < HBCF_REQUIRED_THRESHOLD && updates.hbcfRequired !== true) {
             updates.hbcfRequired = false;
             updates.hbcfStatus = "not_required";
@@ -445,16 +464,24 @@ export const approvalRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateLodgement(input.id, input.data as any, ctx.tenant!.id);
+        const data = coerceDateFields(input.data, [
+          "submittedAt",
+          "acceptedAt",
+          "feePaidAt",
+          "determinationAt",
+          "expiresAt",
+          "ownerConsentSignedAt",
+        ]);
+        await approvalDb.updateLodgement(input.id, data as any, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
           eventType: "lodgement_updated",
           entityType: "lodgement",
           entityId: input.id,
-          summary: `Lodgement updated: ${Object.keys(input.data).join(", ")}`,
+          summary: `Lodgement updated: ${Object.keys(data).join(", ")}`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
-          details: input.data,
+          details: data,
         }, ctx.tenant!.id);
         return { success: true };
       }),
@@ -465,7 +492,17 @@ export const approvalRouter = router({
     list: protectedProcedure
       .input(z.object({ projectId: z.number() }))
       .query(async ({ ctx, input }) => {
-        return approvalDb.getDocumentsByProject(input.projectId, ctx.tenant!.id);
+        const docs = await approvalDb.getDocumentsByProject(input.projectId, ctx.tenant!.id);
+        return Promise.all(docs.map(async (doc: any) => {
+          const versions = await approvalDb.getDocumentVersions(doc.id, ctx.tenant!.id);
+          const latestVersion = versions[0] || null;
+          return {
+            ...doc,
+            latestVersion,
+            latestFileUrl: latestVersion?.fileUrl || null,
+            latestFileName: latestVersion?.fileName || null,
+          };
+        }));
       }),
 
     get: protectedProcedure
@@ -548,8 +585,8 @@ export const approvalRouter = router({
           uploadedByName: ctx.user.name || "Unknown",
         }, ctx.tenant!.id);
 
-        // Update document status to draft
-        await approvalDb.updateDocument(input.documentId, { status: "draft" }, ctx.tenant!.id);
+        // A freshly uploaded file is ready for review unless staff mark it otherwise.
+        await approvalDb.updateDocument(input.documentId, { status: "pending_review" }, ctx.tenant!.id);
 
         await approvalDb.createAuditEntry({
           projectId: input.projectId,
@@ -1177,7 +1214,8 @@ export const approvalRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateFee(input.id, input.data as any, ctx.tenant!.id);
+        const data = coerceDateFields(input.data, ["paidAt", "dueAt"]);
+        await approvalDb.updateFee(input.id, data as any, ctx.tenant!.id);
         return { success: true };
       }),
   }),

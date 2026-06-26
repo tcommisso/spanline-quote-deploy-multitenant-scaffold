@@ -379,7 +379,9 @@ function HbcfProjectCard({ project }: { project: any }) {
   const syncProject = trpc.approvals.hbcf.certificates.syncProject.useMutation({
     onSuccess: (result) => {
       const linked = (result as any).linked || 0;
-      if (linked > 0) {
+      if ((result as any).skipped === "non_nsw_project") {
+        toast.info("HBCF is not required for ACT approval projects.");
+      } else if (linked > 0) {
         toast.success("HBCF sync complete: linked existing certificate from the register");
       } else {
         toast.success(`HBCF sync complete: ${result.imported} certificate${result.imported === 1 ? "" : "s"} imported`);
@@ -402,8 +404,13 @@ function HbcfProjectCard({ project }: { project: any }) {
     onError: (err) => toast.error(err.message),
   });
 
-  const required = gateStatus?.required || project.hbcfRequired;
-  const issued = gateStatus?.issued || (certificates || []).some((cert: any) => isIssuedHbcfStatus(cert.status));
+  const hbcfAppliesToJurisdiction = String(project.jurisdiction || "").toUpperCase() === "NSW";
+  const hasGateStatus = gateStatus !== undefined;
+  const required = hasGateStatus ? !!gateStatus?.required : !!project.hbcfRequired;
+  const issued = required && (
+    (hasGateStatus ? !!gateStatus?.issued : false) ||
+    (certificates || []).some((cert: any) => isIssuedHbcfStatus(cert.status))
+  );
   const statusVariant = !required ? "outline" : issued ? "default" : "destructive";
   const primaryCertificate = (certificates || [])[0];
 
@@ -459,20 +466,31 @@ function HbcfProjectCard({ project }: { project: any }) {
             HBCF
           </CardTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            HBCF is automatically required when the quote or project value is at least $20,000.
+            HBCF applies to NSW residential work at or above the $20,000 threshold.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={statusVariant as any}>
             {!required ? "Not required" : issued ? "Issued" : "Required"}
           </Badge>
-          <Button variant="outline" size="sm" onClick={() => syncProject.mutate({ projectId: project.id })} disabled={syncProject.isPending}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => syncProject.mutate({ projectId: project.id })}
+            disabled={syncProject.isPending || !hbcfAppliesToJurisdiction}
+          >
             <RefreshCw className={`h-3.5 w-3.5 mr-1 ${syncProject.isPending ? "animate-spin" : ""}`} />
             Sync
           </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!hbcfAppliesToJurisdiction && (
+          <div className="rounded border bg-muted/30 p-3 text-sm text-muted-foreground">
+            HBCF is a NSW home building compensation process and is not required for this ACT approval pathway.
+          </div>
+        )}
+
         {required && !issued && (
           <div className="rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive flex gap-2">
             <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -480,7 +498,7 @@ function HbcfProjectCard({ project }: { project: any }) {
           </div>
         )}
 
-        {(certificates || []).length > 0 && (
+        {hbcfAppliesToJurisdiction && (certificates || []).length > 0 && (
           <div className="rounded border divide-y">
             {(certificates || []).map((cert: any) => (
               <div key={cert.id} className="p-3 grid grid-cols-1 md:grid-cols-4 gap-2 text-sm">
@@ -505,6 +523,7 @@ function HbcfProjectCard({ project }: { project: any }) {
           </div>
         )}
 
+        {hbcfAppliesToJurisdiction && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <Label>Certificate number</Label>
@@ -548,6 +567,7 @@ function HbcfProjectCard({ project }: { project: any }) {
             </Button>
           </div>
         </div>
+        )}
       </CardContent>
     </Card>
   );

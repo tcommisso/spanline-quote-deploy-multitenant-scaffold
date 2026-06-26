@@ -1383,6 +1383,23 @@ async function linkCertificateToProject(
   if (!projectId) return;
   const db = await getDb();
   if (!db) return;
+  const [project] = await db.select()
+    .from(approvalProjects)
+    .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))))
+    .limit(1);
+  if (!project) return;
+  if (!isNswHbcfLocation(project)) {
+    await db.update(approvalProjects)
+      .set({
+        hbcfRequired: false,
+        hbcfStatus: "not_required",
+        hbcfCertificateId: null,
+        hbcfRequirementReason: null,
+        hbcfFlaggedAt: null,
+      } as any)
+      .where(and(...scopedConditions(approvalProjects, tenantId, eq(approvalProjects.id, projectId))));
+    return;
+  }
   const issued = isIssuedHbcfStatus(status);
   await db.update(approvalProjects)
     .set({
@@ -1456,7 +1473,7 @@ export async function getProjectHbcfGateStatus(projectId: number, tenantId?: num
   if (!project) return { required: false, issued: false, blockers: ["Project not found"] };
   const required = isNswHbcfLocation(project) &&
     (!!project.hbcfRequired || Number(project.estimatedCost || 0) >= HBCF_REQUIRED_THRESHOLD);
-  if (!required) return { required: false, issued: true, blockers: [] as string[] };
+  if (!required) return { required: false, issued: false, blockers: [] as string[] };
   const issued = await db.select().from(hbcfCertificates)
     .where(and(
       ...scopedConditions(hbcfCertificates, tenantId),

@@ -41,6 +41,17 @@ const STATUS_COLORS: Record<string, string> = {
   withdrawn: "bg-gray-100 text-gray-800",
 };
 
+const LODGEMENT_STATUSES = [
+  { value: "draft", label: "Draft" },
+  { value: "submitted", label: "Lodged" },
+  { value: "accepted", label: "Accepted" },
+  { value: "under_assessment", label: "Under assessment" },
+  { value: "additional_info", label: "Additional info requested" },
+  { value: "determined", label: "Approved / determined" },
+  { value: "refused", label: "Refused" },
+  { value: "withdrawn", label: "Withdrawn" },
+];
+
 export function ApprovalLodgementsTab({ projectId, jurisdiction }: Props) {
   const filteredTypes = jurisdiction
     ? LODGEMENT_TYPES.filter((t) => t.jurisdiction === jurisdiction)
@@ -82,6 +93,28 @@ export function ApprovalLodgementsTab({ projectId, jurisdiction }: Props) {
     },
     onError: (err) => toast.error(err.message),
   });
+
+  const updateLodgement = trpc.approvals.lodgements.update.useMutation({
+    onSuccess: () => {
+      toast.success("Lodgement updated");
+      utils.approvals.lodgements.list.invalidate({ projectId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateLodgementStatus = (lodgement: any, status: string) => {
+    const now = new Date().toISOString();
+    const data: Record<string, unknown> = { status };
+    if (status === "submitted" && !lodgement.submittedAt) data.submittedAt = now;
+    if (status === "accepted" && !lodgement.acceptedAt) data.acceptedAt = now;
+    if (["determined", "refused", "withdrawn"].includes(status) && !lodgement.determinationAt) {
+      data.determinationAt = now;
+    }
+    if (status === "determined") data.determinationOutcome = "approved";
+    if (status === "refused") data.determinationOutcome = "refused";
+    if (status === "withdrawn") data.determinationOutcome = "withdrawn";
+    updateLodgement.mutate({ id: lodgement.id, projectId, data });
+  };
 
   const handleCreate = () => {
     if (!newForm.lodgementType) {
@@ -187,7 +220,7 @@ export function ApprovalLodgementsTab({ projectId, jurisdiction }: Props) {
           {lodgements.map((lodgement: any) => (
             <Card key={lodgement.id}>
               <CardContent className="p-4">
-                <div className="flex items-start justify-between">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <span className="font-semibold">
@@ -207,9 +240,38 @@ export function ApprovalLodgementsTab({ projectId, jurisdiction }: Props) {
                       </p>
                     )}
                   </div>
-                  <div className="text-right text-xs text-muted-foreground">
-                    {lodgement.submittedAt && <p>Submitted: {new Date(lodgement.submittedAt).toLocaleDateString()}</p>}
-                    {lodgement.determinationAt && <p>Determined: {new Date(lodgement.determinationAt).toLocaleDateString()}</p>}
+                  <div className="flex flex-col gap-2 md:items-end">
+                    <Select
+                      value={lodgement.status || "draft"}
+                      onValueChange={(status) => updateLodgementStatus(lodgement, status)}
+                      disabled={updateLodgement.isPending}
+                    >
+                      <SelectTrigger className="h-9 w-full md:w-56">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {LODGEMENT_STATUSES.map((status) => (
+                          <SelectItem key={status.value} value={status.value}>{status.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="flex flex-wrap gap-1 md:justify-end">
+                      {lodgement.status === "draft" && (
+                        <Button variant="outline" size="sm" onClick={() => updateLodgementStatus(lodgement, "submitted")}>
+                          Mark lodged
+                        </Button>
+                      )}
+                      {["submitted", "accepted", "under_assessment", "additional_info"].includes(lodgement.status) && (
+                        <Button variant="outline" size="sm" onClick={() => updateLodgementStatus(lodgement, "determined")}>
+                          Mark approved
+                        </Button>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground md:text-right">
+                      {lodgement.submittedAt && <p>Lodged: {new Date(lodgement.submittedAt).toLocaleDateString()}</p>}
+                      {lodgement.acceptedAt && <p>Accepted: {new Date(lodgement.acceptedAt).toLocaleDateString()}</p>}
+                      {lodgement.determinationAt && <p>Determined: {new Date(lodgement.determinationAt).toLocaleDateString()}</p>}
+                    </div>
                   </div>
                 </div>
               </CardContent>

@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, FileText, Plus, Package, Loader2, CheckCircle2, X, FolderUp } from "lucide-react";
+import { Eye, Upload, FileText, Plus, Package, Loader2, CheckCircle2, X, FolderUp } from "lucide-react";
 import { toast } from "sonner";
 
 interface Props {
@@ -34,6 +34,16 @@ const STATUS_COLORS: Record<string, string> = {
   not_applicable: "bg-gray-50 text-gray-500",
 };
 
+const DOC_STATUSES = [
+  { value: "required", label: "Required" },
+  { value: "draft", label: "Draft" },
+  { value: "pending_review", label: "Pending review" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "superseded", label: "Superseded" },
+  { value: "not_applicable", label: "Not applicable" },
+];
+
 interface BulkFile {
   file: File;
   suggestedType: string;
@@ -47,7 +57,6 @@ export function ApprovalDocumentsTab({ projectId }: Props) {
   const [bulkFiles, setBulkFiles] = useState<BulkFile[]>([]);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const bulkInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -67,6 +76,14 @@ export function ApprovalDocumentsTab({ projectId }: Props) {
   const uploadVersion = trpc.approvals.documents.uploadVersion.useMutation({
     onSuccess: () => {
       toast.success("Version uploaded");
+      utils.approvals.documents.list.invalidate({ projectId });
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateDocument = trpc.approvals.documents.update.useMutation({
+    onSuccess: () => {
+      toast.success("Document updated");
       utils.approvals.documents.list.invalidate({ projectId });
     },
     onError: (err) => toast.error(err.message),
@@ -136,6 +153,20 @@ export function ApprovalDocumentsTab({ projectId }: Props) {
       setUploading(false);
     }
   };
+
+  const updateDocumentMeta = (doc: any, data: Record<string, unknown>) => {
+    updateDocument.mutate({ id: doc.id, projectId, data });
+  };
+
+  const openDocument = (doc: any) => {
+    if (!doc.latestFileUrl) {
+      toast.error("No uploaded file is available for this document");
+      return;
+    }
+    window.open(doc.latestFileUrl, "_blank", "noopener,noreferrer");
+  };
+
+  const formatOptionLabel = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
   // Bulk upload handlers
   const categoriseFile = (fileName: string): { type: string; title: string } => {
@@ -336,36 +367,88 @@ export function ApprovalDocumentsTab({ projectId }: Props) {
         <div className="space-y-2">
           {documents.map((doc: any) => (
             <Card key={doc.id}>
-              <CardContent className="p-3 flex items-center justify-between">
+              <CardContent className="p-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3 min-w-0">
                   <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                   <div className="min-w-0">
                     <p className="font-medium text-sm truncate">{doc.title}</p>
                     <p className="text-xs text-muted-foreground">
-                      {doc.documentType.replace(/_/g, " ")} &middot; v{doc.versionCount}
+                      {doc.latestFileName || doc.documentType.replace(/_/g, " ")} &middot; v{doc.versionCount}
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:w-[32rem]">
+                  <Select
+                    value={doc.documentType}
+                    onValueChange={(documentType) => updateDocumentMeta(doc, { documentType })}
+                    disabled={updateDocument.isPending}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DOC_TYPES.map((type) => (
+                        <SelectItem key={type} value={type}>{formatOptionLabel(type)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={doc.status || "draft"}
+                    onValueChange={(status) => updateDocumentMeta(doc, { status })}
+                    disabled={updateDocument.isPending}
+                  >
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DOC_STATUSES.map((status) => (
+                        <SelectItem key={status.value} value={status.value}>{status.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                   <Badge variant="outline" className={STATUS_COLORS[doc.status] || ""}>
-                    {doc.status.replace(/_/g, " ")}
+                    {(doc.status || "draft").replace(/_/g, " ")}
                   </Badge>
-                  <input
-                    type="file"
-                    className="hidden"
-                    ref={fileInputRef}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleFileUpload(doc.id, file);
-                    }}
-                  />
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
+                    onClick={() => openDocument(doc)}
+                    disabled={!doc.latestFileUrl}
                   >
-                    <Upload className="h-3.5 w-3.5" />
+                    <Eye className="h-3.5 w-3.5 mr-1" />
+                    View
+                  </Button>
+                  <label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      asChild
+                      disabled={uploading}
+                    >
+                      <span>
+                        <Upload className="h-3.5 w-3.5 mr-1" />
+                        Upload
+                      </span>
+                    </Button>
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileUpload(doc.id, file);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => updateDocumentMeta(doc, { status: "approved" })}
+                    disabled={updateDocument.isPending}
+                  >
+                    Approve
                   </Button>
                 </div>
               </CardContent>
