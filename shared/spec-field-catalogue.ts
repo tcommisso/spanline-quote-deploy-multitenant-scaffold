@@ -565,6 +565,42 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
     productMatchField: "specPostsFixing",
     notes: "Hard-coded specsheet option: Footing, Internal Bracket, or Welded Base Plate. It is not populated from product catalogue tabs.",
   },
+  specWindowEntries: {
+    term: "Window schedule",
+    formulaExamples: ["1"],
+    productMatchField: "specWindowType",
+    notes: "JSON window schedule. A mapping on this field with target tab windows expands one quote item per entry, matching products by style plus width/height and using entry quantity.",
+  },
+  specDoorEntries: {
+    term: "Door schedule",
+    formulaExamples: ["1"],
+    productMatchField: "specDoorType",
+    notes: "JSON door schedule. A mapping on this field with target tab doors expands one quote item per entry, matching products by style plus width/height/panel count and using entry quantity.",
+  },
+  specWindowGlassType: {
+    term: "Window glass modifier",
+    formulaExamples: ["Door & Window Modifier: glass_type = Double Glaze, sell +20%"],
+    productMatchField: "specWindowEntries",
+    notes: "Do not duplicate base window products for each glass type. Configure percentage or fixed adjustments in Door & Window Modifiers.",
+  },
+  specDoorGlassType: {
+    term: "Door glass modifier",
+    formulaExamples: ["Door & Window Modifier: glass_type = Double Glaze, sell +20%"],
+    productMatchField: "specDoorEntries",
+    notes: "Do not duplicate base door products for each glass type. Configure percentage or fixed adjustments in Door & Window Modifiers.",
+  },
+  specGlassTint: {
+    term: "Glass tint modifier",
+    formulaExamples: ["Door & Window Modifier: tint = Grey, sell +5%"],
+    productMatchField: "specWindowEntries / specDoorEntries",
+    notes: "Applies a shared tint modifier to generated door and window base lines when matching modifier rows exist.",
+  },
+  specGlassObscurity: {
+    term: "Glass obscurity modifier",
+    formulaExamples: ["Door & Window Modifier: obscurity = Acid Etched, sell +10%"],
+    productMatchField: "specWindowEntries / specDoorEntries",
+    notes: "Use Door & Window Modifiers for Translucent, Acid Etched, or similar glass options instead of duplicating products.",
+  },
   specConcreteArea: {
     term: "Concrete area",
     formulaExamples: ["specConcreteArea", "specArea"],

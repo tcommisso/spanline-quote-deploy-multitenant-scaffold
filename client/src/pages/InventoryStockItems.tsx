@@ -314,7 +314,11 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
   const [costPrice, setCostPrice] = useState(item?.costPrice || "");
   const [fullCostPrice, setFullCostPrice] = useState(item?.costPrice || "");
   const [actualSize, setActualSize] = useState(item?.actualSize || "");
+  const [actualWidth, setActualWidth] = useState(item?.actualWidth || "");
+  const [actualHeight, setActualHeight] = useState(item?.actualHeight || "");
   const [sourceFullLength, setSourceFullLength] = useState(item?.sourceFullLength || "");
+  const [sourceFullWidth, setSourceFullWidth] = useState(item?.sourceFullWidth || "");
+  const [sourceFullHeight, setSourceFullHeight] = useState(item?.sourceFullHeight || "");
   const [manufacturingCatalogueProductId, setManufacturingCatalogueProductId] = useState<number | null>(item?.manufacturingCatalogueProductId || null);
   const [productSearch, setProductSearch] = useState("");
   const utils = trpc.useUtils();
@@ -351,7 +355,11 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
         : existingCost;
     setFullCostPrice(inferredFullCost ? moneyText(inferredFullCost) : "");
     setActualSize(sourceItem?.actualSize || "");
+    setActualWidth(sourceItem?.actualWidth || "");
+    setActualHeight(sourceItem?.actualHeight || "");
     setSourceFullLength(sourceItem?.sourceFullLength || "");
+    setSourceFullWidth(sourceItem?.sourceFullWidth || "");
+    setSourceFullHeight(sourceItem?.sourceFullHeight || "");
     setManufacturingCatalogueProductId(sourceItem?.manufacturingCatalogueProductId || null);
     setProductSearch("");
   };
@@ -363,11 +371,25 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
   useEffect(() => {
     if (conditionIndicator !== "off_cut") return;
     const baseCost = numericValue(fullCostPrice || costPrice);
+    const actualW = numericValue(actualWidth);
+    const actualH = numericValue(actualHeight);
+    const sourceW = numericValue(sourceFullWidth);
+    const sourceH = numericValue(sourceFullHeight);
+    if (
+      baseCost != null &&
+      actualW != null && actualW > 0 &&
+      actualH != null && actualH > 0 &&
+      sourceW != null && sourceW > 0 &&
+      sourceH != null && sourceH > 0
+    ) {
+      setCostPrice(moneyText(baseCost * Math.min((actualW * actualH) / (sourceW * sourceH), 1)));
+      return;
+    }
     const actual = numericValue(actualSize);
     const fullLength = numericValue(sourceFullLength);
     if (baseCost == null || actual == null || fullLength == null || fullLength <= 0) return;
     setCostPrice(moneyText(baseCost * Math.min(actual / fullLength, 1)));
-  }, [conditionIndicator, fullCostPrice, actualSize, sourceFullLength]);
+  }, [conditionIndicator, fullCostPrice, actualSize, actualWidth, actualHeight, sourceFullLength, sourceFullWidth, sourceFullHeight]);
 
   const create = trpc.inventory.stockItems.create.useMutation({
     onSuccess: async () => {
@@ -416,7 +438,11 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
       branchId: branchId ? Number(branchId) : null,
       conditionIndicator: conditionIndicator as "new" | "damaged" | "off_cut",
       actualSize: conditionIndicator === "off_cut" ? textOrNull(actualSize) : null,
+      actualWidth: conditionIndicator === "off_cut" ? textOrNull(actualWidth) : null,
+      actualHeight: conditionIndicator === "off_cut" ? textOrNull(actualHeight) : null,
       sourceFullLength: conditionIndicator === "off_cut" ? textOrNull(sourceFullLength) : null,
+      sourceFullWidth: conditionIndicator === "off_cut" ? textOrNull(sourceFullWidth) : null,
+      sourceFullHeight: conditionIndicator === "off_cut" ? textOrNull(sourceFullHeight) : null,
       description: textOrNull(description),
       supplier: textOrNull(supplier),
       costPrice: textOrNull(costPrice),
@@ -566,7 +592,7 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <Label>Actual Size (m)</Label>
+                  <Label>Actual Length (m)</Label>
                   <Input type="number" step="0.01" value={actualSize} onChange={e => setActualSize(e.target.value)} placeholder="e.g. 2.4" />
                 </div>
                 <div>
@@ -576,6 +602,24 @@ function StockItemDialog({ open, onOpenChange, item, branches }: { open: boolean
                 <div>
                   <Label>Full Length Cost ($)</Label>
                   <Input type="number" step="0.01" value={fullCostPrice} onChange={e => setFullCostPrice(e.target.value)} placeholder="e.g. 149.37" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label>Actual Width (m)</Label>
+                  <Input type="number" step="0.01" value={actualWidth} onChange={e => setActualWidth(e.target.value)} placeholder="e.g. 1.2" />
+                </div>
+                <div>
+                  <Label>Actual Height (m)</Label>
+                  <Input type="number" step="0.01" value={actualHeight} onChange={e => setActualHeight(e.target.value)} placeholder="e.g. 2.4" />
+                </div>
+                <div>
+                  <Label>Full Width (m)</Label>
+                  <Input type="number" step="0.01" value={sourceFullWidth} onChange={e => setSourceFullWidth(e.target.value)} placeholder="e.g. 1.2" />
+                </div>
+                <div>
+                  <Label>Full Height (m)</Label>
+                  <Input type="number" step="0.01" value={sourceFullHeight} onChange={e => setSourceFullHeight(e.target.value)} placeholder="e.g. 6.0" />
                 </div>
               </div>
             </div>

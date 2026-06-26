@@ -27,7 +27,12 @@ function optionalText(value?: string | null) {
 
 function optionalDecimal(value?: string | null) {
   const trimmed = String(value || "").trim();
-  return trimmed ? trimmed : null;
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  if (!Number.isFinite(numeric)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid stock item numeric value." });
+  }
+  return String(numeric);
 }
 
 function decimalFromNumber(value: number | null | undefined) {
@@ -42,6 +47,32 @@ function unitTypeFromUom(uom?: string | null): "unit" | "lm" {
 function numericFromDecimal(value?: string | null) {
   const parsed = Number.parseFloat(String(value || ""));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function errorText(error: unknown, seen = new Set<unknown>()): string {
+  if (error == null || seen.has(error)) return "";
+  seen.add(error);
+  if (typeof error === "string") return error;
+  if (typeof error !== "object") return String(error);
+  const err = error as Record<string, unknown>;
+  return [
+    err.message,
+    err.sqlMessage,
+    err.code,
+    err.errno,
+    err.sql,
+    err.cause ? errorText(err.cause, seen) : "",
+  ].filter(Boolean).join(" ");
+}
+
+function isMissingDimensionColumnError(error: unknown) {
+  const message = errorText(error);
+  const mentionsDimensionColumns = /(actual_width|actual_height|source_full_width|source_full_height)/i.test(message);
+  if (!mentionsDimensionColumns) return false;
+  if (/(unknown column|no such column|doesn't exist|does not exist)/i.test(message)) return true;
+
+  return /failed query:\s*insert/i.test(message)
+    && /(into `?inventory_stock_items`?|into\s+inventory_stock_items)/i.test(message);
 }
 
 function inferFullLengthMetres(...values: Array<string | null | undefined>) {
@@ -68,12 +99,31 @@ function proRataOffCutCost(input: {
   conditionIndicator?: string | null;
   costPrice?: string | null;
   actualSize?: string | null;
+  actualWidth?: string | null;
+  actualHeight?: string | null;
   sourceFullLength?: string | null;
+  sourceFullWidth?: string | null;
+  sourceFullHeight?: string | null;
   name?: string | null;
   description?: string | null;
 }) {
   if (input.conditionIndicator !== "off_cut") return optionalDecimal(input.costPrice);
   const baseCost = numericFromDecimal(input.costPrice);
+  const actualWidth = numericFromDecimal(input.actualWidth);
+  const actualHeight = numericFromDecimal(input.actualHeight);
+  const sourceFullWidth = numericFromDecimal(input.sourceFullWidth);
+  const sourceFullHeight = numericFromDecimal(input.sourceFullHeight);
+  if (
+    baseCost != null &&
+    actualWidth != null && actualWidth > 0 &&
+    actualHeight != null && actualHeight > 0 &&
+    sourceFullWidth != null && sourceFullWidth > 0 &&
+    sourceFullHeight != null && sourceFullHeight > 0
+  ) {
+    const ratio = (actualWidth * actualHeight) / (sourceFullWidth * sourceFullHeight);
+    return decimalFromNumber(baseCost * Math.min(ratio, 1));
+  }
+
   const actualSize = numericFromDecimal(input.actualSize);
   const sourceFullLength = numericFromDecimal(input.sourceFullLength)
     ?? inferFullLengthMetres(input.name, input.description);
@@ -83,6 +133,60 @@ function proRataOffCutCost(input: {
   }
 
   return decimalFromNumber(baseCost * Math.min(actualSize / sourceFullLength, 1));
+}
+
+async function insertInventoryStockItem(db: any, values: Record<string, any>) {
+  try {
+    const [result] = await db.insert(inventoryStockItems).values(values);
+    return result;
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Inventory dimension columns are missing; inserting stock item with pre-0062 column fallback.", error);
+    const [result] = await db.execute(sql`
+      INSERT INTO inventory_stock_items (
+        tenantId,
+        code,
+        name,
+        serial_number,
+        category,
+        unit,
+        unit_type,
+        reorder_qty,
+        min_stock_level,
+        branch_id,
+        condition_indicator,
+        actual_size,
+        source_full_length,
+        description,
+        supplier,
+        cost_price,
+        catalogue_item_id,
+        manufacturing_catalogue_product_id,
+        is_active
+      ) VALUES (
+        ${values.tenantId ?? null},
+        ${values.code},
+        ${values.name},
+        ${values.serialNumber ?? null},
+        ${values.category ?? "general"},
+        ${values.unit ?? "EA"},
+        ${values.unitType ?? "unit"},
+        ${values.reorderQty ?? null},
+        ${values.minStockLevel ?? null},
+        ${values.branchId ?? null},
+        ${values.conditionIndicator ?? "new"},
+        ${values.actualSize ?? null},
+        ${values.sourceFullLength ?? null},
+        ${values.description ?? null},
+        ${values.supplier ?? null},
+        ${values.costPrice ?? null},
+        ${values.catalogueItemId ?? null},
+        ${values.manufacturingCatalogueProductId ?? null},
+        ${values.isActive ?? true}
+      )
+    `);
+    return result;
+  }
 }
 
 function stockDescriptionFromManufacturingProduct(product: any) {
@@ -224,7 +328,11 @@ export const inventoryRouter = router({
       branchId: z.number().nullable().optional(),
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).default("new"),
       actualSize: z.string().nullable().optional(),
+      actualWidth: z.string().nullable().optional(),
+      actualHeight: z.string().nullable().optional(),
       sourceFullLength: z.string().nullable().optional(),
+      sourceFullWidth: z.string().nullable().optional(),
+      sourceFullHeight: z.string().nullable().optional(),
       description: z.string().nullable().optional(),
       supplier: z.string().nullable().optional(),
       costPrice: z.string().nullable().optional(),
@@ -233,7 +341,7 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       if (input.branchId) await requireBranchAccess(db, ctx, input.branchId);
-      const [result] = await db.insert(inventoryStockItems).values({
+      const result = await insertInventoryStockItem(db, {
         tenantId: tenantIdFromContext(ctx),
         code: input.code.trim(),
         name: input.name.trim(),
@@ -246,7 +354,11 @@ export const inventoryRouter = router({
         branchId: input.branchId || null,
         conditionIndicator: input.conditionIndicator,
         actualSize: optionalDecimal(input.actualSize),
+        actualWidth: optionalDecimal(input.actualWidth),
+        actualHeight: optionalDecimal(input.actualHeight),
         sourceFullLength: optionalDecimal(input.sourceFullLength),
+        sourceFullWidth: optionalDecimal(input.sourceFullWidth),
+        sourceFullHeight: optionalDecimal(input.sourceFullHeight),
         description: optionalText(input.description),
         supplier: optionalText(input.supplier),
         costPrice: proRataOffCutCost(input),
@@ -270,7 +382,11 @@ export const inventoryRouter = router({
       branchId: z.number().nullable().optional(),
       conditionIndicator: z.enum(["new", "damaged", "off_cut"]).optional(),
       actualSize: z.string().nullable().optional(),
+      actualWidth: z.string().nullable().optional(),
+      actualHeight: z.string().nullable().optional(),
       sourceFullLength: z.string().nullable().optional(),
+      sourceFullWidth: z.string().nullable().optional(),
+      sourceFullHeight: z.string().nullable().optional(),
       description: z.string().nullable().optional(),
       supplier: z.string().nullable().optional(),
       costPrice: z.string().nullable().optional(),
@@ -294,7 +410,11 @@ export const inventoryRouter = router({
       if (updates.branchId !== undefined) cleanedUpdates.branchId = updates.branchId || null;
       if (updates.conditionIndicator !== undefined) cleanedUpdates.conditionIndicator = updates.conditionIndicator;
       if (updates.actualSize !== undefined) cleanedUpdates.actualSize = optionalDecimal(updates.actualSize);
+      if (updates.actualWidth !== undefined) cleanedUpdates.actualWidth = optionalDecimal(updates.actualWidth);
+      if (updates.actualHeight !== undefined) cleanedUpdates.actualHeight = optionalDecimal(updates.actualHeight);
       if (updates.sourceFullLength !== undefined) cleanedUpdates.sourceFullLength = optionalDecimal(updates.sourceFullLength);
+      if (updates.sourceFullWidth !== undefined) cleanedUpdates.sourceFullWidth = optionalDecimal(updates.sourceFullWidth);
+      if (updates.sourceFullHeight !== undefined) cleanedUpdates.sourceFullHeight = optionalDecimal(updates.sourceFullHeight);
       if (updates.description !== undefined) cleanedUpdates.description = optionalText(updates.description);
       if (updates.supplier !== undefined) cleanedUpdates.supplier = optionalText(updates.supplier);
       if (updates.costPrice !== undefined) {
@@ -302,7 +422,11 @@ export const inventoryRouter = router({
           conditionIndicator: updates.conditionIndicator ?? item.conditionIndicator,
           costPrice: updates.costPrice,
           actualSize: updates.actualSize ?? item.actualSize,
+          actualWidth: updates.actualWidth ?? item.actualWidth,
+          actualHeight: updates.actualHeight ?? item.actualHeight,
           sourceFullLength: updates.sourceFullLength ?? item.sourceFullLength,
+          sourceFullWidth: updates.sourceFullWidth ?? item.sourceFullWidth,
+          sourceFullHeight: updates.sourceFullHeight ?? item.sourceFullHeight,
           name: updates.name ?? item.name,
           description: updates.description ?? item.description,
         });
@@ -411,7 +535,7 @@ export const inventoryRouter = router({
               .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, existing.id))));
             updated += 1;
           } else {
-            await db.insert(inventoryStockItems).values({
+            await insertInventoryStockItem(db, {
               ...productValues,
               branchId: branch.id,
             });

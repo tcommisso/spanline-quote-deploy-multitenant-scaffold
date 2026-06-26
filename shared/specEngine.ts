@@ -42,6 +42,21 @@ export interface ProductLookup {
   coverageWidth: number | null;
 }
 
+export interface WindowDoorOptionModifier {
+  id: number;
+  productType: "window" | "door";
+  optionGroup: "glass_type" | "tint" | "obscurity" | "etched" | "screen" | "pet_door" | "other";
+  optionValue: string;
+  adjustmentType: "percent" | "fixed";
+  costAdjustmentValue: string | number;
+  sellAdjustmentValue: string | number;
+  appliesTo?: string | null;
+  label?: string | null;
+  notes?: string | null;
+  sortOrder?: number | null;
+  active?: boolean | null;
+}
+
 export interface GeneratedItem {
   specMappingId: number;
   productId: number | null;
@@ -90,6 +105,18 @@ function formatSpecValueForDescription(value: unknown): string {
   if (value == null || Array.isArray(value) || typeof value === "object") return "";
   const text = String(value).trim();
   return text && text.toLowerCase() !== "none" ? text : "";
+}
+
+function splitOptionValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap(item => splitOptionValues(item))
+      .filter(Boolean);
+  }
+  return String(value ?? "")
+    .split(",")
+    .map(part => part.trim())
+    .filter(part => part && part.toLowerCase() !== "none" && part.toLowerCase() !== "n/a");
 }
 
 function findProductBySpecMatch(
@@ -151,6 +178,26 @@ function readString(record: Record<string, unknown>, keys: string[]): string {
     }
   }
   return "";
+}
+
+function readNumber(record: Record<string, unknown>, keys: string[], fallback = 0): number {
+  for (const key of keys) {
+    const value = record[key];
+    const numeric = typeof value === "number" ? value : parseFloat(String(value ?? ""));
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  }
+  return fallback;
+}
+
+function numberTokens(value: unknown): number[] {
+  return String(value ?? "")
+    .match(/\d+(?:\.\d+)?/g)
+    ?.map(token => Number(token))
+    .filter(Number.isFinite) || [];
+}
+
+function hasApproxNumber(tokens: number[], target: number): boolean {
+  return tokens.some(token => Math.abs(token - target) < 0.01);
 }
 
 function readBeamLm(record: Record<string, unknown>): number {
@@ -511,6 +558,271 @@ export function calculateRates(
   return { costRate, sellRate: costRate * markup };
 }
 
+type WindowDoorOptionSelection = {
+  group: WindowDoorOptionModifier["optionGroup"];
+  value: string;
+  sourceField: string;
+};
+
+function optionGroupLabel(group: WindowDoorOptionModifier["optionGroup"]): string {
+  return {
+    glass_type: "Glass type",
+    tint: "Tint",
+    obscurity: "Obscurity",
+    etched: "Etched glass",
+    screen: "Screen",
+    pet_door: "Pet door",
+    other: "Option",
+  }[group];
+}
+
+function getWindowDoorOptionSelections(
+  productType: "window" | "door",
+  specValues: SpecValues,
+  entry?: Record<string, unknown>
+): WindowDoorOptionSelection[] {
+  const selections: WindowDoorOptionSelection[] = [];
+  const addSelections = (group: WindowDoorOptionModifier["optionGroup"], sourceField: string) => {
+    for (const value of splitOptionValues(specValues[sourceField])) {
+      selections.push({ group, value, sourceField });
+    }
+  };
+  const addEntryScreen = (sourceField: string) => {
+    if (!entry) return;
+    const screen = readString(entry, ["screen", "screenType"]);
+    if (screen) selections.push({ group: "screen", value: screen, sourceField });
+  };
+
+  if (productType === "window") {
+    addSelections("glass_type", "specWindowGlassType");
+    addSelections("tint", "specWindowsTint");
+    if (entry) {
+      addEntryScreen("specWindowEntries.screen");
+    } else {
+      for (const windowEntry of parseSpecArray(specValues.specWindowEntries)) {
+        if (!windowEntry || typeof windowEntry !== "object" || Array.isArray(windowEntry)) continue;
+        const screen = readString(windowEntry as Record<string, unknown>, ["screen", "screenType"]);
+        if (screen) selections.push({ group: "screen", value: screen, sourceField: "specWindowEntries.screen" });
+      }
+    }
+  } else {
+    addSelections("glass_type", "specDoorGlassType");
+    addSelections("tint", "specDoorsTint");
+    if (entry) {
+      addEntryScreen("specDoorEntries.screen");
+    } else {
+      for (const doorEntry of parseSpecArray(specValues.specDoorEntries)) {
+        if (!doorEntry || typeof doorEntry !== "object" || Array.isArray(doorEntry)) continue;
+        const screen = readString(doorEntry as Record<string, unknown>, ["screen", "screenType"]);
+        if (screen) selections.push({ group: "screen", value: screen, sourceField: "specDoorEntries.screen" });
+      }
+    }
+  }
+
+  addSelections("tint", "specGlassTint");
+  addSelections("obscurity", "specGlassObscurity");
+  addSelections("etched", "specGlassEtched");
+  addSelections("pet_door", "specGlassPetDoor");
+
+  const seen = new Set<string>();
+  return selections.filter((selection) => {
+    const key = `${selection.group}|${normalizeMatchValue(selection.value)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function findWindowDoorOptionModifiers(
+  optionModifiers: WindowDoorOptionModifier[],
+  productType: "window" | "door",
+  selection: WindowDoorOptionSelection
+): WindowDoorOptionModifier[] {
+  const selectedValue = normalizeMatchValue(selection.value);
+  if (!selectedValue) return [];
+  return optionModifiers
+    .filter(modifier => modifier.active !== false)
+    .filter(modifier => modifier.productType === productType)
+    .filter(modifier => modifier.optionGroup === selection.group)
+    .filter((modifier) => {
+      const modifierValue = normalizeMatchValue(modifier.optionValue);
+      return modifierValue === selectedValue || modifierValue.includes(selectedValue) || selectedValue.includes(modifierValue);
+    })
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+}
+
+function buildWindowDoorModifierItems(
+  mapping: SpecMapping,
+  baseItem: GeneratedItem,
+  specValues: SpecValues,
+  optionModifiers: WindowDoorOptionModifier[],
+  entry?: Record<string, unknown>
+): GeneratedItem[] {
+  const productType = getProductTabName(mapping.tabName).includes("door") ? "door" : getProductTabName(mapping.tabName).includes("window") ? "window" : null;
+  if (!productType) return [];
+
+  const baseQty = Number(baseItem.qty || 0);
+  const baseCostTotal = baseQty * Number(baseItem.costRate || 0);
+  const baseSellTotal = baseQty * Number(baseItem.sellRate || 0);
+  if (baseQty <= 0 || (baseCostTotal <= 0 && baseSellTotal <= 0)) return [];
+
+  const items: GeneratedItem[] = [];
+  for (const selection of getWindowDoorOptionSelections(productType, specValues, entry)) {
+    for (const modifier of findWindowDoorOptionModifiers(optionModifiers, productType, selection)) {
+      const costAdjustmentValue = Number(modifier.costAdjustmentValue || 0);
+      const sellAdjustmentValue = Number(modifier.sellAdjustmentValue || 0);
+      if (costAdjustmentValue === 0 && sellAdjustmentValue === 0) continue;
+
+      const isPercent = modifier.adjustmentType === "percent";
+      const qty = isPercent ? 1 : baseQty;
+      const costRate = isPercent ? baseCostTotal * (costAdjustmentValue / 100) : costAdjustmentValue;
+      const sellRate = isPercent ? baseSellTotal * (sellAdjustmentValue / 100) : sellAdjustmentValue;
+      const adjustmentLabel = modifier.label || `${optionGroupLabel(selection.group)}: ${selection.value}`;
+      const notes = [
+        `${optionGroupLabel(selection.group)} modifier from ${selection.sourceField}`,
+        isPercent
+          ? `cost ${formatTakeoffNumber(costAdjustmentValue)}%, sell ${formatTakeoffNumber(sellAdjustmentValue)}% of base ${productType} line`
+          : `fixed cost $${formatTakeoffNumber(costAdjustmentValue)}, sell $${formatTakeoffNumber(sellAdjustmentValue)} per ${productType}`,
+        modifier.notes || "",
+      ].filter(Boolean).join("; ");
+
+      items.push({
+        specMappingId: mapping.id,
+        productId: null,
+        tabName: mapping.tabName,
+        description: `${baseItem.description} - ${adjustmentLabel}`,
+        colour: baseItem.colour,
+        bottomColour: baseItem.bottomColour,
+        uom: isPercent ? "adj" : baseItem.uom,
+        qty: Math.round(qty * 1000) / 1000,
+        costRate: Math.round(costRate * 100) / 100,
+        sellRate: Math.round(sellRate * 100) / 100,
+        notes,
+        source: "auto",
+      });
+    }
+  }
+
+  return items;
+}
+
+function getWindowDoorScheduleProductType(mapping: SpecMapping): "window" | "door" | null {
+  const tabName = getProductTabName(mapping.tabName);
+  if (mapping.specField === "specWindowEntries" && tabName.includes("window")) return "window";
+  if (mapping.specField === "specDoorEntries" && tabName.includes("door")) return "door";
+  return null;
+}
+
+function windowDoorEntryLabel(productType: "window" | "door", entry: Record<string, unknown>): string {
+  const style = readString(entry, ["style", "type"]) || (productType === "window" ? "Window" : "Door");
+  const width = readNumber(entry, ["width", "widthMm", "w"]);
+  const height = readNumber(entry, ["height", "heightMm", "h"]);
+  const panels = readNumber(entry, ["panels", "panelCount"]);
+  const panelText = productType === "door" && panels > 0 ? ` ${formatTakeoffNumber(panels)} panel` : "";
+  const dimensionText = width > 0 && height > 0 ? ` ${formatTakeoffNumber(width)}x${formatTakeoffNumber(height)}mm` : "";
+  return `${style}${panelText} ${productType}${dimensionText}`.replace(/\s+/g, " ").trim();
+}
+
+function findProductForWindowDoorEntry(
+  products: ProductLookup[],
+  mapping: SpecMapping,
+  productType: "window" | "door",
+  entry: Record<string, unknown>,
+  fallbackMatchValue: unknown
+): ProductLookup | null {
+  const candidates = products.filter(product => productMatchesTargetTab(product, mapping.tabName));
+  const style = normalizeMatchValue(readString(entry, ["style", "type"]));
+  const width = readNumber(entry, ["width", "widthMm", "w"]);
+  const height = readNumber(entry, ["height", "heightMm", "h"]);
+  const panels = readNumber(entry, ["panels", "panelCount"]);
+  const entryLabel = normalizeMatchValue(windowDoorEntryLabel(productType, entry));
+
+  const withDimensions = candidates.filter((product) => {
+    const numbers = numberTokens(product.name);
+    return (!width || hasApproxNumber(numbers, width)) && (!height || hasApproxNumber(numbers, height));
+  });
+
+  const styleAndDimensions = withDimensions.find((product) => {
+    const name = normalizeMatchValue(product.name);
+    const panelMatch = panels <= 0 || name.includes(String(panels)) || numberTokens(product.name).some(value => value === panels);
+    return (!style || name.includes(style)) && panelMatch;
+  });
+  if (styleAndDimensions) return styleAndDimensions;
+
+  const exactLabel = candidates.find(product => normalizeMatchValue(product.name) === entryLabel);
+  if (exactLabel) return exactLabel;
+
+  const dimensionOnly = withDimensions[0];
+  if (dimensionOnly) return dimensionOnly;
+
+  const styleOnly = candidates.find((product) => {
+    const name = normalizeMatchValue(product.name);
+    return style && name.includes(style) && name.includes(productType);
+  });
+  if (styleOnly) return styleOnly;
+
+  return findProductBySpecMatch(products, mapping.tabName, fallbackMatchValue || readString(entry, ["style", "type"]));
+}
+
+function buildWindowDoorScheduleItems(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown,
+  products: ProductLookup[],
+  markupRates: MarkupRates,
+  defaultMarkup: number,
+  optionModifiers: WindowDoorOptionModifier[]
+): GeneratedItem[] | null {
+  const productType = getWindowDoorScheduleProductType(mapping);
+  if (!productType) return null;
+
+  const fallbackMatchValue = resolveProductMatchValue(mapping, specValues, fieldValue);
+  const colour = mapping.colourField ? String(specValues[mapping.colourField] || "") : "";
+  const bottomColour = mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "";
+  const entries = parseSpecArray(fieldValue)
+    .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
+
+  const items: GeneratedItem[] = [];
+  for (const entry of entries) {
+    const qty = readNumber(entry, ["qty", "quantity"], 1);
+    if (qty <= 0) continue;
+
+    const product = findProductForWindowDoorEntry(products, mapping, productType, entry, fallbackMatchValue);
+    const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+    const resolvedUom = mapping.uom || product?.uom || "ea";
+    const label = windowDoorEntryLabel(productType, entry);
+    const description = product
+      ? `${product.name} - ${label}`
+      : (mapping.description ? `${mapping.description} - ${label}` : label);
+    const screen = readString(entry, ["screen", "screenType"]);
+    const notes = [
+      `${productType === "window" ? "Window" : "Door"} schedule takeoff: ${formatTakeoffNumber(qty)} x ${label}`,
+      screen && screen.toLowerCase() !== "n/a" ? `screen: ${screen}` : "",
+      product ? `matched product: ${product.name}` : "no matching product found",
+    ].filter(Boolean).join("; ");
+
+    const baseItem: GeneratedItem = {
+      specMappingId: mapping.id,
+      productId: product?.id || null,
+      tabName: mapping.tabName,
+      description,
+      colour,
+      bottomColour,
+      uom: resolvedUom,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate,
+      sellRate,
+      notes,
+      source: "auto",
+    };
+
+    items.push(baseItem);
+    items.push(...buildWindowDoorModifierItems(mapping, baseItem, specValues, optionModifiers, entry));
+  }
+
+  return items;
+}
+
 /**
  * Main generation function: evaluates all active mappings against spec values
  * and produces quote line items.
@@ -520,7 +832,8 @@ export function generateItemsFromSpec(
   specValues: SpecValues,
   products: ProductLookup[],
   markupRates: MarkupRates,
-  defaultMarkup: number = 2.2
+  defaultMarkup: number = 2.2,
+  optionModifiers: WindowDoorOptionModifier[] = []
 ): GeneratedItem[] {
   const items: GeneratedItem[] = [];
 
@@ -535,6 +848,20 @@ export function generateItemsFromSpec(
     // Evaluate condition
     if (!evaluateCondition(fieldValue, mapping.condition)) {
       continue; // Condition not met, skip this mapping
+    }
+
+    const windowDoorScheduleItems = buildWindowDoorScheduleItems(
+      mapping,
+      specValues,
+      fieldValue,
+      products,
+      markupRates,
+      defaultMarkup,
+      optionModifiers,
+    );
+    if (windowDoorScheduleItems) {
+      items.push(...windowDoorScheduleItems);
+      continue;
     }
 
     if (mapping.specField === "specBeamEntries") {
@@ -687,7 +1014,7 @@ export function generateItemsFromSpec(
     // Build description
     const description = mappingFallbackDescription(mapping, product, matchValue);
 
-    items.push({
+    const baseItem: GeneratedItem = {
       specMappingId: mapping.id,
       productId: product?.id || null,
       tabName: mapping.tabName,
@@ -700,7 +1027,10 @@ export function generateItemsFromSpec(
       sellRate,
       notes,
       source: "auto",
-    });
+    };
+
+    items.push(baseItem);
+    items.push(...buildWindowDoorModifierItems(mapping, baseItem, specValues, optionModifiers));
   }
 
   return items;

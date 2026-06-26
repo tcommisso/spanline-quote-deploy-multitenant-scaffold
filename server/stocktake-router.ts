@@ -253,9 +253,14 @@ function isMissingDimensionColumnError(error: unknown) {
   if (/(unknown column|no such column|doesn't exist|does not exist)/i.test(message)) return true;
 
   // Drizzle can wrap the driver error and only expose the generated query text.
-  // In that shape, the safest recovery is still the pre-0062 select fallback.
-  return /failed query:\s*select/i.test(message)
-    && /(from `?(stocktake_lines|inventory_stock_items)`?|from\s+(stocktake_lines|inventory_stock_items))/i.test(message);
+  // In that shape, the safest recovery is still the pre-0062 fallback.
+  return (
+    /failed query:\s*select/i.test(message)
+      && /(from `?(stocktake_lines|inventory_stock_items)`?|from\s+(stocktake_lines|inventory_stock_items))/i.test(message)
+  ) || (
+    /failed query:\s*insert/i.test(message)
+      && /(into `?(stocktake_lines|inventory_stock_items)`?|into\s+(stocktake_lines|inventory_stock_items))/i.test(message)
+  );
 }
 
 async function selectStocktakeLinesForDetail(db: any, stocktakeId: number) {
@@ -341,6 +346,93 @@ async function selectInventoryItemsForStocktakeDetail(db: any, ctx: any, itemIds
   }
 }
 
+async function insertInventoryStockItemForStocktake(db: any, values: Record<string, any>) {
+  try {
+    const [result] = await db.insert(inventoryStockItems).values(values);
+    return result;
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stock item dimension columns are missing; inserting stocktake variant with pre-0062 fallback.", error);
+    const [result] = await db.execute(sql`
+      INSERT INTO inventory_stock_items (
+        tenantId,
+        code,
+        name,
+        serial_number,
+        category,
+        unit,
+        unit_type,
+        reorder_qty,
+        min_stock_level,
+        branch_id,
+        condition_indicator,
+        actual_size,
+        source_full_length,
+        description,
+        supplier,
+        cost_price,
+        catalogue_item_id,
+        manufacturing_catalogue_product_id,
+        is_active
+      ) VALUES (
+        ${values.tenantId ?? null},
+        ${values.code},
+        ${values.name},
+        ${values.serialNumber ?? null},
+        ${values.category ?? "general"},
+        ${values.unit ?? "EA"},
+        ${values.unitType ?? "unit"},
+        ${values.reorderQty ?? null},
+        ${values.minStockLevel ?? null},
+        ${values.branchId ?? null},
+        ${values.conditionIndicator ?? "new"},
+        ${values.actualSize ?? null},
+        ${values.sourceFullLength ?? null},
+        ${values.description ?? null},
+        ${values.supplier ?? null},
+        ${values.costPrice ?? null},
+        ${values.catalogueItemId ?? null},
+        ${values.manufacturingCatalogueProductId ?? null},
+        ${values.isActive ?? true}
+      )
+    `);
+    return result;
+  }
+}
+
+async function insertStocktakeLineRows(db: any, rows: Array<Record<string, any>>) {
+  if (!rows.length) return;
+  try {
+    await db.insert(stocktakeLines).values(rows);
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stocktake line dimension columns are missing; inserting lines with pre-0062 fallback.", error);
+    await db.execute(sql`
+      INSERT INTO stocktake_lines (
+        stocktake_id,
+        stock_item_id,
+        condition_indicator,
+        colour,
+        actual_size,
+        source_full_length,
+        system_qty,
+        unit_cost,
+        notes
+      ) VALUES ${sql.join(rows.map((row) => sql`(
+        ${row.stocktakeId},
+        ${row.stockItemId},
+        ${row.conditionIndicator ?? "new"},
+        ${row.colour ?? null},
+        ${row.actualSize ?? null},
+        ${row.sourceFullLength ?? null},
+        ${row.systemQty ?? "0"},
+        ${row.unitCost ?? "0"},
+        ${row.notes ?? null}
+      )`), sql`, `)}
+    `);
+  }
+}
+
 async function requireStocktakeAccess(db: any, ctx: any, stocktakeId: number) {
   const [stocktake] = await db.select()
     .from(stocktakes)
@@ -391,7 +483,7 @@ async function resolveStocktakeMovementStockItem(db: any, ctx: any, line: typeof
     };
   }
 
-  const [result] = await db.insert(inventoryStockItems).values({
+  const result = await insertInventoryStockItemForStocktake(db, {
     tenantId: tenantIdFromContext(ctx),
     code: variantCode,
     name: stocktakeVariantName(item.name, line),
@@ -600,7 +692,7 @@ export const stocktakeRouter = router({
 
     // Create lines
     if (lineData.length) {
-      await db.insert(stocktakeLines).values(lineData.map(l => ({
+      await insertStocktakeLineRows(db, lineData.map(l => ({
         stocktakeId,
         stockItemId: l.stockItemId,
         conditionIndicator: l.conditionIndicator,
@@ -645,7 +737,7 @@ export const stocktakeRouter = router({
     if (!sourceLine) throw new TRPCError({ code: "NOT_FOUND", message: "Source stocktake line not found" });
     await requireStockItemAccess(db, ctx, sourceLine.stockItemId);
 
-    const [result] = await db.insert(stocktakeLines).values({
+    const lineValues = {
       stocktakeId: input.stocktakeId,
       stockItemId: sourceLine.stockItemId,
       conditionIndicator: input.conditionIndicator || sourceLine.conditionIndicator || "new",
@@ -659,13 +751,22 @@ export const stocktakeRouter = router({
       systemQty: "0",
       unitCost: sourceLine.unitCost || "0",
       notes: input.notes || "Additional count line",
-    });
+    };
+
+    let insertedId: number | null = null;
+    try {
+      const [result] = await db.insert(stocktakeLines).values(lineValues);
+      insertedId = Number((result as any)?.insertId);
+    } catch (error) {
+      if (!isMissingDimensionColumnError(error)) throw error;
+      await insertStocktakeLineRows(db, [lineValues]);
+    }
 
     await db.update(stocktakes).set({
       totalItems: sql`${stocktakes.totalItems} + 1`,
     }).where(and(...stocktakeTenantConditions(ctx, eq(stocktakes.id, input.stocktakeId))));
 
-    return { success: true, id: Number(result.insertId) };
+    return { success: true, id: insertedId != null && Number.isFinite(insertedId) && insertedId > 0 ? insertedId : null };
   }),
 
   // Update counted quantities for lines

@@ -1,7 +1,7 @@
 import { eq, and, asc, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
-import { specMappings, specMappingHistory, quoteItems, products } from "../drizzle/schema";
+import { specMappings, specMappingHistory, quoteItems, products, windowDoorOptionModifiers } from "../drizzle/schema";
 import { appendTenantScope } from "./_core/tenant-scope";
 import { appendPrivateTenantScope } from "./private-tenant-scope";
 
@@ -236,4 +236,67 @@ export async function getAllProducts(tenantId?: number | null) {
   const conditions: any[] = [eq(products.active, true)];
   await appendPrivateTenantScope(conditions, products.tenantId, tenantId);
   return db.select().from(products).where(and(...conditions)).orderBy(asc(products.tabName), asc(products.sortOrder));
+}
+
+// ─── Window/Door Option Modifiers ─────────────────────────────────────────
+
+export async function listWindowDoorOptionModifiers(tenantId?: number | null) {
+  const conditions: any[] = [];
+  await appendPrivateTenantScope(conditions, windowDoorOptionModifiers.tenantId, tenantId);
+  return db.select().from(windowDoorOptionModifiers)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder), asc(windowDoorOptionModifiers.id));
+}
+
+export async function getActiveWindowDoorOptionModifiers(tenantId?: number | null) {
+  return db.select().from(windowDoorOptionModifiers)
+    .where(await withTenant([eq(windowDoorOptionModifiers.active, true)], windowDoorOptionModifiers.tenantId, tenantId))
+    .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder));
+}
+
+export async function createWindowDoorOptionModifier(data: {
+  productType: "window" | "door";
+  optionGroup: "glass_type" | "tint" | "obscurity" | "etched" | "screen" | "pet_door" | "other";
+  optionValue: string;
+  adjustmentType: "percent" | "fixed";
+  costAdjustmentValue?: string | number;
+  sellAdjustmentValue?: string | number;
+  appliesTo?: string | null;
+  label?: string | null;
+  notes?: string | null;
+  sortOrder?: number;
+  active?: boolean;
+}, tenantId?: number | null) {
+  const [result] = await db.insert(windowDoorOptionModifiers).values({
+    ...data,
+    tenantId,
+    costAdjustmentValue: String(data.costAdjustmentValue ?? "0"),
+    sellAdjustmentValue: String(data.sellAdjustmentValue ?? "0"),
+  } as any);
+  return result.insertId;
+}
+
+export async function updateWindowDoorOptionModifier(id: number, data: Partial<{
+  productType: "window" | "door";
+  optionGroup: "glass_type" | "tint" | "obscurity" | "etched" | "screen" | "pet_door" | "other";
+  optionValue: string;
+  adjustmentType: "percent" | "fixed";
+  costAdjustmentValue: string | number;
+  sellAdjustmentValue: string | number;
+  appliesTo: string | null;
+  label: string | null;
+  notes: string | null;
+  sortOrder: number;
+  active: boolean;
+}>, tenantId?: number | null) {
+  const updateData: any = { ...data };
+  if (data.costAdjustmentValue !== undefined) updateData.costAdjustmentValue = String(data.costAdjustmentValue);
+  if (data.sellAdjustmentValue !== undefined) updateData.sellAdjustmentValue = String(data.sellAdjustmentValue);
+  await db.update(windowDoorOptionModifiers).set(updateData)
+    .where(await withTenant([eq(windowDoorOptionModifiers.id, id)], windowDoorOptionModifiers.tenantId, tenantId));
+}
+
+export async function deleteWindowDoorOptionModifier(id: number, tenantId?: number | null) {
+  await db.delete(windowDoorOptionModifiers)
+    .where(await withTenant([eq(windowDoorOptionModifiers.id, id)], windowDoorOptionModifiers.tenantId, tenantId));
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateItemsFromSpec, type ProductLookup, type SpecMapping, type SpecValues } from "../shared/specEngine";
+import { generateItemsFromSpec, type ProductLookup, type SpecMapping, type SpecValues, type WindowDoorOptionModifier } from "../shared/specEngine";
 
 function product(overrides: Partial<ProductLookup>): ProductLookup {
   return {
@@ -59,6 +59,44 @@ function beamMapping(overrides: Partial<SpecMapping> = {}): SpecMapping {
   };
 }
 
+function windowMapping(overrides: Partial<SpecMapping> = {}): SpecMapping {
+  return {
+    id: 500,
+    name: "Windows from schedule",
+    tabName: "windows",
+    specField: "specWindowEntries",
+    condition: "!= ''",
+    productId: null,
+    productMatch: "specWindowType",
+    qtyFormula: "1",
+    description: null,
+    colourField: "specWindowsFrameColour",
+    bottomColourField: null,
+    uom: "ea",
+    sortOrder: 74,
+    active: true,
+    ...overrides,
+  };
+}
+
+function optionModifier(overrides: Partial<WindowDoorOptionModifier>): WindowDoorOptionModifier {
+  return {
+    id: 1,
+    productType: "window",
+    optionGroup: "glass_type",
+    optionValue: "Double Glaze",
+    adjustmentType: "percent",
+    costAdjustmentValue: 0,
+    sellAdjustmentValue: 20,
+    appliesTo: "base_line",
+    label: null,
+    notes: null,
+    sortOrder: 0,
+    active: true,
+    ...overrides,
+  };
+}
+
 const roofSpecValues: SpecValues = {
   specRoofType: "Ultra 48",
   specRoofTopColour: "Prospan-Caulfield Green/Smooth Cream",
@@ -100,6 +138,56 @@ describe("generateItemsFromSpec roof sheet matching", () => {
     expect(items[0].qty).toBe(55.197);
     expect(items[0].notes).toContain("8 sheets");
     expect(items[0].notes).toContain("42.06m² / 762mm cover = 55.197 LM");
+  });
+});
+
+describe("generateItemsFromSpec window and door option modifiers", () => {
+  it("expands window schedule entries and adds visible option modifier lines", () => {
+    const items = generateItemsFromSpec(
+      [windowMapping()],
+      {
+        specWindowEntries: [
+          { style: "Sliding", width: 1200, height: 900, qty: 2, screen: "Security" },
+        ],
+        specWindowGlassType: "Double Glaze",
+        specGlassTint: "Grey",
+        specWindowsFrameColour: "Monument",
+      },
+      [
+        product({
+          id: 50,
+          name: "Sliding Window 1200x900",
+          tabName: "windows",
+          uom: "ea",
+          materials: "300",
+          fixedSell: "1000",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+      [
+        optionModifier({ id: 1, optionGroup: "glass_type", optionValue: "Double Glaze", sellAdjustmentValue: 20 }),
+        optionModifier({ id: 2, optionGroup: "tint", optionValue: "Grey", sellAdjustmentValue: 5, sortOrder: 1 }),
+        optionModifier({ id: 3, optionGroup: "screen", optionValue: "Security", adjustmentType: "fixed", sellAdjustmentValue: 75, sortOrder: 2 }),
+      ],
+    );
+
+    expect(items).toHaveLength(4);
+    expect(items[0].productId).toBe(50);
+    expect(items[0].description).toBe("Sliding Window 1200x900 - Sliding window 1200x900mm");
+    expect(items[0].qty).toBe(2);
+    expect(items[0].sellRate).toBe(1000);
+    expect(items[0].colour).toBe("Monument");
+    expect(items[1].description).toContain("Glass type: Double Glaze");
+    expect(items[1].qty).toBe(1);
+    expect(items[1].uom).toBe("adj");
+    expect(items[1].sellRate).toBe(400);
+    const tintLine = items.find(item => item.description.includes("Tint: Grey"));
+    const screenLine = items.find(item => item.description.includes("Screen: Security"));
+    expect(tintLine?.sellRate).toBe(100);
+    expect(screenLine?.qty).toBe(2);
+    expect(screenLine?.sellRate).toBe(75);
   });
 });
 

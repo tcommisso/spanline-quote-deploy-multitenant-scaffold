@@ -893,6 +893,30 @@ export const quoteItems = mysqlTable("quote_items", {
 export type QuoteItem = typeof quoteItems.$inferSelect;
 export type InsertQuoteItem = typeof quoteItems.$inferInsert;
 
+// ─── Window/Door Option Modifiers ─────────────────────────────────────────
+export const windowDoorOptionModifiers = mysqlTable("window_door_option_modifiers", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  productType: mysqlEnum("productType", ["window", "door"]).notNull(),
+  optionGroup: mysqlEnum("optionGroup", ["glass_type", "tint", "obscurity", "etched", "screen", "pet_door", "other"]).notNull(),
+  optionValue: varchar("optionValue", { length: 128 }).notNull(),
+  adjustmentType: mysqlEnum("adjustmentType", ["percent", "fixed"]).notNull().default("percent"),
+  costAdjustmentValue: decimal("costAdjustmentValue", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  sellAdjustmentValue: decimal("sellAdjustmentValue", { precision: 10, scale: 2 }).notNull().default("0.00"),
+  appliesTo: varchar("appliesTo", { length: 32 }).notNull().default("base_line"),
+  label: varchar("label", { length: 255 }),
+  notes: text("notes"),
+  sortOrder: int("sortOrder").default(0),
+  active: boolean("active").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_wd_option_modifiers_tenant").on(table.tenantId),
+  index("idx_wd_option_modifiers_lookup").on(table.tenantId, table.productType, table.optionGroup, table.active),
+]);
+export type WindowDoorOptionModifier = typeof windowDoorOptionModifiers.$inferSelect;
+export type InsertWindowDoorOptionModifier = typeof windowDoorOptionModifiers.$inferInsert;
+
 
 // ─── CRM Module ─────────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Zap, Info, Download, Copy, Play, AlertTriangle, History, ShieldCheck, CircleAlert, CircleCheck, TriangleAlert, ChevronsUpDown, Check, BookOpen, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Zap, Info, Download, Copy, Play, AlertTriangle, History, ShieldCheck, CircleAlert, CircleCheck, TriangleAlert, ChevronsUpDown, Check, BookOpen, Search, SlidersHorizontal } from "lucide-react";
 import { useState, useMemo } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
@@ -53,6 +53,24 @@ interface MappingForm {
   active: boolean;
 }
 
+type OptionModifierProductType = "window" | "door";
+type OptionModifierGroup = "glass_type" | "tint" | "obscurity" | "etched" | "screen" | "pet_door" | "other";
+type OptionModifierAdjustmentType = "percent" | "fixed";
+
+interface OptionModifierForm {
+  productType: OptionModifierProductType;
+  optionGroup: OptionModifierGroup;
+  optionValue: string;
+  adjustmentType: OptionModifierAdjustmentType;
+  costAdjustmentValue: string;
+  sellAdjustmentValue: string;
+  appliesTo: string;
+  label: string;
+  notes: string;
+  sortOrder: number;
+  active: boolean;
+}
+
 const emptyForm: MappingForm = {
   name: "",
   tabName: "roof",
@@ -67,6 +85,36 @@ const emptyForm: MappingForm = {
   uom: "ea",
   sortOrder: 0,
   active: true,
+};
+
+const emptyOptionModifierForm: OptionModifierForm = {
+  productType: "window",
+  optionGroup: "glass_type",
+  optionValue: "",
+  adjustmentType: "percent",
+  costAdjustmentValue: "0",
+  sellAdjustmentValue: "0",
+  appliesTo: "base_line",
+  label: "",
+  notes: "",
+  sortOrder: 0,
+  active: true,
+};
+
+const OPTION_GROUP_LABELS: Record<OptionModifierGroup, string> = {
+  glass_type: "Glass Type",
+  tint: "Tint",
+  obscurity: "Obscurity",
+  etched: "Etched Glass",
+  screen: "Screen",
+  pet_door: "Pet Door",
+  other: "Other",
+};
+
+const OPTION_GROUPS = Object.entries(OPTION_GROUP_LABELS) as [OptionModifierGroup, string][];
+const OPTION_ADJUSTMENT_LABELS: Record<OptionModifierAdjustmentType, string> = {
+  percent: "Percent",
+  fixed: "Fixed per unit",
 };
 
 const csvCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
@@ -104,10 +152,12 @@ export default function SpecMappingsAdmin() {
   const { data: mappings, isLoading } = trpc.specItems.mappings.list.useQuery();
   const { data: allProducts } = trpc.products.getAll.useQuery();
   const { data: tabsAndUoms } = trpc.products.getTabsAndUoms.useQuery();
+  const { data: optionModifiers } = (trpc.specItems as any).optionModifiers.list.useQuery();
   const mappingRows = useMemo(() => Array.isArray(mappings) ? mappings : [], [mappings]);
   const productRows = useMemo(() => Array.isArray(allProducts) ? allProducts : [], [allProducts]);
   const tabRows = useMemo(() => Array.isArray(tabsAndUoms?.tabs) ? tabsAndUoms.tabs : [], [tabsAndUoms]);
   const subTabRows = useMemo(() => Array.isArray(tabsAndUoms?.subTabs) ? tabsAndUoms.subTabs : [], [tabsAndUoms]);
+  const optionModifierRows = useMemo(() => Array.isArray(optionModifiers) ? optionModifiers : [], [optionModifiers]);
 
   // Dynamically populate tab options from canonical product tab/sub-group data.
   const targetTabOptions = useMemo<TargetTabOption[]>(() => {
@@ -156,10 +206,33 @@ export default function SpecMappingsAdmin() {
     onSuccess: () => { toast.success("Mapping deleted"); utils.specItems.mappings.list.invalidate(); },
     onError: (e: any) => toast.error(e.message),
   });
+  const createOptionModifierMutation = (trpc.specItems as any).optionModifiers.create.useMutation({
+    onSuccess: () => { toast.success("Modifier created"); (utils.specItems as any).optionModifiers.list.invalidate(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const updateOptionModifierMutation = (trpc.specItems as any).optionModifiers.update.useMutation({
+    onSuccess: () => { toast.success("Modifier updated"); (utils.specItems as any).optionModifiers.list.invalidate(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const deleteOptionModifierMutation = (trpc.specItems as any).optionModifiers.delete.useMutation({
+    onSuccess: () => { toast.success("Modifier deleted"); (utils.specItems as any).optionModifiers.list.invalidate(); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const seedOptionModifiersMutation = (trpc.specItems as any).optionModifiers.seedDefaults.useMutation({
+    onSuccess: (data: any) => {
+      toast.success(`Created ${data.created} door/window modifiers (${data.skipped} unchanged)`);
+      (utils.specItems as any).optionModifiers.list.invalidate();
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
 
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<MappingForm>(emptyForm);
+  const [optionModifiersOpen, setOptionModifiersOpen] = useState(false);
+  const [optionModifierEditId, setOptionModifierEditId] = useState<number | null>(null);
+  const [optionModifierForm, setOptionModifierForm] = useState<OptionModifierForm>(emptyOptionModifierForm);
+  const [deleteOptionModifierTarget, setDeleteOptionModifierTarget] = useState<number | null>(null);
   const [filterTab, setFilterTab] = useState<string>("all");
   const [deleteMappingTarget, setDeleteMappingTarget] = useState<number | null>(null);
   const [selectedMappings, setSelectedMappings] = useState<Set<number>>(new Set());
@@ -258,6 +331,64 @@ export default function SpecMappingsAdmin() {
       updateMutation.mutate({ id: editId, data: payload });
     } else {
       createMutation.mutate(payload);
+    }
+  };
+
+  const resetOptionModifierForm = () => {
+    setOptionModifierEditId(null);
+    setOptionModifierForm(emptyOptionModifierForm);
+  };
+
+  const openCreateOptionModifier = () => {
+    resetOptionModifierForm();
+    setOptionModifiersOpen(true);
+  };
+
+  const openEditOptionModifier = (modifier: any) => {
+    setOptionModifierEditId(modifier.id);
+    setOptionModifierForm({
+      productType: modifier.productType || "window",
+      optionGroup: modifier.optionGroup || "glass_type",
+      optionValue: modifier.optionValue || "",
+      adjustmentType: modifier.adjustmentType || "percent",
+      costAdjustmentValue: String(modifier.costAdjustmentValue ?? "0"),
+      sellAdjustmentValue: String(modifier.sellAdjustmentValue ?? "0"),
+      appliesTo: modifier.appliesTo || "base_line",
+      label: modifier.label || "",
+      notes: modifier.notes || "",
+      sortOrder: Number(modifier.sortOrder || 0),
+      active: modifier.active !== false,
+    });
+    setOptionModifiersOpen(true);
+  };
+
+  const optionModifierPayload = () => ({
+    productType: optionModifierForm.productType,
+    optionGroup: optionModifierForm.optionGroup,
+    optionValue: optionModifierForm.optionValue.trim(),
+    adjustmentType: optionModifierForm.adjustmentType,
+    costAdjustmentValue: parseFloat(optionModifierForm.costAdjustmentValue) || 0,
+    sellAdjustmentValue: parseFloat(optionModifierForm.sellAdjustmentValue) || 0,
+    appliesTo: optionModifierForm.appliesTo || "base_line",
+    label: optionModifierForm.label.trim() || null,
+    notes: optionModifierForm.notes.trim() || null,
+    sortOrder: Number(optionModifierForm.sortOrder) || 0,
+    active: optionModifierForm.active,
+  });
+
+  const handleSaveOptionModifier = () => {
+    if (!optionModifierForm.optionValue.trim()) {
+      toast.error("Option value is required");
+      return;
+    }
+    const payload = optionModifierPayload();
+    if (optionModifierEditId) {
+      updateOptionModifierMutation.mutate(
+        { id: optionModifierEditId, data: payload },
+        { onSuccess: resetOptionModifierForm },
+      );
+    } else {
+      createOptionModifierMutation.mutate(payload, { onSuccess: resetOptionModifierForm });
     }
   };
 
@@ -387,6 +518,9 @@ export default function SpecMappingsAdmin() {
           </Button>
           <Button size="sm" variant="outline" onClick={() => setTermsOpen(true)} className="gap-1.5">
             <BookOpen className="h-3.5 w-3.5" /> Defined Terms
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setOptionModifiersOpen(true)} className="gap-1.5">
+            <SlidersHorizontal className="h-3.5 w-3.5" /> Door & Window Modifiers
           </Button>
           <Button size="sm" variant="outline" onClick={() => setDryRunOpen(true)} className="gap-1.5">
             <Play className="h-3.5 w-3.5" /> Dry Run
@@ -868,6 +1002,227 @@ export default function SpecMappingsAdmin() {
         title={`Delete ${selectedMappings.size} Mappings?`}
         description={`Are you sure you want to delete ${selectedMappings.size} selected mapping${selectedMappings.size !== 1 ? "s" : ""}? This action cannot be undone.`}
       />
+      <ConfirmDeleteDialog
+        open={deleteOptionModifierTarget !== null}
+        onOpenChange={(o) => { if (!o) setDeleteOptionModifierTarget(null); }}
+        onConfirm={() => {
+          if (deleteOptionModifierTarget) {
+            deleteOptionModifierMutation.mutate({ id: deleteOptionModifierTarget });
+            setDeleteOptionModifierTarget(null);
+          }
+        }}
+        title="Delete Door/Window Modifier?"
+        description="This will permanently remove this option pricing adjustment."
+      />
+
+      {/* Door & Window Option Modifiers */}
+      <Dialog
+        open={optionModifiersOpen}
+        onOpenChange={(value) => {
+          setOptionModifiersOpen(value);
+          if (!value) resetOptionModifierForm();
+        }}
+      >
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <SlidersHorizontal className="h-4 w-4" /> Door & Window Modifiers
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-muted-foreground">
+              Apply percentage or fixed adjustments to matched door/window base products without duplicating catalogue items.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => seedOptionModifiersMutation.mutate()}
+                disabled={seedOptionModifiersMutation.isPending}
+              >
+                <Zap className="mr-1.5 h-3.5 w-3.5" />
+                {seedOptionModifiersMutation.isPending ? "Seeding..." : "Seed Defaults"}
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={openCreateOptionModifier}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" /> New Modifier
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-[minmax(280px,360px)_1fr]">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">{optionModifierEditId ? "Edit Modifier" : "New Modifier"}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+                  <div className="space-y-1.5">
+                    <Label>Product Type</Label>
+                    <Select
+                      value={optionModifierForm.productType}
+                      onValueChange={(value: OptionModifierProductType) => setOptionModifierForm(prev => ({ ...prev, productType: value }))}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="window">Window</SelectItem>
+                        <SelectItem value="door">Door</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Option Group</Label>
+                    <Select
+                      value={optionModifierForm.optionGroup}
+                      onValueChange={(value: OptionModifierGroup) => setOptionModifierForm(prev => ({ ...prev, optionGroup: value }))}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {OPTION_GROUPS.map(([value, label]) => (
+                          <SelectItem key={value} value={value}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Option Value *</Label>
+                  <Input
+                    value={optionModifierForm.optionValue}
+                    placeholder="e.g. Double Glaze"
+                    onChange={(event) => setOptionModifierForm(prev => ({ ...prev, optionValue: event.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Display Label</Label>
+                  <Input
+                    value={optionModifierForm.label}
+                    placeholder="Optional line item label"
+                    onChange={(event) => setOptionModifierForm(prev => ({ ...prev, label: event.target.value }))}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Adjustment</Label>
+                    <Select
+                      value={optionModifierForm.adjustmentType}
+                      onValueChange={(value: OptionModifierAdjustmentType) => setOptionModifierForm(prev => ({ ...prev, adjustmentType: value }))}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="percent">Percent</SelectItem>
+                        <SelectItem value="fixed">Fixed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Sort Order</Label>
+                    <Input
+                      type="number"
+                      value={optionModifierForm.sortOrder}
+                      onChange={(event) => setOptionModifierForm(prev => ({ ...prev, sortOrder: Number(event.target.value) || 0 }))}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Cost Adj.</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={optionModifierForm.costAdjustmentValue}
+                      onChange={(event) => setOptionModifierForm(prev => ({ ...prev, costAdjustmentValue: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Sell Adj.</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={optionModifierForm.sellAdjustmentValue}
+                      onChange={(event) => setOptionModifierForm(prev => ({ ...prev, sellAdjustmentValue: event.target.value }))}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Percent modifiers use the base line total. Fixed modifiers apply per base unit.
+                </p>
+                <div className="flex items-center justify-between rounded-md border p-3">
+                  <div>
+                    <Label>Active</Label>
+                    <p className="text-xs text-muted-foreground">Inactive modifiers are ignored during generation.</p>
+                  </div>
+                  <Switch
+                    checked={optionModifierForm.active}
+                    onCheckedChange={(value) => setOptionModifierForm(prev => ({ ...prev, active: value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Input
+                    value={optionModifierForm.notes}
+                    placeholder="Internal pricing note"
+                    onChange={(event) => setOptionModifierForm(prev => ({ ...prev, notes: event.target.value }))}
+                  />
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <Button
+                    type="button"
+                    className="flex-1"
+                    onClick={handleSaveOptionModifier}
+                    disabled={createOptionModifierMutation.isPending || updateOptionModifierMutation.isPending}
+                  >
+                    {optionModifierEditId ? "Update Modifier" : "Create Modifier"}
+                  </Button>
+                  {optionModifierEditId && (
+                    <Button type="button" variant="outline" onClick={resetOptionModifierForm}>Cancel</Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+            <div className="space-y-2">
+              {optionModifierRows.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  No modifiers configured yet. Seed defaults to add common glass and tint markups.
+                </div>
+              ) : (
+                optionModifierRows.map((modifier: any) => {
+                  const groupLabel = OPTION_GROUP_LABELS[modifier.optionGroup as OptionModifierGroup] || modifier.optionGroup;
+                  const adjustmentLabel = OPTION_ADJUSTMENT_LABELS[modifier.adjustmentType as OptionModifierAdjustmentType] || modifier.adjustmentType;
+                  return (
+                    <div key={modifier.id} className="rounded-lg border p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium capitalize">{modifier.productType}</p>
+                            <Badge variant="secondary">{groupLabel}</Badge>
+                            <Badge variant={modifier.active ? "default" : "outline"}>{modifier.active ? "Active" : "Inactive"}</Badge>
+                          </div>
+                          <p className="mt-1 text-sm font-medium">{modifier.label || modifier.optionValue}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {modifier.optionValue} · {adjustmentLabel} · cost {modifier.costAdjustmentValue ?? 0} · sell {modifier.sellAdjustmentValue ?? 0}
+                          </p>
+                          {modifier.notes && <p className="mt-1 text-xs text-muted-foreground">{modifier.notes}</p>}
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <Button type="button" size="icon" variant="ghost" onClick={() => openEditOptionModifier(modifier)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button type="button" size="icon" variant="ghost" onClick={() => setDeleteOptionModifierTarget(modifier.id)}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOptionModifiersOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Defined Terms Catalogue */}
       <Dialog open={termsOpen} onOpenChange={setTermsOpen}>

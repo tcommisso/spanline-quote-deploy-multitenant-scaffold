@@ -19,6 +19,11 @@ import {
   confirmQuoteItem,
   confirmAllItems,
   getAllProducts,
+  listWindowDoorOptionModifiers,
+  getActiveWindowDoorOptionModifiers,
+  createWindowDoorOptionModifier,
+  updateWindowDoorOptionModifier,
+  deleteWindowDoorOptionModifier,
   logMappingChange,
   getMappingHistory,
   getAllMappingHistory,
@@ -46,6 +51,44 @@ async function assertQuoteAccess(quoteId: number, tenantId: number, _user?: { ro
   if (!quote) throw new TRPCError({ code: "NOT_FOUND", message: "Quote not found" });
   return quote;
 }
+
+const optionModifierProductTypeSchema = z.enum(["window", "door"]);
+const optionModifierGroupSchema = z.enum(["glass_type", "tint", "obscurity", "etched", "screen", "pet_door", "other"]);
+const optionModifierAdjustmentTypeSchema = z.enum(["percent", "fixed"]);
+
+const optionModifierInputSchema = z.object({
+  productType: optionModifierProductTypeSchema,
+  optionGroup: optionModifierGroupSchema,
+  optionValue: z.string().min(1),
+  adjustmentType: optionModifierAdjustmentTypeSchema,
+  costAdjustmentValue: z.union([z.string(), z.number()]).optional(),
+  sellAdjustmentValue: z.union([z.string(), z.number()]).optional(),
+  appliesTo: z.string().nullable().optional(),
+  label: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  sortOrder: z.number().optional(),
+  active: z.boolean().optional(),
+});
+
+const DEFAULT_OPTION_MODIFIERS = [
+  { productType: "window", optionGroup: "glass_type", optionValue: "Double Glaze", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 20, sortOrder: 10 },
+  { productType: "window", optionGroup: "glass_type", optionValue: "Thermal Break", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 25, sortOrder: 11 },
+  { productType: "window", optionGroup: "glass_type", optionValue: "Toughened", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 10, sortOrder: 12 },
+  { productType: "window", optionGroup: "glass_type", optionValue: "Elow Glass", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 15, sortOrder: 13 },
+  { productType: "window", optionGroup: "tint", optionValue: "Grey", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 20 },
+  { productType: "window", optionGroup: "tint", optionValue: "Bronze", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 21 },
+  { productType: "window", optionGroup: "tint", optionValue: "Green", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 22 },
+  { productType: "door", optionGroup: "glass_type", optionValue: "Double Glaze", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 20, sortOrder: 30 },
+  { productType: "door", optionGroup: "glass_type", optionValue: "Thermal Break", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 25, sortOrder: 31 },
+  { productType: "door", optionGroup: "glass_type", optionValue: "Toughened", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 10, sortOrder: 32 },
+  { productType: "door", optionGroup: "tint", optionValue: "Grey", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 40 },
+  { productType: "door", optionGroup: "tint", optionValue: "Bronze", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 41 },
+  { productType: "door", optionGroup: "tint", optionValue: "Green", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 42 },
+  { productType: "window", optionGroup: "obscurity", optionValue: "Translucent", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 50 },
+  { productType: "window", optionGroup: "obscurity", optionValue: "Acid Etched", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 10, sortOrder: 51 },
+  { productType: "door", optionGroup: "obscurity", optionValue: "Translucent", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 5, sortOrder: 60 },
+  { productType: "door", optionGroup: "obscurity", optionValue: "Acid Etched", adjustmentType: "percent", costAdjustmentValue: 0, sellAdjustmentValue: 10, sortOrder: 61 },
+] as const;
 
 export const specItemsRouter = router({
   // ─── Spec Mappings (Admin) ──────────────────────────────────────────────────
@@ -162,6 +205,64 @@ export const specItemsRouter = router({
         }
         return { deleted: input.ids.length };
       }),
+  }),
+
+  optionModifiers: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      return listWindowDoorOptionModifiers(ctx.tenant!.id);
+    }),
+
+    create: adminProcedure
+      .input(optionModifierInputSchema)
+      .mutation(async ({ input, ctx }) => {
+        const id = await createWindowDoorOptionModifier({
+          ...input,
+          appliesTo: input.appliesTo || "base_line",
+          label: input.label || null,
+          notes: input.notes || null,
+        }, ctx.tenant!.id);
+        return { id };
+      }),
+
+    update: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        data: optionModifierInputSchema.partial(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await updateWindowDoorOptionModifier(input.id, {
+          ...input.data,
+          appliesTo: input.data.appliesTo || undefined,
+          label: input.data.label ?? undefined,
+          notes: input.data.notes ?? undefined,
+        }, ctx.tenant!.id);
+        return { success: true };
+      }),
+
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        await deleteWindowDoorOptionModifier(input.id, ctx.tenant!.id);
+        return { success: true };
+      }),
+
+    seedDefaults: adminProcedure.mutation(async ({ ctx }) => {
+      const existing = await listWindowDoorOptionModifiers(ctx.tenant!.id);
+      const existingKeys = new Set((existing as any[]).map(row => [
+        row.productType,
+        row.optionGroup,
+        String(row.optionValue || "").trim().toLowerCase(),
+      ].join("|")));
+
+      let created = 0;
+      for (const modifier of DEFAULT_OPTION_MODIFIERS) {
+        const key = [modifier.productType, modifier.optionGroup, modifier.optionValue.toLowerCase()].join("|");
+        if (existingKeys.has(key)) continue;
+        await createWindowDoorOptionModifier(modifier, ctx.tenant!.id);
+        created++;
+      }
+      return { created, skipped: DEFAULT_OPTION_MODIFIERS.length - created };
+    }),
   }),
 
   // ─── Quote Items ────────────────────────────────────────────────────────────
@@ -297,6 +398,7 @@ export const specItemsRouter = router({
 
       // Get all products for lookup
       const allProducts = await getAllProducts(ctx.tenant!.id);
+      const optionModifiers = await getActiveWindowDoorOptionModifiers(ctx.tenant!.id);
 
       // TODO: Get markup rates from master data (for now use default)
       const markupRates: Record<string, number> = {};
@@ -307,7 +409,8 @@ export const specItemsRouter = router({
         specValues as SpecValues,
         allProducts as any,
         markupRates,
-        2.2
+        2.2,
+        optionModifiers as any
       );
 
       // Delete existing auto items for this quote
@@ -567,6 +670,7 @@ export const specItemsRouter = router({
       // Get active mappings and products
       const mappings = await getActiveSpecMappings(ctx.tenant!.id);
       const allProducts = await getAllProducts(ctx.tenant!.id);
+      const optionModifiers = await getActiveWindowDoorOptionModifiers(ctx.tenant!.id);
 
       // Markup rates
       const { getMasterDataByCategory: getMD } = await import("./db");
@@ -582,7 +686,8 @@ export const specItemsRouter = router({
         specValues as SpecValues,
         allProducts as any,
         markupRates,
-        2.2
+        2.2,
+        optionModifiers as any
       );
 
       // Also report which mappings were skipped (condition not met)
@@ -661,8 +766,8 @@ export const specItemsRouter = router({
         { name: "Wall LM", tabName: "walls", specField: "specWallLM", condition: "> 0", productMatch: "specWallType", qtyFormula: "specWallLM", description: null, colourField: "specWallColour", bottomColourField: null, uom: "LM", sortOrder: 71 },
         { name: "IWP / Ceiling Panels", tabName: "walls", specField: "specIwpEntries", condition: "!= ''", productMatch: "specIwpEntries", qtyFormula: "wallSheetLM", description: null, colourField: "specIwpColour", bottomColourField: null, uom: "LM", sortOrder: 72 },
         { name: "Ceiling Finish", tabName: "walls", specField: "specCeilingFinish", condition: "!= ''", productMatch: "specCeilingFinish", qtyFormula: "specArea", description: null, colourField: "specCeilingColour", bottomColourField: null, uom: "m2", sortOrder: 73 },
-        { name: "Windows Allowance", tabName: "windows", specField: "specWindowEntries", condition: "!= ''", productMatch: "specWindowType", qtyFormula: "1", description: null, colourField: "specWindowsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 74 },
-        { name: "Doors Allowance", tabName: "doors", specField: "specDoorEntries", condition: "!= ''", productMatch: "specDoorType", qtyFormula: "1", description: null, colourField: "specDoorsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 75 },
+        { name: "Windows from schedule", tabName: "windows", specField: "specWindowEntries", condition: "!= ''", productMatch: "specWindowType", qtyFormula: "1", description: null, colourField: "specWindowsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 74 },
+        { name: "Doors from schedule", tabName: "doors", specField: "specDoorEntries", condition: "!= ''", productMatch: "specDoorType", qtyFormula: "1", description: null, colourField: "specDoorsFrameColour", bottomColourField: null, uom: "ea", sortOrder: 75 },
         { name: "Glass Screens", tabName: "glass", specField: "specGlassScreens", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGlassScreens", description: "Glass Screens", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 76 },
         { name: "Glass Options Allowance", tabName: "glass", specField: "specGlassWindows", condition: "!= ''", productMatch: "specGlassWindows", qtyFormula: "1", description: null, colourField: "specGlassTint", bottomColourField: null, uom: "ea", sortOrder: 77 },
         { name: "Pet Door", tabName: "glass", specField: "specGlassPetDoor", condition: "!= ''", productMatch: "specGlassPetDoor", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 78 },
@@ -727,6 +832,9 @@ export const specItemsRouter = router({
         "Pop-up Brackets",
         "Wall Fixing Bracket",
         "Twinwall",
+        "Windows Allowance",
+        "Doors Allowance",
+        "Glass Options Allowance",
       ];
 
       let created = 0;
