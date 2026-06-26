@@ -101,6 +101,9 @@ export function FlashingProfile3DPreview({
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.domElement.style.display = "block";
+      renderer.domElement.style.touchAction = "none";
+      renderer.domElement.style.cursor = "grab";
       mount.appendChild(renderer.domElement);
 
       const group = new THREE.Group();
@@ -113,6 +116,11 @@ export function FlashingProfile3DPreview({
         new THREE.LineBasicMaterial({ color: "#f8fafc", transparent: true, opacity: 0.72 }),
       );
       group.add(edgeLines);
+
+      const profileBox = new THREE.Box3().setFromObject(group);
+      const profileCenter = profileBox.getCenter(new THREE.Vector3());
+      const profileSize = profileBox.getSize(new THREE.Vector3());
+      group.position.sub(profileCenter);
 
       scene.add(group);
       scene.add(new THREE.HemisphereLight("#e0f2fe", "#1e293b", 1.6));
@@ -127,17 +135,24 @@ export function FlashingProfile3DPreview({
       grid.position.y = -18;
       scene.add(grid);
 
+      const maxProfileDimension = Math.max(profileSize.x, profileSize.y, profileSize.z, 1);
+      const cameraDistance = clamp(maxProfileDimension * 1.85, 95, 240);
       const target = new THREE.Vector3(0, 0, 0);
-      camera.lookAt(target);
+      camera.position.set(cameraDistance * 0.55, cameraDistance * 0.32, cameraDistance);
 
       let width = 1;
       let height = 1;
-      let animationFrame = 0;
       let isPointerDown = false;
       let lastPointerX = 0;
       let lastPointerY = 0;
-      let rotationY = -0.48;
-      let rotationX = -0.26;
+      let rotationY = -0.62;
+      let rotationX = -0.28;
+
+      const renderScene = () => {
+        group.rotation.set(rotationX, rotationY, 0);
+        camera.lookAt(target);
+        renderer.render(scene, camera);
+      };
 
       const resize = () => {
         width = Math.max(1, mount.clientWidth);
@@ -145,19 +160,14 @@ export function FlashingProfile3DPreview({
         renderer.setSize(width, height, false);
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
-      };
-
-      const render = () => {
-        if (!isPointerDown) rotationY += 0.0024;
-        group.rotation.set(rotationX, rotationY, 0);
-        renderer.render(scene, camera);
-        animationFrame = window.requestAnimationFrame(render);
+        renderScene();
       };
 
       const onPointerDown = (event: PointerEvent) => {
         isPointerDown = true;
         lastPointerX = event.clientX;
         lastPointerY = event.clientY;
+        renderer.domElement.style.cursor = "grabbing";
         renderer.domElement.setPointerCapture(event.pointerId);
       };
 
@@ -169,13 +179,16 @@ export function FlashingProfile3DPreview({
         rotationX = clamp(rotationX + deltaY * 0.006, -1.2, 0.7);
         lastPointerX = event.clientX;
         lastPointerY = event.clientY;
+        renderScene();
       };
 
       const onPointerUp = (event: PointerEvent) => {
         isPointerDown = false;
+        renderer.domElement.style.cursor = "grab";
         if (renderer.domElement.hasPointerCapture(event.pointerId)) {
           renderer.domElement.releasePointerCapture(event.pointerId);
         }
+        renderScene();
       };
 
       renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -186,10 +199,9 @@ export function FlashingProfile3DPreview({
       const resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(mount);
       resize();
-      render();
+      renderScene();
 
       return () => {
-        window.cancelAnimationFrame(animationFrame);
         resizeObserver.disconnect();
         renderer.domElement.removeEventListener("pointerdown", onPointerDown);
         renderer.domElement.removeEventListener("pointermove", onPointerMove);

@@ -1770,7 +1770,22 @@ export default function FlashingOrderDetail() {
       </div>
 
       <div className="rounded-lg border bg-card p-2 shadow-sm">
-        <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Flashing order workflow sections">
+        <div className="sm:hidden">
+          <label htmlFor="flashing-section-select" className="sr-only">Flashing order section</label>
+          <select
+            id="flashing-section-select"
+            className="h-12 w-full rounded-md border border-input bg-background px-3 text-sm font-semibold"
+            value={activeSection}
+            onChange={(event) => setActiveSection(event.target.value as WorkflowSectionKey)}
+          >
+            {workflowSections.map((section, index) => (
+              <option key={section.key} value={section.key}>
+                {index + 1}. {section.label}{section.count ? ` (${section.count})` : ""} - {section.detail}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="hidden gap-2 sm:grid sm:grid-cols-3 lg:grid-cols-6" role="tablist" aria-label="Flashing order workflow sections">
           {workflowSections.map((section, index) => {
             const isActive = activeSection === section.key;
             return (
@@ -1781,7 +1796,7 @@ export default function FlashingOrderDetail() {
                 aria-selected={isActive}
                 onClick={() => setActiveSection(section.key)}
                 className={cn(
-                  "min-w-[150px] flex-1 rounded-md border px-3 py-3 text-left transition-colors",
+                  "min-w-0 rounded-md border px-3 py-3 text-left transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                   isActive
                     ? "border-primary bg-primary text-primary-foreground shadow-sm"
