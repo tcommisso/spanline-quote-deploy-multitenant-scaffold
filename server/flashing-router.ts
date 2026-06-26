@@ -46,6 +46,7 @@ const profileGeometrySchema = z.object({
   gridSize: z.number().positive().default(20),
   snapToGrid: z.boolean().default(true),
   foldLabels: z.record(z.string(), z.string()).optional(),
+  foldDetails: z.record(z.string(), z.any()).optional(),
   notes: z.string().optional(),
 });
 

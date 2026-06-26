@@ -10,7 +10,6 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   ArrowLeft,
   Copy,
-  FileText,
   FlipHorizontal,
   Plus,
   RotateCcw,
@@ -29,8 +28,41 @@ type Geometry = {
   notes?: string;
 };
 
+type FoldDetails = {
+  segmentLengths?: Record<string, number>;
+  foldTypes?: Record<string, string>;
+  foldNotes?: Record<string, string>;
+};
+
+type FlashingLineDraft = {
+  id?: number;
+  profileName: string;
+  category: string;
+  materialType: string;
+  gauge: string;
+  colour: string;
+  colourSide: string;
+  finish: string;
+  quantity: number;
+  lengthMm: number;
+  unitPrice: number;
+  geometry: Geometry;
+  foldDetails: FoldDetails;
+  manufacturingNotes: string;
+  status: string;
+};
+
 const CANVAS_W = 560;
 const CANVAS_H = 320;
+
+const FOLD_TYPE_OPTIONS = [
+  { value: "standard", label: "Standard fold" },
+  { value: "crush", label: "Crush fold" },
+  { value: "open_hem", label: "Open hem" },
+  { value: "safety_fold", label: "Safety fold" },
+  { value: "return_fold", label: "Return fold" },
+  { value: "end_fold", label: "End fold" },
+] as const;
 
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
@@ -50,7 +82,13 @@ const DEFAULT_GEOMETRY: Geometry = {
   points: [],
 };
 
-const DEFAULT_LINE = {
+const DEFAULT_FOLD_DETAILS: FoldDetails = {
+  segmentLengths: {},
+  foldTypes: {},
+  foldNotes: {},
+};
+
+const DEFAULT_LINE: FlashingLineDraft = {
   id: undefined as number | undefined,
   profileName: "Custom flashing",
   category: "custom",
@@ -63,7 +101,7 @@ const DEFAULT_LINE = {
   lengthMm: 6500,
   unitPrice: 0,
   geometry: DEFAULT_GEOMETRY,
-  foldDetails: {},
+  foldDetails: DEFAULT_FOLD_DETAILS,
   manufacturingNotes: "",
   status: "draft",
 };
@@ -86,6 +124,13 @@ function formatCurrency(value: unknown) {
   return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(Number(value || 0));
 }
 
+function normaliseColourGroupName(value: unknown) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/colour/g, "color");
+}
+
 function distance(a: Point, b: Point) {
   return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
 }
@@ -94,8 +139,90 @@ function round(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function segmentKey(index: number) {
+  return `segment-${index + 1}`;
+}
+
+function foldKey(pointIndex: number) {
+  return `fold-${pointIndex}`;
+}
+
 function calculateGirth(points: Point[]) {
   return round(points.slice(1).reduce((total, point, index) => total + distance(points[index], point), 0));
+}
+
+function getFoldCount(points: Point[]) {
+  return Math.max(0, points.length - 2);
+}
+
+function normaliseFoldDetails(value: any): FoldDetails {
+  return {
+    segmentLengths: Object.fromEntries(
+      Object.entries(value?.segmentLengths || {})
+        .map(([key, length]) => [key, Number(length)])
+        .filter(([, length]) => Number.isFinite(length)),
+    ),
+    foldTypes: { ...(value?.foldTypes || {}) },
+    foldNotes: { ...(value?.foldNotes || {}) },
+  };
+}
+
+function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
+  const details = normaliseFoldDetails(value);
+  const segmentCount = Math.max(0, points.length - 1);
+  const foldCount = getFoldCount(points);
+  const nextSegmentLengths: Record<string, number> = {};
+  const nextFoldTypes: Record<string, string> = {};
+  const nextFoldNotes: Record<string, string> = {};
+
+  for (let index = 0; index < segmentCount; index += 1) {
+    const key = segmentKey(index);
+    if (details.segmentLengths?.[key] !== undefined) nextSegmentLengths[key] = details.segmentLengths[key];
+  }
+  for (let index = 1; index <= foldCount; index += 1) {
+    const key = foldKey(index);
+    if (details.foldTypes?.[key]) nextFoldTypes[key] = details.foldTypes[key];
+    if (details.foldNotes?.[key]) nextFoldNotes[key] = details.foldNotes[key];
+  }
+
+  return {
+    segmentLengths: nextSegmentLengths,
+    foldTypes: nextFoldTypes,
+    foldNotes: nextFoldNotes,
+  };
+}
+
+function countCrushFolds(foldDetails: any, points: Point[]) {
+  const details = normaliseFoldDetails(foldDetails);
+  let count = 0;
+  for (let index = 1; index <= getFoldCount(points); index += 1) {
+    if (details.foldTypes?.[foldKey(index)] === "crush") count += 1;
+  }
+  return count;
+}
+
+function resizeSegment(geometry: Geometry, segmentIndex: number, nextLength: number): Geometry {
+  const start = geometry.points[segmentIndex];
+  const end = geometry.points[segmentIndex + 1];
+  if (!start || !end || !Number.isFinite(nextLength) || nextLength <= 0) return geometry;
+
+  const currentLength = distance(start, end);
+  if (currentLength <= 0) return geometry;
+
+  const targetEnd = {
+    x: start.x + ((end.x - start.x) / currentLength) * nextLength,
+    y: start.y + ((end.y - start.y) / currentLength) * nextLength,
+  };
+  const delta = { x: targetEnd.x - end.x, y: targetEnd.y - end.y };
+
+  return {
+    ...geometry,
+    points: geometry.points.map((point, index) => (
+      index > segmentIndex
+        ? { x: round(point.x + delta.x), y: round(point.y + delta.y) }
+        : point
+    )),
+  };
 }
 
 function cloneGeometry(value: any): Geometry {
@@ -150,6 +277,7 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
 
   const polyline = geometry.points.map((point) => `${point.x},${point.y}`).join(" ");
   const girth = calculateGirth(geometry.points);
+  const foldCount = getFoldCount(geometry.points);
 
   return (
     <div className="space-y-3">
@@ -239,8 +367,8 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
           <div className="font-semibold">{girth} mm</div>
         </div>
         <div className="rounded-md border bg-muted/30 p-2">
-          <div className="text-muted-foreground">Bends</div>
-          <div className="font-semibold">{Math.max(0, geometry.points.length - 2)}</div>
+          <div className="text-muted-foreground">Folds</div>
+          <div className="font-semibold">{foldCount}</div>
         </div>
         <div className="rounded-md border bg-muted/30 p-2">
           <div className="text-muted-foreground">Points</div>
@@ -254,6 +382,148 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
           />
           Snap to grid
         </label>
+      </div>
+    </div>
+  );
+}
+
+function FoldDimensionTable({
+  geometry,
+  foldDetails,
+  onGeometryChange,
+  onFoldDetailsChange,
+}: {
+  geometry: Geometry;
+  foldDetails: FoldDetails;
+  onGeometryChange: (geometry: Geometry) => void;
+  onFoldDetailsChange: (foldDetails: FoldDetails) => void;
+}) {
+  const details = normaliseFoldDetails(foldDetails);
+  const segments = geometry.points.slice(1).map((point, index) => ({
+    index,
+    length: round(distance(geometry.points[index], point)),
+  }));
+  const folds = geometry.points.slice(1, -1).map((point, index) => ({
+    foldNumber: index + 1,
+    pointIndex: index + 1,
+    point,
+  }));
+
+  const updateSegmentLength = (index: number, rawValue: string) => {
+    const nextLength = Number(rawValue);
+    if (!Number.isFinite(nextLength) || nextLength <= 0) return;
+    const key = segmentKey(index);
+    const nextDetails = {
+      ...details,
+      segmentLengths: { ...(details.segmentLengths || {}), [key]: nextLength },
+    };
+    onFoldDetailsChange(nextDetails);
+    onGeometryChange(resizeSegment(geometry, index, nextLength));
+  };
+
+  const updateFoldType = (pointIndex: number, value: string) => {
+    const key = foldKey(pointIndex);
+    onFoldDetailsChange({
+      ...details,
+      foldTypes: { ...(details.foldTypes || {}), [key]: value },
+    });
+  };
+
+  const updateFoldNote = (pointIndex: number, value: string) => {
+    const key = foldKey(pointIndex);
+    onFoldDetailsChange({
+      ...details,
+      foldNotes: { ...(details.foldNotes || {}), [key]: value },
+    });
+  };
+
+  if (geometry.points.length < 2) {
+    return (
+      <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+        Add at least two profile points to unlock the segment and fold table.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border">
+      <div className="border-b bg-muted/30 px-3 py-2">
+        <p className="text-sm font-semibold">Segments & Folds</p>
+        <p className="text-xs text-muted-foreground">
+          Edit segment dimensions and identify special fold types such as crush folds.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-sm">
+          <thead className="bg-muted/40 text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left">Item</th>
+              <th className="px-3 py-2 text-left">Point / Segment</th>
+              <th className="px-3 py-2 text-right">Dimension</th>
+              <th className="px-3 py-2 text-left">Fold Type</th>
+              <th className="px-3 py-2 text-left">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {segments.map((segment) => {
+              const key = segmentKey(segment.index);
+              return (
+                <tr key={key} className="border-t">
+                  <td className="px-3 py-2 font-medium">Segment {segment.index + 1}</td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    Point {segment.index + 1} to {segment.index + 2}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <Input
+                        key={`${key}-${Math.round(segment.length)}`}
+                        type="number"
+                        min={1}
+                        defaultValue={Math.round(details.segmentLengths?.[key] ?? segment.length)}
+                        onBlur={(event) => updateSegmentLength(segment.index, event.target.value)}
+                        className="h-9 w-28 text-right"
+                      />
+                      <span className="text-xs text-muted-foreground">mm</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">-</td>
+                  <td className="px-3 py-2 text-muted-foreground">Segment length for manufacture</td>
+                </tr>
+              );
+            })}
+            {folds.map((fold) => {
+              const key = foldKey(fold.pointIndex);
+              return (
+                <tr key={key} className="border-t bg-muted/10">
+                  <td className="px-3 py-2 font-medium">Fold {fold.foldNumber}</td>
+                  <td className="px-3 py-2 text-muted-foreground">Point {fold.pointIndex + 1}</td>
+                  <td className="px-3 py-2 text-right text-muted-foreground">
+                    {Math.round(fold.point.x)}, {Math.round(fold.point.y)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                      value={details.foldTypes?.[key] || "standard"}
+                      onChange={(event) => updateFoldType(fold.pointIndex, event.target.value)}
+                    >
+                      {FOLD_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-3 py-2">
+                    <Input
+                      value={details.foldNotes?.[key] || ""}
+                      onChange={(event) => updateFoldNote(fold.pointIndex, event.target.value)}
+                      placeholder="Optional fold note"
+                      className="h-9"
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -319,6 +589,8 @@ export default function FlashingOrderDetail() {
     internalNotes: "",
   });
   const [line, setLine] = useState(DEFAULT_LINE);
+  const { data: allColourGroups } = trpc.colourGroups.getAll.useQuery();
+  const { data: allColourMembers } = trpc.colourGroups.getAllMembers.useQuery();
 
   useEffect(() => {
     if (!order) return;
@@ -332,9 +604,53 @@ export default function FlashingOrderDetail() {
     });
   }, [order]);
 
+  const colourbondColours = useMemo(() => {
+    const groups = Array.isArray(allColourGroups) ? allColourGroups : [];
+    const members = Array.isArray(allColourMembers) ? allColourMembers : [];
+    const standardGroup = groups.find((group: any) => normaliseColourGroupName(group.name) === "standard colorbond")
+      || groups.find((group: any) => normaliseColourGroupName(group.name).includes("standard colorbond"))
+      || groups.find((group: any) => normaliseColourGroupName(group.name).includes("colorbond"));
+    if (!standardGroup) return [];
+
+    return Array.from(new Set(
+      members
+        .filter((member: any) => Number(member.colourGroupId) === Number(standardGroup.id))
+        .sort((a: any, b: any) => (Number(a.sortOrder || 0) - Number(b.sortOrder || 0)) || String(a.colourValue || "").localeCompare(String(b.colourValue || "")))
+        .map((member: any) => String(member.colourValue || "").trim())
+        .filter(Boolean),
+    ));
+  }, [allColourGroups, allColourMembers]);
+
+  const colourOptions = useMemo(() => {
+    if (!line.colour || colourbondColours.includes(line.colour)) return colourbondColours;
+    return [line.colour, ...colourbondColours];
+  }, [colourbondColours, line.colour]);
+
+  const updateLineGeometry = (geometry: Geometry) => {
+    setLine((current) => ({
+      ...current,
+      geometry,
+      foldDetails: pruneFoldDetails(current.foldDetails, geometry.points),
+    }));
+  };
+
+  const updateFoldDetails = (foldDetails: FoldDetails) => {
+    setLine((current) => ({ ...current, foldDetails: normaliseFoldDetails(foldDetails) }));
+  };
+
   const lineGirth = useMemo(() => calculateGirth(line.geometry.points), [line.geometry.points]);
+  const lineFoldCount = getFoldCount(line.geometry.points);
+  const lineCrushFoldCount = countCrushFolds(line.foldDetails, line.geometry.points);
   const lineTotalLm = round((Number(line.lengthMm || 0) * Number(line.quantity || 1)) / 1000);
-  const lineTotal = round(lineTotalLm * Number(line.unitPrice || 0));
+  const orderFoldCount = useMemo(() => (
+    lines.reduce((total: number, existing: any) => {
+      const geometry = cloneGeometry(existing.geometry);
+      return total + Number(existing.bendCount ?? getFoldCount(geometry.points));
+    }, 0)
+  ), [lines]);
+  const orderCrushFoldCount = useMemo(() => (
+    lines.reduce((total: number, existing: any) => total + countCrushFolds(existing.foldDetails, cloneGeometry(existing.geometry).points), 0)
+  ), [lines]);
 
   if (detailQuery.isLoading) {
     return <div className="p-8 flex justify-center"><Spinner /></div>;
@@ -394,7 +710,7 @@ export default function FlashingOrderDetail() {
       lengthMm: Number(existing.lengthMm || 0),
       unitPrice: Number(existing.unitPrice || 0),
       geometry: cloneGeometry(existing.geometry),
-      foldDetails: existing.foldDetails || {},
+      foldDetails: normaliseFoldDetails(existing.foldDetails),
       manufacturingNotes: existing.manufacturingNotes || "",
       status: existing.status || "draft",
     });
@@ -412,6 +728,7 @@ export default function FlashingOrderDetail() {
       quantity: Number(template.defaultQuantity || 1),
       lengthMm: Number(template.defaultLengthMm || 0),
       geometry: cloneGeometry(template.geometry),
+      foldDetails: normaliseFoldDetails((template.geometry as any)?.foldDetails),
     });
   };
 
@@ -465,8 +782,9 @@ export default function FlashingOrderDetail() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Order Value</p>
-            <p className="text-2xl font-bold">{formatCurrency(order.totalExGst)}</p>
+            <p className="text-xs text-muted-foreground">Folds</p>
+            <p className="text-2xl font-bold">{orderFoldCount}</p>
+            {orderCrushFoldCount > 0 && <p className="text-xs text-muted-foreground">{orderCrushFoldCount} crush</p>}
           </CardContent>
         </Card>
       </div>
@@ -478,7 +796,13 @@ export default function FlashingOrderDetail() {
               <CardTitle className="text-base">Profile Line Designer</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
-              <ProfileDesigner geometry={line.geometry} onChange={(geometry) => setLine((current) => ({ ...current, geometry }))} />
+              <ProfileDesigner geometry={line.geometry} onChange={updateLineGeometry} />
+              <FoldDimensionTable
+                geometry={line.geometry}
+                foldDetails={line.foldDetails}
+                onGeometryChange={updateLineGeometry}
+                onFoldDetailsChange={updateFoldDetails}
+              />
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div className="space-y-1 md:col-span-2">
@@ -511,7 +835,19 @@ export default function FlashingOrderDetail() {
                 </div>
                 <div className="space-y-1">
                   <label className="text-sm font-medium">Colour</label>
-                  <Input value={line.colour} onChange={(event) => setLine({ ...line, colour: event.target.value })} />
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={line.colour || ""}
+                    onChange={(event) => setLine({ ...line, colour: event.target.value })}
+                  >
+                    <option value="">Select Colourbond colour</option>
+                    {colourOptions.map((colour) => (
+                      <option key={colour} value={colour}>
+                        {colour}{line.colour === colour && !colourbondColours.includes(colour) ? " (saved)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">From the Standard Colorbond colour group.</p>
                 </div>
                 <div className="space-y-1">
                   <label className="text-sm font-medium">Colour Side</label>
@@ -531,10 +867,6 @@ export default function FlashingOrderDetail() {
                   <Input type="number" min={0} value={line.lengthMm} onChange={(event) => setLine({ ...line, lengthMm: Number(event.target.value) })} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-sm font-medium">Unit Price / LM</label>
-                  <Input type="number" min={0} step="0.01" value={line.unitPrice} onChange={(event) => setLine({ ...line, unitPrice: Number(event.target.value) })} />
-                </div>
-                <div className="space-y-1">
                   <label className="text-sm font-medium">Finish</label>
                   <Input value={line.finish} onChange={(event) => setLine({ ...line, finish: event.target.value })} />
                 </div>
@@ -552,16 +884,16 @@ export default function FlashingOrderDetail() {
                   <p className="font-semibold">{lineGirth} mm</p>
                 </div>
                 <div className="rounded-md border bg-muted/30 p-3">
-                  <p className="text-xs text-muted-foreground">Bends</p>
-                  <p className="font-semibold">{Math.max(0, line.geometry.points.length - 2)}</p>
+                  <p className="text-xs text-muted-foreground">Folds</p>
+                  <p className="font-semibold">{lineFoldCount}</p>
+                </div>
+                <div className="rounded-md border bg-muted/30 p-3">
+                  <p className="text-xs text-muted-foreground">Crush Folds</p>
+                  <p className="font-semibold">{lineCrushFoldCount}</p>
                 </div>
                 <div className="rounded-md border bg-muted/30 p-3">
                   <p className="text-xs text-muted-foreground">Total LM</p>
                   <p className="font-semibold">{lineTotalLm.toFixed(2)}</p>
-                </div>
-                <div className="rounded-md border bg-muted/30 p-3">
-                  <p className="text-xs text-muted-foreground">Line Total</p>
-                  <p className="font-semibold">{formatCurrency(lineTotal)}</p>
                 </div>
               </div>
 
@@ -581,7 +913,7 @@ export default function FlashingOrderDetail() {
                     saveTemplate.mutate({
                       name: line.profileName,
                       category: line.category,
-                      geometry: line.geometry,
+                      geometry: { ...line.geometry, foldDetails: line.foldDetails } as any,
                       defaultMaterialType: line.materialType,
                       defaultGauge: line.gauge,
                       defaultColour: line.colour,
@@ -622,33 +954,43 @@ export default function FlashingOrderDetail() {
                         <th className="px-3 py-2 text-right">Qty</th>
                         <th className="px-3 py-2 text-right">Length</th>
                         <th className="px-3 py-2 text-right">Girth</th>
+                        <th className="px-3 py-2 text-right">Folds</th>
                         <th className="px-3 py-2 text-right">Total</th>
                         <th className="px-3 py-2" />
                       </tr>
                     </thead>
                     <tbody>
-                      {lines.map((existing: any) => (
-                        <tr key={existing.id} className="border-t">
-                          <td className="px-3 py-2">
-                            <div className="font-medium">{existing.profileName}</div>
-                            <div className="text-xs text-muted-foreground">{existing.category}</div>
-                          </td>
-                          <td className="px-3 py-2">
-                            <div>{existing.materialType}</div>
-                            <div className="text-xs text-muted-foreground">{existing.colour || "No colour"} - {existing.gauge || "No gauge"}</div>
-                          </td>
-                          <td className="px-3 py-2 text-right">{existing.quantity}</td>
-                          <td className="px-3 py-2 text-right">{Number(existing.lengthMm || 0).toFixed(0)} mm</td>
-                          <td className="px-3 py-2 text-right">{Number(existing.girthMm || 0).toFixed(0)} mm</td>
-                          <td className="px-3 py-2 text-right font-semibold">{formatCurrency(existing.lineTotal)}</td>
-                          <td className="px-3 py-2 text-right">
-                            <Button variant="ghost" size="sm" onClick={() => editLine(existing)}>Edit</Button>
-                            <Button variant="ghost" size="icon" onClick={() => deleteLine.mutate({ id: existing.id, orderId: order.id })}>
-                              <Trash2 className="h-4 w-4 text-red-600" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
+                      {lines.map((existing: any) => {
+                        const existingGeometry = cloneGeometry(existing.geometry);
+                        const existingFoldCount = Number(existing.bendCount ?? getFoldCount(existingGeometry.points));
+                        const existingCrushFoldCount = countCrushFolds(existing.foldDetails, existingGeometry.points);
+                        return (
+                          <tr key={existing.id} className="border-t">
+                            <td className="px-3 py-2">
+                              <div className="font-medium">{existing.profileName}</div>
+                              <div className="text-xs text-muted-foreground">{existing.category}</div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div>{existing.materialType}</div>
+                              <div className="text-xs text-muted-foreground">{existing.colour || "No colour"} - {existing.gauge || "No gauge"}</div>
+                            </td>
+                            <td className="px-3 py-2 text-right">{existing.quantity}</td>
+                            <td className="px-3 py-2 text-right">{Number(existing.lengthMm || 0).toFixed(0)} mm</td>
+                            <td className="px-3 py-2 text-right">{Number(existing.girthMm || 0).toFixed(0)} mm</td>
+                            <td className="px-3 py-2 text-right">
+                              <div>{existingFoldCount}</div>
+                              {existingCrushFoldCount > 0 && <div className="text-xs text-muted-foreground">{existingCrushFoldCount} crush</div>}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold">{formatCurrency(existing.lineTotal)}</td>
+                            <td className="px-3 py-2 text-right">
+                              <Button variant="ghost" size="sm" onClick={() => editLine(existing)}>Edit</Button>
+                              <Button variant="ghost" size="icon" onClick={() => deleteLine.mutate({ id: existing.id, orderId: order.id })}>
+                                <Trash2 className="h-4 w-4 text-red-600" />
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
