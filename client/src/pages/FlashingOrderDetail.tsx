@@ -4,19 +4,25 @@ import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FlashingProfile3DPreview } from "@/components/flashing/FlashingProfile3DPreview";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 import {
   ArrowLeft,
+  Camera,
   Copy,
   Download,
+  ExternalLink,
   FlipHorizontal,
+  Image as ImageIcon,
   Plus,
   RotateCcw,
   Save,
   Trash2,
   Undo2,
+  Upload,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -54,6 +60,16 @@ type FlashingLineDraft = {
   foldDetails: FoldDetails;
   manufacturingNotes: string;
   status: string;
+};
+
+type FlashingAttachment = {
+  type?: string;
+  url?: string;
+  key?: string;
+  fileName?: string;
+  mimeType?: string;
+  uploadedAt?: string;
+  uploadedByName?: string;
 };
 
 const CANVAS_W = 560;
@@ -151,6 +167,18 @@ function formatDateTime(value?: string | Date | null) {
 
 function formatCurrency(value: unknown) {
   return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(Number(value || 0));
+}
+
+function getSubjectAreaPhoto(attachments: unknown): FlashingAttachment | null {
+  if (!Array.isArray(attachments)) return null;
+  const photo = attachments.find((attachment: any) => (
+    attachment
+    && typeof attachment === "object"
+    && attachment.type === "subject_area_photo"
+    && typeof attachment.url === "string"
+    && attachment.url
+  ));
+  return photo || null;
 }
 
 function normaliseColourGroupName(value: unknown) {
@@ -941,6 +969,22 @@ export default function FlashingOrderDetail() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const uploadSubjectPhoto = trpc.flashing.uploadSubjectPhoto.useMutation({
+    onSuccess: () => {
+      toast.success("Subject area photo uploaded");
+      utils.flashing.getOrder.invalidate({ id: orderId });
+      utils.flashing.listOrders.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const removeSubjectPhoto = trpc.flashing.removeSubjectPhoto.useMutation({
+    onSuccess: () => {
+      toast.success("Subject area photo removed");
+      utils.flashing.getOrder.invalidate({ id: orderId });
+      utils.flashing.listOrders.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const updateStatus = trpc.flashing.updateStatus.useMutation({
     onSuccess: () => {
       toast.success("Status updated");
@@ -973,6 +1017,13 @@ export default function FlashingOrderDetail() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const seedTemplates = trpc.flashing.seedStandardTemplates.useMutation({
+    onSuccess: (result) => {
+      toast.success(`Standard templates ready: ${result.created} added, ${result.updated} updated`);
+      utils.flashing.getOrder.invalidate({ id: orderId });
+    },
+    onError: (error) => toast.error(error.message),
+  });
 
   const order = detailQuery.data?.order;
   const lines = detailQuery.data?.lines || [];
@@ -989,6 +1040,7 @@ export default function FlashingOrderDetail() {
   });
   const [line, setLine] = useState(DEFAULT_LINE);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const subjectPhotoInputRef = useRef<HTMLInputElement | null>(null);
   const { data: allColourGroups } = trpc.colourGroups.getAll.useQuery();
   const { data: allColourMembers } = trpc.colourGroups.getAllMembers.useQuery();
 
@@ -1281,6 +1333,36 @@ export default function FlashingOrderDetail() {
     );
   }
 
+  const subjectAreaPhoto = getSubjectAreaPhoto(order.attachments);
+
+  const handleSubjectPhotoUpload = (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file.");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("Image must be under 8MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = String(reader.result || "").split(",")[1];
+      if (!base64) {
+        toast.error("Could not read the image.");
+        return;
+      }
+      uploadSubjectPhoto.mutate({
+        id: order.id,
+        base64,
+        filename: file.name,
+        mimeType: file.type || "image/jpeg",
+      });
+    };
+    reader.onerror = () => toast.error("Could not read the image.");
+    reader.readAsDataURL(file);
+  };
+
   const saveOrderDetails = () => {
     updateOrder.mutate({
       id: order.id,
@@ -1417,7 +1499,15 @@ export default function FlashingOrderDetail() {
               <CardTitle className="text-base">Profile Line Designer</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
-              <ProfileDesigner geometry={line.geometry} foldDetails={line.foldDetails} onChange={updateLineGeometry} />
+              <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)] gap-5">
+                <ProfileDesigner geometry={line.geometry} foldDetails={line.foldDetails} onChange={updateLineGeometry} />
+                <FlashingProfile3DPreview
+                  geometry={line.geometry}
+                  colour={line.colour}
+                  lengthMm={line.lengthMm}
+                  profileName={line.profileName}
+                />
+              </div>
               <FoldDimensionTable
                 geometry={line.geometry}
                 foldDetails={line.foldDetails}
@@ -1663,12 +1753,119 @@ export default function FlashingOrderDetail() {
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">Subject Area Photo</CardTitle>
+                <Badge variant="outline">Suitability check</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Upload the installation area so construction can confirm flashing suitability before manufacture.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <input
+                ref={subjectPhotoInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => {
+                  handleSubjectPhotoUpload(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
+
+              {subjectAreaPhoto?.url ? (
+                <div className="space-y-3">
+                  <a
+                    href={subjectAreaPhoto.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block overflow-hidden rounded-md border bg-muted"
+                  >
+                    <img
+                      src={subjectAreaPhoto.url}
+                      alt="Subject area for flashing order"
+                      className="h-52 w-full object-cover"
+                    />
+                  </a>
+                  <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                    <div className="flex items-start gap-2">
+                      <ImageIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-foreground">{subjectAreaPhoto.fileName || "Subject area photo"}</p>
+                        <p>
+                          Uploaded {subjectAreaPhoto.uploadedAt ? formatDateTime(subjectAreaPhoto.uploadedAt) : "-"}
+                          {subjectAreaPhoto.uploadedByName ? ` by ${subjectAreaPhoto.uploadedByName}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => subjectPhotoInputRef.current?.click()}
+                      disabled={uploadSubjectPhoto.isPending}
+                    >
+                      {uploadSubjectPhoto.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Upload className="mr-1.5 h-4 w-4" />}
+                      Replace
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => window.open(subjectAreaPhoto.url, "_blank", "noopener,noreferrer")}
+                    >
+                      <ExternalLink className="mr-1.5 h-4 w-4" />
+                      Open
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeSubjectPhoto.mutate({ id: order.id })}
+                      disabled={removeSubjectPhoto.isPending}
+                    >
+                      {removeSubjectPhoto.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <X className="mr-1.5 h-4 w-4" />}
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => subjectPhotoInputRef.current?.click()}
+                  disabled={uploadSubjectPhoto.isPending}
+                  className="flex min-h-52 w-full flex-col items-center justify-center gap-3 rounded-md border border-dashed bg-muted/20 p-5 text-center hover:bg-muted/35 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <span className="rounded-full bg-background p-3 shadow-sm">
+                    {uploadSubjectPhoto.isPending ? <Spinner className="h-6 w-6" /> : <Camera className="h-6 w-6 text-muted-foreground" />}
+                  </span>
+                  <span>
+                    <span className="block text-sm font-medium">Upload subject area photo</span>
+                    <span className="block text-xs text-muted-foreground">Use camera or choose an image under 8MB.</span>
+                  </span>
+                </button>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
               <CardTitle className="text-base">Profile Templates</CardTitle>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => seedTemplates.mutate()}
+                disabled={seedTemplates.isPending}
+              >
+                {seedTemplates.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Plus className="mr-1.5 h-4 w-4" />}
+                Seed Standards
+              </Button>
             </CardHeader>
             <CardContent className="space-y-2 max-h-[360px] overflow-auto">
               {templates.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Saved profiles will appear here.</p>
+                <p className="text-sm text-muted-foreground">Saved profiles will appear here. Seed the standard flashing profiles to start from the order guide templates.</p>
               ) : templates.map((template: any) => (
                 <button
                   key={template.id}
