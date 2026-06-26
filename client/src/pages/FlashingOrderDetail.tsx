@@ -32,6 +32,9 @@ type FoldDetails = {
   segmentLengths?: Record<string, number>;
   foldTypes?: Record<string, string>;
   foldNotes?: Record<string, string>;
+  endTreatments?: Record<string, string>;
+  endTreatmentLengths?: Record<string, number>;
+  endTreatmentNotes?: Record<string, string>;
 };
 
 type FlashingLineDraft = {
@@ -58,11 +61,24 @@ const CANVAS_H = 320;
 const FOLD_TYPE_OPTIONS = [
   { value: "standard", label: "Standard fold" },
   { value: "crush", label: "Crush fold" },
+  { value: "hook", label: "Hook" },
+  { value: "beak_turn_down", label: "Beak / turn down" },
   { value: "open_hem", label: "Open hem" },
   { value: "safety_fold", label: "Safety fold" },
   { value: "return_fold", label: "Return fold" },
   { value: "end_fold", label: "End fold" },
 ] as const;
+
+const END_TREATMENT_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: "hook", label: "Hook" },
+  { value: "beak_turn_down", label: "Beak / turn down" },
+  { value: "turn_up", label: "Turn up" },
+  { value: "return", label: "Return" },
+] as const;
+
+const END_TREATMENT_KEYS = ["start", "end"] as const;
+type EndTreatmentKey = typeof END_TREATMENT_KEYS[number];
 
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
@@ -86,6 +102,9 @@ const DEFAULT_FOLD_DETAILS: FoldDetails = {
   segmentLengths: {},
   foldTypes: {},
   foldNotes: {},
+  endTreatments: {},
+  endTreatmentLengths: {},
+  endTreatmentNotes: {},
 };
 
 const DEFAULT_LINE: FlashingLineDraft = {
@@ -164,6 +183,13 @@ function normaliseFoldDetails(value: any): FoldDetails {
     ),
     foldTypes: { ...(value?.foldTypes || {}) },
     foldNotes: { ...(value?.foldNotes || {}) },
+    endTreatments: { ...(value?.endTreatments || {}) },
+    endTreatmentLengths: Object.fromEntries(
+      Object.entries(value?.endTreatmentLengths || {})
+        .map(([key, length]) => [key, Number(length)])
+        .filter(([, length]) => Number.isFinite(length)),
+    ),
+    endTreatmentNotes: { ...(value?.endTreatmentNotes || {}) },
   };
 }
 
@@ -174,6 +200,9 @@ function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
   const nextSegmentLengths: Record<string, number> = {};
   const nextFoldTypes: Record<string, string> = {};
   const nextFoldNotes: Record<string, string> = {};
+  const nextEndTreatments: Record<string, string> = {};
+  const nextEndTreatmentLengths: Record<string, number> = {};
+  const nextEndTreatmentNotes: Record<string, string> = {};
 
   for (let index = 0; index < segmentCount; index += 1) {
     const key = segmentKey(index);
@@ -184,11 +213,23 @@ function pruneFoldDetails(value: any, points: Point[]): FoldDetails {
     if (details.foldTypes?.[key]) nextFoldTypes[key] = details.foldTypes[key];
     if (details.foldNotes?.[key]) nextFoldNotes[key] = details.foldNotes[key];
   }
+  if (points.length >= 2) {
+    END_TREATMENT_KEYS.forEach((key) => {
+      if (details.endTreatments?.[key]) nextEndTreatments[key] = details.endTreatments[key];
+      if (details.endTreatmentLengths?.[key] !== undefined) {
+        nextEndTreatmentLengths[key] = details.endTreatmentLengths[key];
+      }
+      if (details.endTreatmentNotes?.[key]) nextEndTreatmentNotes[key] = details.endTreatmentNotes[key];
+    });
+  }
 
   return {
     segmentLengths: nextSegmentLengths,
     foldTypes: nextFoldTypes,
     foldNotes: nextFoldNotes,
+    endTreatments: nextEndTreatments,
+    endTreatmentLengths: nextEndTreatmentLengths,
+    endTreatmentNotes: nextEndTreatmentNotes,
   };
 }
 
@@ -408,6 +449,12 @@ function FoldDimensionTable({
     pointIndex: index + 1,
     point,
   }));
+  const endTreatmentRows = END_TREATMENT_KEYS.map((key) => ({
+    key,
+    label: key === "start" ? "Start end treatment" : "End end treatment",
+    pointLabel: key === "start" ? "Point 1" : `Point ${geometry.points.length}`,
+    placeholder: key === "start" ? "e.g. 20" : "e.g. 40",
+  }));
 
   const updateSegmentLength = (index: number, rawValue: string) => {
     const nextLength = Number(rawValue);
@@ -437,6 +484,51 @@ function FoldDimensionTable({
     });
   };
 
+  const updateEndTreatment = (key: EndTreatmentKey, value: string) => {
+    const nextEndTreatments = { ...(details.endTreatments || {}) };
+    if (value === "none") {
+      delete nextEndTreatments[key];
+    } else {
+      nextEndTreatments[key] = value;
+    }
+    onFoldDetailsChange({
+      ...details,
+      endTreatments: nextEndTreatments,
+    });
+  };
+
+  const updateEndTreatmentLength = (key: EndTreatmentKey, rawValue: string) => {
+    const nextEndTreatmentLengths = { ...(details.endTreatmentLengths || {}) };
+    if (rawValue.trim() === "") {
+      delete nextEndTreatmentLengths[key];
+      onFoldDetailsChange({
+        ...details,
+        endTreatmentLengths: nextEndTreatmentLengths,
+      });
+      return;
+    }
+    const nextLength = Number(rawValue);
+    if (!Number.isFinite(nextLength) || nextLength < 0) return;
+    nextEndTreatmentLengths[key] = nextLength;
+    onFoldDetailsChange({
+      ...details,
+      endTreatmentLengths: nextEndTreatmentLengths,
+    });
+  };
+
+  const updateEndTreatmentNote = (key: EndTreatmentKey, value: string) => {
+    const nextEndTreatmentNotes = { ...(details.endTreatmentNotes || {}) };
+    if (value.trim()) {
+      nextEndTreatmentNotes[key] = value;
+    } else {
+      delete nextEndTreatmentNotes[key];
+    }
+    onFoldDetailsChange({
+      ...details,
+      endTreatmentNotes: nextEndTreatmentNotes,
+    });
+  };
+
   if (geometry.points.length < 2) {
     return (
       <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
@@ -448,9 +540,9 @@ function FoldDimensionTable({
   return (
     <div className="rounded-md border">
       <div className="border-b bg-muted/30 px-3 py-2">
-        <p className="text-sm font-semibold">Segments & Folds</p>
+        <p className="text-sm font-semibold">Segments, Folds & End Treatments</p>
         <p className="text-xs text-muted-foreground">
-          Edit segment dimensions and identify special fold types such as crush folds.
+          Edit segment dimensions and identify special fold types such as crush folds, hooks, and beak / turn downs.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -460,7 +552,7 @@ function FoldDimensionTable({
               <th className="px-3 py-2 text-left">Item</th>
               <th className="px-3 py-2 text-left">Point / Segment</th>
               <th className="px-3 py-2 text-right">Dimension</th>
-              <th className="px-3 py-2 text-left">Fold Type</th>
+              <th className="px-3 py-2 text-left">Fold / Treatment Type</th>
               <th className="px-3 py-2 text-left">Notes</th>
             </tr>
           </thead>
@@ -522,6 +614,44 @@ function FoldDimensionTable({
                 </tr>
               );
             })}
+            {endTreatmentRows.map((endTreatment) => (
+              <tr key={endTreatment.key} className="border-t bg-amber-50/40">
+                <td className="px-3 py-2 font-medium">{endTreatment.label}</td>
+                <td className="px-3 py-2 text-muted-foreground">{endTreatment.pointLabel}</td>
+                <td className="px-3 py-2">
+                  <div className="flex items-center justify-end gap-2">
+                    <Input
+                      type="number"
+                      min={0}
+                      value={details.endTreatmentLengths?.[endTreatment.key] ?? ""}
+                      onChange={(event) => updateEndTreatmentLength(endTreatment.key, event.target.value)}
+                      placeholder={endTreatment.placeholder}
+                      className="h-9 w-28 text-right"
+                    />
+                    <span className="text-xs text-muted-foreground">mm</span>
+                  </div>
+                </td>
+                <td className="px-3 py-2">
+                  <select
+                    className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={details.endTreatments?.[endTreatment.key] || "none"}
+                    onChange={(event) => updateEndTreatment(endTreatment.key, event.target.value)}
+                  >
+                    {END_TREATMENT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-2">
+                  <Input
+                    value={details.endTreatmentNotes?.[endTreatment.key] || ""}
+                    onChange={(event) => updateEndTreatmentNote(endTreatment.key, event.target.value)}
+                    placeholder="Optional end treatment note"
+                    className="h-9"
+                  />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
