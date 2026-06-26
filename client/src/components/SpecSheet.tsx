@@ -78,8 +78,8 @@ const SECTIONS = [
 const HOUSE_ROOF_TYPE_OPTIONS = ["Tile", "Metal", "Flat", "Concrete", "Slate", "Other"];
 const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered", "Weatherboard", "Hebel", "Cladding", "Concrete Block", "Other"];
 const YES_NO_OPTIONS = ["Yes", "No"];
-const ATTACHED_SIDE_OPTIONS = ["None", "1 Side", "2 Side", "3 Side", "4 Side"];
-const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["None", "Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
+const ATTACHED_SIDE_OPTIONS = ["1 Side", "2 Side", "3 Side", "4 Side"];
+const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
 const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
   "Fascia brackets": "specFasciaBrackets",
   "Extenda brackets": "specExtendaBrackets",
@@ -88,6 +88,16 @@ const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
   "wall brackets": "specWallFixingBracket",
 };
 const BRACKET_METHOD_QUANTITY_FIELD_KEYS = Object.values(BRACKET_METHOD_QUANTITY_FIELDS);
+const BRACKET_OPTION_FIELD_KEYS = [
+  ...BRACKET_METHOD_QUANTITY_FIELD_KEYS,
+  "specNumberOfBrackets",
+  "specOversizedDGutter",
+  "specBracketCover",
+  "specBracketColour",
+  "specPopupColour",
+  "specWallFixingBeam",
+  "specFoamCut",
+] as const;
 
 function bracketQuantityForMethod(form: Record<string, string>, method: string) {
   const field = BRACKET_METHOD_QUANTITY_FIELDS[method];
@@ -116,6 +126,37 @@ function applyBracketMethodQuantity(form: Record<string, string>, method: string
   if (targetField && quantity) {
     next[targetField] = quantity;
   }
+  return next;
+}
+
+function clearBracketMethodOptions(form: Record<string, string>) {
+  const next = { ...form };
+  for (const field of BRACKET_OPTION_FIELD_KEYS) {
+    next[field] = "";
+  }
+  next.specBracketAttachmentMethod = "";
+  return next;
+}
+
+function applyBracketMethod(form: Record<string, string>, method: string) {
+  const quantity = method && method !== "None"
+    ? (form.specNumberOfBrackets || bracketQuantityForMethod(form, method))
+    : "";
+  const next = applyBracketMethodQuantity(form, method, quantity);
+
+  if (method !== "Gable brackets") {
+    next.specOversizedDGutter = "";
+    next.specBracketCover = "";
+    next.specBracketColour = "";
+  }
+  if (method !== "popup brackets") {
+    next.specPopupColour = "";
+  }
+  if (method !== "wall brackets") {
+    next.specWallFixingBeam = "";
+    next.specFoamCut = "";
+  }
+
   return next;
 }
 
@@ -491,15 +532,25 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const skylightCategories = useMemo(() => getSpecFieldCategories("specSpanlitesType"), [getSpecFieldCategories]);
 
   // Fetch colour options from master data
-  const { data: masterData } = trpc.masterData.getByCategory.useQuery({ category: "colour" });
+  const { data: masterData } = trpc.masterData.getByCategory.useQuery(
+    { category: "colour" },
+    { refetchOnMount: "always", refetchOnWindowFocus: true },
+  );
   const allColourOptions = useMemo(() => {
     if (!masterData) return [];
-    return masterData.map((d: any) => d.value as string).sort();
+    return Array.from(new Set(masterData.map((d: any) => String(d.value || "").trim()).filter(Boolean))).sort();
   }, [masterData]);
+  const validColourValues = useMemo(() => new Set(allColourOptions), [allColourOptions]);
 
   // Fetch colour groups and members for filtering
-  const { data: colourGroupsList } = trpc.colourGroups.getAll.useQuery();
-  const { data: allColourGroupMembers } = trpc.colourGroups.getAllMembers.useQuery();
+  const { data: colourGroupsList } = trpc.colourGroups.getAll.useQuery(undefined, {
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+  const { data: allColourGroupMembers } = trpc.colourGroups.getAllMembers.useQuery(undefined, {
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
 
   // Build a map of group name -> colour values
   const coloursByGroup = useMemo(() => {
@@ -508,12 +559,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       for (const g of colourGroupsList) {
         map[g.name] = allColourGroupMembers
           .filter(m => m.colourGroupId === g.id)
-          .map(m => m.colourValue)
+          .map(m => String(m.colourValue || "").trim())
+          .filter(colour => colour && validColourValues.has(colour))
           .sort();
       }
     }
     return map;
-  }, [colourGroupsList, allColourGroupMembers]);
+  }, [colourGroupsList, allColourGroupMembers, validColourValues]);
   const productColourGroupsByLookup = useMemo(() => {
     const map: Record<string, string> = {};
     for (const [productName, groupName] of Object.entries(productColourGroups)) {
@@ -894,38 +946,36 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const cutBackEaveValue = normalizeCutBackEaveOption(form.specCutBackEave);
   const displayedBracketAttachmentMethod = form.specBracketAttachmentMethod || inferBracketAttachmentMethod(form);
   const displayedNumberOfBrackets = form.specNumberOfBrackets || bracketQuantityForMethod(form, displayedBracketAttachmentMethod);
+  const isFreeStandingStructure = form.specFreeStanding === "Yes";
+  const activeBracketMethod = displayedBracketAttachmentMethod && displayedBracketAttachmentMethod !== "None" ? displayedBracketAttachmentMethod : "";
+  const showGableBracketOptions = !isFreeStandingStructure && activeBracketMethod === "Gable brackets";
+  const showPopupBracketOptions = !isFreeStandingStructure && activeBracketMethod === "popup brackets";
+  const showWallBracketOptions = !isFreeStandingStructure && activeBracketMethod === "wall brackets";
+  const updateFreeStanding = useCallback((value: string) => {
+    setForm(prev => {
+      if (value === "Yes") {
+        return {
+          ...clearBracketMethodOptions(prev),
+          specFreeStanding: "Yes",
+          specAttachmentMethod: "",
+        };
+      }
+      return { ...prev, specFreeStanding: value };
+    });
+  }, []);
   const updateAttachedSideCount = useCallback((value: string) => {
     setForm(prev => {
-      if (value === "None" || value === "") {
+      if (value === "") {
         return {
-          ...prev,
-          specAttachmentMethod: value,
-          specBracketAttachmentMethod: "",
-          specNumberOfBrackets: "",
-          specFasciaBrackets: "",
-          specExtendaBrackets: "",
-          specGableBrackets: "",
-          specOversizedDGutter: "",
-          specBracketCover: "",
-          specBracketColour: "",
-          specPopupBrackets: "",
-          specPopupColour: "",
-          specFreeStanding: "",
-          specWallFixingBeam: "",
-          specWallFixingBracket: "",
-          specFoamCut: "",
+          ...clearBracketMethodOptions(prev),
+          specAttachmentMethod: "",
         };
       }
       return { ...prev, specAttachmentMethod: value };
     });
   }, []);
   const updateBracketAttachmentMethod = useCallback((method: string) => {
-    setForm(prev => {
-      const quantity = method && method !== "None"
-        ? (prev.specNumberOfBrackets || bracketQuantityForMethod(prev, method))
-        : "";
-      return applyBracketMethodQuantity(prev, method, quantity);
-    });
+    setForm(prev => applyBracketMethod(prev, method));
   }, []);
   const updateNumberOfBrackets = useCallback((quantity: string) => {
     setForm(prev => {
@@ -933,11 +983,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       if (!method || method === "None") {
         return { ...prev, specNumberOfBrackets: quantity };
       }
-      return applyBracketMethodQuantity(prev, method, quantity);
+      return applyBracketMethod({ ...prev, specNumberOfBrackets: quantity }, method);
     });
-  }, []);
-  const updateMethodSpecificBracketQuantity = useCallback((method: string, quantity: string) => {
-    setForm(prev => applyBracketMethodQuantity(prev, method, quantity));
   }, []);
 
   // Auto-set Box Gutter Overflow to "Yes" when gutter type includes "box"
@@ -1134,7 +1181,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
       siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
       dimensions: ["specWidth", "specLength", "specRoofToFloor"],
-      brackets: ["specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specBracketColour"],
+      brackets: ["specFreeStanding", "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specExtendaBrackets", "specGableBrackets", "specPopupBrackets", "specWallFixingBracket", "specBracketColour"],
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
       walls: ["specWallType", "specWallColour", "specWallNotes"],
@@ -1716,9 +1763,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     cutBackEave={cutBackEaveValue}
                     jobEave={form.specJobEave || ""}
                     connectionType={(() => {
+                      if (form.specFreeStanding === "Yes") return "FSS";
                       const method = form.specAttachmentMethod || "";
                       if (!method || method === "None") return undefined;
-                      if (form.specFreeStanding === "Yes") return "FSS";
                       if (parseInt(form.specPopupBrackets || "0") > 0) return "POP";
                       if (parseInt(form.specGableBrackets || "0") > 0) return "GBL";
                       if (parseInt(form.specExtendaBrackets || "0") > 0) return "FLY";
@@ -1739,22 +1786,23 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionTrigger className="text-sm font-medium">Attachment & Brackets</AccordionTrigger>
             <AccordionContent>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <SelectField label="No. of Attached Side" value={form.specAttachmentMethod || ""} onChange={updateAttachedSideCount} options={ATTACHED_SIDE_OPTIONS} />
-                <SelectField label="Attachment Method" value={displayedBracketAttachmentMethod} onChange={updateBracketAttachmentMethod} options={BRACKET_ATTACHMENT_METHOD_OPTIONS} />
-                <Field label="Number of Brackets" value={displayedNumberOfBrackets} onChange={updateNumberOfBrackets} min={0} max={20} placeholder="0" />
-                {form.specAttachmentMethod && form.specAttachmentMethod !== "None" && (<>
-                <SelectField label="Fascia Brackets" value={form.specFasciaBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Fascia brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Extenda Brackets" value={form.specExtendaBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Extenda brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Gable Brackets" value={form.specGableBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("Gable brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Oversized D Gutter" value={form.specOversizedDGutter || ""} onChange={(v) => update("specOversizedDGutter", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
-                <SelectField label="Bracket Cover" value={form.specBracketCover || ""} onChange={(v) => update("specBracketCover", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
-                <ColourField label="Bracket Colour" value={form.specBracketColour || ""} onChange={(v) => update("specBracketColour", v)} colours={getColoursForSection("brackets")} />
-                <SelectField label="Pop-up Brackets" value={form.specPopupBrackets || ""} onChange={(v) => updateMethodSpecificBracketQuantity("popup brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <ColourField label="Pop-up Colour" value={form.specPopupColour || ""} onChange={(v) => update("specPopupColour", v)} colours={getColoursForSection("brackets")} />
-                <SelectField label="Free Standing" value={form.specFreeStanding || ""} onChange={(v) => update("specFreeStanding", v)} options={["Yes"]} />
-                <SelectField label="Wall Fixing Beam" value={form.specWallFixingBeam || ""} onChange={(v) => update("specWallFixingBeam", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
-                <SelectField label="Wall Fixing Bracket" value={form.specWallFixingBracket || ""} onChange={(v) => updateMethodSpecificBracketQuantity("wall brackets", v)} options={["1","2","3","4","5","6","7","8","9","10"]} />
-                <SelectField label="Foam Cut" value={form.specFoamCut || ""} onChange={(v) => update("specFoamCut", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
+                <SelectField label="Free Standing" value={form.specFreeStanding || ""} onChange={updateFreeStanding} options={YES_NO_OPTIONS} />
+                {!isFreeStandingStructure && (<>
+                  <SelectField label="No. of Attached Side" value={form.specAttachmentMethod === "None" ? "" : form.specAttachmentMethod || ""} onChange={updateAttachedSideCount} options={ATTACHED_SIDE_OPTIONS} allowNone={false} />
+                  <SelectField label="Attachment Method" value={activeBracketMethod} onChange={updateBracketAttachmentMethod} options={BRACKET_ATTACHMENT_METHOD_OPTIONS} />
+                  {activeBracketMethod && <Field label="Number of Brackets" value={displayedNumberOfBrackets} onChange={updateNumberOfBrackets} min={0} max={20} placeholder="0" />}
+                  {showGableBracketOptions && (<>
+                    <SelectField label="Oversized D Gutter" value={form.specOversizedDGutter || ""} onChange={(v) => update("specOversizedDGutter", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
+                    <SelectField label="Bracket Cover" value={form.specBracketCover || ""} onChange={(v) => update("specBracketCover", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
+                    <ColourField label="Bracket Colour" value={form.specBracketColour || ""} onChange={(v) => update("specBracketColour", v)} colours={getColoursForSection("brackets")} />
+                  </>)}
+                  {showPopupBracketOptions && (
+                    <ColourField label="Pop-up Colour" value={form.specPopupColour || ""} onChange={(v) => update("specPopupColour", v)} colours={getColoursForSection("brackets")} />
+                  )}
+                  {showWallBracketOptions && (<>
+                    <SelectField label="Wall Fixing Beam" value={form.specWallFixingBeam || ""} onChange={(v) => update("specWallFixingBeam", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
+                    <SelectField label="Foam Cut" value={form.specFoamCut || ""} onChange={(v) => update("specFoamCut", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
+                  </>)}
                 </>)}
               </div>
             </AccordionContent>
@@ -1830,10 +1878,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     downpipeLocations={(form.specDownpipeLocation || "").split(",").filter(s => s && s !== "No")}
                     postSize={form.specPostsType || ""}
                     connectionType={(() => {
+                      if (form.specFreeStanding === "Yes") return "FSS";
                       const method = form.specAttachmentMethod || "";
                       if (method === "None" || !method) return undefined;
                       // Determine connection type from bracket fields
-                      if (form.specFreeStanding === "Yes") return "FSS";
                       if (parseInt(form.specPopupBrackets || "0") > 0) return "POP";
                       if (parseInt(form.specGableBrackets || "0") > 0) return "GBL";
                       if (parseInt(form.specExtendaBrackets || "0") > 0) return "FLY";
@@ -3961,30 +4009,38 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Wind Cat" value={form.specWindCat} />
                 <PrintRow label="Cp'n" value={form.specCpn} />
                 <PrintRow label="Fall" value={form.specFall} />
-                <PrintRow label="No. of Attached Side" value={form.specAttachmentMethod} />
               </div>
             </div>
 
-            {/* Brackets - only show in print when No. of Attached Side is not None */}
-            {form.specAttachmentMethod && form.specAttachmentMethod !== "None" && (
+            {/* Attachment & Brackets */}
+            {(form.specFreeStanding || form.specAttachmentMethod || activeBracketMethod) && (
             <div className="spec-section">
               <h3>Attachment & Brackets{getColourGroupsForSection("brackets").length > 0 && <span className="section-colour-group">Palette: {getColourGroupsForSection("brackets").join(", ")}</span>}</h3>
               <div className="spec-3col">
-                <PrintRow label="No. of Attached Side" value={form.specAttachmentMethod} />
-                <PrintRow label="Attachment Method" value={displayedBracketAttachmentMethod} />
-                <PrintRow label="Number of Brackets" value={displayedNumberOfBrackets} />
-                <PrintRow label="Fascia Brackets" value={form.specFasciaBrackets} />
-                <PrintRow label="Extenda Brackets" value={form.specExtendaBrackets} />
-                <PrintRow label="Gable Brackets" value={form.specGableBrackets} />
-                <PrintRow label="Oversized D Gutter" value={form.specOversizedDGutter} />
-                <PrintRow label="Bracket Cover" value={form.specBracketCover} />
-                <PrintRow label="Bracket Colour" value={form.specBracketColour} isColour />
-                <PrintRow label="Pop-up Brackets" value={form.specPopupBrackets} />
-                <PrintRow label="Pop-up Colour" value={form.specPopupColour} isColour />
                 <PrintRow label="Free Standing" value={form.specFreeStanding} />
-                <PrintRow label="Wall Fixing Beam" value={form.specWallFixingBeam} />
-                <PrintRow label="Wall Fixing Bracket" value={form.specWallFixingBracket} />
-                <PrintRow label="Foam Cut" value={form.specFoamCut} />
+                {form.specFreeStanding !== "Yes" && (
+                  <>
+                    <PrintRow label="No. of Attached Side" value={form.specAttachmentMethod === "None" ? "" : form.specAttachmentMethod} />
+                    <PrintRow label="Attachment Method" value={activeBracketMethod} />
+                    <PrintRow label="Number of Brackets" value={displayedNumberOfBrackets} />
+                    {activeBracketMethod === "Gable brackets" && (
+                      <>
+                        <PrintRow label="Oversized D Gutter" value={form.specOversizedDGutter} />
+                        <PrintRow label="Bracket Cover" value={form.specBracketCover} />
+                        <PrintRow label="Bracket Colour" value={form.specBracketColour} isColour />
+                      </>
+                    )}
+                    {activeBracketMethod === "popup brackets" && (
+                      <PrintRow label="Pop-up Colour" value={form.specPopupColour} isColour />
+                    )}
+                    {activeBracketMethod === "wall brackets" && (
+                      <>
+                        <PrintRow label="Wall Fixing Beam" value={form.specWallFixingBeam} />
+                        <PrintRow label="Foam Cut" value={form.specFoamCut} />
+                      </>
+                    )}
+                  </>
+                )}
               </div>
             </div>
             )}
@@ -4610,16 +4666,29 @@ function ColourField({ label, value, onChange, colours }: { label: string; value
   );
 }
 
-function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) {
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  allowNone = true,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  allowNone?: boolean;
+}) {
+  const selectValue = allowNone ? (value || "__none__") : (value || undefined);
   return (
     <div className="space-y-1.5 min-w-0">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
-      <Select value={value || "__none__"} onValueChange={(v) => onChange(v === "__none__" ? "" : v)}>
+      <Select value={selectValue} onValueChange={(v) => onChange(allowNone && v === "__none__" ? "" : v)}>
         <SelectTrigger className="h-8 text-sm [&>span]:truncate">
           <SelectValue placeholder={`Select ${label.toLowerCase()}...`} />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="__none__">— None —</SelectItem>
+          {allowNone && <SelectItem value="__none__">— None —</SelectItem>}
           {options.map((opt) => (
             <SelectItem key={opt} value={opt}>{opt}</SelectItem>
           ))}
@@ -4891,17 +4960,19 @@ function SitePlanElevationSection({ form, quoteId, siteAddress, onUpdate }: { fo
               downpipeLocations: (form.specDownpipeLocation || "").split(",").filter(s => s && s !== "No"),
               specPostSize: form.specPostsType || undefined,
               // Connection detail
-              connectionType: form.specAttachmentMethod || undefined,
+              connectionType: form.specFreeStanding === "Yes" ? "Free Standing" : form.specAttachmentMethod || undefined,
               ...await (async () => {
-                const method = form.specAttachmentMethod || "";
-                if (!method || method === "None") return { connectionCode: undefined, connectionImageUrl: undefined };
                 let code = "BCH";
                 if (form.specFreeStanding === "Yes") code = "FSS";
-                else if (parseInt(form.specPopupBrackets || "0") > 0) code = "POP";
-                else if (parseInt(form.specGableBrackets || "0") > 0) code = "GBL";
-                else if (parseInt(form.specExtendaBrackets || "0") > 0) code = "FLY";
-                else if (form.specWallFixingBeam || form.specWallFixingBracket) code = "WFX";
-                else if (parseInt(form.specFasciaBrackets || "0") > 0) code = "BCH";
+                else {
+                  const method = form.specAttachmentMethod || "";
+                  if (!method || method === "None") return { connectionCode: undefined, connectionImageUrl: undefined };
+                  if (parseInt(form.specPopupBrackets || "0") > 0) code = "POP";
+                  else if (parseInt(form.specGableBrackets || "0") > 0) code = "GBL";
+                  else if (parseInt(form.specExtendaBrackets || "0") > 0) code = "FLY";
+                  else if (form.specWallFixingBeam || form.specWallFixingBracket) code = "WFX";
+                  else if (parseInt(form.specFasciaBrackets || "0") > 0) code = "BCH";
+                }
                 try {
                   const images = await utils.planConverter.getProductImagesByCode.fetch({ code });
                   return { connectionCode: code, connectionImageUrl: images?.[0]?.imageUrl || undefined };
