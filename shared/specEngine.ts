@@ -109,6 +109,122 @@ function isLinearMetreUom(value: string | null | undefined): boolean {
   return /^(lm|l\/m|linear metres?|linear meters?|metres?|meters?|m)$/i.test(String(value || "").trim());
 }
 
+interface BeamEntryGroup {
+  type: string;
+  size: string;
+  qty: number;
+}
+
+function parseSpecArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+  return "";
+}
+
+function readBeamLm(record: Record<string, unknown>): number {
+  const raw = record.lm
+    ?? record.linealMetres
+    ?? record.linealMeters
+    ?? record.linearMetres
+    ?? record.linearMeters
+    ?? record.length
+    ?? record.qty;
+  const value = typeof raw === "number"
+    ? raw
+    : Number.parseFloat(String(raw ?? "").replace(/,/g, ""));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function normalizeBeamSizeKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/(\d)\s*[x×]\s*(\d)/gi, "$1x$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatBeamSizeForMatch(value: string): string {
+  return value
+    .replace(/(\d)\s*[x×]\s*(\d)/gi, "$1 x $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function groupBeamEntries(value: unknown): BeamEntryGroup[] {
+  const groups = new Map<string, BeamEntryGroup>();
+
+  for (const entry of parseSpecArray(value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+
+    const record = entry as Record<string, unknown>;
+    const size = readString(record, ["size", "beamSize", "profile"]);
+    if (!size) continue;
+
+    const qty = readBeamLm(record);
+    if (qty <= 0) continue;
+
+    const type = readString(record, ["type", "material", "beamType"]) || "Beam";
+    const key = `${normalizeMatchValue(type)}|${normalizeBeamSizeKey(size)}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.qty += qty;
+    } else {
+      groups.set(key, { type, size: formatBeamSizeForMatch(size), qty });
+    }
+  }
+
+  return Array.from(groups.values()).filter(group => group.qty > 0);
+}
+
+function beamGroupLabel(group: BeamEntryGroup): string {
+  return [group.type, group.size].filter(Boolean).join(" ").trim();
+}
+
+function findProductForBeamGroup(
+  products: ProductLookup[],
+  mapping: SpecMapping,
+  group: BeamEntryGroup
+): ProductLookup | null {
+  const compactSize = group.size.replace(/\s+/g, "");
+  const label = beamGroupLabel(group);
+  const matchValues = Array.from(new Set([
+    label,
+    `${group.size} ${group.type}`.trim(),
+    `${group.type} ${compactSize}`.trim(),
+    `${compactSize} ${group.type}`.trim(),
+    group.size,
+    compactSize,
+  ].filter(Boolean)));
+
+  for (const matchValue of matchValues) {
+    const product = findProductBySpecMatch(products, mapping.tabName, matchValue);
+    if (product) return product;
+  }
+
+  return mapping.productId
+    ? products.find(p => p.id === mapping.productId) || null
+    : null;
+}
+
 function getNumericSpecValue(specValues: SpecValues, key: string): number | null {
   const direct = specValues[key];
   if (direct !== undefined && direct !== null && direct !== "") {
@@ -288,6 +404,41 @@ export function generateItemsFromSpec(
     // Evaluate condition
     if (!evaluateCondition(fieldValue, mapping.condition)) {
       continue; // Condition not met, skip this mapping
+    }
+
+    if (mapping.specField === "specBeamEntries") {
+      for (const group of groupBeamEntries(fieldValue)) {
+        const product = findProductForBeamGroup(products, mapping, group);
+        const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+        const resolvedUom = mapping.uom || product?.uom || "LM";
+        const roundedQty = Math.round(group.qty * 1000) / 1000;
+        const label = beamGroupLabel(group);
+        const colour = mapping.colourField
+          ? String(specValues[mapping.colourField] || "")
+          : "";
+        const bottomColour = mapping.bottomColourField
+          ? String(specValues[mapping.bottomColourField] || "")
+          : "";
+        const description = mapping.description
+          ? `${mapping.description} - ${label}`
+          : (product ? product.name : `${mapping.name} - ${label}`);
+
+        items.push({
+          specMappingId: mapping.id,
+          productId: product?.id || null,
+          tabName: mapping.tabName,
+          description,
+          colour,
+          bottomColour,
+          uom: resolvedUom,
+          qty: roundedQty,
+          costRate,
+          sellRate,
+          notes: `Beam entries takeoff: ${label} = ${formatTakeoffNumber(roundedQty)} LM`,
+          source: "auto",
+        });
+      }
+      continue;
     }
 
     // Find the product FIRST so we can inject its cover width into formula evaluation

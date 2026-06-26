@@ -39,6 +39,26 @@ function roofMapping(overrides: Partial<SpecMapping> = {}): SpecMapping {
   };
 }
 
+function beamMapping(overrides: Partial<SpecMapping> = {}): SpecMapping {
+  return {
+    id: 200,
+    name: "Beams from spec entries",
+    tabName: "beams",
+    specField: "specBeamEntries",
+    condition: "!= ''",
+    productId: null,
+    productMatch: "specBeamSize",
+    qtyFormula: "specWidth",
+    description: null,
+    colourField: "specBeamColour",
+    bottomColourField: null,
+    uom: "LM",
+    sortOrder: 40,
+    active: true,
+    ...overrides,
+  };
+}
+
 const roofSpecValues: SpecValues = {
   specRoofType: "Ultra 48",
   specRoofTopColour: "Prospan-Caulfield Green/Smooth Cream",
@@ -80,5 +100,41 @@ describe("generateItemsFromSpec roof sheet matching", () => {
     expect(items[0].qty).toBe(55.197);
     expect(items[0].notes).toContain("8 sheets");
     expect(items[0].notes).toContain("42.06m² / 762mm cover = 55.197 LM");
+  });
+});
+
+describe("generateItemsFromSpec beam entry matching", () => {
+  it("rolls up beam entry LM by material and size", () => {
+    const items = generateItemsFromSpec(
+      [beamMapping()],
+      {
+        specBeamSize: "stale fallback size",
+        specBeamColour: "Monument",
+        specWidth: 99,
+        specBeamEntries: [
+          { type: "Steel", size: "150x60", lm: 6.5 },
+          { type: "Steel", size: "150 x 60", lm: "3.2" },
+          { type: "Aluminium", size: "150 x 60", lm: 2.1 },
+          { type: "Steel", size: "200x60", lm: 0 },
+        ],
+      },
+      [
+        product({ id: 10, name: "Steel Beam 150 x 60", tabName: "beams", coverageWidth: null, fixedSell: "50.00" }),
+        product({ id: 11, name: "Aluminium Beam 150 x 60", tabName: "beams", coverageWidth: null, fixedSell: "42.00" }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items.map(item => item.productId)).toEqual([10, 11]);
+    expect(items.map(item => item.qty)).toEqual([9.7, 2.1]);
+    expect(items.map(item => item.description)).toEqual([
+      "Steel Beam 150 x 60",
+      "Aluminium Beam 150 x 60",
+    ]);
+    expect(items.every(item => item.colour === "Monument")).toBe(true);
+    expect(items[0].notes).toContain("Steel 150 x 60 = 9.7 LM");
+    expect(items[1].notes).toContain("Aluminium 150 x 60 = 2.1 LM");
   });
 });

@@ -476,9 +476,9 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
   },
   specBeamEntries: {
     term: "Beam entries",
-    formulaExamples: ["specWidth", "roofRunWidth"],
+    formulaExamples: ["sum(lm by material and size)"],
     productMatchField: "specBeamSize",
-    notes: "JSON entries from the beam section. Current starter mappings use conservative span formulas until entry parsing is deeper.",
+    notes: "JSON entries from the beam section. The spec engine expands these into one LM line per material and beam size, summing repeated entry lengths.",
   },
   specFlashingsType: {
     term: "Flashings product type",
