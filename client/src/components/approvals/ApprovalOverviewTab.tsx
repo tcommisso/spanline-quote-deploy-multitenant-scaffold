@@ -31,6 +31,26 @@ function isIssuedHbcfStatus(value?: string | null) {
   return !status || ["issued", "current", "active", "valid", "completed", "complete", "open job"].includes(status);
 }
 
+function isActProperty(project: any) {
+  const jurisdiction = String(project.jurisdiction || "").trim().toUpperCase();
+  if (jurisdiction === "ACT") return true;
+
+  const state = String(project.propertyState || project.state || "").trim().toUpperCase();
+  if (state === "ACT" || state === "AUSTRALIAN CAPITAL TERRITORY") return true;
+
+  const text = [
+    project.propertyAddress,
+    project.clientAddress,
+    project.siteAddress,
+    project.propertySuburb,
+    project.propertyPostcode,
+  ].filter(Boolean).join(" ").toUpperCase();
+  if (/\b(ACT|AUSTRALIAN CAPITAL TERRITORY|AUSTRALIA CAPITAL TERRITORY)\b/.test(text)) return true;
+
+  const postcodes = text.match(/\b\d{4}\b/g) || [];
+  return postcodes.some((postcode) => /^(260[0-9]|261[0-8]|29[0-1][0-9]|2920)$/.test(postcode));
+}
+
 export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(project);
@@ -92,6 +112,7 @@ export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
 
   const riskFlags = project.riskFlags || {};
   const activeRisks = Object.entries(riskFlags).filter(([, v]) => v);
+  const hideHbcfSection = isActProperty(project);
 
   return (
     <div className="space-y-4 mt-4">
@@ -128,7 +149,7 @@ export function ApprovalOverviewTab({ project }: ApprovalOverviewTabProps) {
         </Card>
       </div>
 
-      <HbcfProjectCard project={project} />
+      {!hideHbcfSection && <HbcfProjectCard project={project} />}
 
       {/* Project Details */}
       <Card>
