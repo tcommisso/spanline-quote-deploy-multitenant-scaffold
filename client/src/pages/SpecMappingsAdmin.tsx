@@ -161,7 +161,6 @@ export default function SpecMappingsAdmin() {
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<MappingForm>(emptyForm);
   const [filterTab, setFilterTab] = useState<string>("all");
-  const [filterSubTab, setFilterSubTab] = useState<string>("all");
   const [deleteMappingTarget, setDeleteMappingTarget] = useState<number | null>(null);
   const [selectedMappings, setSelectedMappings] = useState<Set<number>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -294,7 +293,16 @@ export default function SpecMappingsAdmin() {
     let result = mappingRows;
     if (filterTab !== "all") result = result.filter(m => normalizeTargetTab(m.tabName) === normalizeTargetTab(filterTab));
     return result;
-  }, [mappingRows, filterTab, filterSubTab]);
+  }, [mappingRows, filterTab]);
+
+  const mappingCountByTargetTab = useMemo(() => {
+    const counts = new Map<string, number>();
+    mappingRows.forEach((mapping: any) => {
+      const key = normalizeTargetTab(mapping.tabName);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    return counts;
+  }, [mappingRows]);
 
   const definedTermSections = useMemo(() => {
     return Array.from(new Set(SPEC_DEFINED_TERMS.map(term => term.section))).sort((a, b) => a.localeCompare(b));
@@ -395,12 +403,27 @@ export default function SpecMappingsAdmin() {
         </div>
       </div>
 
-      {/* Filter by tab */}
-      <div className="flex gap-2 flex-wrap">
-        <Badge variant={filterTab === "all" ? "default" : "outline"} className="cursor-pointer" onClick={() => { setFilterTab("all"); setFilterSubTab("all"); }}>All</Badge>
-        {targetTabOptions.map(tab => (
-          <Badge key={tab.value} variant={filterTab === tab.value ? "default" : "outline"} className="cursor-pointer" onClick={() => { setFilterTab(tab.value); setFilterSubTab("all"); }}>{tab.label}</Badge>
-        ))}
+      {/* Filter by target group */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-1.5 w-full sm:max-w-sm">
+          <Label className="text-xs font-medium text-muted-foreground">Filter Group</Label>
+          <Select value={filterTab} onValueChange={setFilterTab}>
+            <SelectTrigger className="h-9 w-full">
+              <SelectValue placeholder="All groups" />
+            </SelectTrigger>
+            <SelectContent className="max-h-80">
+              <SelectItem value="all">All groups ({mappingRows.length})</SelectItem>
+              {targetTabOptions.map(tab => (
+                <SelectItem key={tab.value} value={tab.value}>
+                  {tab.label} ({mappingCountByTargetTab.get(tab.value) || 0})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Showing {filtered.length} of {mappingRows.length} mappings{filterTab !== "all" ? ` in ${getTargetTabLabel(filterTab)}` : ""}.
+        </p>
       </div>
 
       {/* Mappings list */}
