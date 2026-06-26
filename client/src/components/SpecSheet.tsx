@@ -98,6 +98,7 @@ const BRACKET_OPTION_FIELD_KEYS = [
   "specPopupColour",
   "specBracketInfillType",
   "specBracketInfillLength",
+  "specBracketInfillHeight",
   "specBracketInfillColour",
   "specWallFixingBeam",
   "specFoamCut",
@@ -159,6 +160,7 @@ function applyBracketMethod(form: Record<string, string>, method: string) {
   if (method !== "Gable brackets" && method !== "popup brackets") {
     next.specBracketInfillType = "";
     next.specBracketInfillLength = "";
+    next.specBracketInfillHeight = "";
     next.specBracketInfillColour = "";
   }
   if (method !== "wall brackets") {
@@ -799,7 +801,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const WINDOW_WIDTHS = [600, 700, 800, 900, 1200, 1300, 1400, 1500, 1600, 1800, 2100, 2200, 2400, 2700];
 
   type DoorEntry = { style: "Sliding" | "Hinged" | "Bi-fold" | "Stacker"; height: number; width: number; qty: number; panels?: number; screen?: string };
-  type IwpEntry = { type: string; width: number; height: number; qty: number; outsideColour: string; outsideFinish: string; insideColour: string; insideFinish: string; wallSides?: string };
+  type IwpEntry = { type: string; width: number; height: number; outsideColour: string; outsideFinish: string; insideColour: string; insideFinish: string; wallSides?: string };
   const SCREEN_OPTIONS = ["N/A", "Fly", "Pet", "Diamond", "Security", "Invis-gard"];
   const DOOR_HEIGHTS = [2100, 2400];
   const DOOR_WIDTHS = [1500, 1600, 1800, 2100, 2200, 2400, 2700, 2900, 3200, 3300, 3500, 3600, 4200, 4300, 4800];
@@ -1256,7 +1258,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
       siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
       dimensions: ["specWidth", "specLength", "specRoofToFloor"],
-      brackets: ["specFreeStanding", "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specExtendaBrackets", "specGableBrackets", "specPopupBrackets", "specWallFixingBracket", "specBracketColour", "specBracketInfillType", "specBracketInfillLength", "specBracketInfillColour"],
+      brackets: ["specFreeStanding", "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specExtendaBrackets", "specGableBrackets", "specPopupBrackets", "specWallFixingBracket", "specBracketColour", "specBracketInfillType", "specBracketInfillLength", "specBracketInfillHeight", "specBracketInfillColour"],
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
       walls: ["specWallType", "specWallColour", "specWallNotes"],
@@ -1881,6 +1883,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       <SelectField label="Infill Type" value={form.specBracketInfillType || ""} onChange={(v) => update("specBracketInfillType", v)} options={bracketInfillOptions} />
                     )}
                     <Field label="Infill Length" suffix="mm" value={form.specBracketInfillLength || ""} onChange={(v) => update("specBracketInfillLength", v)} placeholder="e.g. 3000" min={0} />
+                    <Field label="Infill Height" suffix="mm" value={form.specBracketInfillHeight || ""} onChange={(v) => update("specBracketInfillHeight", v)} placeholder="e.g. 600" min={0} />
                     <ColourField label="Infill Colour" value={form.specBracketInfillColour || ""} onChange={(v) => update("specBracketInfillColour", v)} colours={getColoursForProduct(bracketInfillColourLookupValue, "brackets")} />
                   </>)}
                   {showWallBracketOptions && (<>
@@ -2044,7 +2047,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                                 <div className="border-b pb-3 mb-3">
                                   <div className="flex items-center justify-between mb-2">
                                     <Label className="text-xs font-medium text-muted-foreground">Insulated Wall Panels</Label>
-                                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setIwpEntries(prev => [...prev, { type: "", width: 0, height: 0, qty: 1, outsideColour: "", outsideFinish: "", insideColour: "", insideFinish: "", wallSides: "" }])}>
+                                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setIwpEntries(prev => [...prev, { type: "", width: 0, height: 0, outsideColour: "", outsideFinish: "", insideColour: "", insideFinish: "", wallSides: "" }])}>
                                       <Plus className="h-3 w-3 mr-1" /> Add Wall
                                     </Button>
                                   </div>
@@ -2094,10 +2097,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       <div>
                         <Label className="text-[11px] text-muted-foreground">Height (mm)</Label>
                         <Input className="h-8 text-sm" type="number" min={0} placeholder="mm" value={entry.height || ""} onChange={(e) => { const next = [...iwpEntries]; next[idx] = { ...next[idx], height: parseInt(e.target.value) || 0 }; setIwpEntries(next); }} />
-                      </div>
-                      <div>
-                        <Label className="text-[11px] text-muted-foreground">Qty</Label>
-                        <Input className="h-8 text-sm" type="number" min={1} placeholder="1" value={entry.qty} onChange={(e) => { const next = [...iwpEntries]; next[idx] = { ...next[idx], qty: parseInt(e.target.value) || 1 }; setIwpEntries(next); }} />
                       </div>
                       <div>
                         <Label className="text-[11px] text-muted-foreground">Outside Colour</Label>
@@ -2193,30 +2192,52 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
           <AccordionItem value="beams" id="spec-section-beams" className="border rounded-lg px-4">
             <AccordionTrigger className="text-sm font-medium">Beams, Channels & Flashings</AccordionTrigger>
             <AccordionContent>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
-                {backChannelCategories.length > 0 ? (
-                  <FilteredSelect label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} categories={backChannelCategories} />
-                ) : (
-                  <SelectField label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} options={backChannelProductNames} />
-                )}
-                <Field label="Back Channel Length" suffix="mm" value={form.specBackChannelLength || ""} onChange={(v) => update("specBackChannelLength", v)} placeholder="e.g. 6000" min={0} />
-                <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(backChannelColourLookupValue, "beams")} />
-                {sideChannelsCategories.length > 0 ? (
-                  <FilteredSelect label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} categories={sideChannelsCategories} />
-                ) : (
-                  <SelectField label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} options={sideChannelsProductNames} />
-                )}
-                <Field label="Side Channels Length" suffix="mm" value={form.specSideChannelsLength || ""} onChange={(v) => update("specSideChannelsLength", v)} placeholder="e.g. 12000" min={0} />
-                <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(sideChannelsColourLookupValue, "beams")} />
-                {flashingsCategories.length > 0 ? (
-                  <FilteredSelect label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} categories={flashingsCategories} />
-                ) : (
-                  <SelectField label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} options={flashingsProductNames} />
-                )}
-                <Field label="Flashings Length" suffix="mm" value={form.specFlashingsLength || ""} onChange={(v) => update("specFlashingsLength", v)} placeholder="e.g. 6000" min={0} />
-                <Field label="Flashings Qty" value={form.specFlashingsQty || ""} onChange={(v) => update("specFlashingsQty", v)} placeholder="e.g. 1" min={0} />
-                <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(flashingsColourLookupValue, "beams")} />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Back Channel</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {backChannelCategories.length > 0 ? (
+                        <FilteredSelect label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} categories={backChannelCategories} />
+                      ) : (
+                        <SelectField label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} options={backChannelProductNames} />
+                      )}
+                      <Field label="Back Channel Length" suffix="mm" value={form.specBackChannelLength || ""} onChange={(v) => update("specBackChannelLength", v)} placeholder="e.g. 6000" min={0} />
+                      <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(backChannelColourLookupValue, "beams")} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Side Channels</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {sideChannelsCategories.length > 0 ? (
+                        <FilteredSelect label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} categories={sideChannelsCategories} />
+                      ) : (
+                        <SelectField label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} options={sideChannelsProductNames} />
+                      )}
+                      <Field label="Side Channels Length" suffix="mm" value={form.specSideChannelsLength || ""} onChange={(v) => update("specSideChannelsLength", v)} placeholder="e.g. 12000" min={0} />
+                      <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(sideChannelsColourLookupValue, "beams")} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Flashings</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                      {flashingsCategories.length > 0 ? (
+                        <FilteredSelect label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} categories={flashingsCategories} />
+                      ) : (
+                        <SelectField label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} options={flashingsProductNames} />
+                      )}
+                      <Field label="Flashings Length" suffix="mm" value={form.specFlashingsLength || ""} onChange={(v) => update("specFlashingsLength", v)} placeholder="e.g. 6000" min={0} />
+                      <Field label="Flashings Qty" value={form.specFlashingsQty || ""} onChange={(v) => update("specFlashingsQty", v)} placeholder="e.g. 1" min={0} />
+                      <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(flashingsColourLookupValue, "beams")} />
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Beams - Multi-row entries */}
@@ -4100,6 +4121,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       <>
                         <PrintRow label="Infill Type" value={form.specBracketInfillType} />
                         <PrintRow label="Infill Length" value={form.specBracketInfillLength} />
+                        <PrintRow label="Infill Height" value={form.specBracketInfillHeight} />
                         <PrintRow label="Infill Colour" value={form.specBracketInfillColour} isColour />
                       </>
                     )}
@@ -4157,7 +4179,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   <p className="text-xs font-medium">Insulated Wall Panels:</p>
                                     {iwpEntries.map((e, i) => (
                                       <div key={i} className="text-xs ml-2 mb-1">
-                                        <span className="font-medium">Wall {i + 1}:</span> {e.type} — {e.width}×{e.height}mm × {e.qty}
+                                        <span className="font-medium">Wall {i + 1}:</span> {e.type} — {e.width}×{e.height}mm
                                         {e.wallSides && <> | Position: {e.wallSides.split(",").join(", ")}</>}
                                         {e.outsideColour && <> | Outside: {e.outsideColour} ({e.outsideFinish})</>}
                                         {e.insideColour && <> | Inside: {e.insideColour} ({e.insideFinish})</>}

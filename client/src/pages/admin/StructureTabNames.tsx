@@ -6,11 +6,12 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Save, Plus, Trash2, Clock, AlertTriangle } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { arrayMove, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { SortableTableRow } from "@/components/SortableTableRow";
+import { SPEC_FIELDS } from "@shared/spec-field-catalogue";
 
 export default function StructureTabNames() {
   const utils = trpc.useUtils();
@@ -54,27 +55,13 @@ export default function StructureTabNames() {
         return Number.isFinite(t) && t > latest ? t : latest;
       }, 0);
 
-  // Available spec sheet dropdown fields that can be linked to product tabs
-  const specFieldOptions = [
-    { value: "", label: "— None —" },
-    { value: "specRoofType", label: "Roof Type" },
-    { value: "specPostsType", label: "Post Type" },
-    { value: "specBeamSize", label: "Beam Size" },
-    { value: "specBackChannelType", label: "Back Channel Type" },
-    { value: "specSideChannelsType", label: "Side Channels Type" },
-    { value: "specFlashingsType", label: "Flashings Type" },
-    { value: "specBracketInfillType", label: "Bracket Infill Type" },
-    { value: "specGutterType", label: "Gutter Type" },
-    { value: "specWallType", label: "Wall Type" },
-    { value: "specSpanlitesType", label: "Spanlites Type" },
-    { value: "specWindowsTint", label: "Windows Tint" },
-    { value: "specDoorsTint", label: "Doors Tint" },
-    { value: "specElecLightType", label: "Light Type" },
-    { value: "specDownpipeType", label: "Downpipe Type" },
-    { value: "specCeilingFinish", label: "Ceiling Finish" },
-    { value: "specScreenType", label: "Screen Type" },
-    { value: "specBalustradeType", label: "Balustrade Type" },
-  ];
+  // Available spec sheet dropdown fields that can be linked to product tabs.
+  const specFieldOptions = useMemo(() => [
+    { value: "", label: "— None —", section: "" },
+    ...SPEC_FIELDS
+      .filter((field) => field.type === "text")
+      .map((field) => ({ value: field.value, label: field.label, section: field.section })),
+  ], []);
 
   useEffect(() => {
     if (Array.isArray(masterData)) {
@@ -223,7 +210,9 @@ export default function StructureTabNames() {
                             </SelectTrigger>
                             <SelectContent>
                               {specFieldOptions.map(opt => (
-                                <SelectItem key={opt.value || "__none__"} value={opt.value || "__none__"}>{opt.label}</SelectItem>
+                                <SelectItem key={opt.value || "__none__"} value={opt.value || "__none__"}>
+                                  {opt.value ? `${opt.section} — ${opt.label}` : opt.label}
+                                </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>

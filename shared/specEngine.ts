@@ -61,7 +61,8 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
-const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor)\b/gi;
+const WALL_SHEET_COVER_WIDTH_MM = 1140;
 
 function formatTakeoffNumber(value: number): string {
   return value.toFixed(3).replace(/\.?0+$/, "");
@@ -83,6 +84,12 @@ function getProductTabName(value: string) {
 function productMatchesTargetTab(product: ProductLookup, tabName: string) {
   const target = getProductTabName(tabName);
   return getProductTabName(product.tabName) === target || getProductTabName(product.subTab || "") === target;
+}
+
+function formatSpecValueForDescription(value: unknown): string {
+  if (value == null || Array.isArray(value) || typeof value === "object") return "";
+  const text = String(value).trim();
+  return text && text.toLowerCase() !== "none" ? text : "";
 }
 
 function findProductBySpecMatch(
@@ -203,6 +210,124 @@ function groupBeamEntries(value: unknown): BeamEntryGroup[] {
 
 function beamGroupLabel(group: BeamEntryGroup): string {
   return [group.type, group.size].filter(Boolean).join(" ").trim();
+}
+
+function readPositiveNumber(record: Record<string, unknown>, keys: string[], fallback: number = 0): number {
+  for (const key of keys) {
+    const raw = record[key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    const value = typeof raw === "number"
+      ? raw
+      : Number.parseFloat(String(raw).replace(/,/g, ""));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return fallback;
+}
+
+function firstWallEntryType(value: unknown): string {
+  for (const entry of parseSpecArray(value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const type = readString(entry as Record<string, unknown>, ["type", "iwpType", "wallType", "product", "productName"]);
+    if (type) return type;
+  }
+  return "";
+}
+
+function resolveProductMatchValue(mapping: SpecMapping, specValues: SpecValues, fieldValue: unknown) {
+  if (!mapping.productMatch) return fieldValue || "";
+  const directValue = specValues[mapping.productMatch];
+  if (directValue !== undefined && directValue !== null && String(directValue).trim() !== "") {
+    return directValue;
+  }
+  if (mapping.specField === "specIwpEntries") {
+    return firstWallEntryType(fieldValue);
+  }
+  return fieldValue || "";
+}
+
+function mappingFallbackDescription(
+  mapping: SpecMapping,
+  product: ProductLookup | null,
+  matchValue: unknown
+): string {
+  if (mapping.description) return mapping.description;
+  if (product) return product.name;
+  const selected = formatSpecValueForDescription(matchValue);
+  return selected || mapping.name;
+}
+
+interface WallEntryTakeoff {
+  product: ProductLookup | null;
+  type: string;
+  colour: string;
+  bottomColour: string;
+  widthMm: number;
+  heightMm: number;
+  coverWidthMm: number;
+  sheetQty: number;
+  lm: number;
+}
+
+function calculateWallEntryTakeoffs(
+  value: unknown,
+  products: ProductLookup[],
+  mapping: SpecMapping
+): WallEntryTakeoff[] {
+  const takeoffs: WallEntryTakeoff[] = [];
+
+  for (const entry of parseSpecArray(value)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const widthMm = readPositiveNumber(record, ["width", "wallWidth", "widthMm", "widthMM"]);
+    const heightMm = readPositiveNumber(record, ["height", "wallHeight", "heightMm", "heightMM"]);
+    if (widthMm <= 0 || heightMm <= 0) continue;
+
+    const type = readString(record, ["type", "iwpType", "wallType", "product", "productName"]) || "Wall panel";
+    const product = findProductBySpecMatch(products, mapping.tabName, type)
+      || (mapping.productId ? products.find(p => p.id === mapping.productId) || null : null);
+    const coverWidthMm = product?.coverageWidth && product.coverageWidth > 0
+      ? product.coverageWidth
+      : WALL_SHEET_COVER_WIDTH_MM;
+    const sheetQty = Math.ceil(widthMm / coverWidthMm);
+    const lm = sheetQty * (heightMm / 1000);
+    takeoffs.push({
+      product,
+      type,
+      colour: readString(record, ["outsideColour", "colour", "wallColour"]),
+      bottomColour: readString(record, ["insideColour", "bottomColour"]),
+      widthMm,
+      heightMm,
+      coverWidthMm,
+      sheetQty,
+      lm,
+    });
+  }
+
+  return takeoffs;
+}
+
+function groupWallEntryTakeoffs(takeoffs: WallEntryTakeoff[]) {
+  const groups = new Map<string, WallEntryTakeoff & { details: string[] }>();
+
+  for (const takeoff of takeoffs) {
+    const description = takeoff.product?.name || takeoff.type;
+    const key = [
+      takeoff.product?.id || normalizeMatchValue(takeoff.type),
+      normalizeMatchValue(takeoff.colour),
+      normalizeMatchValue(takeoff.bottomColour),
+    ].join("|");
+    const detail = `${description}: ${takeoff.widthMm}x${takeoff.heightMm}mm / ${takeoff.coverWidthMm}mm cover = ${takeoff.sheetQty} sheet${takeoff.sheetQty === 1 ? "" : "s"} x ${formatTakeoffNumber(takeoff.heightMm / 1000)}m = ${formatTakeoffNumber(takeoff.lm)} LM`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.sheetQty += takeoff.sheetQty;
+      existing.lm += takeoff.lm;
+      existing.details.push(detail);
+    } else {
+      groups.set(key, { ...takeoff, details: [detail] });
+    }
+  }
+
+  return Array.from(groups.values()).filter(group => group.lm > 0);
 }
 
 function findProductForBeamGroup(
@@ -447,11 +572,51 @@ export function generateItemsFromSpec(
       continue;
     }
 
+    if (mapping.specField === "specIwpEntries") {
+      for (const group of groupWallEntryTakeoffs(calculateWallEntryTakeoffs(fieldValue, products, mapping))) {
+        const groupSpecValues = {
+          ...specValues,
+          wallSheetQty: group.sheetQty,
+          wallSheetLM: group.lm,
+          specWallPanels: group.sheetQty,
+          specWallLM: group.lm,
+        };
+        const legacyAreaFormula = /\b(specArea|area)\b/i.test(mapping.qtyFormula) && !/\bwallSheet(LM|Qty)\b/i.test(mapping.qtyFormula);
+        const qty = legacyAreaFormula
+          ? group.lm
+          : evaluateFormula(mapping.qtyFormula, groupSpecValues);
+        if (qty <= 0) continue;
+
+        const { costRate, sellRate } = calculateRates(group.product, markupRates, defaultMarkup);
+        const resolvedUom = legacyAreaFormula ? "LM" : (mapping.uom || group.product?.uom || "LM");
+        const colour = group.colour || (mapping.colourField ? String(specValues[mapping.colourField] || "") : "");
+        const bottomColour = group.bottomColour || (mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "");
+        const description = mappingFallbackDescription(mapping, group.product, group.type);
+        const roundedQty = Math.round(qty * 1000) / 1000;
+
+        items.push({
+          specMappingId: mapping.id,
+          productId: group.product?.id || null,
+          tabName: mapping.tabName,
+          description,
+          colour,
+          bottomColour,
+          uom: resolvedUom,
+          qty: roundedQty,
+          costRate,
+          sellRate,
+          notes: `Wall panel takeoff: ${group.details.join("; ")}`,
+          source: "auto",
+        });
+      }
+      continue;
+    }
+
     // Find the product FIRST so we can inject its cover width into formula evaluation
     let product: ProductLookup | null = null;
+    const matchValue = resolveProductMatchValue(mapping, specValues, fieldValue);
     if (mapping.productMatch) {
       // Match product by name using the spec field value
-      const matchValue = specValues[mapping.productMatch] || fieldValue || "";
       product = findProductBySpecMatch(products, mapping.tabName, matchValue);
     } else if (mapping.productId) {
       product = products.find(p => p.id === mapping.productId) || null;
@@ -520,8 +685,7 @@ export function generateItemsFromSpec(
       : "";
 
     // Build description
-    const description = mapping.description
-      || (product ? product.name : mapping.name);
+    const description = mappingFallbackDescription(mapping, product, matchValue);
 
     items.push({
       specMappingId: mapping.id,

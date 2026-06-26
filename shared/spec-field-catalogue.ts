@@ -59,6 +59,7 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specPopupColour", label: "Pop-up Colour", type: "text", section: "Attachment & Brackets" },
   { value: "specBracketInfillType", label: "Bracket Infill Type", type: "text", section: "Attachment & Brackets" },
   { value: "specBracketInfillLength", label: "Bracket Infill Length (mm)", type: "num", section: "Attachment & Brackets" },
+  { value: "specBracketInfillHeight", label: "Bracket Infill Height (mm)", type: "num", section: "Attachment & Brackets" },
   { value: "specBracketInfillColour", label: "Bracket Infill Colour", type: "text", section: "Attachment & Brackets" },
   { value: "specFreeStanding", label: "Free Standing", type: "text", section: "Attachment & Brackets" },
   { value: "specWallFixingBeam", label: "Wall Fixing Beam", type: "text", section: "Attachment & Brackets" },
@@ -262,6 +263,8 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "wasteFactor", label: "Waste Factor (from master data)", type: "computed", section: "Computed" },
   { value: "roofSheetLM", label: "Roof Sheet LM", type: "computed", section: "Computed" },
   { value: "roofSheetQty", label: "Roof Sheet Qty", type: "computed", section: "Computed" },
+  { value: "wallSheetLM", label: "Wall Sheet LM", type: "computed", section: "Computed" },
+  { value: "wallSheetQty", label: "Wall Sheet Qty", type: "computed", section: "Computed" },
   { value: "productCover", label: "Product Cover Width", type: "computed", section: "Computed" },
 ];
 
@@ -292,6 +295,8 @@ export const FORMULA_ONLY_SPEC_VALUES = [
   "roofSheetLength",
   "roofSheetQty",
   "roofSheetLM",
+  "wallSheetQty",
+  "wallSheetLM",
   "productCover",
 ] as const;
 
@@ -532,15 +537,21 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
   },
   specBracketInfillType: {
     term: "Bracket infill product type",
-    formulaExamples: ["specBracketInfillLength / 1000"],
+    formulaExamples: ["(specBracketInfillLength / 1000) * (specBracketInfillHeight / 1000)", "specBracketInfillLength / 1000"],
     productMatchField: "specBracketInfillType",
     notes: "Glass or twinwall infill selected under Attachment & Brackets for gable or pop-up bracket methods.",
   },
   specBracketInfillLength: {
     term: "Bracket infill length",
-    formulaExamples: ["specBracketInfillLength / 1000"],
+    formulaExamples: ["(specBracketInfillLength / 1000) * (specBracketInfillHeight / 1000)", "specBracketInfillLength / 1000"],
     productMatchField: "specBracketInfillType",
-    notes: "Infill measure entered in millimetres. Divide by 1000 for LM pricing.",
+    notes: "Infill length entered in millimetres. Divide by 1000 for LM pricing, or multiply by infill height for square metre pricing.",
+  },
+  specBracketInfillHeight: {
+    term: "Bracket infill height",
+    formulaExamples: ["(specBracketInfillLength / 1000) * (specBracketInfillHeight / 1000)"],
+    productMatchField: "specBracketInfillType",
+    notes: "Infill height entered in millimetres. Use with bracket infill length when glass or twinwall products are priced by square metre.",
   },
   specPostsNumber: {
     term: "Post quantity",
@@ -562,15 +573,27 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
   },
   specWallPanels: {
     term: "Wall panel quantity",
-    formulaExamples: ["specWallPanels"],
+    formulaExamples: ["wallSheetQty", "specWallPanels"],
     productMatchField: "specWallType",
-    notes: "Number of insulated wall panels.",
+    notes: "Computed number of wall sheets. For IWP entries this is calculated per wall as ceil(width mm / matched product cover width).",
   },
   specWallLM: {
     term: "Wall lineal metres",
-    formulaExamples: ["specWallLM"],
+    formulaExamples: ["wallSheetLM", "specWallLM"],
     productMatchField: "specWallType",
-    notes: "Lineal metres of walling.",
+    notes: "Computed lineal metres of wall sheets. For each wall entry: ceil(width mm / product cover width) x height metres, then grouped by product/colour.",
+  },
+  wallSheetQty: {
+    term: "Wall sheet quantity",
+    formulaExamples: ["wallSheetQty"],
+    productMatchField: "specIwpEntries",
+    notes: "Formula-only wall sheet count for each generated wall product group. Uses the matched product coverage width, with 1140mm fallback.",
+  },
+  wallSheetLM: {
+    term: "Wall sheet linear metres",
+    formulaExamples: ["wallSheetLM", "wallSheetLM * (1 + wasteFactor / 100)"],
+    productMatchField: "specIwpEntries",
+    notes: "Formula-only wall sheet LM for each generated wall product group: ceil(width mm / product cover width) x wall height metres.",
   },
   specElecLights: {
     term: "Electrical light quantity",

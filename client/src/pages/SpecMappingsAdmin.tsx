@@ -85,6 +85,20 @@ function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
   URL.revokeObjectURL(url);
 }
 
+interface TargetTabOption {
+  value: string;
+  label: string;
+  kind: "tab" | "subtab" | "legacy";
+}
+
+function normalizeTargetTab(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
 export default function SpecMappingsAdmin() {
   const utils = trpc.useUtils();
   const { data: mappings, isLoading } = trpc.specItems.mappings.list.useQuery();
@@ -95,10 +109,41 @@ export default function SpecMappingsAdmin() {
   const tabRows = useMemo(() => Array.isArray(tabsAndUoms?.tabs) ? tabsAndUoms.tabs : [], [tabsAndUoms]);
   const subTabRows = useMemo(() => Array.isArray(tabsAndUoms?.subTabs) ? tabsAndUoms.subTabs : [], [tabsAndUoms]);
 
-  // Dynamically populate tab options from the Tab Names master data
-  const TAB_OPTIONS = useMemo(() => {
-    return tabRows.map((t: any) => t.value.toLowerCase());
-  }, [tabRows]);
+  // Dynamically populate tab options from canonical product tab/sub-group data.
+  const targetTabOptions = useMemo<TargetTabOption[]>(() => {
+    const options: TargetTabOption[] = [];
+    const seen = new Set<string>();
+    const addOption = (value: unknown, label: unknown, kind: TargetTabOption["kind"]) => {
+      const normalized = normalizeTargetTab(value);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      options.push({ value: normalized, label: String(label || normalized), kind });
+    };
+
+    tabRows.forEach((tab: any) => addOption(tab.key || tab.value, tab.value || tab.key, "tab"));
+    subTabRows.forEach((subTab: any) => {
+      const rawKey = String(subTab.key || "");
+      const subKey = rawKey.includes("::") ? rawKey.split("::").pop() : rawKey;
+      const parent = tabRows.find((tab: any) => String(tab.key) === String(subTab.description));
+      addOption(
+        subTab.value || subKey,
+        `${parent?.value || subTab.description || "Tab"} / ${subTab.value || subKey}`,
+        "subtab",
+      );
+    });
+    (mappingRows as any[]).forEach((mapping) => {
+      addOption(mapping.tabName, `${mapping.tabName} (legacy)`, "legacy");
+    });
+
+    const kindOrder = { tab: 0, subtab: 1, legacy: 2 };
+    return options.sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.label.localeCompare(b.label));
+  }, [tabRows, subTabRows, mappingRows]);
+  const targetTabLookup = useMemo(() => new Map(targetTabOptions.map(option => [option.value, option])), [targetTabOptions]);
+  const getTargetTabLabel = (value: unknown) => targetTabLookup.get(normalizeTargetTab(value))?.label || String(value || "");
+  const productMatchesMappingTab = (product: any, tabName: unknown) => {
+    const target = normalizeTargetTab(tabName);
+    return normalizeTargetTab(product.tabName) === target || normalizeTargetTab(product.subTab) === target;
+  };
   const createMutation = trpc.specItems.mappings.create.useMutation({
     onSuccess: () => { toast.success("Mapping created"); utils.specItems.mappings.list.invalidate(); setOpen(false); },
     onError: (e: any) => toast.error(e.message),
@@ -176,12 +221,6 @@ export default function SpecMappingsAdmin() {
     else setSelectedMappings(new Set(filtered.map((m: any) => m.id)));
   };
 
-  // Sub-tabs for the currently selected tab
-  const subTabsForTab = useMemo(() => {
-    if (filterTab === "all") return [];
-    return subTabRows.filter((st: any) => st.description === filterTab.toLowerCase()).map((st: any) => st.value);
-  }, [filterTab, subTabRows]);
-
   const openCreate = () => { setEditId(null); setForm(emptyForm); setOpen(true); };
   const openEdit = (m: any) => {
     setEditId(m.id);
@@ -253,8 +292,7 @@ export default function SpecMappingsAdmin() {
 
   const filtered = useMemo(() => {
     let result = mappingRows;
-    if (filterTab !== "all") result = result.filter(m => m.tabName === filterTab);
-    // Note: spec_mappings don't have a subTab field currently, but we can filter by product's subTab
+    if (filterTab !== "all") result = result.filter(m => normalizeTargetTab(m.tabName) === normalizeTargetTab(filterTab));
     return result;
   }, [mappingRows, filterTab, filterSubTab]);
 
@@ -360,20 +398,10 @@ export default function SpecMappingsAdmin() {
       {/* Filter by tab */}
       <div className="flex gap-2 flex-wrap">
         <Badge variant={filterTab === "all" ? "default" : "outline"} className="cursor-pointer" onClick={() => { setFilterTab("all"); setFilterSubTab("all"); }}>All</Badge>
-        {TAB_OPTIONS.map(tab => (
-          <Badge key={tab} variant={filterTab === tab ? "default" : "outline"} className="cursor-pointer capitalize" onClick={() => { setFilterTab(tab); setFilterSubTab("all"); }}>{tab}</Badge>
+        {targetTabOptions.map(tab => (
+          <Badge key={tab.value} variant={filterTab === tab.value ? "default" : "outline"} className="cursor-pointer" onClick={() => { setFilterTab(tab.value); setFilterSubTab("all"); }}>{tab.label}</Badge>
         ))}
       </div>
-
-      {/* Sub-tab filter (second level) */}
-      {subTabsForTab.length > 0 && (
-        <div className="flex gap-2 flex-wrap pl-4 border-l-2 border-muted">
-          <Badge variant={filterSubTab === "all" ? "secondary" : "outline"} className="cursor-pointer text-xs" onClick={() => setFilterSubTab("all")}>All Sub-tabs</Badge>
-          {subTabsForTab.map(st => (
-            <Badge key={st} variant={filterSubTab === st ? "secondary" : "outline"} className="cursor-pointer text-xs" onClick={() => setFilterSubTab(st)}>{st}</Badge>
-          ))}
-        </div>
-      )}
 
       {/* Mappings list */}
       {filtered.length === 0 ? (
@@ -395,7 +423,7 @@ export default function SpecMappingsAdmin() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <input type="checkbox" checked={selectedMappings.has(m.id)} onChange={() => toggleSelectMapping(m.id)} className="h-3.5 w-3.5 rounded border-gray-300 shrink-0" />
-                    <Badge variant="outline" className="capitalize text-xs shrink-0">{m.tabName}</Badge>
+                    <Badge variant="outline" className="text-xs shrink-0">{getTargetTabLabel(m.tabName)}</Badge>
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{m.name}</p>
                       <p className="text-xs text-muted-foreground truncate">
@@ -412,12 +440,11 @@ export default function SpecMappingsAdmin() {
                           ? <Badge variant="outline" className="text-xs text-green-700 border-green-300 bg-green-50" title={`Linked: ${product.name} (ID ${product.id})`}>✓ {product.name?.substring(0, 15)}</Badge>
                           : <Badge variant="outline" className="text-xs text-red-700 border-red-300 bg-red-50" title={`Product ID ${m.productId} not found or inactive`}>✗ Missing Product</Badge>;
                       } else if (m.productMatch) {
-                        const tabProducts = productRows.filter((p: any) => p.tabName === m.tabName);
+                        const tabProducts = productRows.filter((p: any) => productMatchesMappingTab(p, m.tabName));
                         const matchFieldLabel = m.productMatch?.replace('spec', '') || '';
                         if (tabProducts.length === 0) {
-                          return <Badge variant="outline" className="text-xs text-red-700 border-red-300 bg-red-50" title={`No active products in tab '${m.tabName}'`}>✗ No products in tab</Badge>;
+                          return <Badge variant="outline" className="text-xs text-red-700 border-red-300 bg-red-50" title={`No active products in tab '${getTargetTabLabel(m.tabName)}'`}>✗ No products in tab</Badge>;
                         }
-                        const productNames = tabProducts.map((p: any) => p.name?.toLowerCase());
                         const tooltip = `Dynamic match via ${m.productMatch}. ${tabProducts.length} candidate(s): ${tabProducts.slice(0, 5).map((p: any) => p.name).join(', ')}${tabProducts.length > 5 ? '...' : ''}`;
                         return <Badge variant="outline" className="text-xs text-blue-700 border-blue-300 bg-blue-50" title={tooltip}>⚡ {matchFieldLabel.substring(0, 12)} ({tabProducts.length})</Badge>;
                       }
@@ -477,7 +504,7 @@ export default function SpecMappingsAdmin() {
                 <Select value={form.tabName} onValueChange={v => setForm(p => ({ ...p, tabName: v }))}>
                   <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {TAB_OPTIONS.map(t => <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>)}
+                    {targetTabOptions.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -591,7 +618,7 @@ export default function SpecMappingsAdmin() {
                   <Button variant="outline" role="combobox" className="h-9 w-full justify-between font-normal">
                     {form.productId ? (() => {
                       const prod = productRows.find((p: any) => p.id === form.productId);
-                      return prod ? <span className="truncate">{prod.name} ({prod.tabName})</span> : `Product #${form.productId}`;
+                      return prod ? <span className="truncate">{prod.name} ({[prod.tabName, prod.subTab].filter(Boolean).join(" / ")})</span> : `Product #${form.productId}`;
                     })() : <span className="text-muted-foreground">— No product (manual rates) —</span>}
                     <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -601,7 +628,7 @@ export default function SpecMappingsAdmin() {
                     if (value === "none") return search ? 0 : 1;
                     const prod = productRows.find((p: any) => String(p.id) === value);
                     if (!prod) return 0;
-                    const haystack = `${prod.name} ${prod.tabName} ${prod.productCode || ""}`.toLowerCase();
+                    const haystack = `${prod.name} ${prod.tabName} ${prod.subTab || ""} ${prod.productCode || ""}`.toLowerCase();
                     return haystack.includes(search.toLowerCase()) ? 1 : 0;
                   }}>
                     <CommandInput placeholder="Search products..." />
@@ -616,7 +643,7 @@ export default function SpecMappingsAdmin() {
                           <CommandItem key={p.id} value={String(p.id)} onSelect={(v) => setForm(prev => ({ ...prev, productId: Number(v), productMatch: "" }))}>
                             <Check className={`mr-1 h-3 w-3 ${form.productId === p.id ? "opacity-100" : "opacity-0"}`} />
                             <span className="truncate">{p.name}</span>
-                            <span className="ml-auto text-xs text-muted-foreground">{p.tabName}</span>
+                            <span className="ml-auto text-xs text-muted-foreground">{[p.tabName, p.subTab].filter(Boolean).join(" / ")}</span>
                           </CommandItem>
                         ))}
                       </CommandGroup>

@@ -224,6 +224,101 @@ function manufacturingCatalogueTenantSql(ctx: any) {
   return isMultiTenancyMode() ? sql`tenantId = ${tenantId}` : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
 }
 
+function inventoryStockItemTenantSql(ctx: any) {
+  const tenantId = tenantIdFromContext(ctx);
+  if (!tenantId) return isMultiTenancyMode() ? sql`1 = 0` : sql`1 = 1`;
+  return isMultiTenancyMode() ? sql`tenantId = ${tenantId}` : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
+}
+
+function isMissingDimensionColumnError(error: unknown) {
+  const message = String((error as any)?.message || error || "");
+  return /(actual_width|actual_height|source_full_width|source_full_height)/i.test(message)
+    && /(unknown column|no such column|doesn't exist|does not exist)/i.test(message);
+}
+
+async function selectStocktakeLinesForDetail(db: any, stocktakeId: number) {
+  try {
+    return await db.select().from(stocktakeLines)
+      .where(eq(stocktakeLines.stocktakeId, stocktakeId))
+      .orderBy(stocktakeLines.stockItemId, stocktakeLines.id);
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stocktake dimension columns are missing; using pre-0062 stocktake line fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        stocktake_id AS stocktakeId,
+        stock_item_id AS stockItemId,
+        condition_indicator AS conditionIndicator,
+        colour,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        system_qty AS systemQty,
+        counted_qty AS countedQty,
+        variance,
+        unit_cost AS unitCost,
+        variance_value AS varianceValue,
+        adjustment_created AS adjustmentCreated,
+        counted_at AS countedAt,
+        counted_by AS countedBy,
+        notes,
+        created_at AS createdAt
+      FROM stocktake_lines
+      WHERE stocktake_id = ${stocktakeId}
+      ORDER BY stock_item_id, id
+    `);
+    return rowsFromExecuteResult(result);
+  }
+}
+
+async function selectInventoryItemsForStocktakeDetail(db: any, ctx: any, itemIds: number[]) {
+  if (!itemIds.length) return [];
+  try {
+    return await db.select().from(inventoryStockItems)
+      .where(and(...stockItemTenantConditions(ctx, inArray(inventoryStockItems.id, itemIds))));
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stock item dimension columns are missing; using pre-0062 inventory item fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        tenantId,
+        code,
+        name,
+        serial_number AS serialNumber,
+        category,
+        unit,
+        unit_type AS unitType,
+        reorder_qty AS reorderQty,
+        min_stock_level AS minStockLevel,
+        branch_id AS branchId,
+        condition_indicator AS conditionIndicator,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        description,
+        supplier,
+        cost_price AS costPrice,
+        catalogue_item_id AS catalogueItemId,
+        manufacturing_catalogue_product_id AS manufacturingCatalogueProductId,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM inventory_stock_items
+      WHERE id IN (${sql.join(itemIds.map((id) => sql`${id}`), sql`,`)})
+        AND ${inventoryStockItemTenantSql(ctx)}
+    `);
+    return rowsFromExecuteResult(result);
+  }
+}
+
 async function requireStocktakeAccess(db: any, ctx: any, stocktakeId: number) {
   const [stocktake] = await db.select()
     .from(stocktakes)
@@ -352,17 +447,14 @@ export const stocktakeRouter = router({
     const db = await requireDb();
     const stocktake = await requireStocktakeAccess(db, ctx, input.id);
 
-    const lines = await db.select().from(stocktakeLines)
-      .where(eq(stocktakeLines.stocktakeId, input.id))
-      .orderBy(stocktakeLines.stockItemId, stocktakeLines.id);
+    const lines = await selectStocktakeLinesForDetail(db, input.id);
 
     // Get stock item details for each line
-    const itemIds = lines.map(l => l.stockItemId);
+    const itemIds = lines.map((l: any) => l.stockItemId);
     let itemsMap: Record<number, any> = {};
     if (itemIds.length) {
-      const items = await db.select().from(inventoryStockItems)
-        .where(and(...stockItemTenantConditions(ctx, inArray(inventoryStockItems.id, itemIds))));
-      itemsMap = Object.fromEntries(items.map(i => [i.id, i]));
+      const items = await selectInventoryItemsForStocktakeDetail(db, ctx, itemIds);
+      itemsMap = Object.fromEntries(items.map((i: any) => [i.id, i]));
 
       const productIds = Array.from(new Set(items
         .map((i: any) => Number(i.manufacturingCatalogueProductId))
@@ -372,7 +464,7 @@ export const stocktakeRouter = router({
           const [productsResult] = await db.execute(sql`
             SELECT id, category, subGroup, colour
             FROM manufacturing_catalogue_products
-            WHERE id IN (${sql.join(productIds, sql`,`)})
+            WHERE id IN (${sql.join(productIds.map((id) => sql`${id}`), sql`,`)})
               AND ${manufacturingCatalogueTenantSql(ctx)}
           `);
           const productMap = Object.fromEntries(rowsFromExecuteResult(productsResult).map((p: any) => [Number(p.id), p]));
@@ -395,7 +487,7 @@ export const stocktakeRouter = router({
 
     return {
       ...stocktake,
-      lines: lines.map(l => ({
+      lines: lines.map((l: any) => ({
         ...l,
         actualSize: decimalToNumber(l.actualSize),
         actualWidth: decimalToNumber(l.actualWidth),

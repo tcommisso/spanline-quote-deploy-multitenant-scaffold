@@ -138,3 +138,132 @@ describe("generateItemsFromSpec beam entry matching", () => {
     expect(items[1].notes).toContain("Aluminium 150 x 60 = 2.1 LM");
   });
 });
+
+describe("generateItemsFromSpec attachment descriptions", () => {
+  it("falls back to the selected product match value for dynamic bracket mappings", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 300,
+        name: "Number of Brackets",
+        tabName: "attachment",
+        specField: "specBracketAttachmentMethod",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "specBracketAttachmentMethod",
+        qtyFormula: "specNumberOfBrackets",
+        description: null,
+        colourField: "specBracketColour",
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 30,
+        active: true,
+      }],
+      {
+        specBracketAttachmentMethod: "Gable brackets",
+        specNumberOfBrackets: 6,
+        specBracketColour: "Basal",
+      },
+      [],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].description).toBe("Gable brackets");
+    expect(items[0].qty).toBe(6);
+  });
+});
+
+describe("generateItemsFromSpec wall entry matching", () => {
+  it("calculates IWP wall LM from each wall width and product-specific cover width", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 400,
+        name: "IWP / Ceiling Panels",
+        tabName: "walls",
+        specField: "specIwpEntries",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "specIwpEntries",
+        qtyFormula: "wallSheetLM",
+        description: null,
+        colourField: "specIwpColour",
+        bottomColourField: null,
+        uom: "LM",
+        sortOrder: 72,
+        active: true,
+      }],
+      {
+        specIwpEntries: [
+          {
+            type: "Panelux Steel/Steel 1140mm",
+            width: 6000,
+            height: 2400,
+            outsideColour: "Gull Grey",
+            insideColour: "Pearl White",
+          },
+          {
+            type: "Panelux Narrow 900mm",
+            width: 3000,
+            height: 2100,
+            outsideColour: "Gull Grey",
+            insideColour: "Pearl White",
+          },
+        ],
+      },
+      [
+        product({ id: 20, name: "Panelux Steel/Steel 1140mm", tabName: "walls", coverageWidth: 1140, fixedSell: "50.00" }),
+        product({ id: 21, name: "Panelux Narrow 900mm", tabName: "walls", coverageWidth: 900, fixedSell: "60.00" }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items.map(item => item.description)).toEqual([
+      "Panelux Steel/Steel 1140mm",
+      "Panelux Narrow 900mm",
+    ]);
+    expect(items.map(item => item.qty)).toEqual([14.4, 8.4]);
+    expect(items[0].notes).toContain("6000x2400mm / 1140mm cover = 6 sheets");
+    expect(items[1].notes).toContain("3000x2100mm / 900mm cover = 4 sheets");
+  });
+
+  it("uses wall LM for legacy IWP mappings that still reference specArea", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 401,
+        name: "IWP / Ceiling Panels",
+        tabName: "walls",
+        specField: "specIwpEntries",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "specIwpEntries",
+        qtyFormula: "specArea",
+        description: null,
+        colourField: "specIwpColour",
+        bottomColourField: null,
+        uom: "m2",
+        sortOrder: 72,
+        active: true,
+      }],
+      {
+        specArea: 42,
+        specIwpEntries: [
+          {
+            type: "Panelux Steel/Steel 1140mm",
+            width: 6000,
+            height: 2400,
+          },
+        ],
+      },
+      [product({ id: 20, name: "Panelux Steel/Steel 1140mm", tabName: "walls", coverageWidth: 1140 })],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].qty).toBe(14.4);
+    expect(items[0].uom).toBe("LM");
+  });
+});

@@ -36,7 +36,10 @@ export default function StocktakeDetail() {
   const [, navigate] = useLocation();
   const stocktakeId = Number(id);
 
-  const { data, refetch, isLoading } = trpc.stocktake.getById.useQuery({ id: stocktakeId });
+  const { data, refetch, isLoading, error } = trpc.stocktake.getById.useQuery(
+    { id: stocktakeId },
+    { enabled: Number.isFinite(stocktakeId) && stocktakeId > 0 },
+  );
   const [counts, setCounts] = useState<Record<number, LineDraft>>({});
   const [filter, setFilter] = useState<"all" | "uncounted" | "variance">("all");
   const [searchTerm, setSearchTerm] = useState("");
@@ -226,7 +229,31 @@ export default function StocktakeDetail() {
   }, [data?.lines]);
 
   if (isLoading) return <div className="p-6">Loading...</div>;
-  if (!data) return <div className="p-6">Stocktake not found</div>;
+  if (error || !data) {
+    return (
+      <div className="p-6 space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/inventory/stocktake")}>
+          <ArrowLeft className="w-4 h-4 mr-2" /> Back to Stocktakes
+        </Button>
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-600" />
+              <div>
+                <h1 className="text-lg font-semibold">{error ? "Could not load stocktake" : "Stocktake not found"}</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {error?.message || "This stocktake may have been deleted or you may not have access to it."}
+                </p>
+                <Button className="mt-4" variant="outline" onClick={() => refetch()}>
+                  Retry
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const isEditable = data.status === "in_progress";
   const isReviewable = data.status === "review";
