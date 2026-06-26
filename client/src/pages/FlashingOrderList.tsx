@@ -95,11 +95,15 @@ export default function FlashingOrderList() {
     });
   };
 
+  const openOrder = (id: number) => {
+    navigate(`/construction/flashing-orders/${id}`);
+  };
+
   return (
-    <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="p-3 sm:p-6 space-y-5 sm:space-y-6 max-w-7xl mx-auto">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="text-2xl font-bold flex items-center gap-2 leading-tight">
             <FileText className="h-6 w-6" />
             Flashing Orders
           </h1>
@@ -107,7 +111,7 @@ export default function FlashingOrderList() {
             Design, specify, and manage custom flashing profiles for manufacturing or supplier orders.
           </p>
         </div>
-        <Button onClick={() => setShowNew((value) => !value)}>
+        <Button onClick={() => setShowNew((value) => !value)} className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-1.5" />
           New Flashing Order
         </Button>
@@ -171,7 +175,7 @@ export default function FlashingOrderList() {
       )}
 
       <Card>
-        <CardContent className="pt-6 space-y-4">
+        <CardContent className="p-4 sm:p-6 space-y-4">
           <div className="flex flex-col md:flex-row gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -209,7 +213,56 @@ export default function FlashingOrderList() {
               <p className="text-sm text-muted-foreground">Create the first order to start designing flashing profiles.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-md border">
+            <>
+            <div className="space-y-3 xl:hidden">
+              {orders.map((order: any) => (
+                <button
+                  key={order.id}
+                  type="button"
+                  onClick={() => openOrder(order.id)}
+                  className="w-full rounded-lg border bg-background p-4 text-left shadow-sm transition hover:bg-muted/30 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-slate-900"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{order.orderNumber}</div>
+                      <div className="mt-1 text-base font-semibold leading-tight text-foreground">{order.clientName || "Manual order"}</div>
+                      <div className="mt-1 line-clamp-2 text-sm leading-snug text-muted-foreground">
+                        {order.jobNumber || order.siteAddress || "No job linked"}
+                      </div>
+                    </div>
+                    <Badge variant="outline" className={`shrink-0 ${STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}`}>
+                      {STATUS_LABELS[order.status] || order.status}
+                    </Badge>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+                    <div className="rounded-md bg-muted/40 p-2">
+                      <div className="text-sm font-semibold text-foreground">{order.lineCount || 0}</div>
+                      Lines
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-2">
+                      <div className="text-sm font-semibold text-foreground">{Number(order.totalLinealMetres || 0).toFixed(2)}</div>
+                      LM
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-2">
+                      <div className="text-sm font-semibold text-foreground">{formatCurrency(order.totalExGst)}</div>
+                      Total
+                    </div>
+                    <div className="rounded-md bg-muted/40 p-2">
+                      <div className="text-sm font-semibold text-foreground">{formatDate(order.updatedAt)}</div>
+                      Updated
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex h-11 items-center justify-between rounded-md bg-slate-900 px-4 text-sm font-semibold text-white">
+                    <span>Open / edit order</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="hidden overflow-x-auto rounded-md border xl:block">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 text-muted-foreground">
                   <tr>
@@ -225,7 +278,19 @@ export default function FlashingOrderList() {
                 </thead>
                 <tbody>
                   {orders.map((order: any) => (
-                    <tr key={order.id} className="border-t hover:bg-muted/30">
+                    <tr
+                      key={order.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openOrder(order.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openOrder(order.id);
+                        }
+                      }}
+                      className="cursor-pointer border-t hover:bg-muted/30 focus:bg-muted/30 focus:outline-none"
+                    >
                       <td className="px-4 py-3 font-semibold">{order.orderNumber}</td>
                       <td className="px-4 py-3">
                         <div className="font-medium">{order.clientName || "Manual order"}</div>
@@ -246,7 +311,14 @@ export default function FlashingOrderList() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Button size="sm" variant="outline" onClick={() => navigate(`/construction/flashing-orders/${order.id}`)}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openOrder(order.id);
+                          }}
+                        >
                           Open <ArrowRight className="h-4 w-4 ml-1.5" />
                         </Button>
                       </td>
@@ -255,6 +327,7 @@ export default function FlashingOrderList() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
 
           <div className="flex items-center justify-between text-sm text-muted-foreground">

@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   ArrowLeft,
   Copy,
+  Download,
   FlipHorizontal,
   Plus,
   RotateCcw,
@@ -79,6 +80,15 @@ const END_TREATMENT_OPTIONS = [
 
 const END_TREATMENT_KEYS = ["start", "end"] as const;
 type EndTreatmentKey = typeof END_TREATMENT_KEYS[number];
+type EndTreatmentAnnotation = {
+  key: EndTreatmentKey;
+  label: string;
+  origin: Point;
+  path: string;
+  pathPoints: [Point, Point, Point];
+  labelPoint: Point;
+  textAnchor: "start" | "end";
+};
 
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
@@ -166,6 +176,33 @@ function foldKey(pointIndex: number) {
   return `fold-${pointIndex}`;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function unitVector(from: Point, to: Point) {
+  const length = distance(from, to);
+  if (length <= 0) return { x: 1, y: 0 };
+  return {
+    x: (to.x - from.x) / length,
+    y: (to.y - from.y) / length,
+  };
+}
+
+function scaledPoint(origin: Point, vector: Point, length: number) {
+  return {
+    x: origin.x + vector.x * length,
+    y: origin.y + vector.y * length,
+  };
+}
+
+function canvasSafePoint(point: Point, padding = 12) {
+  return {
+    x: clamp(point.x, padding, CANVAS_W - padding),
+    y: clamp(point.y, padding, CANVAS_H - padding),
+  };
+}
+
 function calculateGirth(points: Point[]) {
   return round(points.slice(1).reduce((total, point, index) => total + distance(points[index], point), 0));
 }
@@ -242,6 +279,188 @@ function countCrushFolds(foldDetails: any, points: Point[]) {
   return count;
 }
 
+function treatmentLabel(value: string) {
+  return END_TREATMENT_OPTIONS.find((option) => option.value === value)?.label || value;
+}
+
+function buildEndTreatmentAnnotation(geometry: Geometry, foldDetails: any, key: EndTreatmentKey): EndTreatmentAnnotation | null {
+  const details = normaliseFoldDetails(foldDetails);
+  const treatment = details.endTreatments?.[key];
+  if (!treatment || treatment === "none" || geometry.points.length < 2) return null;
+
+  const startIndex = key === "start" ? 0 : geometry.points.length - 1;
+  const adjacentIndex = key === "start" ? 1 : geometry.points.length - 2;
+  const origin = geometry.points[startIndex];
+  const adjacent = geometry.points[adjacentIndex];
+  const outward = unitVector(adjacent, origin);
+  const normalA = { x: -outward.y, y: outward.x };
+  const turnDown = normalA.y >= 0 ? normalA : { x: -normalA.x, y: -normalA.y };
+  const rawLength = Number(details.endTreatmentLengths?.[key] ?? 0);
+  const labelLength = Number.isFinite(rawLength) && rawLength > 0 ? `${Math.round(rawLength)} mm` : "";
+  const displayLength = clamp(Number.isFinite(rawLength) && rawLength > 0 ? rawLength : 28, 18, 70);
+
+  const introPoint = treatment === "beak_turn_down"
+    ? scaledPoint(origin, outward, displayLength * 0.35)
+    : scaledPoint(origin, outward, displayLength * 0.75);
+  const endPoint = treatment === "beak_turn_down"
+    ? scaledPoint(introPoint, turnDown, displayLength)
+    : treatment === "hook"
+      ? scaledPoint(introPoint, turnDown, clamp(displayLength * 0.55, 10, 22))
+      : scaledPoint(origin, outward, displayLength);
+
+  const labelPoint = canvasSafePoint({
+    x: (introPoint.x + endPoint.x) / 2 + (key === "start" ? -8 : 8),
+    y: Math.min(introPoint.y, endPoint.y) - 12,
+  }, 18);
+
+  const label = [treatmentLabel(treatment), labelLength].filter(Boolean).join(" ");
+  return {
+    key,
+    label,
+    origin,
+    path: `M ${origin.x} ${origin.y} L ${introPoint.x} ${introPoint.y} L ${endPoint.x} ${endPoint.y}`,
+    pathPoints: [origin, introPoint, endPoint],
+    labelPoint,
+    textAnchor: key === "start" ? "end" as const : "start" as const,
+  };
+}
+
+function safeFileName(value: string) {
+  return value
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80) || "flashing-order";
+}
+
+function formatPdfNumber(value: unknown, decimals = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return number.toLocaleString("en-AU", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+function foldTypeLabel(value?: string) {
+  if (!value || value === "standard") return "Standard fold";
+  return FOLD_TYPE_OPTIONS.find((option) => option.value === value)?.label || value;
+}
+
+function getLineTotalLm(existing: any) {
+  const storedTotal = Number(existing.totalLinealMetres);
+  if (Number.isFinite(storedTotal) && storedTotal > 0) return storedTotal;
+  return round((Number(existing.lengthMm || 0) * Number(existing.quantity || 1)) / 1000);
+}
+
+function getLineTotalPrice(existing: any) {
+  const storedTotal = Number(existing.lineTotal);
+  if (Number.isFinite(storedTotal)) return storedTotal;
+  return round(getLineTotalLm(existing) * Number(existing.unitPrice || 0));
+}
+
+function addWrappedPdfText(doc: any, text: string, x: number, y: number, maxWidth: number, lineHeight = 4) {
+  const lines = doc.splitTextToSize(text || "-", maxWidth);
+  lines.forEach((line: string, index: number) => doc.text(line, x, y + index * lineHeight));
+  return y + lines.length * lineHeight;
+}
+
+function drawProfilePdf(doc: any, geometry: Geometry, foldDetails: FoldDetails, x: number, y: number, width: number, height: number) {
+  doc.setDrawColor(226, 232, 240);
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(x, y, width, height, 2, 2, "FD");
+
+  if (geometry.points.length < 2) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text("No profile geometry recorded.", x + 6, y + 12);
+    return;
+  }
+
+  const annotations = END_TREATMENT_KEYS
+    .map((key) => buildEndTreatmentAnnotation(geometry, foldDetails, key))
+    .filter(Boolean) as EndTreatmentAnnotation[];
+  const drawingPoints = [
+    ...geometry.points,
+    ...annotations.flatMap((annotation) => [...annotation.pathPoints, annotation.labelPoint]),
+  ];
+  const minX = Math.min(...drawingPoints.map((point) => point.x));
+  const maxX = Math.max(...drawingPoints.map((point) => point.x));
+  const minY = Math.min(...drawingPoints.map((point) => point.y));
+  const maxY = Math.max(...drawingPoints.map((point) => point.y));
+  const sourceWidth = Math.max(1, maxX - minX);
+  const sourceHeight = Math.max(1, maxY - minY);
+  const padding = 7;
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const scale = Math.min(usableWidth / sourceWidth, usableHeight / sourceHeight);
+  const drawnWidth = sourceWidth * scale;
+  const drawnHeight = sourceHeight * scale;
+  const offsetX = x + padding + (usableWidth - drawnWidth) / 2;
+  const offsetY = y + padding + (usableHeight - drawnHeight) / 2;
+  const mapPoint = (point: Point) => ({
+    x: offsetX + (point.x - minX) * scale,
+    y: offsetY + (point.y - minY) * scale,
+  });
+
+  const gridSize = geometry.gridSize || 20;
+  doc.setDrawColor(235, 241, 245);
+  doc.setLineWidth(0.08);
+  for (let gx = Math.ceil(minX / gridSize) * gridSize; gx <= maxX; gx += gridSize) {
+    const start = mapPoint({ x: gx, y: minY });
+    const end = mapPoint({ x: gx, y: maxY });
+    doc.line(start.x, start.y, end.x, end.y);
+  }
+  for (let gy = Math.ceil(minY / gridSize) * gridSize; gy <= maxY; gy += gridSize) {
+    const start = mapPoint({ x: minX, y: gy });
+    const end = mapPoint({ x: maxX, y: gy });
+    doc.line(start.x, start.y, end.x, end.y);
+  }
+
+  doc.setDrawColor(15, 23, 42);
+  doc.setLineWidth(0.9);
+  geometry.points.slice(1).forEach((point, index) => {
+    const from = mapPoint(geometry.points[index]);
+    const to = mapPoint(point);
+    doc.line(from.x, from.y, to.x, to.y);
+  });
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7);
+  doc.setTextColor(15, 23, 42);
+  geometry.points.slice(1).forEach((point, index) => {
+    const previous = geometry.points[index];
+    const mid = mapPoint({ x: (previous.x + point.x) / 2, y: (previous.y + point.y) / 2 });
+    doc.text(`${Math.round(distance(previous, point))} mm`, mid.x + 1.5, mid.y - 1.5);
+  });
+
+  annotations.forEach((annotation) => {
+    const [origin, introPoint, endPoint] = annotation.pathPoints.map(mapPoint);
+    const labelPoint = mapPoint(annotation.labelPoint);
+    doc.setDrawColor(245, 158, 11);
+    doc.setLineWidth(0.8);
+    doc.circle(origin.x, origin.y, 2.2);
+    doc.line(origin.x, origin.y, introPoint.x, introPoint.y);
+    doc.line(introPoint.x, introPoint.y, endPoint.x, endPoint.y);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7);
+    doc.setTextColor(146, 64, 14);
+    doc.text(annotation.label, labelPoint.x, labelPoint.y, { align: annotation.textAnchor });
+  });
+
+  geometry.points.forEach((point, index) => {
+    const mapped = mapPoint(point);
+    doc.setFillColor(index === 0 ? 201 : 239, index === 0 ? 171 : 68, index === 0 ? 87 : 68);
+    doc.setDrawColor(255, 255, 255);
+    doc.circle(mapped.x, mapped.y, 2.2, "FD");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6);
+    doc.setTextColor(71, 85, 105);
+    doc.text(String(index + 1), mapped.x + 2.6, mapped.y + 1.6);
+  });
+}
+
 function resizeSegment(geometry: Geometry, segmentIndex: number, nextLength: number): Geometry {
   const start = geometry.points[segmentIndex];
   const end = geometry.points[segmentIndex + 1];
@@ -279,7 +498,15 @@ function cloneGeometry(value: any): Geometry {
   };
 }
 
-function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange: (geometry: Geometry) => void }) {
+function ProfileDesigner({
+  geometry,
+  foldDetails,
+  onChange,
+}: {
+  geometry: Geometry;
+  foldDetails: FoldDetails;
+  onChange: (geometry: Geometry) => void;
+}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const gridSize = geometry.gridSize || 20;
@@ -319,6 +546,9 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
   const polyline = geometry.points.map((point) => `${point.x},${point.y}`).join(" ");
   const girth = calculateGirth(geometry.points);
   const foldCount = getFoldCount(geometry.points);
+  const endTreatmentAnnotations = END_TREATMENT_KEYS
+    .map((key) => buildEndTreatmentAnnotation(geometry, foldDetails, key))
+    .filter(Boolean);
 
   return (
     <div className="space-y-3">
@@ -372,6 +602,45 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
           {geometry.points.length >= 2 && (
             <polyline points={polyline} fill="none" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
           )}
+          {endTreatmentAnnotations.map((annotation) => annotation && (
+            <g key={`end-treatment-${annotation.key}`} pointerEvents="none">
+              <circle
+                cx={annotation.origin.x}
+                cy={annotation.origin.y}
+                r="14"
+                fill="none"
+                stroke="#F59E0B"
+                strokeWidth="2"
+                strokeDasharray="4 3"
+              />
+              <path
+                d={annotation.path}
+                fill="none"
+                stroke="#FBBF24"
+                strokeWidth="4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d={annotation.path}
+                fill="none"
+                stroke="#0F172A"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <text
+                x={annotation.labelPoint.x}
+                y={annotation.labelPoint.y}
+                fill="#FDE68A"
+                fontSize="13"
+                fontWeight="700"
+                textAnchor={annotation.textAnchor}
+              >
+                {annotation.label}
+              </text>
+            </g>
+          ))}
           {geometry.points.slice(1).map((point, index) => {
             const previous = geometry.points[index];
             const midX = (previous.x + point.x) / 2;
@@ -719,6 +988,7 @@ export default function FlashingOrderDetail() {
     internalNotes: "",
   });
   const [line, setLine] = useState(DEFAULT_LINE);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const { data: allColourGroups } = trpc.colourGroups.getAll.useQuery();
   const { data: allColourMembers } = trpc.colourGroups.getAllMembers.useQuery();
 
@@ -781,6 +1051,218 @@ export default function FlashingOrderDetail() {
   const orderCrushFoldCount = useMemo(() => (
     lines.reduce((total: number, existing: any) => total + countCrushFolds(existing.foldDetails, cloneGeometry(existing.geometry).points), 0)
   ), [lines]);
+
+  const exportFlashingPdf = async () => {
+    if (!order) return;
+    if (lines.length === 0) {
+      toast.error("Add at least one flashing line before exporting.");
+      return;
+    }
+
+    setIsExportingPdf(true);
+    try {
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 14;
+      const contentWidth = pageWidth - margin * 2;
+      let y = 18;
+
+      const addFooter = () => {
+        const pageNumber = doc.getNumberOfPages();
+        doc.setDrawColor(226, 232, 240);
+        doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`Generated ${new Date().toLocaleDateString("en-AU")}`, margin, pageHeight - 7);
+        doc.text(`Page ${pageNumber}`, pageWidth - margin, pageHeight - 7, { align: "right" });
+      };
+
+      const ensureSpace = (needed: number) => {
+        if (y + needed <= pageHeight - 18) return;
+        addFooter();
+        doc.addPage();
+        y = 18;
+      };
+
+      doc.setFillColor(15, 23, 42);
+      doc.rect(0, 0, pageWidth, 26, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text("Flashing Order", margin, 14);
+      doc.setFontSize(10);
+      doc.setFont("helvetica", "normal");
+      doc.text(order.orderNumber, pageWidth - margin, 14, { align: "right" });
+      y = 36;
+
+      doc.setTextColor(15, 23, 42);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text(order.clientName || "Manual order", margin, y);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      y += 5;
+      y = addWrappedPdfText(doc, order.siteAddress || "No site address recorded", margin, y, contentWidth * 0.62);
+      y += 2;
+      doc.text(`Job: ${order.jobNumber || "-"}`, margin, y);
+      doc.text(`Status: ${STATUS_LABELS[order.status] || order.status}`, pageWidth - margin, y, { align: "right" });
+      y += 10;
+
+      const summaryCards = [
+        ["Profiles", String(order.lineCount || lines.length)],
+        ["Total LM", formatPdfNumber(order.totalLinealMetres, 2)],
+        ["Total Girth", `${formatPdfNumber(order.totalGirthMm)} mm`],
+        ["Folds", `${orderFoldCount}${orderCrushFoldCount > 0 ? ` (${orderCrushFoldCount} crush)` : ""}`],
+      ];
+      const cardGap = 3;
+      const cardWidth = (contentWidth - cardGap * 3) / 4;
+      summaryCards.forEach(([label, value], index) => {
+        const cardX = margin + index * (cardWidth + cardGap);
+        doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(cardX, y, cardWidth, 18, 2, 2, "FD");
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text(label, cardX + 3, y + 6);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(15, 23, 42);
+        doc.text(value, cardX + 3, y + 13);
+      });
+      y += 28;
+
+      lines.forEach((existing: any, index: number) => {
+        const geometry = cloneGeometry(existing.geometry);
+        const foldDetails = normaliseFoldDetails(existing.foldDetails);
+        const foldCount = Number(existing.bendCount ?? getFoldCount(geometry.points));
+        const crushFoldCount = countCrushFolds(foldDetails, geometry.points);
+        const totalLm = getLineTotalLm(existing);
+        const totalPrice = getLineTotalPrice(existing);
+        const drawingHeight = 78;
+        ensureSpace(132);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(12);
+        doc.setTextColor(15, 23, 42);
+        doc.text(`${index + 1}. ${existing.profileName || "Custom flashing"}`, margin, y);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(100, 116, 139);
+        doc.text(existing.category || "custom", pageWidth - margin, y, { align: "right" });
+        y += 5;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(71, 85, 105);
+        const materialText = [
+          existing.materialType || "Material not set",
+          existing.gauge,
+          existing.colour ? `Colour: ${existing.colour}` : "No colour",
+          existing.finish ? `Finish: ${existing.finish}` : "",
+        ].filter(Boolean).join(" | ");
+        y = addWrappedPdfText(doc, materialText, margin, y, contentWidth);
+        y += 2;
+
+        const metricsText = [
+          `Qty ${formatPdfNumber(existing.quantity)}`,
+          `Length ${formatPdfNumber(existing.lengthMm)} mm`,
+          `LM ${formatPdfNumber(totalLm, 2)}`,
+          `Girth ${formatPdfNumber(existing.girthMm)} mm`,
+          `Folds ${foldCount}`,
+          crushFoldCount > 0 ? `Crush folds ${crushFoldCount}` : "",
+          totalPrice > 0 ? `Total ${formatCurrency(totalPrice)}` : "",
+        ].filter(Boolean).join(" | ");
+        y = addWrappedPdfText(doc, metricsText, margin, y, contentWidth);
+        y += 4;
+
+        drawProfilePdf(doc, geometry, foldDetails, margin, y, contentWidth, drawingHeight);
+        y += drawingHeight + 6;
+
+        const rows: Array<[string, string, string, string]> = [];
+        geometry.points.slice(1).forEach((point, segmentIndex) => {
+          const key = segmentKey(segmentIndex);
+          const length = foldDetails.segmentLengths?.[key] ?? distance(geometry.points[segmentIndex], point);
+          rows.push([
+            `Segment ${segmentIndex + 1}`,
+            `Point ${segmentIndex + 1} to ${segmentIndex + 2}`,
+            `${formatPdfNumber(length)} mm`,
+            "Manufacture length",
+          ]);
+        });
+        geometry.points.slice(1, -1).forEach((point, foldIndex) => {
+          const pointIndex = foldIndex + 1;
+          const key = foldKey(pointIndex);
+          rows.push([
+            `Fold ${foldIndex + 1}`,
+            `Point ${pointIndex + 1}`,
+            foldTypeLabel(foldDetails.foldTypes?.[key]),
+            foldDetails.foldNotes?.[key] || "-",
+          ]);
+        });
+        END_TREATMENT_KEYS.forEach((key) => {
+          const treatment = foldDetails.endTreatments?.[key];
+          if (!treatment || treatment === "none") return;
+          rows.push([
+            key === "start" ? "Start end" : "End end",
+            key === "start" ? "Point 1" : `Point ${geometry.points.length}`,
+            `${treatmentLabel(treatment)} ${foldDetails.endTreatmentLengths?.[key] ? `${formatPdfNumber(foldDetails.endTreatmentLengths[key])} mm` : ""}`.trim(),
+            foldDetails.endTreatmentNotes?.[key] || "-",
+          ]);
+        });
+
+        ensureSpace(14 + rows.length * 7);
+        doc.setFillColor(241, 245, 249);
+        doc.setDrawColor(226, 232, 240);
+        doc.rect(margin, y, contentWidth, 7, "FD");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(51, 65, 85);
+        doc.text("Item", margin + 2, y + 4.8);
+        doc.text("Location", margin + 44, y + 4.8);
+        doc.text("Dimension / Type", margin + 86, y + 4.8);
+        doc.text("Notes", margin + 132, y + 4.8);
+        y += 7;
+        doc.setFont("helvetica", "normal");
+        rows.forEach((row) => {
+          ensureSpace(8);
+          doc.setDrawColor(241, 245, 249);
+          doc.line(margin, y, pageWidth - margin, y);
+          doc.setFontSize(7.2);
+          doc.setTextColor(51, 65, 85);
+          doc.text(row[0], margin + 2, y + 5);
+          doc.text(row[1], margin + 44, y + 5);
+          doc.text(row[2], margin + 86, y + 5);
+          doc.text(doc.splitTextToSize(row[3], 52), margin + 132, y + 5);
+          y += 8;
+        });
+
+        if (existing.manufacturingNotes) {
+          ensureSpace(14);
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(15, 23, 42);
+          doc.text("Manufacturing notes", margin, y + 3);
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(71, 85, 105);
+          y = addWrappedPdfText(doc, existing.manufacturingNotes, margin, y + 8, contentWidth, 4);
+        }
+        y += 8;
+      });
+
+      addFooter();
+      doc.save(`${safeFileName(order.orderNumber)}-flashing-order.pdf`);
+      toast.success("Flashing PDF downloaded");
+    } catch (error: any) {
+      toast.error(`Failed to generate flashing PDF: ${error?.message || "Unknown error"}`);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
 
   if (detailQuery.isLoading) {
     return <div className="p-8 flex justify-center"><Spinner /></div>;
@@ -881,6 +1363,15 @@ export default function FlashingOrderDetail() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={exportFlashingPdf}
+            disabled={isExportingPdf || lines.length === 0}
+          >
+            {isExportingPdf ? <Spinner className="h-4 w-4 mr-1.5" /> : <Download className="h-4 w-4 mr-1.5" />}
+            Export PDF
+          </Button>
           <select
             className="h-10 rounded-md border border-input bg-background px-3 text-sm"
             value={order.status}
@@ -926,7 +1417,7 @@ export default function FlashingOrderDetail() {
               <CardTitle className="text-base">Profile Line Designer</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
-              <ProfileDesigner geometry={line.geometry} onChange={updateLineGeometry} />
+              <ProfileDesigner geometry={line.geometry} foldDetails={line.foldDetails} onChange={updateLineGeometry} />
               <FoldDimensionTable
                 geometry={line.geometry}
                 foldDetails={line.foldDetails}
