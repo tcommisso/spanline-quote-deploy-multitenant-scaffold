@@ -8,6 +8,79 @@ import { appendPrivateTenantScope } from "./private-tenant-scope";
 const pool = mysql.createPool(process.env.DATABASE_URL!);
 const db = drizzle(pool);
 
+function flattenErrorText(error: unknown): string {
+  const visited = new Set<unknown>();
+  const parts: string[] = [];
+
+  const collect = (value: unknown) => {
+    if (!value || visited.has(value)) return;
+    visited.add(value);
+
+    if (typeof value === "string") {
+      parts.push(value);
+      return;
+    }
+
+    if (typeof value !== "object") return;
+
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "code", "errno", "sqlMessage", "sql", "query"]) {
+      const field = record[key];
+      if (typeof field === "string" || typeof field === "number") {
+        parts.push(String(field));
+      }
+    }
+
+    collect(record.cause);
+    collect(record.error);
+    collect(record.originalError);
+  };
+
+  collect(error);
+  return parts.join(" \n").toLowerCase();
+}
+
+function isMissingWindowDoorOptionModifierSchema(error: unknown): boolean {
+  const text = flattenErrorText(error);
+  if (!text.includes("window_door_option_modifiers")) return false;
+  if (
+    text.includes("access denied") ||
+    text.includes("command denied") ||
+    text.includes("permission") ||
+    text.includes("econn") ||
+    text.includes("timeout") ||
+    text.includes("too many connections") ||
+    text.includes("deadlock") ||
+    text.includes("lock wait")
+  ) {
+    return false;
+  }
+
+  return (
+    text.includes("er_no_such_table") ||
+    text.includes("doesn't exist") ||
+    text.includes("does not exist") ||
+    text.includes("unknown table") ||
+    text.includes("er_bad_field_error") ||
+    text.includes("unknown column") ||
+    text.includes("failed query: select")
+  );
+}
+
+async function fallbackEmptyWindowDoorOptionModifiers<T>(operation: () => Promise<T[]>): Promise<T[]> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (isMissingWindowDoorOptionModifierSchema(error)) {
+      console.warn(
+        "[spec-items] window_door_option_modifiers schema is not available; continuing without window/door option modifiers."
+      );
+      return [];
+    }
+    throw error;
+  }
+}
+
 async function withTenant(conditions: any[], column: any, tenantId?: number | null) {
   await appendPrivateTenantScope(conditions, column, tenantId);
   return and(...conditions);
@@ -243,15 +316,19 @@ export async function getAllProducts(tenantId?: number | null) {
 export async function listWindowDoorOptionModifiers(tenantId?: number | null) {
   const conditions: any[] = [];
   await appendPrivateTenantScope(conditions, windowDoorOptionModifiers.tenantId, tenantId);
-  return db.select().from(windowDoorOptionModifiers)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder), asc(windowDoorOptionModifiers.id));
+  return fallbackEmptyWindowDoorOptionModifiers(() =>
+    db.select().from(windowDoorOptionModifiers)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder), asc(windowDoorOptionModifiers.id))
+  );
 }
 
 export async function getActiveWindowDoorOptionModifiers(tenantId?: number | null) {
-  return db.select().from(windowDoorOptionModifiers)
-    .where(await withTenant([eq(windowDoorOptionModifiers.active, true)], windowDoorOptionModifiers.tenantId, tenantId))
-    .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder));
+  return fallbackEmptyWindowDoorOptionModifiers(async () =>
+    db.select().from(windowDoorOptionModifiers)
+      .where(await withTenant([eq(windowDoorOptionModifiers.active, true)], windowDoorOptionModifiers.tenantId, tenantId))
+      .orderBy(asc(windowDoorOptionModifiers.productType), asc(windowDoorOptionModifiers.optionGroup), asc(windowDoorOptionModifiers.sortOrder))
+  );
 }
 
 export async function createWindowDoorOptionModifier(data: {
