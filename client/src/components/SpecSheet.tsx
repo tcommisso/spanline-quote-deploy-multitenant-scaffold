@@ -36,7 +36,6 @@ import SitePlanPreviewDialog from "@/components/SitePlanPreviewDialog";
 import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
-import { validateBeamSize, getRecommendedBeamSize } from "../../../shared/beamSizeValidator";
 import { calculateRakedGeometry, type RakedEdge } from "../../../shared/rakedGeometry";
 
 // ─── Section definitions for sidebar nav ───────────────────────────────────
@@ -80,6 +79,8 @@ const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered",
 const YES_NO_OPTIONS = ["Yes", "No"];
 const ATTACHED_SIDE_OPTIONS = ["1 Side", "2 Side", "3 Side", "4 Side"];
 const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
+const BRACKET_INFILL_FALLBACK_OPTIONS = ["Glass", "Twinwall"];
+const POST_FIXING_OPTIONS = ["Footing", "Internal Bracket", "Welded Base Plate"];
 const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
   "Fascia brackets": "specFasciaBrackets",
   "Extenda brackets": "specExtendaBrackets",
@@ -95,6 +96,9 @@ const BRACKET_OPTION_FIELD_KEYS = [
   "specBracketCover",
   "specBracketColour",
   "specPopupColour",
+  "specBracketInfillType",
+  "specBracketInfillLength",
+  "specBracketInfillColour",
   "specWallFixingBeam",
   "specFoamCut",
 ] as const;
@@ -152,6 +156,11 @@ function applyBracketMethod(form: Record<string, string>, method: string) {
   if (method !== "popup brackets") {
     next.specPopupColour = "";
   }
+  if (method !== "Gable brackets" && method !== "popup brackets") {
+    next.specBracketInfillType = "";
+    next.specBracketInfillLength = "";
+    next.specBracketInfillColour = "";
+  }
   if (method !== "wall brackets") {
     next.specWallFixingBeam = "";
     next.specFoamCut = "";
@@ -179,6 +188,65 @@ function normalizeCutBackEaveOption(value?: string | null): string {
   const numeric = Number(raw);
   if (!Number.isNaN(numeric)) return numeric > 0 ? "Yes" : "No";
   return "";
+}
+
+function normalizePostFixingOption(value?: string | null): string {
+  const raw = (value || "").trim();
+  if (!raw) return "";
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, " ");
+  return POST_FIXING_OPTIONS.find(option => option.toLowerCase() === normalized) || raw;
+}
+
+type BeamOrientation = "H" | "V";
+
+function parseSpecBeamPosition(pos: string): { idx: number; orientation: BeamOrientation } | null {
+  const parts = pos.split(":");
+  const idx = parseInt(parts[0] || "", 10);
+  if (!Number.isFinite(idx)) return null;
+  return { idx, orientation: parts[2] === "V" ? "V" : "H" };
+}
+
+function defaultBeamOrientationForWalls(houseWalls: string[]): BeamOrientation {
+  const firstWall = houseWalls[0] || "A-B";
+  return firstWall === "B-C" || firstWall === "D-A" ? "V" : "H";
+}
+
+function parseDimensionMetres(value?: string | null): number | null {
+  const parsed = parseFloat(value || "");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolveBeamPlacementMeta(
+  index: number,
+  beamPositions: string[],
+  houseWalls: string[],
+  width: string,
+  length: string,
+): { orientation: BeamOrientation; lm: number | null; source: "width" | "projection" } {
+  const parsed = beamPositions
+    .map(parseSpecBeamPosition)
+    .find((position): position is { idx: number; orientation: BeamOrientation } => !!position && position.idx === index);
+  const orientation = parsed?.orientation || defaultBeamOrientationForWalls(houseWalls);
+  const source = orientation === "H" ? "width" : "projection";
+  const dimension = orientation === "H" ? parseDimensionMetres(width) : parseDimensionMetres(length);
+  return { orientation, lm: dimension === null ? null : Number(dimension.toFixed(3)), source };
+}
+
+function syncBeamEntriesToPlacement(
+  entries: { type: "Steel" | "Aluminium"; size: string; lm: number }[],
+  beamPositions: string[],
+  houseWalls: string[],
+  width: string,
+  length: string,
+) {
+  let changed = false;
+  const next = entries.map((entry, index) => {
+    const { lm } = resolveBeamPlacementMeta(index, beamPositions, houseWalls, width, length);
+    if (lm === null || Math.abs((entry.lm || 0) - lm) < 0.001) return entry;
+    changed = true;
+    return { ...entry, lm };
+  });
+  return changed ? next : entries;
 }
 
 // HOW tiers (default fallback if not configured in master data)
@@ -413,19 +481,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     onError: (err: any) => toast.error(err.message),
   });
 
-  // Beam cost auto-update mutation (fired when auto-suggest accepts a new beam size)
-  const updateBeamCostMutation = trpc.specItems.updateBeamCost.useMutation({
-    onSuccess: (data: any) => {
-      if (data.success) {
-        toast.success(data.message);
-        utils.specItems.items.list.invalidate({ quoteId });
-      } else {
-        toast.info(data.message);
-      }
-    },
-    onError: (err: any) => toast.error(`Beam cost update failed: ${err.message}`),
-  });
-
   // Angle cutting cost auto-update mutation (fired when angle cutting metres change)
   const updateAngleCuttingCostMutation = trpc.specItems.updateAngleCuttingCost.useMutation({
     onSuccess: (data: any) => {
@@ -492,7 +547,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const gutterProductNames = useMemo(() => getSpecFieldAllOptions("specGutterType"), [getSpecFieldAllOptions]);
   const downpipeProductNames = useMemo(() => getSpecFieldAllOptions("specDownpipeType"), [getSpecFieldAllOptions]);
   const wallProductNames = useMemo(() => getSpecFieldAllOptions("specWallType"), [getSpecFieldAllOptions]);
+  const backChannelProductNames = useMemo(() => getSpecFieldAllOptions("specBackChannelType"), [getSpecFieldAllOptions]);
+  const sideChannelsProductNames = useMemo(() => getSpecFieldAllOptions("specSideChannelsType"), [getSpecFieldAllOptions]);
   const flashingsProductNames = useMemo(() => getSpecFieldAllOptions("specFlashingsType"), [getSpecFieldAllOptions]);
+  const bracketInfillProductNames = useMemo(() => getSpecFieldAllOptions("specBracketInfillType"), [getSpecFieldAllOptions]);
 
   // Category arrays for FilteredSelect (from dynamic specField mapping)
   const roofCategories = useMemo(() => getSpecFieldCategories("specRoofType"), [getSpecFieldCategories]);
@@ -501,7 +559,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const downpipeCategories = useMemo(() => getSpecFieldCategories("specDownpipeType"), [getSpecFieldCategories]);
   const wallCategories = useMemo(() => getSpecFieldCategories("specWallType"), [getSpecFieldCategories]);
   const beamCategories = useMemo(() => getSpecFieldCategories("specBeamSize"), [getSpecFieldCategories]);
+  const backChannelCategories = useMemo(() => getSpecFieldCategories("specBackChannelType"), [getSpecFieldCategories]);
+  const sideChannelsCategories = useMemo(() => getSpecFieldCategories("specSideChannelsType"), [getSpecFieldCategories]);
   const flashingsCategories = useMemo(() => getSpecFieldCategories("specFlashingsType"), [getSpecFieldCategories]);
+  const bracketInfillCategories = useMemo(() => getSpecFieldCategories("specBracketInfillType"), [getSpecFieldCategories]);
 
   // Derive beam size options from product database, extracting just the dimension (e.g. "140×50")
   const dbSteelSizes = useMemo(() => {
@@ -765,7 +826,21 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [windowEntries, setWindowEntries] = useState<WindowEntry[]>([]);
   const [doorEntries, setDoorEntries] = useState<DoorEntry[]>([]);
   const beamColourLookupValue = form.specBeamSize || beamEntries.find(entry => entry.size)?.size || "";
+  const backChannelColourLookupValue = form.specBackChannelType || beamColourLookupValue;
+  const sideChannelsColourLookupValue = form.specSideChannelsType || beamColourLookupValue;
   const flashingsColourLookupValue = form.specFlashingsType || beamColourLookupValue;
+  const bracketInfillColourLookupValue = form.specBracketInfillType || "";
+  const beamPositionList = useMemo(() => (form.specBeamPositions || "").split(";").filter(Boolean), [form.specBeamPositions]);
+  const houseWallList = useMemo(() => (form.specHouseWalls || "").split(",").filter(Boolean), [form.specHouseWalls]);
+  const bracketInfillOptions = bracketInfillProductNames.length > 0 ? bracketInfillProductNames : BRACKET_INFILL_FALLBACK_OPTIONS;
+
+  const deriveBeamEntriesFromPlacement = useCallback((entries: BeamEntry[], positions = beamPositionList) => (
+    syncBeamEntriesToPlacement(entries, positions, houseWallList, form.specWidth || "", form.specLength || "")
+  ), [beamPositionList, houseWallList, form.specWidth, form.specLength]);
+
+  useEffect(() => {
+    setBeamEntries(prev => deriveBeamEntriesFromPlacement(prev));
+  }, [deriveBeamEntriesFromPlacement]);
 
   // ─── Checklist Pricing Selections ───
   type ChecklistSelection = { itemId: number; label: string; unitPrice: number; qty: number; total: number; section: string; unit: string };
@@ -1181,11 +1256,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       client: ["clientName", "siteAddress", "descriptionOfWork"],
       siteDetails: ["specSiteAccess", "specSiteRestricted", "specSiteConditions", "specSiteOther", "specSiteMixed", "specSiteNotes"],
       dimensions: ["specWidth", "specLength", "specRoofToFloor"],
-      brackets: ["specFreeStanding", "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specExtendaBrackets", "specGableBrackets", "specPopupBrackets", "specWallFixingBracket", "specBracketColour"],
+      brackets: ["specFreeStanding", "specAttachmentMethod", "specBracketAttachmentMethod", "specNumberOfBrackets", "specFasciaBrackets", "specExtendaBrackets", "specGableBrackets", "specPopupBrackets", "specWallFixingBracket", "specBracketColour", "specBracketInfillType", "specBracketInfillLength", "specBracketInfillColour"],
       posts: ["specPostsNumber", "specPostsType"],
       gutter: ["specGutterType", "specGutterColour"],
       walls: ["specWallType", "specWallColour", "specWallNotes"],
-      beams: ["specBeamSize", "specBeamColour", "specFlashingsType", "specFlashingsQty", "specFlashingsColour"],
+      beams: ["specBeamSize", "specBeamColour", "specBackChannelType", "specBackChannelLength", "specBackChannelColour", "specSideChannelsType", "specSideChannelsLength", "specSideChannelsColour", "specFlashingsType", "specFlashingsLength", "specFlashingsQty", "specFlashingsColour"],
       roof: ["specRoofType", "specRoofTopColour"],
       windows: ["specWindowsFrameColour", "specDoorsFrameColour"],
       floor: ["specFloorPrep", "specElecFrameType", "specFloorFinish", "specSubfloorM2"],
@@ -1799,6 +1874,15 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   {showPopupBracketOptions && (
                     <ColourField label="Pop-up Colour" value={form.specPopupColour || ""} onChange={(v) => update("specPopupColour", v)} colours={getColoursForSection("brackets")} />
                   )}
+                  {(showGableBracketOptions || showPopupBracketOptions) && (<>
+                    {bracketInfillCategories.length > 0 ? (
+                      <FilteredSelect label="Infill Type" value={form.specBracketInfillType || ""} onChange={(v) => update("specBracketInfillType", v)} categories={bracketInfillCategories} />
+                    ) : (
+                      <SelectField label="Infill Type" value={form.specBracketInfillType || ""} onChange={(v) => update("specBracketInfillType", v)} options={bracketInfillOptions} />
+                    )}
+                    <Field label="Infill Length" suffix="mm" value={form.specBracketInfillLength || ""} onChange={(v) => update("specBracketInfillLength", v)} placeholder="e.g. 3000" min={0} />
+                    <ColourField label="Infill Colour" value={form.specBracketInfillColour || ""} onChange={(v) => update("specBracketInfillColour", v)} colours={getColoursForProduct(bracketInfillColourLookupValue, "brackets")} />
+                  </>)}
                   {showWallBracketOptions && (<>
                     <SelectField label="Wall Fixing Beam" value={form.specWallFixingBeam || ""} onChange={(v) => update("specWallFixingBeam", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
                     <SelectField label="Foam Cut" value={form.specFoamCut || ""} onChange={(v) => update("specFoamCut", v)} options={["1 to 5m", "6 to 10m", "11 to 15m", "16 to 20m", "Other"]} />
@@ -1822,7 +1906,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   <SelectField label="Post Type" value={form.specPostsType || ""} onChange={(v) => update("specPostsType", v)} options={postProductNames} />
                 )}
                 <ColourField label="Post Colour" value={form.specPostsColour || ""} onChange={(v) => update("specPostsColour", v)} colours={getColoursForProduct(form.specPostsType, "posts")} />
-                <SelectField label="Post Fixing" value={form.specPostsFixing || ""} onChange={(v) => update("specPostsFixing", v)} options={["none", "footing", "internal bracket", "welded base plate"]} />
+                <SelectField label="Post Fixing" value={normalizePostFixingOption(form.specPostsFixing)} onChange={(v) => update("specPostsFixing", v)} options={POST_FIXING_OPTIONS} />
               </div>
 
               {/* Post Position Diagram */}
@@ -2111,16 +2195,28 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionContent>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 <ColourField label="Beam Colour" value={form.specBeamColour || ""} onChange={(v) => update("specBeamColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
-                <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
-                <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
+                {backChannelCategories.length > 0 ? (
+                  <FilteredSelect label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} categories={backChannelCategories} />
+                ) : (
+                  <SelectField label="Back Channel Type" value={form.specBackChannelType || ""} onChange={(v) => update("specBackChannelType", v)} options={backChannelProductNames} />
+                )}
+                <Field label="Back Channel Length" suffix="mm" value={form.specBackChannelLength || ""} onChange={(v) => update("specBackChannelLength", v)} placeholder="e.g. 6000" min={0} />
+                <ColourField label="Back Channel Colour" value={form.specBackChannelColour || ""} onChange={(v) => update("specBackChannelColour", v)} colours={getColoursForProduct(backChannelColourLookupValue, "beams")} />
+                {sideChannelsCategories.length > 0 ? (
+                  <FilteredSelect label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} categories={sideChannelsCategories} />
+                ) : (
+                  <SelectField label="Side Channels Type" value={form.specSideChannelsType || ""} onChange={(v) => update("specSideChannelsType", v)} options={sideChannelsProductNames} />
+                )}
+                <Field label="Side Channels Length" suffix="mm" value={form.specSideChannelsLength || ""} onChange={(v) => update("specSideChannelsLength", v)} placeholder="e.g. 12000" min={0} />
+                <ColourField label="Side Channels Colour" value={form.specSideChannelsColour || ""} onChange={(v) => update("specSideChannelsColour", v)} colours={getColoursForProduct(sideChannelsColourLookupValue, "beams")} />
                 {flashingsCategories.length > 0 ? (
                   <FilteredSelect label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} categories={flashingsCategories} />
                 ) : (
                   <SelectField label="Flashings Type" value={form.specFlashingsType || ""} onChange={(v) => update("specFlashingsType", v)} options={flashingsProductNames} />
                 )}
+                <Field label="Flashings Length" suffix="mm" value={form.specFlashingsLength || ""} onChange={(v) => update("specFlashingsLength", v)} placeholder="e.g. 6000" min={0} />
                 <Field label="Flashings Qty" value={form.specFlashingsQty || ""} onChange={(v) => update("specFlashingsQty", v)} placeholder="e.g. 1" min={0} />
                 <ColourField label="Flashings Colour" value={form.specFlashingsColour || ""} onChange={(v) => update("specFlashingsColour", v)} colours={getColoursForProduct(flashingsColourLookupValue, "beams")} />
-                <ColourField label="Twinwall Colour" value={form.specTwinwallColour || ""} onChange={(v) => update("specTwinwallColour", v)} colours={getColoursForProduct(beamColourLookupValue, "beams")} />
               </div>
 
               {/* Beams - Multi-row entries */}
@@ -2129,7 +2225,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   <Label className="text-sm font-medium">Beams</Label>
                   <Button variant="outline" size="sm" onClick={() => {
                     const defaultSize = dbSteelSizes.length > 0 ? dbSteelSizes[0] : "140×50";
-                    setBeamEntries([...beamEntries, { type: "Steel", size: defaultSize, lm: 0 }]);
+                    setBeamEntries(deriveBeamEntriesFromPlacement([...beamEntries, { type: "Steel", size: defaultSize, lm: 0 }]));
                   }}>
                     <Plus className="h-3 w-3 mr-1" /> Add Beam
                   </Button>
@@ -2137,19 +2233,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 {beamEntries.length === 0 && <p className="text-xs text-muted-foreground">No beam entries yet. Click "Add Beam" to start.</p>}
                 {beamEntries.map((entry, i) => {
                   const sizes = entry.type === "Steel" ? dbSteelSizes : dbAluSizes;
-                  // Per-beam RB100 validation
-                  const beamSpan = parseFloat(form.specPostSpacing || "0") || (parseFloat(form.specWidth || "0") * 1000) || 0;
-                  const projMm = (parseFloat(form.specLength || "0") * 1000) || 0;
-                  const windCat = form.specWindCat || "";
-                  // Normalise size: replace \u00d7 with x for validator
-                  const normSize = entry.size.replace("\u00d7", "x");
-                  const beamVal = (beamSpan > 0 && projMm > 0 && windCat)
-                    ? validateBeamSize(normSize, beamSpan, projMm, windCat)
-                    : null;
-                  const valBorder = beamVal ? beamVal.borderClass : "";
-                  const valBg = beamVal?.status === "pass" ? "bg-green-50" : beamVal?.status === "warning" ? "bg-amber-50" : beamVal?.status === "fail" ? "bg-red-50" : "";
+                  const placementMeta = resolveBeamPlacementMeta(i, beamPositionList, houseWallList, form.specWidth || "", form.specLength || "");
+                  const hasDerivedLength = placementMeta.lm !== null;
                   return (
-                    <div key={i} className={`flex items-center gap-2 mb-2 px-2 py-1 rounded ${valBg}`}>
+                    <div key={i} className="flex flex-wrap items-center gap-2 mb-2 px-2 py-1 rounded">
                       <Select value={entry.type} onValueChange={(v) => {
                         const next = [...beamEntries];
                         next[i] = { ...next[i], type: v as "Steel" | "Aluminium", size: v === "Steel" ? (dbSteelSizes[0] || "140×50") : (dbAluSizes[0] || "100×50") };
@@ -2166,49 +2253,22 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                         next[i] = { ...next[i], size: v };
                         setBeamEntries(next);
                       }}>
-                        <SelectTrigger className={`w-[100px] h-8 text-xs ${valBorder}`}><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="w-[100px] h-8 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {sizes.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <div className="flex items-center gap-1">
-                        <Input type="number" className="w-[60px] h-8 text-xs" placeholder="LM" value={entry.lm || ""} onChange={(e) => {
+                        <Input type="number" className="w-[72px] h-8 text-xs" placeholder="LM" readOnly={hasDerivedLength} value={entry.lm || ""} onChange={(e) => {
                           const next = [...beamEntries];
                           next[i] = { ...next[i], lm: parseFloat(e.target.value) || 0 };
                           setBeamEntries(next);
                         }} />
                         <span className="text-xs text-muted-foreground">LM</span>
-                      </div>
-                      {/* Per-beam validation indicator */}
-                      {beamVal && beamVal.status !== "unknown" && (
-                        <span className={`text-[9px] font-bold px-1 py-0.5 rounded ${beamVal.textClass} ${beamVal.bgClass} border ${beamVal.borderClass}`} title={beamVal.tooltip}>
-                          {beamVal.label}
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                          {placementMeta.source === "width" ? "width" : "projection"}
                         </span>
-                      )}
-                      {/* Auto-suggest per beam */}
-                      {beamVal && (beamVal.status === "fail" || beamVal.status === "warning") && (() => {
-                        const rec = getRecommendedBeamSize(beamSpan, projMm, windCat);
-                        // Map recommended spec size back to display format with \u00d7
-                        if (!rec) return null;
-                        const recDisplay = rec.replace("x", "\u00d7");
-                        if (recDisplay === entry.size) return null;
-                        return (
-                          <button
-                            type="button"
-                            className="text-[9px] font-medium px-1 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-300 hover:bg-blue-200 transition-colors whitespace-nowrap"
-                            onClick={() => {
-                              const next = [...beamEntries];
-                              next[i] = { ...next[i], size: recDisplay };
-                              setBeamEntries(next);
-                              // Auto-update beam cost in quote items
-                              updateBeamCostMutation.mutate({ quoteId, newBeamSize: recDisplay, beamIndex: i });
-                            }}
-                            title={`Accept recommended: ${recDisplay}`}
-                          >
-                            Use {recDisplay}
-                          </button>
-                        );
-                      })()}
+                      </div>
                       <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive" onClick={() => setBeamEntries(beamEntries.filter((_, j) => j !== i))}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
@@ -2234,8 +2294,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       houseWalls={form.specHouseWalls ? form.specHouseWalls.split(",").filter(Boolean) : []}
                       fallDirection={form.specFallDirection || ""}
                       beamEntries={beamEntries}
-                      beamPositions={(form.specBeamPositions || "").split(";").filter(Boolean)}
-                      onBeamPositionsChange={(positions: string[]) => update("specBeamPositions", positions.join(";"))}
+                      beamPositions={beamPositionList}
+                      onBeamPositionsChange={(positions: string[]) => {
+                        update("specBeamPositions", positions.join(";"));
+                        setBeamEntries(prev => deriveBeamEntriesFromPlacement(prev, positions));
+                      }}
                     />
                     <p className="text-[10px] text-muted-foreground mt-1">Drag beam lines to position them within the structure. Beams are shown as dashed lines parallel to the house wall.</p>
                   </div>
@@ -4033,6 +4096,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     {activeBracketMethod === "popup brackets" && (
                       <PrintRow label="Pop-up Colour" value={form.specPopupColour} isColour />
                     )}
+                    {(activeBracketMethod === "Gable brackets" || activeBracketMethod === "popup brackets") && (
+                      <>
+                        <PrintRow label="Infill Type" value={form.specBracketInfillType} />
+                        <PrintRow label="Infill Length" value={form.specBracketInfillLength} />
+                        <PrintRow label="Infill Colour" value={form.specBracketInfillColour} isColour />
+                      </>
+                    )}
                     {activeBracketMethod === "wall brackets" && (
                       <>
                         <PrintRow label="Wall Fixing Beam" value={form.specWallFixingBeam} />
@@ -4053,7 +4123,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Posts (Number)" value={form.specPostsNumber} />
                 <PrintRow label="Post Type" value={form.specPostsType} />
                 <PrintRow label="Post Colour" value={form.specPostsColour} isColour />
-                <PrintRow label="Post Fixing" value={form.specPostsFixing} />
+                <PrintRow label="Post Fixing" value={normalizePostFixingOption(form.specPostsFixing)} />
               </div>
             </div>
             )}
@@ -4108,18 +4178,22 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             )}
 
             {/* Beams, Channels & Flashings */}
-            {(form.specBeamSize || form.specBeamColour || form.specBackChannelColour || form.specSideChannelsColour || form.specFlashingsType || form.specFlashingsQty || form.specFlashingsColour || form.specTwinwallColour || beamEntries.length > 0) && (
+            {(form.specBeamSize || form.specBeamColour || form.specBackChannelType || form.specBackChannelLength || form.specBackChannelColour || form.specSideChannelsType || form.specSideChannelsLength || form.specSideChannelsColour || form.specFlashingsType || form.specFlashingsLength || form.specFlashingsQty || form.specFlashingsColour || beamEntries.length > 0) && (
             <div className="spec-section">
               <h3>Beams, Channels & Flashings{getColourGroupsForSection("beams").length > 0 && <span className="section-colour-group">Palette: {getColourGroupsForSection("beams").join(", ")}</span>}</h3>
               <div className="spec-3col">
                 <PrintRow label="Beam Size" value={form.specBeamSize} />
                 <PrintRow label="Beam Colour" value={form.specBeamColour} isColour />
-                <PrintRow label="Back Channel" value={form.specBackChannelColour} isColour />
-                <PrintRow label="Side Channels" value={form.specSideChannelsColour} isColour />
+                <PrintRow label="Back Channel Type" value={form.specBackChannelType} />
+                <PrintRow label="Back Channel Length" value={form.specBackChannelLength} />
+                <PrintRow label="Back Channel Colour" value={form.specBackChannelColour} isColour />
+                <PrintRow label="Side Channels Type" value={form.specSideChannelsType} />
+                <PrintRow label="Side Channels Length" value={form.specSideChannelsLength} />
+                <PrintRow label="Side Channels Colour" value={form.specSideChannelsColour} isColour />
                 <PrintRow label="Flashings Type" value={form.specFlashingsType} />
+                <PrintRow label="Flashings Length" value={form.specFlashingsLength} />
                 <PrintRow label="Flashings Qty" value={form.specFlashingsQty} />
                 <PrintRow label="Flashings Colour" value={form.specFlashingsColour} isColour />
-                <PrintRow label="Twinwall" value={form.specTwinwallColour} isColour />
               </div>
               {beamEntries.length > 0 && (
                 <div className="mt-2">

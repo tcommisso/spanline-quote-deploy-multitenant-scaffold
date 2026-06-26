@@ -636,14 +636,14 @@ export const specItemsRouter = router({
         { name: "Number of Brackets", tabName: "attachment", specField: "specBracketAttachmentMethod", condition: "!= ''", productMatch: "specBracketAttachmentMethod", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 30 },
         { name: "Bracket Cover", tabName: "attachment", specField: "specBracketCover", condition: "!= ''", productMatch: "specBracketCover", qtyFormula: "specNumberOfBrackets", description: null, colourField: "specBracketColour", bottomColourField: null, uom: "ea", sortOrder: 31 },
         { name: "Wall Fixing Beam", tabName: "attachment", specField: "specWallFixingBeam", condition: "!= ''", productMatch: "specWallFixingBeam", qtyFormula: "roofRunWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 32 },
+        { name: "Bracket Infill", tabName: "infill", specField: "specBracketInfillType", condition: "!= ''", productMatch: "specBracketInfillType", qtyFormula: "specBracketInfillLength / 1000", description: null, colourField: "specBracketInfillColour", bottomColourField: null, uom: "LM", sortOrder: 33 },
 
         // ── Beams, channels & flashings ──
         { name: "Beams from spec entries", tabName: "beams", specField: "specBeamEntries", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 40 },
         { name: "Beam Size Allowance", tabName: "beams", specField: "specBeamSize", condition: "!= ''", productMatch: "specBeamSize", qtyFormula: "specWidth", description: null, colourField: "specBeamColour", bottomColourField: null, uom: "LM", sortOrder: 41 },
-        { name: "Back Channel", tabName: "beams", specField: "specBackChannelColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "roofRunWidth", description: "Back Channel", colourField: "specBackChannelColour", bottomColourField: null, uom: "LM", sortOrder: 42 },
-        { name: "Side Channels", tabName: "beams", specField: "specSideChannelsColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "roofSheetLength * 2", description: "Side Channels", colourField: "specSideChannelsColour", bottomColourField: null, uom: "LM", sortOrder: 43 },
-        { name: "Flashings", tabName: "beams", specField: "specFlashingsType", condition: "!= ''", productMatch: "specFlashingsType", qtyFormula: "roofRunWidth * Math.max(1, specFlashingsQty)", description: "Flashings", colourField: "specFlashingsColour", bottomColourField: null, uom: "LM", sortOrder: 44 },
-        { name: "Twinwall", tabName: "beams", specField: "specTwinwallColour", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "specArea", description: "Twinwall", colourField: "specTwinwallColour", bottomColourField: null, uom: "m2", sortOrder: 45 },
+        { name: "Back Channel", tabName: "back channel", specField: "specBackChannelLength", condition: "> 0", productMatch: "specBackChannelType", qtyFormula: "specBackChannelLength / 1000", description: null, colourField: "specBackChannelColour", bottomColourField: null, uom: "LM", sortOrder: 42 },
+        { name: "Side Channels", tabName: "side channels", specField: "specSideChannelsLength", condition: "> 0", productMatch: "specSideChannelsType", qtyFormula: "specSideChannelsLength / 1000", description: null, colourField: "specSideChannelsColour", bottomColourField: null, uom: "LM", sortOrder: 43 },
+        { name: "Flashings", tabName: "flashings", specField: "specFlashingsLength", condition: "> 0", productMatch: "specFlashingsType", qtyFormula: "(specFlashingsLength / 1000) * Math.max(1, specFlashingsQty)", description: null, colourField: "specFlashingsColour", bottomColourField: null, uom: "LM", sortOrder: 44 },
 
         // ── Posts ──
         { name: "Posts from spec count", tabName: "posts", specField: "specPostsNumber", condition: "> 0", productMatch: "specPostsType", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 50 },
@@ -726,6 +726,7 @@ export const specItemsRouter = router({
         "Gable Brackets",
         "Pop-up Brackets",
         "Wall Fixing Bracket",
+        "Twinwall",
       ];
 
       let created = 0;
@@ -900,6 +901,11 @@ export const specItemsRouter = router({
       };
 
       const findings: Finding[] = [];
+      const normaliseProductTab = (value: string | null | undefined) => String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+      const productMatchesMappingTab = (product: any, tabName: string | null | undefined) => {
+        const target = normaliseProductTab(tabName);
+        return normaliseProductTab(product.tabName) === target || normaliseProductTab(product.subTab) === target;
+      };
 
       for (const m of mappings as any[]) {
         // 1. Check specField is valid
@@ -936,11 +942,11 @@ export const specItemsRouter = router({
               severity: "error", category: "Broken Product Link",
               message: `productId ${m.productId} not found or inactive`,
             });
-          } else if (product.tabName?.toLowerCase() !== m.tabName?.toLowerCase()) {
+          } else if (!productMatchesMappingTab(product, m.tabName)) {
             findings.push({
               mappingId: m.id, mappingName: m.name, tabName: m.tabName,
               severity: "warning", category: "Product Tab Mismatch",
-              message: `Product "${product.name}" is in tab "${product.tabName}" but mapping targets tab "${m.tabName}"`,
+              message: `Product "${product.name}" is in tab "${product.tabName}"${product.subTab ? ` / "${product.subTab}"` : ""} but mapping targets "${m.tabName}"`,
             });
           }
         } else if (m.productMatch) {
@@ -953,7 +959,7 @@ export const specItemsRouter = router({
             });
           }
           // Check if there are any products in the target tab
-          const tabProds = (allProds as any[]).filter(p => p.tabName?.toLowerCase() === m.tabName?.toLowerCase());
+          const tabProds = (allProds as any[]).filter(p => productMatchesMappingTab(p, m.tabName));
           if (tabProds.length === 0) {
             findings.push({
               mappingId: m.id, mappingName: m.name, tabName: m.tabName,

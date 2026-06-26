@@ -1631,14 +1631,44 @@ export const appRouter = router({
       const tabs = allMd.filter(m => m.category === "product_tab");
       const subTabs = allMd.filter(m => m.category === "product_subtab").sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
 
-      // Build map: specField -> list of tabKeys
-      const specFieldToTabs: Record<string, { tabKey: string; tabLabel: string }[]> = {};
+      // Build map: specField -> product tab/sub-tab sources
+      const specFieldToTabs: Record<string, { tabKey: string; tabLabel: string; subTabFilter?: string; subTabLabel?: string }[]> = {};
+      const fallbackSpecFieldForTab = (tabKey: string, tabLabel: string) => {
+        const value = `${tabKey} ${tabLabel}`.toLowerCase().replace(/[_-]+/g, " ");
+        if (value.includes("back channel")) return "specBackChannelType";
+        if (value.includes("side channel")) return "specSideChannelsType";
+        if (value.includes("flashing")) return "specFlashingsType";
+        if (value.includes("infill") || value.includes("twinwall")) return "specBracketInfillType";
+        return "";
+      };
+      const normalizeSubTab = (value: string) => value.replace(/_/g, " ").trim().toLowerCase();
+      const addSpecFieldSource = (specField: string, source: { tabKey: string; tabLabel: string; subTabFilter?: string; subTabLabel?: string }) => {
+        if (!specFieldToTabs[specField]) specFieldToTabs[specField] = [];
+        const exists = specFieldToTabs[specField].some(existing =>
+          existing.tabKey === source.tabKey &&
+          (existing.subTabFilter || "") === (source.subTabFilter || "")
+        );
+        if (!exists) specFieldToTabs[specField].push(source);
+      };
       for (const tab of tabs) {
         const meta = tab.metadata as any;
-        if (meta?.specField) {
-          if (!specFieldToTabs[meta.specField]) specFieldToTabs[meta.specField] = [];
-          specFieldToTabs[meta.specField].push({ tabKey: tab.key, tabLabel: tab.value });
+        const specField = meta?.specField || fallbackSpecFieldForTab(tab.key, tab.value);
+        if (specField) {
+          addSpecFieldSource(specField, { tabKey: tab.key, tabLabel: tab.value });
         }
+      }
+      for (const subTab of subTabs) {
+        const tabKey = subTab.description || "";
+        if (!tabKey) continue;
+        const specField = fallbackSpecFieldForTab(subTab.key, subTab.value);
+        if (!specField) continue;
+        const parentTab = tabs.find(tab => tab.key === tabKey);
+        addSpecFieldSource(specField, {
+          tabKey,
+          tabLabel: parentTab?.value || tabKey,
+          subTabFilter: normalizeSubTab(subTab.key.split("::")[1] || subTab.key),
+          subTabLabel: subTab.value,
+        });
       }
 
       // For each specField, fetch products from all mapped tabs and group by sub-tab
@@ -1651,7 +1681,7 @@ export const appRouter = router({
       for (const [specField, mappedTabs] of Object.entries(specFieldToTabs)) {
         const categories: { id: string; label: string; options: string[] }[] = [];
 
-        for (const { tabKey, tabLabel } of mappedTabs) {
+        for (const { tabKey, tabLabel, subTabFilter, subTabLabel } of mappedTabs) {
           // Get sub-tabs for this tab
           const tabSubTabs = subTabs.filter(st => st.description === tabKey);
           // Get products for this tab
@@ -1667,15 +1697,25 @@ export const appRouter = router({
             }
           }
 
+          if (subTabFilter) {
+            const matching = products.filter(p =>
+              p.subTab && normalizeSubTab(p.subTab) === subTabFilter
+            );
+            if (matching.length > 0) {
+              categories.push({ id: `${tabKey}::${subTabFilter}`, label: subTabLabel || `${tabLabel} (${subTabFilter})`, options: matching.map(p => p.name) });
+            }
+            continue;
+          }
+
           if (tabSubTabs.length > 0) {
             // Group products by sub-tab
             for (const st of tabSubTabs) {
               const subTabKey = st.key.split("::")[1] || st.key;
               const subTabLabel = st.value;
               // Normalize: master_data keys use underscores, product subTab uses spaces
-              const normalizedSubTabKey = subTabKey.replace(/_/g, " ").trim().toLowerCase();
+              const normalizedSubTabKey = normalizeSubTab(subTabKey);
               const matching = products.filter(p =>
-                p.subTab && p.subTab.trim().toLowerCase() === normalizedSubTabKey
+                p.subTab && normalizeSubTab(p.subTab) === normalizedSubTabKey
               );
               if (matching.length > 0) {
                 categories.push({ id: `${tabKey}::${subTabKey}`, label: subTabLabel, options: matching.map(p => p.name) });
@@ -1683,8 +1723,8 @@ export const appRouter = router({
             }
             // Products without a sub-tab go into the tab-level category
             const unmatched = products.filter(p => !p.subTab || !tabSubTabs.some(st => {
-              const key = (st.key.split("::")[1] || st.key).replace(/_/g, " ").trim().toLowerCase();
-              return key === (p.subTab || "").trim().toLowerCase();
+              const key = normalizeSubTab(st.key.split("::")[1] || st.key);
+              return key === normalizeSubTab(p.subTab || "");
             }));
             if (unmatched.length > 0) {
               categories.push({ id: `${tabKey}::other`, label: `${tabLabel} (Other)`, options: unmatched.map(p => p.name) });

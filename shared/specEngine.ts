@@ -30,6 +30,7 @@ export interface ProductLookup {
   id: number;
   name: string;
   tabName: string;
+  subTab?: string | null;
   uom: string;
   baseCost: string;
   materials: string | null;
@@ -79,6 +80,11 @@ function getProductTabName(value: string) {
   return normalizeMatchValue(value);
 }
 
+function productMatchesTargetTab(product: ProductLookup, tabName: string) {
+  const target = getProductTabName(tabName);
+  return getProductTabName(product.tabName) === target || getProductTabName(product.subTab || "") === target;
+}
+
 function findProductBySpecMatch(
   products: ProductLookup[],
   tabName: string,
@@ -87,7 +93,7 @@ function findProductBySpecMatch(
   const normalizedMatch = normalizeMatchValue(matchValue);
   if (!normalizedMatch) return null;
 
-  const candidates = products.filter(p => getProductTabName(p.tabName) === getProductTabName(tabName));
+  const candidates = products.filter(p => productMatchesTargetTab(p, tabName));
   const exact = candidates.find(p => normalizeMatchValue(p.name) === normalizedMatch);
   if (exact) return exact;
 
