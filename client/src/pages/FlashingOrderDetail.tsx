@@ -47,11 +47,7 @@ const STATUS_LABELS: Record<string, string> = {
 const DEFAULT_GEOMETRY: Geometry = {
   gridSize: 20,
   snapToGrid: true,
-  points: [
-    { x: 120, y: 220 },
-    { x: 280, y: 220 },
-    { x: 280, y: 120 },
-  ],
+  points: [],
 };
 
 const DEFAULT_LINE = {
@@ -103,9 +99,9 @@ function calculateGirth(points: Point[]) {
 }
 
 function cloneGeometry(value: any): Geometry {
-  const points = Array.isArray(value?.points) && value.points.length >= 2
+  const points = Array.isArray(value?.points)
     ? value.points.map((point: any) => ({ x: Number(point.x) || 0, y: Number(point.y) || 0 }))
-    : DEFAULT_GEOMETRY.points;
+    : [];
   return {
     points,
     gridSize: Number(value?.gridSize || 20),
@@ -167,8 +163,8 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => geometry.points.length > 2 && onChange({ ...geometry, points: geometry.points.slice(0, -1) })}
-            disabled={geometry.points.length <= 2}
+            onClick={() => geometry.points.length > 0 && onChange({ ...geometry, points: geometry.points.slice(0, -1) })}
+            disabled={geometry.points.length === 0}
           >
             <Undo2 className="h-4 w-4 mr-1" /> Undo Point
           </Button>
@@ -181,11 +177,12 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
               const maxX = Math.max(...geometry.points.map((p) => p.x));
               onChange({ ...geometry, points: geometry.points.map((point) => ({ ...point, x: maxX - (point.x - minX) })) });
             }}
+            disabled={geometry.points.length < 2}
           >
             <FlipHorizontal className="h-4 w-4 mr-1" /> Mirror
           </Button>
           <Button type="button" size="sm" variant="outline" onClick={() => onChange(DEFAULT_GEOMETRY)}>
-            <RotateCcw className="h-4 w-4 mr-1" /> Reset
+            <RotateCcw className="h-4 w-4 mr-1" /> Clear
           </Button>
         </div>
       </div>
@@ -203,7 +200,9 @@ function ProfileDesigner({ geometry, onChange }: { geometry: Geometry; onChange:
           onPointerLeave={() => setDragIndex(null)}
         >
           <g stroke="rgba(148,163,184,0.18)" strokeWidth="1">{gridLines}</g>
-          <polyline points={polyline} fill="none" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          {geometry.points.length >= 2 && (
+            <polyline points={polyline} fill="none" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          )}
           {geometry.points.slice(1).map((point, index) => {
             const previous = geometry.points[index];
             const midX = (previous.x + point.x) / 2;
@@ -367,6 +366,10 @@ export default function FlashingOrderDetail() {
   };
 
   const submitLine = () => {
+    if (line.geometry.points.length < 2) {
+      toast.error("Add at least two profile points before saving a flashing line.");
+      return;
+    }
     saveLine.mutate({
       ...line,
       orderId: order.id,
@@ -570,18 +573,24 @@ export default function FlashingOrderDetail() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => saveTemplate.mutate({
-                    name: line.profileName,
-                    category: line.category,
-                    geometry: line.geometry,
-                    defaultMaterialType: line.materialType,
-                    defaultGauge: line.gauge,
-                    defaultColour: line.colour,
-                    defaultColourSide: line.colourSide as any,
-                    defaultQuantity: line.quantity,
-                    defaultLengthMm: line.lengthMm,
-                    notes: line.manufacturingNotes,
-                  })}
+                  onClick={() => {
+                    if (line.geometry.points.length < 2) {
+                      toast.error("Add at least two profile points before saving a template.");
+                      return;
+                    }
+                    saveTemplate.mutate({
+                      name: line.profileName,
+                      category: line.category,
+                      geometry: line.geometry,
+                      defaultMaterialType: line.materialType,
+                      defaultGauge: line.gauge,
+                      defaultColour: line.colour,
+                      defaultColourSide: line.colourSide as any,
+                      defaultQuantity: line.quantity,
+                      defaultLengthMm: line.lengthMm,
+                      notes: line.manufacturingNotes,
+                    });
+                  }}
                 >
                   <Copy className="h-4 w-4 mr-1.5" />
                   Save as Template
