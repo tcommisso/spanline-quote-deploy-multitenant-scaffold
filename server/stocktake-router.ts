@@ -230,10 +230,32 @@ function inventoryStockItemTenantSql(ctx: any) {
   return isMultiTenancyMode() ? sql`tenantId = ${tenantId}` : sql`(tenantId = ${tenantId} OR tenantId IS NULL)`;
 }
 
+function errorText(error: unknown, seen = new Set<unknown>()): string {
+  if (error == null || seen.has(error)) return "";
+  seen.add(error);
+  if (typeof error === "string") return error;
+  if (typeof error !== "object") return String(error);
+  const err = error as Record<string, unknown>;
+  return [
+    err.message,
+    err.sqlMessage,
+    err.code,
+    err.errno,
+    err.sql,
+    err.cause ? errorText(err.cause, seen) : "",
+  ].filter(Boolean).join(" ");
+}
+
 function isMissingDimensionColumnError(error: unknown) {
-  const message = String((error as any)?.message || error || "");
-  return /(actual_width|actual_height|source_full_width|source_full_height)/i.test(message)
-    && /(unknown column|no such column|doesn't exist|does not exist)/i.test(message);
+  const message = errorText(error);
+  const mentionsDimensionColumns = /(actual_width|actual_height|source_full_width|source_full_height)/i.test(message);
+  if (!mentionsDimensionColumns) return false;
+  if (/(unknown column|no such column|doesn't exist|does not exist)/i.test(message)) return true;
+
+  // Drizzle can wrap the driver error and only expose the generated query text.
+  // In that shape, the safest recovery is still the pre-0062 select fallback.
+  return /failed query:\s*select/i.test(message)
+    && /(from `?(stocktake_lines|inventory_stock_items)`?|from\s+(stocktake_lines|inventory_stock_items))/i.test(message);
 }
 
 async function selectStocktakeLinesForDetail(db: any, stocktakeId: number) {
