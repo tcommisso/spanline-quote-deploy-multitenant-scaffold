@@ -133,6 +133,8 @@ const PlanConverter = lazy(() => import("./pages/PlanConverter"));
 const PatioEditorPage = lazy(() => import("./pages/PatioEditorPage"));
 const SmartshopOrderForm = lazy(() => import("./pages/SmartshopOrderForm"));
 const OrderHistory = lazy(() => import("./pages/OrderHistory"));
+const FlashingOrderList = lazy(() => import("./pages/FlashingOrderList"));
+const FlashingOrderDetail = lazy(() => import("./pages/FlashingOrderDetail"));
 const ComponentCatalogueAdmin = lazy(() => import("./pages/ComponentCatalogueAdmin"));
 const ManufacturingDataAdmin = lazy(() => import("./pages/ManufacturingDataAdmin"));
 const AdminSecurityScreens = lazy(() => import("./pages/admin/AdminSecurityScreens"));
@@ -448,6 +450,8 @@ function MainRouter() {
         <Route path="/api/xero/callback" component={XeroCallback} />
         <Route path="/construction/component-orders/history" component={OrderHistory} />
         <Route path="/construction/component-orders" component={SmartshopOrderForm} />
+        <Route path="/construction/flashing-orders/:id" component={FlashingOrderDetail} />
+        <Route path="/construction/flashing-orders" component={FlashingOrderList} />
         <Route path="/construction/smartshop">{() => <Redirect to="/construction/component-orders" />}</Route>
         <Route path="/construction" component={ConstructionDashboard} />
         <Route path="/manufacturing/orders/:id" component={ManufacturingOrderDetail} />

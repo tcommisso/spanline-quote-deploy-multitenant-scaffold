@@ -175,6 +175,7 @@ const constructionItems: MenuItem[] = [
   { icon: CloudRain, label: "Rain Days", path: "/construction/rain-days" },
   { icon: FileText, label: "Invoice Review", path: "/admin/invoice-review" },
   { icon: ShoppingCart, label: "Component Orders", path: "/construction/component-orders" },
+  { icon: FileText, label: "Flashing Orders", path: "/construction/flashing-orders" },
   { icon: MapPin, label: "Live Tracking", path: "/construction/live-tracking" },
   { icon: FileText, label: "Plan Converter", path: "/plan-converter" },
 ];

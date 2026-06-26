@@ -100,6 +100,7 @@ import { apiHealthRouter } from "./api-health-router";
 import { saasBillingRouter } from "./saas-billing-router";
 import { securityScreensRouter } from "./security-screens-router";
 import { blindsRouter } from "./blinds-router";
+import { flashingRouter } from "./flashing-router";
 import { tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { isStorageConfigured, storageGet, storageDownload, storagePut } from "./storage";
 import { syncQuoteHbcfRequirement } from "./hbcf-service";
@@ -2448,6 +2449,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   proposalLibrary: proposalLibraryRouter,
   securityScreens: securityScreensRouter,
   blinds: blindsRouter,
+  flashing: flashingRouter,
   reviews: reviewsRouter,
   manufacturing: manufacturingRouter,
   manufacturingData: manufacturingDataRouter,

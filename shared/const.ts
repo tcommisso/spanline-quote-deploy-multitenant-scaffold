@@ -26,6 +26,7 @@ export type PermissionKey =
   | 'construction_rain_days'
   | 'construction_invoice_review'
   | 'construction_component_orders'
+  | 'construction_flashing_orders'
   | 'construction_live_tracking'
   | 'construction_plan_converter'
   | 'construction_financials'
@@ -111,6 +112,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   construction_rain_days: 'Rain Days',
   construction_invoice_review: 'Invoice Review',
   construction_component_orders: 'Component Orders',
+  construction_flashing_orders: 'Flashing Orders',
   construction_live_tracking: 'Construction Live Tracking',
   construction_plan_converter: 'Plan Converter',
   construction_financials: 'Construction Financials',
@@ -169,6 +171,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: true,
     construction_invoice_review: true,
     construction_component_orders: true,
+    construction_flashing_orders: true,
     construction_live_tracking: true,
     construction_plan_converter: true,
     construction_financials: true,
@@ -222,6 +225,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: false,
     construction_invoice_review: false,
     construction_component_orders: false,
+    construction_flashing_orders: false,
     construction_live_tracking: false,
     construction_plan_converter: false,
     construction_financials: false,
@@ -275,6 +279,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: true,
     construction_invoice_review: true,
     construction_component_orders: true,
+    construction_flashing_orders: true,
     construction_live_tracking: true,
     construction_plan_converter: true,
     construction_financials: true,
@@ -328,6 +333,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: true,
     construction_invoice_review: false,
     construction_component_orders: true,
+    construction_flashing_orders: true,
     construction_live_tracking: true,
     construction_plan_converter: true,
     construction_financials: false,
@@ -381,6 +387,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: false,
     construction_invoice_review: false,
     construction_component_orders: false,
+    construction_flashing_orders: false,
     construction_live_tracking: false,
     construction_plan_converter: false,
     construction_financials: false,
@@ -434,6 +441,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_rain_days: false,
     construction_invoice_review: false,
     construction_component_orders: false,
+    construction_flashing_orders: false,
     construction_live_tracking: false,
     construction_plan_converter: false,
     construction_financials: false,
@@ -511,6 +519,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/construction/rain-days', permission: 'construction_rain_days' },
   { prefix: '/construction/component-orders', permission: 'construction_component_orders' },
   { prefix: '/construction/smartshop', permission: 'construction_component_orders' },
+  { prefix: '/construction/flashing-orders', permission: 'construction_flashing_orders' },
   { prefix: '/construction/live-tracking', permission: 'construction_live_tracking' },
   { prefix: '/construction/financials', permission: 'construction_financials' },
   { prefix: '/construction/analytics', permission: 'construction_analytics' },

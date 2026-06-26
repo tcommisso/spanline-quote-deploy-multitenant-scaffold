@@ -3580,6 +3580,123 @@ export const smartshopOrderDrafts = mysqlTable("smartshop_order_drafts", {
 export type SmartshopOrderDraft = typeof smartshopOrderDrafts.$inferSelect;
 export type InsertSmartshopOrderDraft = typeof smartshopOrderDrafts.$inferInsert;
 
+// ─── Flashing Orders ───────────────────────────────────────────────────────
+export const flashingOrders = mysqlTable("flashing_orders", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  orderNumber: varchar("orderNumber", { length: 64 }).notNull(),
+  jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
+  jobNumber: varchar("jobNumber", { length: 128 }),
+  clientName: varchar("clientName", { length: 255 }),
+  siteAddress: text("siteAddress"),
+  supplierId: int("supplierId").references(() => suppliers.id, { onDelete: "set null" }),
+  supplierName: varchar("supplierName", { length: 255 }),
+  requestedByUserId: int("requestedByUserId").references(() => users.id, { onDelete: "set null" }),
+  requestedByName: varchar("requestedByName", { length: 255 }),
+  requestedByEmail: varchar("requestedByEmail", { length: 320 }),
+  deliveryMethod: varchar("deliveryMethod", { length: 64 }).default("pickup"),
+  requestedDeliveryAt: timestamp("requestedDeliveryAt"),
+  status: mysqlEnum("status", ["draft", "submitted", "supplier_received", "in_production", "purchase_ordered", "ready", "completed", "cancelled", "archived"]).default("draft").notNull(),
+  priority: mysqlEnum("priority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
+  lineCount: int("lineCount").default(0).notNull(),
+  totalGirthMm: decimal("totalGirthMm", { precision: 12, scale: 2 }).default("0"),
+  totalLinealMetres: decimal("totalLinealMetres", { precision: 12, scale: 2 }).default("0"),
+  totalExGst: decimal("totalExGst", { precision: 12, scale: 2 }).default("0"),
+  siteNotes: text("siteNotes"),
+  internalNotes: text("internalNotes"),
+  attachments: json("attachments").$type<Array<Record<string, any>>>().default([]),
+  submittedAt: timestamp("submittedAt"),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_flashing_orders_tenant_number").on(table.tenantId, table.orderNumber),
+  index("idx_flashing_orders_tenant_status").on(table.tenantId, table.status),
+  index("idx_flashing_orders_tenant_job").on(table.tenantId, table.jobId),
+  index("idx_flashing_orders_tenant_updated").on(table.tenantId, table.updatedAt),
+]);
+export type FlashingOrder = typeof flashingOrders.$inferSelect;
+export type InsertFlashingOrder = typeof flashingOrders.$inferInsert;
+
+export const flashingOrderLines = mysqlTable("flashing_order_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  orderId: int("orderId").notNull().references(() => flashingOrders.id, { onDelete: "cascade" }),
+  templateId: int("templateId"),
+  lineNumber: int("lineNumber").default(1).notNull(),
+  profileName: varchar("profileName", { length: 255 }).notNull(),
+  category: varchar("category", { length: 128 }).default("custom"),
+  materialType: varchar("materialType", { length: 128 }).default("Colorbond"),
+  gauge: varchar("gauge", { length: 64 }),
+  colour: varchar("colour", { length: 128 }),
+  colourSide: mysqlEnum("colourSide", ["inside", "outside", "both", "unspecified"]).default("unspecified").notNull(),
+  finish: varchar("finish", { length: 128 }),
+  quantity: int("quantity").default(1).notNull(),
+  lengthMm: decimal("lengthMm", { precision: 12, scale: 2 }).default("0"),
+  totalLinealMetres: decimal("totalLinealMetres", { precision: 12, scale: 2 }).default("0"),
+  girthMm: decimal("girthMm", { precision: 12, scale: 2 }).default("0"),
+  bendCount: int("bendCount").default(0).notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).default("0"),
+  lineTotal: decimal("lineTotal", { precision: 12, scale: 2 }).default("0"),
+  geometry: json("geometry").$type<Record<string, any>>().notNull(),
+  foldDetails: json("foldDetails").$type<Record<string, any>>().default({}),
+  manufacturingNotes: text("manufacturingNotes"),
+  status: mysqlEnum("status", ["draft", "ready", "needs_clarification", "approved", "in_production", "completed", "cancelled"]).default("draft").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_flashing_order_lines_order").on(table.orderId),
+  index("idx_flashing_order_lines_tenant").on(table.tenantId),
+  index("idx_flashing_order_lines_tenant_status").on(table.tenantId, table.status),
+]);
+export type FlashingOrderLine = typeof flashingOrderLines.$inferSelect;
+export type InsertFlashingOrderLine = typeof flashingOrderLines.$inferInsert;
+
+export const flashingProfileTemplates = mysqlTable("flashing_profile_templates", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  category: varchar("category", { length: 128 }).default("custom"),
+  geometry: json("geometry").$type<Record<string, any>>().notNull(),
+  defaultMaterialType: varchar("defaultMaterialType", { length: 128 }),
+  defaultGauge: varchar("defaultGauge", { length: 64 }),
+  defaultColour: varchar("defaultColour", { length: 128 }),
+  defaultColourSide: mysqlEnum("defaultColourSide", ["inside", "outside", "both", "unspecified"]).default("unspecified").notNull(),
+  defaultQuantity: int("defaultQuantity").default(1).notNull(),
+  defaultLengthMm: decimal("defaultLengthMm", { precision: 12, scale: 2 }).default("0"),
+  supplierCompatibility: text("supplierCompatibility"),
+  notes: text("notes"),
+  tags: text("tags"),
+  version: int("version").default(1).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  lastUsedAt: timestamp("lastUsedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_flashing_templates_tenant_category").on(table.tenantId, table.category),
+  index("idx_flashing_templates_tenant_active").on(table.tenantId, table.isActive),
+]);
+export type FlashingProfileTemplate = typeof flashingProfileTemplates.$inferSelect;
+export type InsertFlashingProfileTemplate = typeof flashingProfileTemplates.$inferInsert;
+
+export const flashingOrderStatusHistory = mysqlTable("flashing_order_status_history", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  orderId: int("orderId").notNull().references(() => flashingOrders.id, { onDelete: "cascade" }),
+  fromStatus: varchar("fromStatus", { length: 64 }),
+  toStatus: varchar("toStatus", { length: 64 }).notNull(),
+  notes: text("notes"),
+  changedByUserId: int("changedByUserId").references(() => users.id, { onDelete: "set null" }),
+  changedByName: varchar("changedByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_flashing_status_history_order").on(table.orderId),
+  index("idx_flashing_status_history_tenant").on(table.tenantId),
+]);
+export type FlashingOrderStatusHistory = typeof flashingOrderStatusHistory.$inferSelect;
+export type InsertFlashingOrderStatusHistory = typeof flashingOrderStatusHistory.$inferInsert;
+
 // ─── Smartshop Order Status History (Audit Log) ─────────────────────────────
 export const smartshopOrderStatusHistory = mysqlTable("smartshop_order_status_history", {
   id: int("id").autoincrement().primaryKey(),
