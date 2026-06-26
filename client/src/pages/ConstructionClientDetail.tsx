@@ -73,6 +73,115 @@ const PROGRESS_STATUS_COLORS: Record<string, string> = {
   skipped: "bg-slate-400",
 };
 
+const SUMMARY_STATUS_CONFIG: Record<string, { label: string; badge: string; dot: string }> = {
+  not_started: {
+    label: "Not Started",
+    badge: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700",
+    dot: "bg-slate-400",
+  },
+  in_progress: {
+    label: "In Progress",
+    badge: "bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800",
+    dot: "bg-amber-500",
+  },
+  completed: {
+    label: "Completed",
+    badge: "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-800",
+    dot: "bg-green-500",
+  },
+};
+
+function formatSummaryStatus(value?: string | null) {
+  const key = String(value || "not_started");
+  return SUMMARY_STATUS_CONFIG[key] || SUMMARY_STATUS_CONFIG.not_started;
+}
+
+function formatDetailStatus(value?: string | null) {
+  const raw = String(value || "not_started").trim();
+  if (!raw) return "Not Started";
+  return raw
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function getApprovalDetailClass(value?: string | null) {
+  const normalized = String(value || "").toLowerCase();
+  if (["approved", "approved_with_conditions", "issued", "completed", "passed", "satisfied"].includes(normalized)) {
+    return "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300";
+  }
+  if (["not_started", "not_required"].includes(normalized)) {
+    return "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300";
+  }
+  if (["refused", "cancelled", "failed", "overdue"].includes(normalized)) {
+    return "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300";
+  }
+  return "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300";
+}
+
+function ConstructionStatusSummary({ summary, onOpen }: { summary: any; onOpen: (tab: string) => void }) {
+  const items = [
+    { key: "checkMeasure", label: "Check Measure", icon: Clipboard, tab: "check-measure" },
+    { key: "approvals", label: "Approvals", icon: Building, tab: "building-authority" },
+    { key: "approvalTypes", label: "DA / BA / CC / HBCF", icon: FileCheck, tab: "building-authority" },
+    { key: "schedule", label: "Schedule", icon: CalendarDays, tab: "schedule" },
+    { key: "subcontracts", label: "Subcontracts", icon: FileText, tab: "subcontracts" },
+    { key: "inductions", label: "Inductions", icon: ClipboardCheck, tab: "inductions" },
+  ];
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Project Status Summary</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+          {items.map((item) => {
+            const data = summary?.[item.key] || { status: "not_started", count: 0 };
+            const status = formatSummaryStatus(data.status);
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => onOpen(item.tab)}
+                className="group flex min-h-[112px] flex-col rounded-md border bg-background p-3 text-left transition-colors hover:border-primary/40 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground group-hover:text-primary">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-semibold">{item.label}</p>
+                      <Badge variant="outline" className="ml-auto shrink-0 tabular-nums">{data.count || 0}</Badge>
+                    </div>
+                    <Badge variant="outline" className={`mt-2 border ${status.badge}`}>
+                      <span className={`mr-1.5 h-2 w-2 rounded-full ${status.dot}`} />
+                      {status.label}
+                    </Badge>
+                  </div>
+                </div>
+                {item.key === "approvalTypes" && Array.isArray(data.details) && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {data.details.map((detail: any) => (
+                      <span
+                        key={detail.key || detail.label}
+                        className={`rounded border px-2 py-0.5 text-[11px] font-medium ${getApprovalDetailClass(detail.status)}`}
+                      >
+                        {detail.label}: {formatDetailStatus(detail.status)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Traffic light health indicator based on margin % */
 function HealthIndicator({ marginPercent }: { marginPercent: number }) {
   let color: string;
@@ -249,7 +358,7 @@ export default function ConstructionClientDetail() {
     );
   }
 
-  const { job, progress, assignments, financials, xeroAccountingSummary, kanbanTasks, quoteData, leadData, completedStages, totalStages, progressPercent, progressSource } = detailQuery.data;
+  const { job, progress, assignments, financials, xeroAccountingSummary, kanbanTasks, quoteData, leadData, completedStages, totalStages, progressPercent, progressSource, statusSummary } = detailQuery.data;
   const statusCfg = STATUS_CONFIG[job.status] || STATUS_CONFIG.scheduled;
   const StatusIcon = statusCfg.icon;
   const activeTabConfig = TAB_CONFIG.find(tab => tab.value === activeTab) || TAB_CONFIG[0];
@@ -432,6 +541,8 @@ export default function ConstructionClientDetail() {
               </CardContent>
             </Card>
           </div>
+
+          <ConstructionStatusSummary summary={statusSummary} onOpen={setActiveTab} />
 
           {/* Quote & Lead Info */}
           {(quoteData || leadData) && (

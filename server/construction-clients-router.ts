@@ -4,7 +4,8 @@ import { getDb } from "./db";
 import {
   constructionJobs, constructionProgress, constructionAssignments,
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
-  quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
+  checkMeasureWorkbooks, constructionScheduleEvents, projectSubcontracts,
+  siteInductions, quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
   approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
   approvalLodgements, hbcfCertificates, suppliers,
 } from "../drizzle/schema";
@@ -62,6 +63,36 @@ function isCommencementCertificateType(value?: string | null) {
   const normalized = String(value || "").trim().toLowerCase();
   return ["cc", "cdc", "ba", "ccc", "nsw_cc", "nsw_cdc", "act_ba", "act_cou"].includes(normalized) ||
     /construction certificate|commencement certificate|construction commencement|complying development|building approval/.test(normalized);
+}
+
+type SummaryStatus = "not_started" | "in_progress" | "completed";
+
+function completionStatus(count: number, completedCount: number): SummaryStatus {
+  if (count <= 0) return "not_started";
+  if (completedCount >= count) return "completed";
+  return "in_progress";
+}
+
+function normaliseApprovalStatus(value?: string | null) {
+  const normalized = String(value || "").trim();
+  return normalized || "not_started";
+}
+
+function isApprovalComplete(value?: string | null) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["approved", "approved_with_conditions", "issued", "completed", "passed", "satisfied"].includes(normalized);
+}
+
+function findLatestApprovalRecord<T extends { status?: string | null; lodgementType?: string | null; certificateType?: string | null }>(
+  records: T[],
+  matcher: (value?: string | null) => boolean,
+): T | null {
+  return records.find((record) => matcher(record.lodgementType || record.certificateType)) || null;
+}
+
+function hasApprovalType(value: string | null | undefined, tokens: string[]) {
+  const normalized = String(value || "").toLowerCase();
+  return tokens.some((token) => normalized.includes(token.toLowerCase()));
 }
 
 async function resolveProjectTeamRole(db: any, ctx: any, userId?: number | null, manualName?: string | null) {
@@ -622,9 +653,10 @@ export const constructionClientsRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const job = await requireJobAccess(db, ctx, input.jobId);
+      const tenantId = tenantIdFromContext(ctx);
 
       // Get related data
-      const [progress, assignments, financials, kanbanTasks, xeroAccountingSummary] = await Promise.all([
+      const [progress, assignments, financials, kanbanTasks, xeroAccountingSummary, checkMeasures, scheduleEvents, subcontracts, inductions] = await Promise.all([
         db.select().from(constructionProgress)
           .where(eq(constructionProgress.jobId, input.jobId))
           .orderBy(constructionProgress.createdAt),
@@ -635,7 +667,184 @@ export const constructionClientsRouter = router({
         db.select().from(constructionKanbanTasks)
           .where(eq(constructionKanbanTasks.jobId, input.jobId)),
         getXeroAccountingSummaryForJob(db, input.jobId),
+        db.select({
+          id: checkMeasureWorkbooks.id,
+          status: checkMeasureWorkbooks.status,
+        }).from(checkMeasureWorkbooks)
+          .where(eq(checkMeasureWorkbooks.jobId, input.jobId)),
+        tenantId
+          ? db.select({
+              id: constructionScheduleEvents.id,
+              status: constructionScheduleEvents.status,
+            }).from(constructionScheduleEvents)
+              .where(and(eq(constructionScheduleEvents.jobId, input.jobId), eq(constructionScheduleEvents.tenantId, tenantId)))
+          : Promise.resolve([]),
+        tenantId
+          ? db.select({
+              id: projectSubcontracts.id,
+              status: projectSubcontracts.status,
+            }).from(projectSubcontracts)
+              .where(and(eq(projectSubcontracts.jobId, input.jobId), eq(projectSubcontracts.tenantId, tenantId)))
+          : Promise.resolve([]),
+        db.select({
+          id: siteInductions.id,
+          status: siteInductions.status,
+        }).from(siteInductions)
+          .where(eq(siteInductions.jobId, input.jobId)),
       ]);
+
+      const approvalMatchConditions: any[] = [eq(approvalProjects.crmJobId, job.id)];
+      if (job.leadId) approvalMatchConditions.push(eq(approvalProjects.crmLeadId, job.leadId));
+      if (job.clientName && job.siteAddress) {
+        approvalMatchConditions.push(and(
+          eq(approvalProjects.clientName, job.clientName),
+          eq(approvalProjects.propertyAddress, job.siteAddress),
+        ));
+      }
+
+      const approvalConditions: any[] = [];
+      appendTenantScope(approvalConditions, approvalProjects.tenantId, tenantId);
+      approvalConditions.push(or(...approvalMatchConditions));
+
+      const matchedApprovalProjects = await db.select({
+        id: approvalProjects.id,
+        currentState: approvalProjects.currentState,
+        overallStatus: approvalProjects.overallStatus,
+        hbcfRequired: approvalProjects.hbcfRequired,
+        hbcfStatus: approvalProjects.hbcfStatus,
+        crmLeadId: approvalProjects.crmLeadId,
+      })
+        .from(approvalProjects)
+        .where(and(...approvalConditions))
+        .orderBy(desc(approvalProjects.updatedAt));
+
+      const approvalProjectIds = matchedApprovalProjects.map((project) => project.id);
+      const approvalLeadIds = Array.from(new Set([
+        ...matchedApprovalProjects.map((project) => project.crmLeadId).filter((id): id is number => !!id),
+        ...(job.leadId ? [job.leadId] : []),
+      ]));
+
+      const [approvalLodgementRows, approvalCertificateRows, hbcfRows] = approvalProjectIds.length > 0
+        ? await Promise.all([
+            db.select({
+              id: approvalLodgements.id,
+              lodgementType: approvalLodgements.lodgementType,
+              status: approvalLodgements.status,
+              determinationOutcome: approvalLodgements.determinationOutcome,
+              updatedAt: approvalLodgements.updatedAt,
+            }).from(approvalLodgements)
+              .where(inArray(approvalLodgements.projectId, approvalProjectIds))
+              .orderBy(desc(approvalLodgements.updatedAt)),
+            db.select({
+              id: approvalCertificates.id,
+              certificateType: approvalCertificates.certificateType,
+              certificateNumber: approvalCertificates.certificateNumber,
+              issuedAt: approvalCertificates.issuedAt,
+              updatedAt: approvalCertificates.updatedAt,
+            }).from(approvalCertificates)
+              .where(inArray(approvalCertificates.projectId, approvalProjectIds))
+              .orderBy(desc(approvalCertificates.updatedAt)),
+            tenantId
+              ? db.select({
+                  id: hbcfCertificates.id,
+                  approvalProjectId: hbcfCertificates.approvalProjectId,
+                  crmLeadId: hbcfCertificates.crmLeadId,
+                  status: hbcfCertificates.status,
+                  policyStatusGroup: hbcfCertificates.policyStatusGroup,
+                  updatedAt: hbcfCertificates.updatedAt,
+                }).from(hbcfCertificates)
+                  .where(and(
+                    eq(hbcfCertificates.tenantId, tenantId),
+                    approvalLeadIds.length > 0
+                      ? or(inArray(hbcfCertificates.approvalProjectId, approvalProjectIds), inArray(hbcfCertificates.crmLeadId, approvalLeadIds))
+                      : inArray(hbcfCertificates.approvalProjectId, approvalProjectIds),
+                  ))
+                  .orderBy(desc(hbcfCertificates.updatedAt))
+              : Promise.resolve([]),
+          ])
+        : [[], [], []];
+
+      const checkMeasureCompleted = checkMeasures.filter((row) => ["reviewed", "approved"].includes(String(row.status))).length;
+      const scheduleStatus = scheduleEvents.length > 0
+        ? completionStatus(scheduleEvents.length, scheduleEvents.filter((row) => ["completed", "cancelled"].includes(String(row.status))).length)
+        : (job.actualEnd || job.status === "completed" ? "completed" : job.scheduledStart ? "in_progress" : "not_started");
+      const activeSubcontracts = subcontracts.filter((row) => row.status !== "cancelled" && row.status !== "declined");
+      const subcontractStatus = activeSubcontracts.length > 0
+        ? completionStatus(activeSubcontracts.length, activeSubcontracts.filter((row) => row.status === "signed").length)
+        : "not_started";
+      const inductionStatus = completionStatus(inductions.length, inductions.filter((row) => row.status === "completed").length);
+
+      const approvalCompleted = matchedApprovalProjects.filter((project) => project.overallStatus === "completed").length;
+      const commencementRecord = approvalCertificateRows.find((certificate) => isCommencementCertificateType(certificate.certificateType));
+      const approvalWorkflowStatus: SummaryStatus = matchedApprovalProjects.length === 0
+        ? "not_started"
+        : (approvalCompleted >= matchedApprovalProjects.length || !!commencementRecord ? "completed" : "in_progress");
+
+      const daRecord = findLatestApprovalRecord(approvalLodgementRows, (value) => hasApprovalType(value, ["DA"]));
+      const baLodgement = findLatestApprovalRecord(approvalLodgementRows, (value) => hasApprovalType(value, ["BA"]));
+      const baCertificate = findLatestApprovalRecord(approvalCertificateRows, (value) => hasApprovalType(value, ["BA"]));
+      const ccCertificate = findLatestApprovalRecord(approvalCertificateRows, (value) => hasApprovalType(value, ["CC", "CDC", "CCC"]));
+      const ccLodgement = findLatestApprovalRecord(approvalLodgementRows, (value) => hasApprovalType(value, ["CC", "CDC", "CCC"]));
+      const hbcfRecord = hbcfRows[0];
+      const projectHbcfStatus = matchedApprovalProjects.find((project) => project.hbcfStatus && project.hbcfStatus !== "not_required")?.hbcfStatus
+        || (matchedApprovalProjects.some((project) => project.hbcfRequired) ? "required" : "not_required");
+
+      const approvalTypeDetails = [
+        {
+          key: "da",
+          label: "DA",
+          status: normaliseApprovalStatus(daRecord?.determinationOutcome || daRecord?.status),
+        },
+        {
+          key: "ba",
+          label: "BA",
+          status: normaliseApprovalStatus(baCertificate?.issuedAt ? "issued" : baLodgement?.determinationOutcome || baLodgement?.status),
+        },
+        {
+          key: "cc",
+          label: "CC",
+          status: normaliseApprovalStatus(ccCertificate?.issuedAt ? "issued" : ccLodgement?.determinationOutcome || ccLodgement?.status),
+        },
+        {
+          key: "hbcf",
+          label: "HBCF",
+          status: normaliseApprovalStatus(hbcfRecord?.policyStatusGroup || hbcfRecord?.status || projectHbcfStatus),
+        },
+      ];
+      const startedApprovalTypes = approvalTypeDetails.filter((item) => !["not_started", "not_required"].includes(item.status));
+      const approvalTypeCount = startedApprovalTypes.length;
+      const approvalTypeCompleteCount = startedApprovalTypes.filter((item) => isApprovalComplete(item.status)).length;
+      const approvalTypeStatus = approvalTypeCount === 0
+        ? "not_started"
+        : completionStatus(approvalTypeCount, approvalTypeCompleteCount);
+
+      const statusSummary = {
+        checkMeasure: {
+          status: completionStatus(checkMeasures.length, checkMeasureCompleted),
+          count: checkMeasures.length,
+        },
+        approvals: {
+          status: approvalWorkflowStatus,
+          count: matchedApprovalProjects.length,
+        },
+        approvalTypes: {
+          status: approvalTypeStatus,
+          count: approvalTypeCount,
+          details: approvalTypeDetails,
+        },
+        schedule: {
+          status: scheduleStatus,
+          count: scheduleEvents.length,
+        },
+        subcontracts: {
+          status: subcontractStatus,
+          count: subcontracts.length,
+        },
+        inductions: {
+          status: inductionStatus,
+          count: inductions.length,
+        },
+      };
 
       // Get installer names for assignments
       const installerIds = Array.from(new Set(assignments.map(a => a.installerId).filter((id): id is number => id != null)));
@@ -709,6 +918,7 @@ export const constructionClientsRouter = router({
         totalStages,
         progressPercent,
         progressSource,
+        statusSummary,
       };
     }),
 
