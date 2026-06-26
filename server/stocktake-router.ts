@@ -346,6 +346,53 @@ async function selectInventoryItemsForStocktakeDetail(db: any, ctx: any, itemIds
   }
 }
 
+async function selectActiveInventoryItemsForStocktake(db: any, ctx: any, branchId: number) {
+  try {
+    return await db.select().from(inventoryStockItems)
+      .where(and(...stockItemTenantConditions(ctx,
+        eq(inventoryStockItems.isActive, true),
+        eq(inventoryStockItems.branchId, branchId)
+      )));
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stock item dimension columns are missing; using pre-0062 stocktake create fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        tenantId,
+        code,
+        name,
+        serial_number AS serialNumber,
+        category,
+        unit,
+        unit_type AS unitType,
+        reorder_qty AS reorderQty,
+        min_stock_level AS minStockLevel,
+        branch_id AS branchId,
+        condition_indicator AS conditionIndicator,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        description,
+        supplier,
+        cost_price AS costPrice,
+        catalogue_item_id AS catalogueItemId,
+        manufacturing_catalogue_product_id AS manufacturingCatalogueProductId,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM inventory_stock_items
+      WHERE is_active = 1
+        AND branch_id = ${branchId}
+        AND ${inventoryStockItemTenantSql(ctx)}
+    `);
+    return rowsFromExecuteResult(result);
+  }
+}
+
 async function insertInventoryStockItemForStocktake(db: any, values: Record<string, any>) {
   try {
     const [result] = await db.insert(inventoryStockItems).values(values);
@@ -630,11 +677,7 @@ export const stocktakeRouter = router({
     const stocktakeNumber = `ST-${Date.now().toString(36).toUpperCase()}`;
 
     // Get all active stock items for this branch
-    const items = await db.select().from(inventoryStockItems)
-      .where(and(...stockItemTenantConditions(ctx,
-        eq(inventoryStockItems.isActive, true),
-        eq(inventoryStockItems.branchId, input.branchId)
-      )));
+    const items = await selectActiveInventoryItemsForStocktake(db, ctx, input.branchId);
 
     // Calculate system qty for each item
     const lineData: Array<{
