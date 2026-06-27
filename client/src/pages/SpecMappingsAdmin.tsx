@@ -37,6 +37,10 @@ const CONDITION_EXAMPLES = [
   { value: "contains gable", label: "contains value (partial match)" },
 ];
 
+const WORK_CHECKLIST_PRODUCT_MATCH_FIELDS = SPEC_FIELDS.filter((field) =>
+  ["workItemProduct", "workItemLabel"].includes(field.value),
+);
+
 interface MappingForm {
   name: string;
   tabName: string;
@@ -839,8 +843,18 @@ export default function SpecMappingsAdmin() {
                           — None —
                         </CommandItem>
                       </CommandGroup>
+                      <CommandGroup heading="Work Checklist Rows">
+                        {WORK_CHECKLIST_PRODUCT_MATCH_FIELDS.map(f => (
+                          <CommandItem key={f.value} value={f.value} onSelect={(v) => setForm(p => ({ ...p, productMatch: v, productId: null }))}>
+                            <Check className={`mr-1 h-3 w-3 ${form.productMatch === f.value ? "opacity-100" : "opacity-0"}`} />
+                            <span className="truncate">{f.label}</span>
+                            <span className="ml-auto text-[10px] text-muted-foreground font-mono">{f.value}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
                       {(() => {
-                        const textFields = SPEC_FIELDS.filter(f => f.type === "text");
+                        const pinnedValues = new Set(WORK_CHECKLIST_PRODUCT_MATCH_FIELDS.map(f => f.value));
+                        const textFields = SPEC_FIELDS.filter(f => f.type === "text" && !pinnedValues.has(f.value));
                         const sections: Record<string, SpecField[]> = {};
                         textFields.forEach(f => { (sections[f.section] ??= []).push(f); });
                         return Object.entries(sections).map(([section, fields]) => (
