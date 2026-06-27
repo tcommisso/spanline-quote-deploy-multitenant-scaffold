@@ -10,7 +10,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Search, Plus, Trash2, Save, Check, X, Pencil, ChevronLeft, ChevronRight, Package, Upload, Clock, ImageIcon } from "lucide-react";
+import { Search, Plus, Trash2, Check, X, Pencil, ChevronLeft, ChevronRight, Package, Upload, ImageIcon, Lock } from "lucide-react";
 import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 import { TAB_LABELS, type ComponentTabName } from "@shared/types";
@@ -82,6 +82,7 @@ export default function ProductTable() {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role || "");
+  const isSuperAdmin = user?.role === "super_admin";
   const { data: allProducts, isLoading } = trpc.products.getAll.useQuery();
   const { data: masterDataItems } = trpc.masterData.getAll.useQuery();
   const { data: tabsAndUoms } = trpc.products.getTabsAndUoms.useQuery();
@@ -284,7 +285,7 @@ export default function ProductTable() {
       productCode: editing.productCode || null,
       tabName: editing.tabName,
       subTab: editing.subTab,
-      name: editing.name,
+      name: isSuperAdmin ? editing.name : product.name,
       uom: editing.uom,
       baseCost: editing.baseCost,
       materials: editing.materials,
@@ -690,7 +691,27 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-3">
                         {isEditing ? (
-                          <Input value={editing.name} onChange={(e) => setEditing(prev => prev ? { ...prev, name: e.target.value } : prev)} className="h-7 text-xs" />
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              value={editing.name}
+                              onChange={(e) => setEditing(prev => prev ? { ...prev, name: e.target.value } : prev)}
+                              disabled={!isSuperAdmin}
+                              title={!isSuperAdmin ? "Product names are locked because spec mapping uses them for matching. Super admins can edit this field." : undefined}
+                              className="h-7 text-xs disabled:opacity-100 disabled:bg-muted/40"
+                            />
+                            {!isSuperAdmin && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>Locked because spec mapping uses product names for matching.</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                          </div>
                         ) : (
                           <span className="font-medium">{product.name}</span>
                         )}

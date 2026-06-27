@@ -1589,12 +1589,16 @@ export const appRouter = router({
         active: z.boolean().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const existingProduct = input.id ? await db.getProductById(input.id, ctx.tenant!.id) : undefined;
         // Auto-compute baseCost from breakdown fields
         const materials = parseFloat(input.materials || "0") || 0;
         const installLabour = parseFloat(input.installLabour || "0") || 0;
         const consumables = parseFloat(input.consumables || "0") || 0;
         const computedBaseCost = (materials + installLabour + consumables).toFixed(2);
-        const id = await db.upsertProduct({ ...input, baseCost: computedBaseCost } as any, ctx.tenant!.id);
+        const name = input.id && ctx.user?.role !== "super_admin" && existingProduct
+          ? existingProduct.name
+          : input.name;
+        const id = await db.upsertProduct({ ...input, name, baseCost: computedBaseCost } as any, ctx.tenant!.id);
         return { id };
       }),
     delete: tenantAdminProcedure

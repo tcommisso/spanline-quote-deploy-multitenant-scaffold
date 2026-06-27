@@ -56,6 +56,37 @@ const optionModifierProductTypeSchema = z.enum(["window", "door"]);
 const optionModifierGroupSchema = z.enum(["glass_type", "tint", "obscurity", "etched", "screen", "pet_door", "other"]);
 const optionModifierAdjustmentTypeSchema = z.enum(["percent", "fixed"]);
 
+const WORK_CHECKLIST_ROW_PRODUCT_MATCH_FIELDS = new Set([
+  "workItemProduct",
+  "workItemLabel",
+  "workItemUnit",
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formulaVariablePattern(variables: Iterable<string>): RegExp {
+  const alternatives = Array.from(variables)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp);
+  return new RegExp(`\\b(${alternatives.join("|")})\\b`, "gi");
+}
+
+function seedWorkChecklistFormulaContext(specValues: SpecValues, uom?: string | null): void {
+  Object.assign(specValues, {
+    workItemQty: 1,
+    workChecklistQty: 1,
+    checklistQty: 1,
+    workItemQuantity: 1,
+    workItemProduct: "Sample checklist product",
+    workItemLabel: "Sample checklist item",
+    workItemNotes: "",
+    workItemUnit: uom || "ea",
+  });
+}
+
 const optionModifierInputSchema = z.object({
   productType: optionModifierProductTypeSchema,
   optionGroup: optionModifierGroupSchema,
@@ -890,9 +921,11 @@ export const specItemsRouter = router({
     .input(z.object({
       formula: z.string(),
       productId: z.number().nullable().optional(),
+      specField: z.string().nullable().optional(),
+      uom: z.string().nullable().optional(),
     }))
     .query(async ({ ctx, input }) => {
-      const { formula, productId } = input;
+      const { formula, productId, uom } = input;
       // Get the most recent quote with spec values
       const { getDb } = await import("./db");
       const { quotes } = await import("../drizzle/schema");
@@ -948,6 +981,7 @@ export const specItemsRouter = router({
       } catch { specValues.wasteFactor = 0; }
 
       enrichDerivedSpecValues(specValues as Record<string, any>);
+      seedWorkChecklistFormulaContext(specValues, uom);
 
       // Evaluate formula
       const { evaluateFormula } = await import("../shared/specEngine");
@@ -996,6 +1030,12 @@ export const specItemsRouter = router({
       const VALID_SPEC_FIELDS = new Set(VALID_SPEC_FIELD_VALUES);
       const VALID_FORMULA_VARS = new Set(VALID_SPEC_FORMULA_VARIABLES);
       const VALID_FORMULA_VARS_LOWER = new Set(VALID_SPEC_FORMULA_VARIABLES.map((value) => value.toLowerCase()));
+      const VALID_PRODUCT_MATCH_FIELDS = new Set([
+        ...VALID_SPEC_FIELD_VALUES,
+        ...Array.from(WORK_CHECKLIST_ROW_PRODUCT_MATCH_FIELDS),
+      ]);
+      const VALID_PRODUCT_MATCH_FIELDS_LOWER = new Set(Array.from(VALID_PRODUCT_MATCH_FIELDS).map((value) => value.toLowerCase()));
+      const formulaFieldPattern = formulaVariablePattern(VALID_FORMULA_VARS);
 
       type Finding = {
         mappingId: number;
@@ -1057,7 +1097,7 @@ export const specItemsRouter = router({
           }
         } else if (m.productMatch) {
           // Check productMatch field is valid
-          if (!VALID_SPEC_FIELDS.has(m.productMatch)) {
+          if (!VALID_PRODUCT_MATCH_FIELDS.has(m.productMatch) && !VALID_PRODUCT_MATCH_FIELDS_LOWER.has(String(m.productMatch).toLowerCase())) {
             findings.push({
               mappingId: m.id, mappingName: m.name, tabName: m.tabName,
               severity: "warning", category: "Invalid Product Match Field",
@@ -1087,8 +1127,7 @@ export const specItemsRouter = router({
           try {
             let testExpr = m.qtyFormula.trim();
             // Replace all valid field references with 1
-            const fieldPattern = /\b(spec\w+|width|length|area|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|productCover|wasteFactor)\b/gi;
-            testExpr = testExpr.replace(fieldPattern, "1");
+            testExpr = testExpr.replace(formulaFieldPattern, "1");
             // Try to evaluate
             const safeExpr = testExpr.replace(/Math\.(ceil|floor|round|max|min|abs)/g, "Math.$1");
             new Function("Math", `return ${safeExpr}`)(Math);

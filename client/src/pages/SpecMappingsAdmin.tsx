@@ -1423,7 +1423,12 @@ export default function SpecMappingsAdmin() {
                       {((dryRunResult as any).items || []).map((item: any, idx: number) => (
                         <tr key={idx} className="border-t">
                           <td className="px-2 py-1 capitalize">{item.tabName}</td>
-                          <td className="px-2 py-1">{item.description}</td>
+                          <td className="px-2 py-1">
+                            <div>{item.description}</div>
+                            {item.notes && (
+                              <div className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{item.notes}</div>
+                            )}
+                          </td>
                           <td className="px-2 py-1">{item.colour || "—"}</td>
                           <td className="px-2 py-1">{item.bottomColour || "—"}</td>
                           <td className="px-2 py-1 text-right font-mono">{item.qty}</td>
@@ -1603,7 +1608,12 @@ export default function SpecMappingsAdmin() {
               size="sm"
               onClick={async () => {
                 try {
-                  const res = await fetch(`/api/trpc/specItems.previewFormula?input=${encodeURIComponent(JSON.stringify({ formula: form.qtyFormula, productId: form.productId }))}`);
+                  const res = await fetch(`/api/trpc/specItems.previewFormula?input=${encodeURIComponent(JSON.stringify({
+                    formula: form.qtyFormula,
+                    productId: form.productId,
+                    specField: form.specField,
+                    uom: form.uom,
+                  }))}`);
                   const json = await res.json();
                   if (json?.result?.data) {
                     setPreviewResult(String(json.result.data.result));
