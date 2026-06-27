@@ -344,11 +344,22 @@ export async function createWindowDoorOptionModifier(data: {
   sortOrder?: number;
   active?: boolean;
 }, tenantId?: number | null) {
+  const now = new Date();
   const [result] = await db.insert(windowDoorOptionModifiers).values({
-    ...data,
     tenantId,
+    productType: data.productType,
+    optionGroup: data.optionGroup,
+    optionValue: data.optionValue,
+    adjustmentType: data.adjustmentType,
     costAdjustmentValue: String(data.costAdjustmentValue ?? "0"),
     sellAdjustmentValue: String(data.sellAdjustmentValue ?? "0"),
+    appliesTo: data.appliesTo?.trim() || "base_line",
+    label: data.label ?? null,
+    notes: data.notes ?? null,
+    sortOrder: data.sortOrder ?? 0,
+    active: data.active ?? true,
+    createdAt: now,
+    updatedAt: now,
   } as any);
   return result.insertId;
 }
@@ -369,6 +380,10 @@ export async function updateWindowDoorOptionModifier(id: number, data: Partial<{
   const updateData: any = { ...data };
   if (data.costAdjustmentValue !== undefined) updateData.costAdjustmentValue = String(data.costAdjustmentValue);
   if (data.sellAdjustmentValue !== undefined) updateData.sellAdjustmentValue = String(data.sellAdjustmentValue);
+  if (data.appliesTo !== undefined) updateData.appliesTo = data.appliesTo?.trim() || "base_line";
+  if (data.label !== undefined) updateData.label = data.label ?? null;
+  if (data.notes !== undefined) updateData.notes = data.notes ?? null;
+  updateData.updatedAt = new Date();
   await db.update(windowDoorOptionModifiers).set(updateData)
     .where(await withTenant([eq(windowDoorOptionModifiers.id, id)], windowDoorOptionModifiers.tenantId, tenantId));
 }
