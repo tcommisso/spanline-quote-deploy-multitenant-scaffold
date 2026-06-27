@@ -247,7 +247,7 @@ export default function SpecMappingsAdmin() {
   const seedTemplatesMutation = (trpc.specItems as any).seedTemplates.useMutation({
     onSuccess: (data: any) => {
       const retired = data.retired ? `, retired ${data.retired}` : "";
-      toast.success(`Created ${data.created} starter templates, refreshed ${data.updated || 0}${retired} (${data.skipped} unchanged)`);
+      toast.success(`Created ${data.created} missing starter templates, preserved ${data.preserved ?? data.skipped ?? 0} existing${retired}`);
       utils.specItems.mappings.list.invalidate();
     },
     onError: (e: any) => toast.error(e.message),

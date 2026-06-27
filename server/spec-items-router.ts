@@ -722,7 +722,8 @@ export const specItemsRouter = router({
     }),
 
   // ─── Seed Starter Templates ────────────────────────────────────────────────
-  // Inserts a set of common spec mapping templates (idempotent: skips if name exists)
+  // Inserts missing starter templates only. Existing tenant mappings are editable
+  // source-of-truth rows and must not be refreshed back to starter defaults.
   seedTemplates: adminProcedure
     .mutation(async ({ ctx }) => {
 
@@ -838,24 +839,12 @@ export const specItemsRouter = router({
       ];
 
       let created = 0;
-      let updated = 0;
+      let preserved = 0;
       let retired = 0;
       for (const tmpl of TEMPLATES) {
         const existingMapping = existingByName.get(tmpl.name);
         if (existingMapping) {
-          const updateData = { ...tmpl };
-          const hasChanged = Object.entries(updateData).some(([key, value]) => (existingMapping as any)[key] !== value);
-          if (hasChanged) {
-            await updateSpecMapping((existingMapping as any).id, updateData, ctx.tenant!.id);
-            await logMappingChange({
-              mappingId: (existingMapping as any).id,
-              userId: ctx.user!.id,
-              userName: ctx.user!.name,
-              action: "updated",
-              snapshot: { ...updateData, id: (existingMapping as any).id, source: "seed_template_refresh" },
-            }, ctx.tenant!.id);
-            updated++;
-          }
+          preserved++;
           continue;
         }
         const id = await createSpecMapping({ ...tmpl, active: false }, ctx.tenant!.id);
@@ -884,7 +873,7 @@ export const specItemsRouter = router({
         }
       }
 
-      return { created, updated, retired, skipped: TEMPLATES.length - created - updated, total: TEMPLATES.length };
+      return { created, updated: 0, preserved, retired, skipped: preserved, total: TEMPLATES.length };
     }),
 
   // Preview a formula against the most recent quote's spec values
