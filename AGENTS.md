@@ -45,6 +45,13 @@ After each meaningful pass, report:
 - If tests cannot be run, explain why and state the residual risk.
 - For UI work, verify visually where possible across desktop and mobile viewports.
 
+## Commit, Push, and Deploy
+- For completed implementation work, finish the pass by committing and pushing the reviewed changes unless the user explicitly asks not to.
+- For production-facing fixes or features, deploy after pushing when the repository and Railway context are available.
+- Verify deployment completion before reporting success. A queued deploy is not enough; confirm the deployment reaches a successful/running state.
+- Keep commits focused and describe the actual change. Do not bundle unrelated edits into the same commit.
+- If the worktree contains unrelated user changes, leave them untouched and commit only the files required for the current task.
+
 ## Frontend Responsiveness
 - Design and test every user-facing page at mobile, tablet, and desktop widths.
 - Use responsive layout primitives such as flexible grids, wrapping rows, `minmax()`, `clamp()`, and sensible `min-width`/`max-width` constraints.
@@ -82,6 +89,10 @@ After each meaningful pass, report:
 - Do not change schema casually.
 - Preserve existing data.
 - Include rollback or migration notes for risky changes.
+- Apply SQL updates through the Railway CLI whenever production database access is required and the CLI context is available.
+- Prefer the repo migration runner, for example `railway run --service <mysql-service> -- node scripts/apply-sql-migration.mjs drizzle/migrations/<migration>.sql`, so Railway-managed variables are used instead of copying database credentials manually.
+- Run SQL migrations from the database service context when local execution needs the public database URL, and verify by rerunning the migration or checking the migration table.
+- Do not print, paste, or commit database credentials while applying migrations.
 
 ## Final Response
 End with:
