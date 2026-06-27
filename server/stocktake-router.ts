@@ -302,6 +302,128 @@ async function selectStocktakeLinesForDetail(db: any, stocktakeId: number) {
   }
 }
 
+async function selectStocktakeLineById(db: any, stocktakeId: number, lineId: number) {
+  try {
+    const [line] = await db.select().from(stocktakeLines).where(and(
+      eq(stocktakeLines.id, lineId),
+      eq(stocktakeLines.stocktakeId, stocktakeId)
+    )).limit(1);
+    return line || null;
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stocktake dimension columns are missing; using pre-0062 single line fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        stocktake_id AS stocktakeId,
+        stock_item_id AS stockItemId,
+        condition_indicator AS conditionIndicator,
+        colour,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        system_qty AS systemQty,
+        counted_qty AS countedQty,
+        variance,
+        unit_cost AS unitCost,
+        variance_value AS varianceValue,
+        adjustment_created AS adjustmentCreated,
+        counted_at AS countedAt,
+        counted_by AS countedBy,
+        notes,
+        created_at AS createdAt
+      FROM stocktake_lines
+      WHERE id = ${lineId}
+        AND stocktake_id = ${stocktakeId}
+      LIMIT 1
+    `);
+    return rowsFromExecuteResult(result)[0] || null;
+  }
+}
+
+async function selectVarianceStocktakeLinesForFinalise(db: any, stocktakeId: number) {
+  try {
+    return await db.select().from(stocktakeLines)
+      .where(and(
+        eq(stocktakeLines.stocktakeId, stocktakeId),
+        sql`${stocktakeLines.variance} != 0`,
+        sql`${stocktakeLines.countedQty} IS NOT NULL`
+      ));
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stocktake dimension columns are missing; using pre-0062 finalise fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        stocktake_id AS stocktakeId,
+        stock_item_id AS stockItemId,
+        condition_indicator AS conditionIndicator,
+        colour,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        system_qty AS systemQty,
+        counted_qty AS countedQty,
+        variance,
+        unit_cost AS unitCost,
+        variance_value AS varianceValue,
+        adjustment_created AS adjustmentCreated,
+        counted_at AS countedAt,
+        counted_by AS countedBy,
+        notes,
+        created_at AS createdAt
+      FROM stocktake_lines
+      WHERE stocktake_id = ${stocktakeId}
+        AND variance != 0
+        AND counted_qty IS NOT NULL
+    `);
+    return rowsFromExecuteResult(result);
+  }
+}
+
+async function updateStocktakeLineById(db: any, stocktakeId: number, lineId: number, updates: Record<string, any>) {
+  try {
+    await db.update(stocktakeLines).set(updates).where(and(
+      eq(stocktakeLines.id, lineId),
+      eq(stocktakeLines.stocktakeId, stocktakeId)
+    ));
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stocktake dimension columns are missing; updating line with pre-0062 fallback.", error);
+
+    const legacyColumnMap: Record<string, string> = {
+      conditionIndicator: "condition_indicator",
+      colour: "colour",
+      actualSize: "actual_size",
+      sourceFullLength: "source_full_length",
+      systemQty: "system_qty",
+      countedQty: "counted_qty",
+      variance: "variance",
+      unitCost: "unit_cost",
+      varianceValue: "variance_value",
+      adjustmentCreated: "adjustment_created",
+      countedAt: "counted_at",
+      countedBy: "counted_by",
+      notes: "notes",
+    };
+    const legacyUpdates = Object.entries(updates).filter(([key]) => legacyColumnMap[key]);
+    if (!legacyUpdates.length) return;
+
+    await db.execute(sql`
+      UPDATE stocktake_lines
+      SET ${sql.join(legacyUpdates.map(([key, value]) => sql`${sql.raw(`\`${legacyColumnMap[key]}\``)} = ${value}`), sql`, `)}
+      WHERE id = ${lineId}
+        AND stocktake_id = ${stocktakeId}
+    `);
+  }
+}
+
 async function selectInventoryItemsForStocktakeDetail(db: any, ctx: any, itemIds: number[]) {
   if (!itemIds.length) return [];
   try {
@@ -390,6 +512,57 @@ async function selectActiveInventoryItemsForStocktake(db: any, ctx: any, branchI
         AND ${inventoryStockItemTenantSql(ctx)}
     `);
     return rowsFromExecuteResult(result);
+  }
+}
+
+async function selectInventoryVariantByCode(db: any, ctx: any, branchId: number, code: string) {
+  try {
+    const [item] = await db.select()
+      .from(inventoryStockItems)
+      .where(and(...stockItemTenantConditions(ctx,
+        eq(inventoryStockItems.branchId, branchId),
+        eq(inventoryStockItems.code, code),
+      )))
+      .limit(1);
+    return item || null;
+  } catch (error) {
+    if (!isMissingDimensionColumnError(error)) throw error;
+    console.warn("Stock item dimension columns are missing; using pre-0062 variant lookup fallback.", error);
+    const [result] = await db.execute(sql`
+      SELECT
+        id,
+        tenantId,
+        code,
+        name,
+        serial_number AS serialNumber,
+        category,
+        unit,
+        unit_type AS unitType,
+        reorder_qty AS reorderQty,
+        min_stock_level AS minStockLevel,
+        branch_id AS branchId,
+        condition_indicator AS conditionIndicator,
+        actual_size AS actualSize,
+        NULL AS actualWidth,
+        NULL AS actualHeight,
+        source_full_length AS sourceFullLength,
+        NULL AS sourceFullWidth,
+        NULL AS sourceFullHeight,
+        description,
+        supplier,
+        cost_price AS costPrice,
+        catalogue_item_id AS catalogueItemId,
+        manufacturing_catalogue_product_id AS manufacturingCatalogueProductId,
+        is_active AS isActive,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM inventory_stock_items
+      WHERE branch_id = ${branchId}
+        AND code = ${code}
+        AND ${inventoryStockItemTenantSql(ctx)}
+      LIMIT 1
+    `);
+    return rowsFromExecuteResult(result)[0] || null;
   }
 }
 
@@ -490,10 +663,7 @@ async function requireStocktakeAccess(db: any, ctx: any, stocktakeId: number) {
 }
 
 async function requireStockItemAccess(db: any, ctx: any, stockItemId: number) {
-  const [item] = await db.select()
-    .from(inventoryStockItems)
-    .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, stockItemId))))
-    .limit(1);
+  const [item] = await selectInventoryItemsForStocktakeDetail(db, ctx, [stockItemId]);
   if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Stock item not found" });
   return item;
 }
@@ -514,13 +684,7 @@ async function resolveStocktakeMovementStockItem(db: any, ctx: any, line: typeof
   }
 
   const variantCode = stocktakeVariantCode(item.code, line);
-  const [existingVariant] = await db.select()
-    .from(inventoryStockItems)
-    .where(and(...stockItemTenantConditions(ctx,
-      eq(inventoryStockItems.branchId, branchId),
-      eq(inventoryStockItems.code, variantCode),
-    )))
-    .limit(1);
+  const existingVariant = await selectInventoryVariantByCode(db, ctx, branchId, variantCode);
 
   if (existingVariant?.id) {
     return {
@@ -773,10 +937,7 @@ export const stocktakeRouter = router({
       throw new TRPCError({ code: "BAD_REQUEST", message: "Additional count lines can only be added to an in-progress stocktake." });
     }
 
-    const [sourceLine] = await db.select().from(stocktakeLines).where(and(
-      eq(stocktakeLines.id, input.sourceLineId),
-      eq(stocktakeLines.stocktakeId, input.stocktakeId)
-    )).limit(1);
+    const sourceLine = await selectStocktakeLineById(db, input.stocktakeId, input.sourceLineId);
     if (!sourceLine) throw new TRPCError({ code: "NOT_FOUND", message: "Source stocktake line not found" });
     await requireStockItemAccess(db, ctx, sourceLine.stockItemId);
 
@@ -833,10 +994,7 @@ export const stocktakeRouter = router({
     await requireStocktakeAccess(db, ctx, input.stocktakeId);
 
     for (const count of input.counts) {
-      const [line] = await db.select().from(stocktakeLines).where(and(
-        eq(stocktakeLines.id, count.lineId),
-        eq(stocktakeLines.stocktakeId, input.stocktakeId)
-      ));
+      const line = await selectStocktakeLineById(db, input.stocktakeId, count.lineId);
       if (!line) continue;
 
       const updates: any = {};
@@ -895,10 +1053,7 @@ export const stocktakeRouter = router({
       }
 
       if (Object.keys(updates).length) {
-        await db.update(stocktakeLines).set(updates).where(and(
-          eq(stocktakeLines.id, count.lineId),
-          eq(stocktakeLines.stocktakeId, input.stocktakeId)
-        ));
+        await updateStocktakeLineById(db, input.stocktakeId, count.lineId, updates);
       }
     }
 
@@ -1015,12 +1170,7 @@ export const stocktakeRouter = router({
     }
 
     // Get all lines with variance
-    const lines = await db.select().from(stocktakeLines)
-      .where(and(
-        eq(stocktakeLines.stocktakeId, input.id),
-        sql`${stocktakeLines.variance} != 0`,
-        sql`${stocktakeLines.countedQty} IS NOT NULL`
-      ));
+    const lines = await selectVarianceStocktakeLinesForFinalise(db, input.id);
 
     // Create adjustment movements for each variance
     for (const line of lines) {
