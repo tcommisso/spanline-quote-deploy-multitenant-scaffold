@@ -1,4 +1,4 @@
-import { eq, and, asc, desc } from "drizzle-orm";
+import { eq, and, asc, desc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { specMappings, specMappingHistory, quoteItems, products, windowDoorOptionModifiers } from "../drizzle/schema";
@@ -344,7 +344,6 @@ export async function createWindowDoorOptionModifier(data: {
   sortOrder?: number;
   active?: boolean;
 }, tenantId?: number | null) {
-  const now = new Date();
   const [result] = await db.insert(windowDoorOptionModifiers).values({
     tenantId,
     productType: data.productType,
@@ -358,8 +357,8 @@ export async function createWindowDoorOptionModifier(data: {
     notes: data.notes ?? null,
     sortOrder: data.sortOrder ?? 0,
     active: data.active ?? true,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: sql`CURRENT_TIMESTAMP`,
+    updatedAt: sql`CURRENT_TIMESTAMP`,
   } as any);
   return result.insertId;
 }
@@ -383,7 +382,7 @@ export async function updateWindowDoorOptionModifier(id: number, data: Partial<{
   if (data.appliesTo !== undefined) updateData.appliesTo = data.appliesTo?.trim() || "base_line";
   if (data.label !== undefined) updateData.label = data.label ?? null;
   if (data.notes !== undefined) updateData.notes = data.notes ?? null;
-  updateData.updatedAt = new Date();
+  updateData.updatedAt = sql`CURRENT_TIMESTAMP`;
   await db.update(windowDoorOptionModifiers).set(updateData)
     .where(await withTenant([eq(windowDoorOptionModifiers.id, id)], windowDoorOptionModifiers.tenantId, tenantId));
 }
