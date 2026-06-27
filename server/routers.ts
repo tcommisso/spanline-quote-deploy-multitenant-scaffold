@@ -1641,6 +1641,7 @@ export const appRouter = router({
         if (value.includes("side channel")) fields.push("specSideChannelsType");
         if (value.includes("flashing")) fields.push("specFlashingsType");
         if (value.includes("infill") || value.includes("twinwall")) fields.push("specBracketInfillType");
+        if (value.includes("post fixing") || value.includes("posts fixing")) fields.push("specPostsFixing");
 
         // Back/side channel products are commonly kept under Roof > Channels.
         // Use that shared catalogue source for both channel spec dropdowns.
@@ -1679,6 +1680,9 @@ export const appRouter = router({
             subTabLabel: subTab.value,
           });
         }
+      }
+      for (const postFixingTabKey of ["posts_fixing", "post_fixing", "posts fixing", "post fixing"]) {
+        addSpecFieldSource("specPostsFixing", { tabKey: postFixingTabKey, tabLabel: "Post Fixing" });
       }
 
       // For each specField, fetch products from all mapped tabs and group by sub-tab

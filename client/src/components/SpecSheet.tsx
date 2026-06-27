@@ -546,6 +546,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   // Legacy fallback names (used if specField has no mapping yet)
   const roofProductNames = useMemo(() => getSpecFieldAllOptions("specRoofType"), [getSpecFieldAllOptions]);
   const postProductNames = useMemo(() => getSpecFieldAllOptions("specPostsType"), [getSpecFieldAllOptions]);
+  const postFixingProductNames = useMemo(() => getSpecFieldAllOptions("specPostsFixing"), [getSpecFieldAllOptions]);
   const gutterProductNames = useMemo(() => getSpecFieldAllOptions("specGutterType"), [getSpecFieldAllOptions]);
   const downpipeProductNames = useMemo(() => getSpecFieldAllOptions("specDownpipeType"), [getSpecFieldAllOptions]);
   const wallProductNames = useMemo(() => getSpecFieldAllOptions("specWallType"), [getSpecFieldAllOptions]);
@@ -557,6 +558,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   // Category arrays for FilteredSelect (from dynamic specField mapping)
   const roofCategories = useMemo(() => getSpecFieldCategories("specRoofType"), [getSpecFieldCategories]);
   const postCategories = useMemo(() => getSpecFieldCategories("specPostsType"), [getSpecFieldCategories]);
+  const postFixingCategories = useMemo(() => getSpecFieldCategories("specPostsFixing"), [getSpecFieldCategories]);
   const gutterCategories = useMemo(() => getSpecFieldCategories("specGutterType"), [getSpecFieldCategories]);
   const downpipeCategories = useMemo(() => getSpecFieldCategories("specDownpipeType"), [getSpecFieldCategories]);
   const wallCategories = useMemo(() => getSpecFieldCategories("specWallType"), [getSpecFieldCategories]);
@@ -1915,7 +1917,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   <SelectField label="Post Type" value={form.specPostsType || ""} onChange={(v) => update("specPostsType", v)} options={postProductNames} />
                 )}
                 <ColourField label="Post Colour" value={form.specPostsColour || ""} onChange={(v) => update("specPostsColour", v)} colours={getColoursForProduct(form.specPostsType, "posts")} />
-                <SelectField label="Post Fixing" value={normalizePostFixingOption(form.specPostsFixing)} onChange={(v) => update("specPostsFixing", v)} options={POST_FIXING_OPTIONS} />
+                {postFixingCategories.length > 0 ? (
+                  <FilteredSelect label="Post Fixing" value={form.specPostsFixing || ""} onChange={(v) => update("specPostsFixing", v)} categories={postFixingCategories} />
+                ) : (
+                  <SelectField label="Post Fixing" value={normalizePostFixingOption(form.specPostsFixing)} onChange={(v) => update("specPostsFixing", v)} options={postFixingProductNames.length > 0 ? postFixingProductNames : POST_FIXING_OPTIONS} />
+                )}
               </div>
 
               {/* Post Position Diagram */}
