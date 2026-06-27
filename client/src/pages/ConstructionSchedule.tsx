@@ -47,6 +47,29 @@ const RESOURCE_TABS: { value: ResourceView; label: string; icon: any }[] = [
   { value: "equipment", label: "Equip", icon: Package },
 ];
 
+function toLocalDateKey(value: Date | string | number) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localDateTimeToIso(value: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function localDateStartToIso(dateKey: string) {
+  return localDateTimeToIso(`${dateKey}T00:00`);
+}
+
+function localDateEndToIso(dateKey: string) {
+  return localDateTimeToIso(`${dateKey}T23:59:59`);
+}
+
 function normaliseSearchText(value: unknown) {
   return String(value || "")
     .toLowerCase()
@@ -210,7 +233,7 @@ export default function ConstructionSchedule() {
     } else {
       const dayOfWeek = d.getDay();
       const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-      const monday = new Date(d);
+      const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       monday.setDate(d.getDate() + mondayOffset);
       const sunday = new Date(monday);
       sunday.setDate(monday.getDate() + 7);
@@ -233,8 +256,8 @@ export default function ConstructionSchedule() {
 
   // Rain days for schedule indicator
   const rainDaysQuery = trpc.rainDay.listForSchedule.useQuery({
-    startDate: dateRange.start.slice(0, 10),
-    endDate: dateRange.end.slice(0, 10),
+    startDate: toLocalDateKey(dateRange.start),
+    endDate: toLocalDateKey(dateRange.end),
   });
 
   const createEvent = trpc.constructionSchedule.create.useMutation({
@@ -369,7 +392,7 @@ export default function ConstructionSchedule() {
   const eventsByDate = useMemo(() => {
     const map: Record<string, any[]> = {};
     for (const event of filteredEvents) {
-      const dateKey = new Date(event.startTime).toISOString().slice(0, 10);
+      const dateKey = toLocalDateKey(event.startTime);
       if (!map[dateKey]) map[dateKey] = [];
       map[dateKey].push(event);
     }
@@ -384,7 +407,7 @@ export default function ConstructionSchedule() {
       const end = new Date(booking.endDate);
       const d = new Date(start);
       while (d <= end) {
-        const dateKey = d.toISOString().slice(0, 10);
+        const dateKey = toLocalDateKey(d);
         if (!map[dateKey]) map[dateKey] = [];
         map[dateKey].push(booking);
         d.setDate(d.getDate() + 1);
@@ -408,7 +431,7 @@ export default function ConstructionSchedule() {
     ? currentDate.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
     : `Week of ${calendarDays[0]?.toLocaleDateString("en-AU", { day: "numeric", month: "short" })} – ${calendarDays[6]?.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}`;
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = toLocalDateKey(new Date());
   const currentMonth = currentDate.getMonth();
 
   const [tourActive, setTourActive] = useState(false);
@@ -420,7 +443,7 @@ export default function ConstructionSchedule() {
   const eqBookingCount = (equipmentBookingsQuery.data || []).length;
 
   // Current day key for day view
-  const currentDayKey = currentDate.toISOString().slice(0, 10);
+  const currentDayKey = toLocalDateKey(currentDate);
   const dayEvents = eventsByDate[currentDayKey] || [];
   const dayBookings = bookingsByDate[currentDayKey] || [];
 
@@ -563,7 +586,7 @@ export default function ConstructionSchedule() {
           {/* Week Strip */}
           <div className="flex gap-1 justify-between bg-muted/30 rounded-lg p-1.5">
             {weekStrip.map((day, idx) => {
-              const dayKey = day.toISOString().slice(0, 10);
+              const dayKey = toLocalDateKey(day);
               const isSelected = dayKey === currentDayKey;
               const isToday2 = dayKey === today;
               const hasEvents = (eventsByDate[dayKey]?.length || 0) + (bookingsByDate[dayKey]?.length || 0) > 0;
@@ -700,7 +723,7 @@ export default function ConstructionSchedule() {
           {/* Calendar Grid */}
           <div className="grid grid-cols-7 gap-px bg-border rounded-b-lg overflow-hidden -mt-2">
             {calendarDays.map((day, idx) => {
-              const dateKey = day.toISOString().slice(0, 10);
+              const dateKey = toLocalDateKey(day);
               const cellEvents = eventsByDate[dateKey] || [];
               const cellBookings = bookingsByDate[dateKey] || [];
               const isToday2 = dateKey === today;
@@ -1000,8 +1023,8 @@ function EventForm({
           jobId: Number(form.jobId),
           title: form.title,
           description: form.description || undefined,
-          startTime: form.allDay ? `${form.startTime.slice(0, 10)}T00:00:00.000Z` : new Date(form.startTime).toISOString(),
-          endTime: form.allDay ? undefined : (form.endTime ? new Date(form.endTime).toISOString() : undefined),
+          startTime: form.allDay ? localDateStartToIso(form.startTime.slice(0, 10)) : localDateTimeToIso(form.startTime),
+          endTime: form.allDay ? undefined : (form.endTime ? localDateTimeToIso(form.endTime) : undefined),
           allDay: form.allDay,
           eventType: form.eventType as any,
           assignedInstallerId: form.assignedInstallerId && form.assignedInstallerId !== "none" ? Number(form.assignedInstallerId) : undefined,
@@ -1084,8 +1107,8 @@ function EquipmentBookingForm({
         onClick={() => onSubmit({
           equipmentId: Number(form.equipmentId),
           jobId: form.jobId ? Number(form.jobId) : undefined,
-          startDate: `${form.startDate}T00:00:00.000Z`,
-          endDate: `${form.endDate}T23:59:59.000Z`,
+          startDate: localDateStartToIso(form.startDate),
+          endDate: localDateEndToIso(form.endDate),
           notes: form.notes || undefined,
         })}
         disabled={loading || !form.equipmentId || !form.startDate || !form.endDate}
