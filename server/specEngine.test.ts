@@ -441,7 +441,7 @@ describe("generateItemsFromSpec work checklist matching", () => {
             responsibility: "By Builder",
             qty: 24,
             unit: "m2",
-            productMatch: "Concrete slab demolition",
+            productMatch: "Stale free text should not override the fixed description",
             notes: "include disposal",
           },
           {
@@ -462,12 +462,14 @@ describe("generateItemsFromSpec work checklist matching", () => {
       [
         product({
           id: 60,
-          name: "Concrete slab demolition",
+          name: "Demolish existing concrete slab m2",
           tabName: "demolition",
           uom: "m2",
-          materials: "12",
-          installLabour: "8",
-          fixedSell: "55",
+          baseCost: "93",
+          materials: null,
+          installLabour: null,
+          consumables: null,
+          fixedSell: "207",
           coverageWidth: null,
         }),
         product({
@@ -486,13 +488,13 @@ describe("generateItemsFromSpec work checklist matching", () => {
 
     expect(items).toHaveLength(1);
     expect(items[0].productId).toBe(60);
-    expect(items[0].description).toBe("Concrete slab demolition");
+    expect(items[0].description).toBe("Demolish existing concrete slab m2");
     expect(items[0].qty).toBe(24);
     expect(items[0].uom).toBe("m2");
-    expect(items[0].costRate).toBe(20);
-    expect(items[0].sellRate).toBe(55);
+    expect(items[0].costRate).toBe(93);
+    expect(items[0].sellRate).toBe(207);
     expect(items[0].notes).toContain("Work checklist takeoff: Demolish existing concrete slab");
-    expect(items[0].notes).toContain("matched product: Concrete slab demolition");
+    expect(items[0].notes).toContain("matched product: Demolish existing concrete slab m2");
     expect(items[0].notes).toContain("notes: include disposal");
   });
 

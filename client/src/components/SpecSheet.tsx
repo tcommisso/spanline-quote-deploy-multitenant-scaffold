@@ -271,6 +271,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role || "");
+  const isSuperAdmin = user?.role === "super_admin";
   const { data: quote, isLoading } = trpc.quotes.get.useQuery({ id: quoteId });
   const updateMutation = trpc.quotes.updateSpec.useMutation({
     onSuccess: () => {
@@ -817,7 +818,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const checklistDetail = (row: CheckItem) => [
     row.responsibility,
     row.qty !== undefined && row.qty !== "" ? `${row.qty} ${row.unit || "ea"}` : "",
-    row.productMatch ? `Product: ${row.productMatch}` : "",
     row.notes,
   ].filter(Boolean).join(" - ");
 
@@ -2161,6 +2161,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   placeholder="Wall work item..."
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
+                  lockItemLabels={!isSuperAdmin}
                   defaultItems={[
                     { item: "Timber Stud wall", checked: false, notes: "", responsibility: "" },
                     { item: "Brick wall", checked: false, notes: "", responsibility: "" },
@@ -2911,6 +2912,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   placeholder="Site work item..."
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
+                  lockItemLabels={!isSuperAdmin}
                   defaultItems={[
                     { task: "Earthworks - ground preparation", checked: false, responsibility: "" },
                     { task: "Landscaping", checked: false, responsibility: "" },
@@ -2944,6 +2946,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   onChange={setStairsChecks}
                   placeholder="Stairs item..."
                   notesPlaceholder="Notes (optional)..."
+                  lockItemLabels={!isSuperAdmin}
                   defaultItems={[
                     { item: "Timber Stairs", checked: false, notes: "" },
                     { item: "Steel Stringers", checked: false, notes: "" },
@@ -3397,6 +3400,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   placeholder="Electrical work item..."
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
+                  lockItemLabels={!isSuperAdmin}
                   defaultItems={[
                     { task: "Light cabling for future use", checked: false, responsibility: "" },
                     { task: "Light cabling only (Connection by Owner)", checked: false, responsibility: "" },
@@ -3441,6 +3445,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 placeholder="Concreting item..."
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
+                lockItemLabels={!isSuperAdmin}
                 defaultItems={[
                   { item: "Patio Slab", checked: false, notes: "", responsibility: "" },
                   { item: "Enclosure Slab", checked: false, notes: "", responsibility: "" },
@@ -3485,6 +3490,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 placeholder="Demolition item..."
                 notesPlaceholder="Qty m² or notes..."
                 showResponsibility
+                lockItemLabels={!isSuperAdmin}
                 defaultItems={[
                   { item: "Demolish existing concrete slab", checked: false, notes: "", responsibility: "" },
                   { item: "Demolish existing steel structure", checked: false, notes: "", responsibility: "" },
@@ -3517,6 +3523,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 placeholder="Work item..."
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
+                lockItemLabels={!isSuperAdmin}
                 defaultItems={[
                   { item: "Eave cut back", checked: false, notes: "", responsibility: "" },
                   { item: "Stud Wall", checked: false, notes: "", responsibility: "" },
@@ -3549,6 +3556,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 placeholder="Plumbing item..."
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
+                lockItemLabels={!isSuperAdmin}
                 defaultItems={[
                   { item: "Stormwater connection", checked: false, notes: "", responsibility: "" },
                   { item: "Move hot water", checked: false, notes: "", responsibility: "" },

@@ -96,6 +96,8 @@ function formatTakeoffNumber(value: number): string {
 function normalizeMatchValue(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
+    .replace(/²/g, "2")
+    .replace(/³/g, "3")
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
@@ -151,7 +153,8 @@ function findProductBySpecMatch(
   if (tokens.length === 0) return null;
   return candidates.find(p => {
     const name = normalizeMatchValue(p.name);
-    return tokens.every(token => name.includes(token));
+    const nameTokens = new Set(name.split(" ").filter(Boolean));
+    return tokens.every(token => nameTokens.has(token) || name.includes(token));
   }) || null;
 }
 
@@ -213,7 +216,7 @@ function workChecklistLabel(row: Record<string, unknown>): string {
 }
 
 function workChecklistProductMatch(row: Record<string, unknown>, label: string): string {
-  return readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]) || label;
+  return label || readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]);
 }
 
 function workChecklistUnit(row: Record<string, unknown>, fallback: string | null | undefined): string {
@@ -585,7 +588,9 @@ export function calculateRates(
   const materials = parseFloat(product.materials || "0") || 0;
   const installLabour = parseFloat(product.installLabour || "0") || 0;
   const consumables = parseFloat(product.consumables || "0") || 0;
-  const costRate = materials + installLabour + consumables;
+  const breakdownCost = materials + installLabour + consumables;
+  const baseCost = parseFloat(product.baseCost || "0") || 0;
+  const costRate = breakdownCost > 0 ? breakdownCost : baseCost;
 
   // If product has a fixed sell price, use it
   if (product.fixedSell && parseFloat(product.fixedSell) > 0) {

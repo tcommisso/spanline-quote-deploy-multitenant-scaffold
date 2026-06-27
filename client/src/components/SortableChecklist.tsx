@@ -15,7 +15,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { GripVertical, Lock, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -26,6 +26,7 @@ export type CheckItem = {
   item?: string;
   task?: string;
   checked: boolean;
+  custom?: boolean;
   notes?: string;
   responsibility?: "" | "By Builder" | "By Client";
   qty?: string | number;
@@ -65,6 +66,7 @@ interface SortableChecklistProps {
   defaultItems?: CheckItem[];
   showResponsibility?: boolean;
   showPricingFields?: boolean;
+  lockItemLabels?: boolean;
 }
 
 function SortableItem({
@@ -77,6 +79,7 @@ function SortableItem({
   notesPlaceholder,
   showResponsibility,
   showPricingFields,
+  lockItemLabels,
 }: {
   id: string;
   row: CheckItem;
@@ -87,6 +90,7 @@ function SortableItem({
   notesPlaceholder: string;
   showResponsibility: boolean;
   showPricingFields: boolean;
+  lockItemLabels: boolean;
 }) {
   const {
     attributes,
@@ -102,6 +106,7 @@ function SortableItem({
     transition,
     opacity: isDragging ? 0.5 : 1,
   };
+  const itemLabelLocked = lockItemLabels && !row.custom && getChecklistLabel(row).trim() !== "";
 
   return (
     <div
@@ -127,18 +132,28 @@ function SortableItem({
         className="mt-1"
       />
       <div className="flex-1 min-w-0 space-y-1">
-        <Input
-          className="h-7 text-sm"
-          placeholder={placeholder}
-          value={getChecklistLabel(row)}
-          onChange={(e) => {
-            const next = [...items];
-            next[index] = patchChecklistLabel(next[index], e.target.value);
-            onChange(next);
-          }}
-        />
+        <div className="flex items-center gap-1.5">
+          <Input
+            className="h-7 text-sm disabled:opacity-100 disabled:bg-muted/40"
+            placeholder={placeholder}
+            value={getChecklistLabel(row)}
+            disabled={itemLabelLocked}
+            title={itemLabelLocked ? "Locked because spec mapping uses checklist descriptions for product matching. Super admins can edit this field." : undefined}
+            onChange={(e) => {
+              const next = [...items];
+              next[index] = patchChecklistLabel(next[index], e.target.value);
+              onChange(next);
+            }}
+          />
+          {itemLabelLocked && (
+            <Lock
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-label="Checklist description locked"
+            />
+          )}
+        </div>
         {showPricingFields && (
-          <div className="grid grid-cols-1 sm:grid-cols-[6rem_6rem_minmax(0,1fr)] gap-1">
+          <div className="grid grid-cols-1 sm:grid-cols-[6rem_6rem] gap-1">
             <Input
               className="h-7 text-xs"
               type="number"
@@ -165,16 +180,6 @@ function SortableItem({
                 <option key={unit} value={unit}>{unit}</option>
               ))}
             </select>
-            <Input
-              className="h-7 text-xs"
-              placeholder="Product match (optional)"
-              value={row.productMatch ?? ""}
-              onChange={(e) => {
-                const next = [...items];
-                next[index] = { ...next[index], productMatch: e.target.value };
-                onChange(next);
-              }}
-            />
           </div>
         )}
         <Input
@@ -235,6 +240,7 @@ export function SortableChecklist({
   defaultItems,
   showResponsibility = false,
   showPricingFields = true,
+  lockItemLabels = false,
 }: SortableChecklistProps) {
   // Generate stable IDs based on index
   const getIds = (list: CheckItem[]) => list.map((_, i) => `sortable-${i}`);
@@ -264,7 +270,7 @@ export function SortableChecklist({
           variant="outline"
           size="sm"
           className="h-6 text-xs"
-          onClick={() => onChange([...items, normalizeChecklistItem({ item: "", checked: false })])}
+          onClick={() => onChange([...items, normalizeChecklistItem({ item: "", checked: false, custom: true })])}
         >
           <Plus className="h-3 w-3 mr-1" /> Add Item
         </Button>
@@ -299,6 +305,7 @@ export function SortableChecklist({
                 notesPlaceholder={notesPlaceholder}
                 showResponsibility={showResponsibility}
                 showPricingFields={showPricingFields}
+                lockItemLabels={lockItemLabels}
               />
             ))}
           </SortableContext>
