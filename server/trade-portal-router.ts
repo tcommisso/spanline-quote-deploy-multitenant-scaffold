@@ -165,6 +165,15 @@ async function requireSubcontractAccess(db: any, ctx: any, subcontractId: number
   return subcontract;
 }
 
+function moneyNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyString(value: number): string {
+  return value.toFixed(2);
+}
+
 // ─── Trade Portal Auth Middleware ────────────────────────────────────────────
 
 const requireTradePortalAccess = middleware(async ({ ctx, next }) => {
@@ -1081,18 +1090,125 @@ export const tradePortalRouter = router({
         .orderBy(asc(poMilestones.sortOrder));
     }),
 
+  getInvoiceClaimOptions: protectedTradePortalProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    const installerId = ctx.tradeAccess.installerId;
+    const visibleJobIds = await getVisibleTradeJobIds(db, ctx, installerId);
+    if (visibleJobIds.length === 0) {
+      return { jobs: [], workOrders: [], poMilestones: [], subcontractMilestones: [] };
+    }
+
+    const jobs = await db.select({
+      jobId: constructionJobs.id,
+      quoteNumber: constructionJobs.quoteNumber,
+      clientName: constructionJobs.clientName,
+      siteAddress: constructionJobs.siteAddress,
+      status: constructionJobs.status,
+    })
+      .from(constructionJobs)
+      .where(and(...tradeJobConditions(ctx, inArray(constructionJobs.id, visibleJobIds))))
+      .orderBy(desc(constructionJobs.updatedAt));
+
+    const [installer] = await db.select()
+      .from(constructionInstallers)
+      .where(and(...tradeInstallerConditions(ctx, eq(constructionInstallers.id, installerId))))
+      .limit(1);
+
+    const allWorkOrders = installer?.email
+      ? await db.select()
+        .from(cmWorkOrders)
+        .where(and(
+          eq(cmWorkOrders.assignedEmail, installer.email),
+          inArray(cmWorkOrders.jobId, visibleJobIds),
+        ))
+        .orderBy(desc(cmWorkOrders.createdAt))
+      : [];
+
+    const workOrderIds = allWorkOrders.map((wo: any) => wo.id);
+    const milestoneRows = workOrderIds.length
+      ? await db.select()
+        .from(poMilestones)
+        .where(inArray(poMilestones.workOrderId, workOrderIds))
+        .orderBy(asc(poMilestones.sortOrder))
+      : [];
+
+    const subcontracts = await db.select()
+      .from(projectSubcontracts)
+      .where(and(
+        inArray(projectSubcontracts.jobId, visibleJobIds),
+        or(
+          eq(projectSubcontracts.installerId, installerId),
+          eq(projectSubcontracts.status, "signed")
+        ),
+      ));
+
+    const subcontractIds = subcontracts.map((subcontract: any) => subcontract.id);
+    const existingClaims = subcontractIds.length
+      ? await db.select({
+        subcontractId: tradeInvoiceLines.subcontractId,
+        subcontractMilestoneIndex: tradeInvoiceLines.subcontractMilestoneIndex,
+        amount: tradeInvoiceLines.amount,
+        approvalStatus: tradeInvoiceLines.approvalStatus,
+      })
+        .from(tradeInvoiceLines)
+        .where(inArray(tradeInvoiceLines.subcontractId, subcontractIds))
+      : [];
+
+    const subcontractMilestones = subcontracts.flatMap((subcontract: any) => {
+      const schedule = ((subcontract.paymentSchedule as PaymentMilestone[]) || []);
+      return schedule.map((milestone, index) => {
+        const claims = existingClaims.filter((claim: any) =>
+          claim.subcontractId === subcontract.id && claim.subcontractMilestoneIndex === index
+        );
+        const amount = milestone.usePercent
+          ? ((milestone.percentOfTotal || 0) / 100) * moneyNumber(subcontract.subcontractSum)
+          : moneyNumber(milestone.amountDollars);
+        return {
+          subcontractId: subcontract.id,
+          subcontractMilestoneIndex: index,
+          jobId: subcontract.jobId,
+          subcontractorName: subcontract.subcontractorName,
+          label: milestone.label,
+          amountDollars: amount,
+          percentOfTotal: milestone.percentOfTotal,
+          usePercent: milestone.usePercent,
+          claimed: claims.length > 0,
+          claimStatus: claims.length > 0 ? claims[0].approvalStatus : null,
+          claimedAmount: claims.reduce((sum: number, claim: any) => sum + moneyNumber(claim.amount), 0),
+        };
+      });
+    });
+
+    return {
+      jobs: jobs.filter((job: any) => job.status !== "completed" && job.status !== "cancelled"),
+      workOrders: allWorkOrders,
+      poMilestones: milestoneRows,
+      subcontractMilestones,
+    };
+  }),
+
   // Submit invoice with PO milestone linking
   submitInvoiceWithMilestone: protectedTradePortalProcedure
     .input(z.object({
       invoiceNumber: z.string().min(1),
-      amount: z.string(),
+      amount: z.string().optional(),
       gstAmount: z.string().optional(),
       description: z.string().optional(),
-      jobId: z.number(),
+      jobId: z.number().optional(),
       workOrderId: z.number().optional(),
       milestoneId: z.number().optional(),
       subcontractId: z.number().optional(),
       subcontractMilestoneIndex: z.number().optional(),
+      items: z.array(z.object({
+        description: z.string().optional(),
+        amount: z.string(),
+        gstAmount: z.string().optional(),
+        jobId: z.number(),
+        workOrderId: z.number().optional(),
+        milestoneId: z.number().optional(),
+        subcontractId: z.number().optional(),
+        subcontractMilestoneIndex: z.number().optional(),
+      })).optional(),
       fileBase64: z.string(),
       fileName: z.string(),
       fileMimeType: z.string(),
@@ -1100,36 +1216,86 @@ export const tradePortalRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
-      await requireTradeJobAccess(db, ctx, input.jobId);
-      if (input.workOrderId) {
-        const workOrder = await requireWorkOrderAccess(db, ctx, input.workOrderId);
-        if (workOrder.jobId !== input.jobId) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Work order does not belong to this job" });
-        }
+      const rawItems = input.items?.length
+        ? input.items
+        : [{
+          description: input.description,
+          amount: input.amount || "0",
+          gstAmount: input.gstAmount,
+          jobId: input.jobId!,
+          workOrderId: input.workOrderId,
+          milestoneId: input.milestoneId,
+          subcontractId: input.subcontractId,
+          subcontractMilestoneIndex: input.subcontractMilestoneIndex,
+        }];
+
+      if (!rawItems.length || rawItems.some((item) => !item.jobId || moneyNumber(item.amount) <= 0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "At least one claim item with a job and amount is required" });
       }
-      if (input.subcontractId != null) {
-        const subcontract = await requireSubcontractAccess(db, ctx, input.subcontractId);
-        if (subcontract.jobId !== input.jobId) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Subcontract does not belong to this job" });
+
+      const validatedItems: Array<{
+        description: string;
+        amount: string;
+        gstAmount: string;
+        jobId: number;
+        workOrderId: number | null;
+        milestoneId: number | null;
+        subcontractId: number | null;
+        subcontractMilestoneIndex: number | null;
+      }> = [];
+
+      for (let index = 0; index < rawItems.length; index++) {
+        const item = rawItems[index];
+        await requireTradeJobAccess(db, ctx, item.jobId);
+        let workOrderId = item.workOrderId ?? null;
+        let milestoneId = item.milestoneId ?? null;
+        let subcontractId = item.subcontractId ?? null;
+        const subcontractMilestoneIndex = item.subcontractMilestoneIndex ?? null;
+
+        if (workOrderId) {
+          const workOrder = await requireWorkOrderAccess(db, ctx, workOrderId);
+          if (workOrder.jobId !== item.jobId) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: work order does not belong to this job` });
+          }
         }
-      }
-      if (input.milestoneId) {
-        const [milestone] = await db.select({
-          id: poMilestones.id,
-          workOrderId: poMilestones.workOrderId,
-          jobId: poMilestones.jobId,
-        })
-          .from(poMilestones)
-          .where(and(
-            eq(poMilestones.id, input.milestoneId),
-            eq(poMilestones.jobId, input.jobId),
-            ...(input.workOrderId ? [eq(poMilestones.workOrderId, input.workOrderId)] : []),
-          ))
-          .limit(1);
-        if (!milestone) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Milestone does not belong to this work order" });
+
+        if (subcontractId != null) {
+          const subcontract = await requireSubcontractAccess(db, ctx, subcontractId);
+          if (subcontract.jobId !== item.jobId) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: subcontract does not belong to this job` });
+          }
         }
-        await requireWorkOrderAccess(db, ctx, milestone.workOrderId);
+
+        if (milestoneId) {
+          const [milestone] = await db.select({
+            id: poMilestones.id,
+            workOrderId: poMilestones.workOrderId,
+            jobId: poMilestones.jobId,
+          })
+            .from(poMilestones)
+            .where(and(
+              eq(poMilestones.id, milestoneId),
+              eq(poMilestones.jobId, item.jobId),
+              ...(workOrderId ? [eq(poMilestones.workOrderId, workOrderId)] : []),
+            ))
+            .limit(1);
+          if (!milestone) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: milestone does not belong to this job/work order` });
+          }
+          await requireWorkOrderAccess(db, ctx, milestone.workOrderId);
+          workOrderId = milestone.workOrderId;
+        }
+
+        validatedItems.push({
+          description: item.description?.trim() || input.description?.trim() || `Invoice claim line ${index + 1}`,
+          amount: moneyString(moneyNumber(item.amount)),
+          gstAmount: moneyString(moneyNumber(item.gstAmount)),
+          jobId: item.jobId,
+          workOrderId,
+          milestoneId,
+          subcontractId,
+          subcontractMilestoneIndex,
+        });
       }
 
       // Upload file to S3
@@ -1138,17 +1304,19 @@ export const tradePortalRouter = router({
       const fileKey = `trade-invoices/${installerId}/${input.fileName}-${suffix}`;
       const { url: fileUrl } = await storagePut(fileKey, fileBuffer, input.fileMimeType);
 
-      const gstAmount = input.gstAmount || "0";
-      const totalWithGst = String(parseFloat(input.amount) + parseFloat(gstAmount));
+      const invoiceAmount = validatedItems.reduce((sum, item) => sum + moneyNumber(item.amount), 0);
+      const gstAmount = validatedItems.reduce((sum, item) => sum + moneyNumber(item.gstAmount), 0);
+      const totalWithGst = invoiceAmount + gstAmount;
+      const primaryItem = validatedItems[0];
 
       const [result] = await db.insert(tradeInvoices).values({
         installerId,
-        jobId: input.jobId,
-        workOrderId: input.workOrderId || null,
+        jobId: primaryItem.jobId,
+        workOrderId: primaryItem.workOrderId,
         invoiceNumber: input.invoiceNumber,
-        amount: input.amount,
-        gstAmount,
-        totalWithGst,
+        amount: moneyString(invoiceAmount),
+        gstAmount: moneyString(gstAmount),
+        totalWithGst: moneyString(totalWithGst),
         description: input.description || null,
         fileUrl,
         fileKey,
@@ -1157,47 +1325,48 @@ export const tradePortalRouter = router({
 
       const invoiceId = Number(result.insertId);
 
-      // Create an invoice line linked to subcontract milestone if specified
-      let amountDiscrepancy: string | null = null;
-      if (input.subcontractId != null && input.subcontractMilestoneIndex != null) {
-        // Check milestone expected amount for discrepancy flagging
-        const [sc] = await db.select()
-          .from(projectSubcontracts)
-          .where(eq(projectSubcontracts.id, input.subcontractId))
-          .limit(1);
-        if (sc && sc.paymentSchedule) {
-          const milestone = (sc.paymentSchedule as any[])[input.subcontractMilestoneIndex];
-          if (milestone) {
-            const expectedAmount = milestone.usePercent
-              ? ((milestone.percentOfTotal || 0) / 100) * parseFloat(sc.subcontractSum || "0")
-              : milestone.amountDollars || 0;
-            const invoiceAmount = parseFloat(input.amount);
-            if (expectedAmount > 0 && Math.abs(invoiceAmount - expectedAmount) > 0.01) {
-              amountDiscrepancy = `Invoice $${invoiceAmount.toFixed(2)} vs milestone expected $${expectedAmount.toFixed(2)}`;
+      for (let index = 0; index < validatedItems.length; index++) {
+        const item = validatedItems[index];
+        let lineDesc = item.description;
+        if (item.subcontractId != null && item.subcontractMilestoneIndex != null) {
+          const [sc] = await db.select()
+            .from(projectSubcontracts)
+            .where(eq(projectSubcontracts.id, item.subcontractId))
+            .limit(1);
+          if (sc && sc.paymentSchedule) {
+            const milestone = (sc.paymentSchedule as any[])[item.subcontractMilestoneIndex];
+            if (milestone) {
+              const expectedAmount = milestone.usePercent
+                ? ((milestone.percentOfTotal || 0) / 100) * moneyNumber(sc.subcontractSum)
+                : moneyNumber(milestone.amountDollars);
+              const itemAmount = moneyNumber(item.amount);
+              if (expectedAmount > 0 && Math.abs(itemAmount - expectedAmount) > 0.01) {
+                lineDesc = `${lineDesc} [AMOUNT MISMATCH: Invoice $${itemAmount.toFixed(2)} vs milestone expected $${expectedAmount.toFixed(2)}]`;
+              }
             }
           }
         }
-        const lineDesc = amountDiscrepancy
-          ? `${input.description || "Milestone claim"} [AMOUNT MISMATCH: ${amountDiscrepancy}]`
-          : input.description || `Milestone claim`;
-        await db.insert(tradeInvoiceLines).values({
-          invoiceId,
-          lineNumber: 1,
-          description: lineDesc,
-          amount: input.amount,
-          gstAmount: gstAmount,
-          jobId: input.jobId,
-          workOrderId: input.workOrderId || null,
-          subcontractId: input.subcontractId,
-          subcontractMilestoneIndex: input.subcontractMilestoneIndex,
-        });
-      }
 
-      // If PO milestone specified, update its status to claimed
-      if (input.milestoneId) {
-        await db.update(poMilestones)
-          .set({ status: "claimed", claimedAt: new Date(), invoiceLineId: invoiceId })
-          .where(eq(poMilestones.id, input.milestoneId));
+        const [lineResult] = await db.insert(tradeInvoiceLines).values({
+          invoiceId,
+          lineNumber: index + 1,
+          description: lineDesc,
+          quantity: "1",
+          unitPrice: item.amount,
+          amount: item.amount,
+          gstAmount: item.gstAmount,
+          jobId: item.jobId,
+          workOrderId: item.workOrderId,
+          milestoneId: item.milestoneId,
+          subcontractId: item.subcontractId,
+          subcontractMilestoneIndex: item.subcontractMilestoneIndex,
+        });
+
+        if (item.milestoneId) {
+          await db.update(poMilestones)
+            .set({ status: "claimed", claimedAt: new Date(), invoiceLineId: Number(lineResult.insertId) })
+            .where(eq(poMilestones.id, item.milestoneId));
+        }
       }
 
       // Notify owner/supervisor that a new invoice has been submitted
@@ -1207,14 +1376,14 @@ export const tradePortalRouter = router({
         .limit(1);
       notifyOwner({
         title: "New Trade Invoice Submitted",
-        content: `${installerInfo?.name || "Trade"} submitted invoice ${input.invoiceNumber} for $${input.amount} (Job #${input.jobId})`,
+        content: `${installerInfo?.name || "Trade"} submitted invoice ${input.invoiceNumber} for $${moneyString(invoiceAmount)} across ${validatedItems.length} item(s)`,
       }).catch(() => {});
 
       // Push notification to staff
       triggerPushTradeInvoiceSubmitted(
         installerInfo?.name || "Trade",
         input.invoiceNumber,
-        input.amount
+        moneyString(invoiceAmount)
       );
 
       return { id: invoiceId, fileUrl };

@@ -209,6 +209,25 @@ export function triggerPushTradeInvoiceApproved(installerId: number, invoiceNumb
 }
 
 /**
+ * Trigger: Trade invoice approved with adjustment -> notify installer
+ */
+export function triggerPushTradeInvoiceAdjusted(
+  installerId: number,
+  invoiceNumber: string,
+  claimedAmount: string,
+  approvedAmount: string,
+  reason?: string | null,
+): void {
+  const reasonText = reason ? ` Reason: ${reason}` : "";
+  pushToTradePortalByInstaller(installerId, {
+    title: "Invoice Approved with Adjustment",
+    body: `Invoice ${invoiceNumber}: claimed $${claimedAmount}, approved $${approvedAmount}.${reasonText}`,
+    url: "/trade-portal/invoices",
+    tag: `invoice-adjusted-${installerId}`,
+  }).catch(() => {});
+}
+
+/**
  * Trigger: Trade invoice rejected → notify installer
  */
 export function triggerPushTradeInvoiceRejected(installerId: number, invoiceNumber: string, reason?: string | null): void {

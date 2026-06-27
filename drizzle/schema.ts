@@ -2748,6 +2748,9 @@ export const tradeInvoices = mysqlTable("trade_invoices", {
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
   gstAmount: decimal("gstAmount", { precision: 12, scale: 2 }).default("0"),
   totalWithGst: decimal("totalWithGst", { precision: 12, scale: 2 }),
+  approvedAmount: decimal("approvedAmount", { precision: 12, scale: 2 }),
+  approvedGstAmount: decimal("approvedGstAmount", { precision: 12, scale: 2 }),
+  approvedTotalWithGst: decimal("approvedTotalWithGst", { precision: 12, scale: 2 }),
   description: text("description"),
   fileUrl: text("fileUrl"),
   fileKey: varchar("fileKey", { length: 512 }),
@@ -2765,6 +2768,7 @@ export const tradeInvoices = mysqlTable("trade_invoices", {
   xeroBillId: varchar("xeroBillId", { length: 128 }),
   xeroBillNumber: varchar("xeroBillNumber", { length: 64 }),
   notes: text("notes"),
+  approvalAdjustmentReason: text("approvalAdjustmentReason"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -2799,6 +2803,8 @@ export const tradeInvoiceLines = mysqlTable("trade_invoice_lines", {
   unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }),
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
   gstAmount: decimal("gstAmount", { precision: 12, scale: 2 }).default("0"),
+  approvedAmount: decimal("approvedAmount", { precision: 12, scale: 2 }),
+  approvedGstAmount: decimal("approvedGstAmount", { precision: 12, scale: 2 }),
   // Job / PO / Milestone linking
   jobId: int("jobId").references(() => constructionJobs.id, { onDelete: "set null" }),
   workOrderId: int("workOrderId").references(() => cmWorkOrders.id, { onDelete: "set null" }),
@@ -2811,6 +2817,7 @@ export const tradeInvoiceLines = mysqlTable("trade_invoice_lines", {
   approvedBy: int("approvedBy").references(() => users.id),
   approvedAt: timestamp("approvedAt"),
   rejectionReason: text("rejectionReason"),
+  approvalAdjustmentReason: text("approvalAdjustmentReason"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

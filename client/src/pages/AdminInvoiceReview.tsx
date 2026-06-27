@@ -3,6 +3,8 @@ import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -50,6 +52,24 @@ function StatusBadge({ status }: { status: string }) {
 function formatCurrency(val: string | number | null | undefined): string {
   const n = typeof val === "string" ? parseFloat(val) : (val || 0);
   return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(n);
+}
+
+function amountNumber(val: string | number | null | undefined): number {
+  const parsed = typeof val === "number" ? val : parseFloat(String(val ?? "0"));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function approvedLineAmount(line: any): number {
+  return line.approvedAmount != null ? amountNumber(line.approvedAmount) : amountNumber(line.amount);
+}
+
+function approvedLineGst(line: any): number {
+  return line.approvedGstAmount != null ? amountNumber(line.approvedGstAmount) : amountNumber(line.gstAmount);
+}
+
+function lineHasAdjustment(line: any): boolean {
+  return Math.abs(approvedLineAmount(line) - amountNumber(line.amount)) > 0.005
+    || Math.abs(approvedLineGst(line) - amountNumber(line.gstAmount)) > 0.005;
 }
 
 function daysSince(date: string | number | Date | null | undefined): number {
@@ -102,6 +122,10 @@ function InvoiceRow({ inv, onClick }: { inv: any; onClick: () => void }) {
   const age = daysSince(inv.submittedAt);
   const isUrgent = inv.status === "pending_approval" && age > 3;
   const isNew = inv.status === "submitted" && age < 1;
+  const approvedTotal = inv.approvedTotalWithGst != null
+    ? amountNumber(inv.approvedTotalWithGst)
+    : null;
+  const claimedTotal = amountNumber(inv.totalWithGst) || (amountNumber(inv.amount) + amountNumber(inv.gstAmount));
 
   return (
     <Card
@@ -165,7 +189,12 @@ function InvoiceRow({ inv, onClick }: { inv: any; onClick: () => void }) {
           </div>
           <div className="flex items-center gap-3 shrink-0">
             <div className="text-right">
-              <p className="font-bold text-base">{formatCurrency(inv.amount)}</p>
+              <p className="font-bold text-base">{formatCurrency(approvedTotal ?? claimedTotal)}</p>
+              {approvedTotal != null && Math.abs(approvedTotal - claimedTotal) > 0.005 && (
+                <p className="text-[10px] text-orange-700">
+                  claimed {formatCurrency(claimedTotal)}
+                </p>
+              )}
               {inv.gstAmount && (
                 <p className="text-xs text-muted-foreground">
                   +{formatCurrency(inv.gstAmount)} GST
@@ -177,6 +206,89 @@ function InvoiceRow({ inv, onClick }: { inv: any; onClick: () => void }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function ApproveLineDialog({
+  line,
+  pending,
+  onCancel,
+  onApprove,
+}: {
+  line: any;
+  pending: boolean;
+  onCancel: () => void;
+  onApprove: (payload: { approvedAmount: string; approvedGstAmount: string; adjustmentReason?: string }) => void;
+}) {
+  const [approvedAmount, setApprovedAmount] = useState(String(line.approvedAmount ?? line.amount ?? ""));
+  const [approvedGstAmount, setApprovedGstAmount] = useState(String(line.approvedGstAmount ?? line.gstAmount ?? "0"));
+  const [reason, setReason] = useState(line.approvalAdjustmentReason || "");
+  const adjusted = Math.abs(amountNumber(approvedAmount) - amountNumber(line.amount)) > 0.005
+    || Math.abs(amountNumber(approvedGstAmount) - amountNumber(line.gstAmount)) > 0.005;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={onCancel}>
+      <div className="bg-background p-6 rounded-xl max-w-lg w-full shadow-xl" onClick={e => e.stopPropagation()}>
+        <h3 className="font-semibold mb-1">Approve Line</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Confirm the approved amount. Add a reason if it differs from the claimed amount.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          <div>
+            <Label className="text-xs">Claimed amount ex GST</Label>
+            <Input value={formatCurrency(line.amount)} disabled className="bg-muted" />
+          </div>
+          <div>
+            <Label className="text-xs">Claimed GST</Label>
+            <Input value={formatCurrency(line.gstAmount)} disabled className="bg-muted" />
+          </div>
+          <div>
+            <Label className="text-xs">Approved amount ex GST</Label>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={approvedAmount}
+              onChange={(event) => setApprovedAmount(event.target.value)}
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Approved GST</Label>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={approvedGstAmount}
+              onChange={(event) => setApprovedGstAmount(event.target.value)}
+            />
+          </div>
+        </div>
+        <div className="mb-4">
+          <Label className="text-xs">Reason for adjustment{adjusted ? " *" : ""}</Label>
+          <Textarea
+            placeholder="Explain why the approved amount differs from the claimed amount..."
+            value={reason}
+            onChange={event => setReason(event.target.value)}
+            rows={3}
+          />
+        </div>
+        <div className="flex gap-2 justify-end">
+          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button
+            className="bg-green-600 hover:bg-green-700"
+            onClick={() => onApprove({
+              approvedAmount,
+              approvedGstAmount,
+              adjustmentReason: reason.trim() || undefined,
+            })}
+            disabled={pending || !approvedAmount || amountNumber(approvedAmount) < 0 || amountNumber(approvedGstAmount) < 0 || (adjusted && !reason.trim())}
+          >
+            {pending ? <RotateCw className="h-4 w-4 mr-1 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-1" />}
+            Approve Line
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -272,6 +384,7 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
 
   const [rejectComment, setRejectComment] = useState("");
   const [rejectLineId, setRejectLineId] = useState<number | null>(null);
+  const [approvingLine, setApprovingLine] = useState<any | null>(null);
   const [annotatePhoto, setAnnotatePhoto] = useState<{ url: string; id: number; caption?: string } | null>(null);
 
   if (!open) return null;
@@ -279,10 +392,19 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
   const pendingLines = data?.lines.filter(l => l.approvalStatus === "pending").length || 0;
   const approvedLines = data?.lines.filter(l => l.approvalStatus === "approved").length || 0;
   const totalLines = data?.lines.length || 0;
+  const claimedExGst = data?.lines.reduce((sum, line) => sum + amountNumber(line.amount), 0) || amountNumber(data?.invoice?.amount);
+  const claimedGst = data?.lines.reduce((sum, line) => sum + amountNumber(line.gstAmount), 0) || amountNumber(data?.invoice?.gstAmount);
+  const approvedExGst = data?.invoice?.approvedAmount != null
+    ? amountNumber(data.invoice.approvedAmount)
+    : (data?.lines.reduce((sum, line) => sum + approvedLineAmount(line), 0) || claimedExGst);
+  const approvedGst = data?.invoice?.approvedGstAmount != null
+    ? amountNumber(data.invoice.approvedGstAmount)
+    : (data?.lines.reduce((sum, line) => sum + approvedLineGst(line), 0) || claimedGst);
+  const invoiceAdjusted = Math.abs(approvedExGst - claimedExGst) > 0.005 || Math.abs(approvedGst - claimedGst) > 0.005;
 
   return (<>
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="w-[96vw] max-w-[96vw] xl:max-w-7xl max-h-[92vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Receipt className="h-5 w-5" />
@@ -300,7 +422,7 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
         ) : data ? (
           <div className="space-y-5">
             {/* ── Invoice Header ── */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 bg-muted/50 rounded-xl">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 p-4 bg-muted/50 rounded-xl">
               <div>
                 <p className="text-xs text-muted-foreground">Trade</p>
                 <p className="font-semibold">{data.trade?.name || "Unknown"}</p>
@@ -316,16 +438,25 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                 </p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Amount (ex GST)</p>
+                <p className="text-xs text-muted-foreground">Claimed ex GST</p>
                 <p className="font-semibold">{formatCurrency(data.invoice.amount)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">GST</p>
+                <p className="text-xs text-muted-foreground">Claimed GST</p>
                 <p className="font-medium">{formatCurrency(data.invoice.gstAmount)}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Total (inc GST)</p>
+                <p className="text-xs text-muted-foreground">Claimed inc GST</p>
                 <p className="font-bold text-lg">{formatCurrency(data.invoice.totalWithGst)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Approved inc GST</p>
+                <p className={`font-bold text-lg ${invoiceAdjusted ? "text-orange-700" : "text-green-700"}`}>
+                  {formatCurrency(approvedExGst + approvedGst)}
+                </p>
+                {invoiceAdjusted && data.invoice.approvalAdjustmentReason && (
+                  <p className="text-[10px] text-orange-700 truncate">{data.invoice.approvalAdjustmentReason}</p>
+                )}
               </div>
             </div>
 
@@ -419,7 +550,7 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                     {data.invoice.status === "pending_approval" && pendingLines > 0 && (
                       <Button size="sm" onClick={() => bulkApproveMutation.mutate({ invoiceId })}
                         disabled={bulkApproveMutation.isPending} className="bg-green-600 hover:bg-green-700">
-                        <CheckCircle className="h-4 w-4 mr-1" /> Approve All ({pendingLines})
+                        <CheckCircle className="h-4 w-4 mr-1" /> Approve All at Claimed ({pendingLines})
                       </Button>
                     )}
                   </CardTitle>
@@ -443,54 +574,73 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                           <th className="p-2">Job / PO</th>
                           <th className="p-2 text-right">Qty</th>
                           <th className="p-2 text-right">Unit $</th>
-                          <th className="p-2 text-right">Amount</th>
+                          <th className="p-2 text-right">Claimed</th>
+                          <th className="p-2 text-right">Approved</th>
                           <th className="p-2 text-right">GST</th>
                           <th className="p-2">Status</th>
                           <th className="p-2 w-20">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {data.lines.map((line) => (
-                          <tr key={line.id} className={`border-b hover:bg-muted/30 ${
-                            line.approvalStatus === "rejected" ? "bg-red-50/50" :
-                            line.approvalStatus === "approved" ? "bg-green-50/30" : ""
-                          }`}>
-                            <td className="p-2 text-muted-foreground">{line.lineNumber}</td>
-                            <td className="p-2 max-w-[200px]">
-                              <p className="truncate font-medium">{line.description || "—"}</p>
-                            </td>
-                            <td className="p-2 text-xs text-muted-foreground">
-                              {line.jobId ? `Job #${line.jobId}` : "—"}
-                              {line.workOrderId && ` / WO #${line.workOrderId}`}
-                            </td>
-                            <td className="p-2 text-right">{line.quantity || "—"}</td>
-                            <td className="p-2 text-right">{line.unitPrice ? formatCurrency(line.unitPrice) : "—"}</td>
-                            <td className="p-2 text-right font-medium">{formatCurrency(line.amount)}</td>
-                            <td className="p-2 text-right">{formatCurrency(line.gstAmount)}</td>
-                            <td className="p-2"><StatusBadge status={line.approvalStatus || "pending"} /></td>
-                            <td className="p-2">
-                              {line.approvalStatus === "pending" && data.invoice.status === "pending_approval" && (
-                                <div className="flex gap-1">
-                                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-green-600 hover:bg-green-100"
-                                    onClick={() => approveMutation.mutate({ lineId: line.id, action: "approved" })}
-                                    disabled={approveMutation.isPending}>
-                                    <CheckCircle className="h-4 w-4" />
-                                  </Button>
-                                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-600 hover:bg-red-100"
-                                    onClick={() => setRejectLineId(line.id)}>
-                                    <XCircle className="h-4 w-4" />
-                                  </Button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {data.lines.map((line) => {
+                          const adjusted = lineHasAdjustment(line);
+                          return (
+                            <tr key={line.id} className={`border-b hover:bg-muted/30 ${
+                              line.approvalStatus === "rejected" ? "bg-red-50/50" :
+                              line.approvalStatus === "approved" ? "bg-green-50/30" : ""
+                            }`}>
+                              <td className="p-2 text-muted-foreground">{line.lineNumber}</td>
+                              <td className="p-2 max-w-[220px]">
+                                <p className="truncate font-medium">{line.description || "—"}</p>
+                                {line.approvalAdjustmentReason && (
+                                  <p className="text-[10px] text-orange-700 truncate">{line.approvalAdjustmentReason}</p>
+                                )}
+                              </td>
+                              <td className="p-2 text-xs text-muted-foreground">
+                                {line.jobId ? `Job #${line.jobId}` : "—"}
+                                {line.workOrderId && ` / WO #${line.workOrderId}`}
+                              </td>
+                              <td className="p-2 text-right">{line.quantity || "—"}</td>
+                              <td className="p-2 text-right">{line.unitPrice ? formatCurrency(line.unitPrice) : "—"}</td>
+                              <td className="p-2 text-right font-medium">{formatCurrency(line.amount)}</td>
+                              <td className={`p-2 text-right font-medium ${adjusted ? "text-orange-700" : "text-green-700"}`}>
+                                {line.approvedAmount != null ? formatCurrency(line.approvedAmount) : "—"}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatCurrency(line.gstAmount)}
+                                {line.approvedGstAmount != null && Math.abs(amountNumber(line.approvedGstAmount) - amountNumber(line.gstAmount)) > 0.005 && (
+                                  <span className="block text-[10px] text-orange-700">approved {formatCurrency(line.approvedGstAmount)}</span>
+                                )}
+                              </td>
+                              <td className="p-2"><StatusBadge status={line.approvalStatus || "pending"} /></td>
+                              <td className="p-2">
+                                {line.approvalStatus === "pending" && data.invoice.status === "pending_approval" && (
+                                  <div className="flex gap-1">
+                                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-green-600 hover:bg-green-100"
+                                      onClick={() => setApprovingLine(line)}
+                                      disabled={approveMutation.isPending}>
+                                      <CheckCircle className="h-4 w-4" />
+                                    </Button>
+                                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-600 hover:bg-red-100"
+                                      onClick={() => setRejectLineId(line.id)}>
+                                      <XCircle className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                       <tfoot>
                         <tr className="border-t-2 font-semibold">
                           <td colSpan={5} className="p-2 text-right">Total</td>
-                          <td className="p-2 text-right">{formatCurrency(data.invoice.amount)}</td>
-                          <td className="p-2 text-right">{formatCurrency(data.invoice.gstAmount)}</td>
+                          <td className="p-2 text-right">{formatCurrency(claimedExGst)}</td>
+                          <td className={`p-2 text-right ${invoiceAdjusted ? "text-orange-700" : "text-green-700"}`}>{formatCurrency(approvedExGst)}</td>
+                          <td className="p-2 text-right">
+                            {formatCurrency(claimedGst)}
+                            {invoiceAdjusted && <span className="block text-[10px] text-orange-700">approved {formatCurrency(approvedGst)}</span>}
+                          </td>
                           <td colSpan={2} />
                         </tr>
                       </tfoot>
@@ -703,6 +853,24 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
               </div>
             </div>
           </div>
+        )}
+        {approvingLine && (
+          <ApproveLineDialog
+            line={approvingLine}
+            pending={approveMutation.isPending}
+            onCancel={() => setApprovingLine(null)}
+            onApprove={(payload) => {
+              approveMutation.mutate({
+                lineId: approvingLine.id,
+                action: "approved",
+                approvedAmount: payload.approvedAmount,
+                approvedGstAmount: payload.approvedGstAmount,
+                adjustmentReason: payload.adjustmentReason,
+              }, {
+                onSettled: () => setApprovingLine(null),
+              });
+            }}
+          />
         )}
       </DialogContent>
     </Dialog>

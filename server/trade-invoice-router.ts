@@ -18,7 +18,7 @@ import {
   poMilestones, users, tenantMemberships,
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
-import { triggerPushTradeInvoiceApproved, triggerPushTradeInvoiceRejected } from "./push-triggers";
+import { triggerPushTradeInvoiceAdjusted, triggerPushTradeInvoiceApproved, triggerPushTradeInvoiceRejected } from "./push-triggers";
 import { getValidAccessToken } from "./xero-client";
 import { notifyOwner } from "./_core/notification";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -146,6 +146,92 @@ async function requireInvoicePhotoAccess(db: any, ctx: any, photoId: number) {
   return photo;
 }
 
+function moneyNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyString(value: number): string {
+  return value.toFixed(2);
+}
+
+function hasLineAdjustment(line: any): boolean {
+  return (
+    line.approvedAmount != null &&
+    Math.abs(moneyNumber(line.approvedAmount) - moneyNumber(line.amount)) > 0.005
+  ) || (
+    line.approvedGstAmount != null &&
+    Math.abs(moneyNumber(line.approvedGstAmount) - moneyNumber(line.gstAmount)) > 0.005
+  );
+}
+
+function lineApprovedAmount(line: any): number {
+  return line.approvedAmount != null ? moneyNumber(line.approvedAmount) : moneyNumber(line.amount);
+}
+
+function lineApprovedGstAmount(line: any): number {
+  return line.approvedGstAmount != null ? moneyNumber(line.approvedGstAmount) : moneyNumber(line.gstAmount);
+}
+
+async function finaliseInvoiceIfReady(db: any, ctx: any, invoiceId: number) {
+  const allLines = await db.select()
+    .from(tradeInvoiceLines)
+    .where(eq(tradeInvoiceLines.invoiceId, invoiceId));
+
+  const allApproved = allLines.length > 0 && allLines.every((line: any) => line.approvalStatus === "approved");
+  const anyRejected = allLines.some((line: any) => line.approvalStatus === "rejected");
+
+  if (allApproved) {
+    const claimedAmount = allLines.reduce((sum: number, line: any) => sum + moneyNumber(line.amount), 0);
+    const claimedGstAmount = allLines.reduce((sum: number, line: any) => sum + moneyNumber(line.gstAmount), 0);
+    const approvedAmount = allLines.reduce((sum: number, line: any) => sum + lineApprovedAmount(line), 0);
+    const approvedGstAmount = allLines.reduce((sum: number, line: any) => sum + lineApprovedGstAmount(line), 0);
+    const adjustmentReasons = Array.from(new Set(
+      allLines
+        .map((line: any) => String(line.approvalAdjustmentReason || "").trim())
+        .filter(Boolean)
+    ));
+    const adjustmentReason = adjustmentReasons.join("; ") || null;
+
+    await db.update(tradeInvoices).set({
+      status: "approved",
+      approvedAt: new Date(),
+      approvedAmount: moneyString(approvedAmount),
+      approvedGstAmount: moneyString(approvedGstAmount),
+      approvedTotalWithGst: moneyString(approvedAmount + approvedGstAmount),
+      approvalAdjustmentReason: adjustmentReason,
+    }).where(eq(tradeInvoices.id, invoiceId));
+
+    const [inv] = await db.select({ installerId: tradeInvoices.installerId, invoiceNumber: tradeInvoices.invoiceNumber })
+      .from(tradeInvoices).where(eq(tradeInvoices.id, invoiceId)).limit(1);
+    if (inv) {
+      const adjusted = allLines.some(hasLineAdjustment);
+      if (adjusted) {
+        triggerPushTradeInvoiceAdjusted(
+          inv.installerId,
+          inv.invoiceNumber,
+          moneyString(claimedAmount + claimedGstAmount),
+          moneyString(approvedAmount + approvedGstAmount),
+          adjustmentReason
+        );
+      } else {
+        triggerPushTradeInvoiceApproved(inv.installerId, inv.invoiceNumber);
+      }
+    }
+  } else if (anyRejected) {
+    await db.update(tradeInvoices).set({
+      status: "rejected",
+    }).where(eq(tradeInvoices.id, invoiceId));
+
+    const rejectedReason = allLines.find((line: any) => line.approvalStatus === "rejected")?.rejectionReason;
+    const [inv] = await db.select({ installerId: tradeInvoices.installerId, invoiceNumber: tradeInvoices.invoiceNumber })
+      .from(tradeInvoices).where(eq(tradeInvoices.id, invoiceId)).limit(1);
+    if (inv) triggerPushTradeInvoiceRejected(inv.installerId, inv.invoiceNumber, rejectedReason);
+  }
+
+  return { allApproved, anyRejected };
+}
+
 export const tradeInvoiceRouter = router({
   // ─── List Invoices (Admin) ─────────────────────────────────────────────────
   listInvoices: adminProcedure
@@ -183,6 +269,10 @@ export const tradeInvoiceRouter = router({
         amount: tradeInvoices.amount,
         gstAmount: tradeInvoices.gstAmount,
         totalWithGst: tradeInvoices.totalWithGst,
+        approvedAmount: tradeInvoices.approvedAmount,
+        approvedGstAmount: tradeInvoices.approvedGstAmount,
+        approvedTotalWithGst: tradeInvoices.approvedTotalWithGst,
+        approvalAdjustmentReason: tradeInvoices.approvalAdjustmentReason,
         description: tradeInvoices.description,
         fileUrl: tradeInvoices.fileUrl,
         ocrStatus: tradeInvoices.ocrStatus,
@@ -475,6 +565,9 @@ export const tradeInvoiceRouter = router({
       lineId: z.number(),
       action: z.enum(["approved", "rejected", "returned"]),
       comments: z.string().optional(),
+      approvedAmount: z.string().optional(),
+      approvedGstAmount: z.string().optional(),
+      adjustmentReason: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
@@ -489,12 +582,41 @@ export const tradeInvoiceRouter = router({
         }
       }
 
+      const cleanApprovedAmount = input.action === "approved" && input.approvedAmount?.trim()
+        ? moneyNumber(input.approvedAmount)
+        : null;
+      const cleanApprovedGstAmount = input.action === "approved" && input.approvedGstAmount?.trim()
+        ? moneyNumber(input.approvedGstAmount)
+        : null;
+      if (
+        input.action === "approved" &&
+        (cleanApprovedAmount != null && cleanApprovedAmount < 0 || cleanApprovedGstAmount != null && cleanApprovedGstAmount < 0)
+      ) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Approved amounts cannot be negative" });
+      }
+
+      const amountAdjusted = input.action === "approved" && cleanApprovedAmount != null
+        && Math.abs(cleanApprovedAmount - moneyNumber(line.amount)) > 0.005;
+      const gstAdjusted = input.action === "approved" && cleanApprovedGstAmount != null
+        && Math.abs(cleanApprovedGstAmount - moneyNumber(line.gstAmount)) > 0.005;
+      const adjustmentReason = (input.adjustmentReason || input.comments || "").trim();
+      if ((amountAdjusted || gstAdjusted) && !adjustmentReason) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Reason is required when approving a different amount" });
+      }
+
+      const auditComment = input.action === "approved" && (amountAdjusted || gstAdjusted)
+        ? `Approved at $${moneyString((cleanApprovedAmount ?? moneyNumber(line.amount)) + (cleanApprovedGstAmount ?? moneyNumber(line.gstAmount)))} inc GST. Reason: ${adjustmentReason}`
+        : input.comments || null;
+
       // Update line approval status
       await db.update(tradeInvoiceLines).set({
         approvalStatus: input.action === "returned" ? "pending" : input.action,
         approvedBy: input.action === "approved" ? ctx.user.id : null,
         approvedAt: input.action === "approved" ? new Date() : null,
         rejectionReason: input.action === "rejected" ? input.comments || null : null,
+        approvedAmount: input.action === "approved" ? (cleanApprovedAmount != null ? moneyString(cleanApprovedAmount) : null) : null,
+        approvedGstAmount: input.action === "approved" ? (cleanApprovedGstAmount != null ? moneyString(cleanApprovedGstAmount) : null) : null,
+        approvalAdjustmentReason: input.action === "approved" && (amountAdjusted || gstAdjusted) ? adjustmentReason : null,
       }).where(eq(tradeInvoiceLines.id, input.lineId));
 
       // Create approval audit log
@@ -504,37 +626,10 @@ export const tradeInvoiceRouter = router({
         supervisorId: ctx.user.id,
         supervisorName: ctx.user.name || ctx.user.email,
         action: input.action,
-        comments: input.comments || null,
+        comments: auditComment,
       });
 
-      // Check if all lines are approved → update invoice status
-      const allLines = await db.select()
-        .from(tradeInvoiceLines)
-        .where(eq(tradeInvoiceLines.invoiceId, line.invoiceId));
-
-      const allApproved = allLines.every(l => l.approvalStatus === "approved");
-      const anyRejected = allLines.some(l => l.approvalStatus === "rejected");
-
-      if (allApproved && allLines.length > 0) {
-        await db.update(tradeInvoices).set({
-          status: "approved",
-          approvedAt: new Date(),
-        }).where(eq(tradeInvoices.id, line.invoiceId));
-
-        // Push notification to installer: invoice approved
-        const [inv] = await db.select({ installerId: tradeInvoices.installerId, invoiceNumber: tradeInvoices.invoiceNumber })
-          .from(tradeInvoices).where(eq(tradeInvoices.id, line.invoiceId)).limit(1);
-        if (inv) triggerPushTradeInvoiceApproved(inv.installerId, inv.invoiceNumber);
-      } else if (anyRejected) {
-        await db.update(tradeInvoices).set({
-          status: "rejected",
-        }).where(eq(tradeInvoices.id, line.invoiceId));
-
-        // Push notification to installer: invoice rejected
-        const [inv] = await db.select({ installerId: tradeInvoices.installerId, invoiceNumber: tradeInvoices.invoiceNumber })
-          .from(tradeInvoices).where(eq(tradeInvoices.id, line.invoiceId)).limit(1);
-        if (inv) triggerPushTradeInvoiceRejected(inv.installerId, inv.invoiceNumber, input.comments);
-      }
+      const { allApproved, anyRejected } = await finaliseInvoiceIfReady(db, ctx, line.invoiceId);
 
       return { success: true, allApproved, anyRejected };
     }),
@@ -567,6 +662,9 @@ export const tradeInvoiceRouter = router({
           approvalStatus: "approved",
           approvedBy: ctx.user.id,
           approvedAt: new Date(),
+          approvedAmount: null,
+          approvedGstAmount: null,
+          approvalAdjustmentReason: null,
         }).where(eq(tradeInvoiceLines.id, line.id));
 
         await db.insert(tradeInvoiceApprovals).values({
@@ -579,15 +677,7 @@ export const tradeInvoiceRouter = router({
         });
       }
 
-      await db.update(tradeInvoices).set({
-        status: "approved",
-        approvedAt: new Date(),
-      }).where(eq(tradeInvoices.id, input.invoiceId));
-
-      // Push notification to installer: invoice bulk approved
-      const [inv] = await db.select({ installerId: tradeInvoices.installerId, invoiceNumber: tradeInvoices.invoiceNumber })
-        .from(tradeInvoices).where(eq(tradeInvoices.id, input.invoiceId)).limit(1);
-      if (inv) triggerPushTradeInvoiceApproved(inv.installerId, inv.invoiceNumber);
+      await finaliseInvoiceIfReady(db, ctx, input.invoiceId);
 
       return { success: true, linesApproved: lines.length };
     }),
@@ -626,13 +716,19 @@ export const tradeInvoiceRouter = router({
       const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
       if (!auth) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Xero not connected" });
 
-      const xeroLineItems = lines.map(line => ({
-        Description: line.description,
-        Quantity: parseFloat(line.quantity || "1"),
-        UnitAmount: parseFloat(line.unitPrice || line.amount),
-        AccountCode: "200", // Default cost of sales account
-        TaxType: "INPUT", // GST on purchases
-      }));
+      const xeroLineItems = lines.map(line => {
+        const quantity = moneyNumber(line.quantity || "1") || 1;
+        const approvedLineAmount = lineApprovedAmount(line);
+        return {
+          Description: line.approvalAdjustmentReason
+            ? `${line.description}\nApproved adjustment: ${line.approvalAdjustmentReason}`
+            : line.description,
+          Quantity: quantity,
+          UnitAmount: approvedLineAmount / quantity,
+          AccountCode: "200", // Default cost of sales account
+          TaxType: "INPUT", // GST on purchases
+        };
+      });
 
       const billPayload = {
         Type: "ACCPAY",

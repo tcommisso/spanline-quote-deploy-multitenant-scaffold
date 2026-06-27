@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import {
   FileUp, Plus, Loader2, Eye, FileText, DollarSign, CheckCircle,
   Clock, AlertCircle, Brain, ChevronRight, Upload, XCircle,
-  Camera, Image, X,
+  Camera, Image, X, Trash2,
 } from "lucide-react";
 
 const statusColors: Record<string, string> = {
@@ -37,10 +37,44 @@ const statusIcons: Record<string, React.ReactNode> = {
 
 type SubmitStep = "upload" | "ai_review" | "confirm";
 
+type ClaimItem = {
+  id: string;
+  jobId: string;
+  workOrderId: string;
+  milestoneId: string;
+  subcontractKey: string;
+  description: string;
+  amount: string;
+  gstAmount: string;
+};
+
+function createClaimItem(): ClaimItem {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    jobId: "",
+    workOrderId: "",
+    milestoneId: "",
+    subcontractKey: "",
+    description: "",
+    amount: "",
+    gstAmount: "",
+  };
+}
+
+function amountNumber(value: string | number | null | undefined): number {
+  const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyString(value: number): string {
+  return value.toFixed(2);
+}
+
 export default function TradePortalInvoices() {
   const { data: invoices, isLoading, refetch } = trpc.tradePortal.getInvoices.useQuery();
   const { data: jobs } = trpc.tradePortal.getActiveJobs.useQuery();
   const { data: workOrders } = trpc.tradePortal.getWorkOrders.useQuery();
+  const { data: claimOptions } = trpc.tradePortal.getInvoiceClaimOptions.useQuery();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [step, setStep] = useState<SubmitStep>("upload");
@@ -49,29 +83,13 @@ export default function TradePortalInvoices() {
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [amount, setAmount] = useState("");
   const [gstAmount, setGstAmount] = useState("");
-  const [jobId, setJobId] = useState("");
-  const [workOrderId, setWorkOrderId] = useState("");
-  const [milestoneId, setMilestoneId] = useState("");
-  const [subcontractId, setSubcontractId] = useState("");
-  const [subcontractMilestoneIndex, setSubcontractMilestoneIndex] = useState("");
   const [description, setDescription] = useState("");
+  const [claimItems, setClaimItems] = useState<ClaimItem[]>([createClaimItem()]);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [aiData, setAiData] = useState<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  // Fetch milestones for selected work order
-  const { data: milestones } = trpc.tradePortal.getWorkOrderMilestones.useQuery(
-    { workOrderId: parseInt(workOrderId) },
-    { enabled: !!workOrderId }
-  );
-
-  // Fetch subcontract milestones for selected job
-  const { data: subcontractMilestones } = trpc.tradePortal.getJobSubcontractMilestones.useQuery(
-    { jobId: parseInt(jobId) },
-    { enabled: !!jobId }
-  );
 
   const submitMutation = trpc.tradePortal.submitInvoiceWithMilestone.useMutation({
     onSuccess: () => {
@@ -108,12 +126,8 @@ export default function TradePortalInvoices() {
     setInvoiceNumber("");
     setAmount("");
     setGstAmount("");
-    setJobId("");
-    setWorkOrderId("");
-    setMilestoneId("");
-    setSubcontractId("");
-    setSubcontractMilestoneIndex("");
     setDescription("");
+    setClaimItems([createClaimItem()]);
     setFile(null);
     setAiData(null);
     setExtracting(false);
@@ -124,18 +138,19 @@ export default function TradePortalInvoices() {
       toast.error("Please attach an invoice file");
       return;
     }
-    if (!jobId) {
-      toast.error("Please select a job");
-      return;
-    }
 
     // Move to confirm step (AI extraction happens server-side after submission)
     setStep("confirm");
   }
 
   async function handleSubmit() {
-    if (!invoiceNumber || !amount || !jobId) {
+    const validItems = claimItems.filter((item) => item.jobId && amountNumber(item.amount) > 0);
+    if (!invoiceNumber || validItems.length === 0) {
       toast.error("Please fill in all required fields");
+      return;
+    }
+    if (validItems.length !== claimItems.length) {
+      toast.error("Each claim item needs a job and claimed amount");
       return;
     }
 
@@ -144,6 +159,9 @@ export default function TradePortalInvoices() {
       return;
     }
 
+    const subtotal = validItems.reduce((sum, item) => sum + amountNumber(item.amount), 0);
+    const gstTotal = validItems.reduce((sum, item) => sum + amountNumber(item.gstAmount), 0);
+
     setUploading(true);
     try {
       const reader = new FileReader();
@@ -151,14 +169,22 @@ export default function TradePortalInvoices() {
         const base64 = (reader.result as string).split(",")[1];
         submitMutation.mutate({
           invoiceNumber,
-          amount,
-          gstAmount: gstAmount || undefined,
-          jobId: parseInt(jobId),
-          workOrderId: workOrderId ? parseInt(workOrderId) : undefined,
-          milestoneId: milestoneId ? parseInt(milestoneId) : undefined,
-          subcontractId: subcontractId ? parseInt(subcontractId) : undefined,
-          subcontractMilestoneIndex: subcontractMilestoneIndex !== "" ? parseInt(subcontractMilestoneIndex) : undefined,
+          amount: moneyString(subtotal),
+          gstAmount: moneyString(gstTotal),
           description: description || undefined,
+          items: validItems.map((item) => {
+            const [subcontractId, subcontractMilestoneIndex] = item.subcontractKey ? item.subcontractKey.split(":") : [];
+            return {
+              description: item.description || undefined,
+              amount: moneyString(amountNumber(item.amount)),
+              gstAmount: moneyString(amountNumber(item.gstAmount)),
+              jobId: parseInt(item.jobId),
+              workOrderId: item.workOrderId ? parseInt(item.workOrderId) : undefined,
+              milestoneId: item.milestoneId ? parseInt(item.milestoneId) : undefined,
+              subcontractId: subcontractId ? parseInt(subcontractId) : undefined,
+              subcontractMilestoneIndex: subcontractMilestoneIndex !== undefined ? parseInt(subcontractMilestoneIndex) : undefined,
+            };
+          }),
           fileBase64: base64,
           fileName: file.name,
           fileMimeType: file.type || "application/octet-stream",
@@ -171,6 +197,9 @@ export default function TradePortalInvoices() {
       setUploading(false);
     }
   }
+
+  const claimSubtotal = claimItems.reduce((sum, item) => sum + amountNumber(item.amount), 0);
+  const claimGstTotal = claimItems.reduce((sum, item) => sum + amountNumber(item.gstAmount), 0);
 
   if (isLoading) {
     return (
@@ -297,7 +326,7 @@ export default function TradePortalInvoices() {
 
       {/* Submit Invoice Dialog - Multi-step */}
       <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) resetForm(); else setDialogOpen(true); }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-[94vw] max-w-[94vw] lg:max-w-5xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileUp className="w-5 h-5 text-primary" />
@@ -327,98 +356,6 @@ export default function TradePortalInvoices() {
 
           {step === "upload" && (
             <div className="space-y-4">
-              <div>
-                <Label>Job *</Label>
-                <Select value={jobId} onValueChange={(v) => { setJobId(v); setWorkOrderId(""); setMilestoneId(""); }}>
-                  <SelectTrigger><SelectValue placeholder="Select a job" /></SelectTrigger>
-                  <SelectContent>
-                    {jobs?.map((job: any) => (
-                      <SelectItem key={job.jobId} value={job.jobId.toString()}>
-                        {job.quoteNumber} — {job.clientName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {jobId && workOrders && workOrders.filter((wo: any) => wo.jobId === parseInt(jobId)).length > 0 && (
-                <div>
-                  <Label>Work Order (optional)</Label>
-                  <Select value={workOrderId} onValueChange={(v) => { setWorkOrderId(v); setMilestoneId(""); }}>
-                    <SelectTrigger><SelectValue placeholder="Link to a work order" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No work order</SelectItem>
-                      {workOrders.filter((wo: any) => wo.jobId === parseInt(jobId)).map((wo: any) => (
-                        <SelectItem key={wo.id} value={wo.id.toString()}>
-                          {wo.orderNumber || `WO-${wo.id}`} — {wo.tradeType}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {workOrderId && workOrderId !== "none" && milestones && milestones.length > 0 && (
-                <div>
-                  <Label>Claim Against PO Milestone (optional)</Label>
-                  <Select value={milestoneId} onValueChange={setMilestoneId}>
-                    <SelectTrigger><SelectValue placeholder="Select milestone to claim" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No specific milestone</SelectItem>
-                      {milestones.filter((m: any) => m.status === "pending").map((m: any) => (
-                        <SelectItem key={m.id} value={m.id.toString()}>
-                          {m.stage} — ${parseFloat(m.amount).toLocaleString()} ({m.percentage}%)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {milestones.some((m: any) => m.status !== "pending") && (
-                    <p className="text-[11px] text-muted-foreground mt-1">
-                      {milestones.filter((m: any) => m.status !== "pending").length} milestone(s) already claimed
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Subcontract Milestone Selection */}
-              {jobId && subcontractMilestones && subcontractMilestones.length > 0 && (
-                <div>
-                  <Label>Claim Against Subcontract Milestone (optional)</Label>
-                  <Select
-                    value={subcontractId ? `${subcontractId}-${subcontractMilestoneIndex}` : ""}
-                    onValueChange={(v) => {
-                      if (v === "none" || !v) {
-                        setSubcontractId("");
-                        setSubcontractMilestoneIndex("");
-                      } else {
-                        const [scId, idx] = v.split("-");
-                        setSubcontractId(scId);
-                        setSubcontractMilestoneIndex(idx);
-                      }
-                    }}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Select subcontract milestone" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No subcontract milestone</SelectItem>
-                      {subcontractMilestones.map((sc: any) =>
-                        sc.milestones
-                          .filter((m: any) => !m.claimed)
-                          .map((m: any) => (
-                            <SelectItem key={`${sc.id}-${m.index}`} value={`${sc.id}-${m.index}`}>
-                              {sc.subcontractorName} — {m.label} (${m.amountDollars?.toLocaleString() || "TBD"})
-                            </SelectItem>
-                          ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                  {subcontractMilestones.some((sc: any) => sc.milestones.some((m: any) => m.claimed)) && (
-                    <p className="text-[11px] text-muted-foreground mt-1">
-                      {subcontractMilestones.reduce((count: number, sc: any) => count + sc.milestones.filter((m: any) => m.claimed).length, 0)} milestone(s) already claimed
-                    </p>
-                  )}
-                </div>
-              )}
-
               <div>
                 <Label>Attach Invoice (PDF/Image) *</Label>
                 <div className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-6 text-center hover:border-primary transition-colors">
@@ -452,7 +389,7 @@ export default function TradePortalInvoices() {
 
               <DialogFooter className="gap-2">
                 <Button variant="outline" onClick={resetForm}>Cancel</Button>
-                <Button onClick={handleFileUpload} disabled={!file || !jobId} className="bg-primary hover:bg-primary/90 text-primary-foreground">
+                <Button onClick={handleFileUpload} disabled={!file} className="bg-primary hover:bg-primary/90 text-primary-foreground">
                   <ChevronRight className="w-4 h-4 mr-1" /> Continue
                 </Button>
               </DialogFooter>
@@ -551,26 +488,33 @@ export default function TradePortalInvoices() {
                   <Input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="e.g., INV-001" />
                 </div>
                 <div>
-                  <Label>Amount (ex GST) *</Label>
-                  <div className="relative">
-                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="pl-9" />
-                  </div>
-                </div>
-                <div>
-                  <Label>GST</Label>
-                  <div className="relative">
-                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                    <Input type="number" step="0.01" value={gstAmount} onChange={(e) => setGstAmount(e.target.value)} placeholder="0.00" className="pl-9" />
-                  </div>
-                </div>
-                <div>
-                  <Label>Total (inc GST)</Label>
+                  <Label>Claim total (inc GST)</Label>
                   <Input
-                    value={`$${(parseFloat(amount || "0") + parseFloat(gstAmount || "0")).toFixed(2)}`}
+                    value={`$${(claimSubtotal + claimGstTotal).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     disabled
                     className="bg-muted"
                   />
+                </div>
+              </div>
+
+              <ClaimItemsEditor
+                items={claimItems}
+                options={claimOptions}
+                onChange={setClaimItems}
+              />
+
+              <div className="grid grid-cols-3 gap-2 rounded-lg bg-muted/50 p-3 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">Claimed ex GST</p>
+                  <p className="font-semibold">${claimSubtotal.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">GST</p>
+                  <p className="font-semibold">${claimGstTotal.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="font-bold">${(claimSubtotal + claimGstTotal).toLocaleString("en-AU", { minimumFractionDigits: 2 })}</p>
                 </div>
               </div>
 
@@ -590,7 +534,7 @@ export default function TradePortalInvoices() {
                 <Button variant="outline" onClick={() => setStep(aiData ? "ai_review" : "upload")}>Back</Button>
                 <Button
                   onClick={handleSubmit}
-                  disabled={uploading || submitMutation.isPending || !invoiceNumber || !amount}
+                  disabled={uploading || submitMutation.isPending || !invoiceNumber || claimSubtotal <= 0}
                   className="bg-primary hover:bg-primary/90 text-primary-foreground"
                 >
                   {uploading || submitMutation.isPending ? (
@@ -604,6 +548,229 @@ export default function TradePortalInvoices() {
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function ClaimItemsEditor({
+  items,
+  options,
+  onChange,
+}: {
+  items: ClaimItem[];
+  options: any;
+  onChange: (items: ClaimItem[]) => void;
+}) {
+  const jobs = options?.jobs || [];
+  const workOrders = options?.workOrders || [];
+  const poMilestones = options?.poMilestones || [];
+  const subcontractMilestones = options?.subcontractMilestones || [];
+
+  const updateItem = (id: string, updates: Partial<ClaimItem>) => {
+    onChange(items.map((item) => item.id === id ? { ...item, ...updates } : item));
+  };
+
+  const removeItem = (id: string) => {
+    if (items.length === 1) return;
+    onChange(items.filter((item) => item.id !== id));
+  };
+
+  const addItem = () => onChange([...items, createClaimItem()]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <Label>Invoice Claim Items *</Label>
+        <Button type="button" variant="outline" size="sm" onClick={addItem}>
+          <Plus className="w-4 h-4 mr-1" /> Add Item
+        </Button>
+      </div>
+
+      <div className="space-y-3">
+        {items.map((item, index) => {
+          const jobId = item.jobId ? parseInt(item.jobId) : null;
+          const workOrderOptions = jobId ? workOrders.filter((wo: any) => wo.jobId === jobId) : [];
+          const milestoneOptions = item.workOrderId
+            ? poMilestones.filter((milestone: any) => milestone.workOrderId === parseInt(item.workOrderId) && milestone.status === "pending")
+            : [];
+          const subcontractOptions = jobId
+            ? subcontractMilestones.filter((milestone: any) => milestone.jobId === jobId && !milestone.claimed)
+            : [];
+
+          return (
+            <div key={item.id} className="rounded-lg border p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Item {index + 1}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-destructive"
+                  disabled={items.length === 1}
+                  onClick={() => removeItem(item.id)}
+                >
+                  <Trash2 className="w-4 h-4 mr-1" /> Remove
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Job *</Label>
+                  <Select
+                    value={item.jobId}
+                    onValueChange={(value) => updateItem(item.id, {
+                      jobId: value,
+                      workOrderId: "",
+                      milestoneId: "",
+                      subcontractKey: "",
+                    })}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select a job" /></SelectTrigger>
+                    <SelectContent>
+                      {jobs.map((job: any) => (
+                        <SelectItem key={job.jobId} value={job.jobId.toString()}>
+                          {job.quoteNumber} — {job.clientName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs">Work Order</Label>
+                  <Select
+                    value={item.workOrderId || "none"}
+                    disabled={!item.jobId || workOrderOptions.length === 0}
+                    onValueChange={(value) => updateItem(item.id, {
+                      workOrderId: value === "none" ? "" : value,
+                      milestoneId: "",
+                    })}
+                  >
+                    <SelectTrigger><SelectValue placeholder="No work order" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No work order</SelectItem>
+                      {workOrderOptions.map((wo: any) => (
+                        <SelectItem key={wo.id} value={wo.id.toString()}>
+                          {wo.orderNumber || `WO-${wo.id}`} — {wo.tradeType || "work order"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs">PO Milestone</Label>
+                  <Select
+                    value={item.milestoneId || "none"}
+                    disabled={!item.workOrderId || milestoneOptions.length === 0}
+                    onValueChange={(value) => {
+                      if (value === "none") {
+                        updateItem(item.id, { milestoneId: "" });
+                        return;
+                      }
+                      const milestone = poMilestones.find((candidate: any) => candidate.id === parseInt(value));
+                      updateItem(item.id, {
+                        milestoneId: value,
+                        amount: item.amount || moneyString(amountNumber(milestone?.amount)),
+                        gstAmount: item.gstAmount || moneyString(amountNumber(milestone?.amount) * 0.1),
+                        description: item.description || milestone?.stage || "",
+                      });
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="No PO milestone" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No PO milestone</SelectItem>
+                      {milestoneOptions.map((milestone: any) => (
+                        <SelectItem key={milestone.id} value={milestone.id.toString()}>
+                          {milestone.stage} — ${amountNumber(milestone.amount).toLocaleString("en-AU")}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs">Subcontract Milestone</Label>
+                  <Select
+                    value={item.subcontractKey || "none"}
+                    disabled={!item.jobId || subcontractOptions.length === 0}
+                    onValueChange={(value) => {
+                      if (value === "none") {
+                        updateItem(item.id, { subcontractKey: "" });
+                        return;
+                      }
+                      const milestone = subcontractMilestones.find((candidate: any) =>
+                        `${candidate.subcontractId}:${candidate.subcontractMilestoneIndex}` === value
+                      );
+                      const milestoneAmount = amountNumber(milestone?.amountDollars);
+                      updateItem(item.id, {
+                        subcontractKey: value,
+                        amount: item.amount || (milestoneAmount > 0 ? moneyString(milestoneAmount) : item.amount),
+                        gstAmount: item.gstAmount || (milestoneAmount > 0 ? moneyString(milestoneAmount * 0.1) : item.gstAmount),
+                        description: item.description || milestone?.label || "",
+                      });
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="No subcontract milestone" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No subcontract milestone</SelectItem>
+                      {subcontractOptions.map((milestone: any) => (
+                        <SelectItem
+                          key={`${milestone.subcontractId}:${milestone.subcontractMilestoneIndex}`}
+                          value={`${milestone.subcontractId}:${milestone.subcontractMilestoneIndex}`}
+                        >
+                          {milestone.subcontractorName} — {milestone.label} ({milestone.amountDollars ? `$${amountNumber(milestone.amountDollars).toLocaleString("en-AU")}` : "TBD"})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_140px] gap-3">
+                <div>
+                  <Label className="text-xs">Description</Label>
+                  <Input
+                    value={item.description}
+                    onChange={(event) => updateItem(item.id, { description: event.target.value })}
+                    placeholder="Work completed or claim note"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Amount ex GST *</Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={item.amount}
+                      onChange={(event) => updateItem(item.id, { amount: event.target.value })}
+                      className="pl-9"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">GST</Label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={item.gstAmount}
+                      onChange={(event) => updateItem(item.id, { gstAmount: event.target.value })}
+                      className="pl-9"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
