@@ -344,21 +344,27 @@ export async function createWindowDoorOptionModifier(data: {
   sortOrder?: number;
   active?: boolean;
 }, tenantId?: number | null) {
-  const [result] = await db.insert(windowDoorOptionModifiers).values({
-    tenantId,
-    productType: data.productType,
-    optionGroup: data.optionGroup,
-    optionValue: data.optionValue,
-    adjustmentType: data.adjustmentType,
-    costAdjustmentValue: String(data.costAdjustmentValue ?? "0"),
-    sellAdjustmentValue: String(data.sellAdjustmentValue ?? "0"),
-    appliesTo: data.appliesTo?.trim() || "base_line",
-    label: data.label ?? null,
-    notes: data.notes ?? null,
-    sortOrder: data.sortOrder ?? 0,
-    active: data.active ?? true,
-  } as any);
-  return result.insertId;
+  const [result] = await pool.execute(
+    `INSERT INTO window_door_option_modifiers
+      (tenantId, productType, optionGroup, optionValue, adjustmentType, costAdjustmentValue,
+       sellAdjustmentValue, appliesTo, label, notes, sortOrder, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      tenantId ?? null,
+      data.productType,
+      data.optionGroup,
+      data.optionValue,
+      data.adjustmentType,
+      String(data.costAdjustmentValue ?? "0"),
+      String(data.sellAdjustmentValue ?? "0"),
+      data.appliesTo?.trim() || "base_line",
+      data.label ?? null,
+      data.notes ?? null,
+      data.sortOrder ?? 0,
+      data.active ?? true,
+    ]
+  );
+  return (result as any).insertId;
 }
 
 export async function updateWindowDoorOptionModifier(id: number, data: Partial<{
