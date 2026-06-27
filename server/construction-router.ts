@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb, createSmsDeliveryLog, getSmsDeliveryLogsByJob } from "./db";
-import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, quotes, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, quotes, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { eq, desc, and, sql, gte, lt, notInArray, or, isNull, like, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
@@ -62,6 +62,16 @@ function jobScope(ctx: any, jobId?: number) {
   if (jobId != null) conditions.push(eq(constructionJobs.id, jobId));
   appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+async function createTradePortalNotificationMessage(db: any, installerId: number, content: string, senderName?: string | null) {
+  await db.insert(tradeMessages).values({
+    installerId,
+    jobId: null,
+    content,
+    direction: "outbound",
+    senderName: senderName || "Office",
+  });
 }
 
 function installerScope(ctx: any, installerId?: number) {
@@ -1398,6 +1408,7 @@ export const constructionRouter = router({
               status: "sent",
               sentBy: ctx.user.id,
             });
+            await createTradePortalNotificationMessage(db, installer.id, input.message, ctx.user.name);
             results.push({ id: installer.id, name: installer.name, success: true });
           } catch (err: any) {
             results.push({ id: installer.id, name: installer.name, success: false, error: err.message });
@@ -1444,6 +1455,9 @@ export const constructionRouter = router({
               subject: input.subject,
               htmlBody,
             });
+            if (result.success) {
+              await createTradePortalNotificationMessage(db, installer.id, input.message, ctx.user.name);
+            }
             results.push({ id: installer.id, name: installer.name, success: result.success, error: result.error });
           } catch (err: any) {
             results.push({ id: installer.id, name: installer.name, success: false, error: err.message });

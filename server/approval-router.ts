@@ -99,6 +99,44 @@ async function createOrUpdateInspectionScheduleEvent(input: {
   await db.insert(constructionScheduleEvents).values(values);
 }
 
+async function cancelInspectionScheduleEvent(input: {
+  tenantId: number;
+  projectId: number;
+  inspectionId: number;
+}) {
+  const db = await getDb();
+  if (!db) return;
+
+  const [project] = await db.select({ crmJobId: approvalProjects.crmJobId, crmLeadId: approvalProjects.crmLeadId })
+    .from(approvalProjects)
+    .where(and(eq(approvalProjects.id, input.projectId), eq(approvalProjects.tenantId, input.tenantId)));
+
+  let jobId: number | null = null;
+  if (project?.crmJobId) {
+    const [job] = await db.select({ id: constructionJobs.id })
+      .from(constructionJobs)
+      .where(and(eq(constructionJobs.id, project.crmJobId), eq(constructionJobs.tenantId, input.tenantId)));
+    if (job) jobId = job.id;
+  } else if (project?.crmLeadId) {
+    const [job] = await db.select({ id: constructionJobs.id })
+      .from(constructionJobs)
+      .where(and(eq(constructionJobs.leadId, project.crmLeadId), eq(constructionJobs.tenantId, input.tenantId)));
+    if (job) jobId = job.id;
+  }
+
+  if (!jobId) return;
+
+  const marker = `[approval-inspection:${input.inspectionId}]`;
+  await db.update(constructionScheduleEvents)
+    .set({ status: "cancelled" })
+    .where(and(
+      eq(constructionScheduleEvents.tenantId, input.tenantId),
+      eq(constructionScheduleEvents.jobId, jobId),
+      eq(constructionScheduleEvents.eventType, "inspection"),
+      sql`${constructionScheduleEvents.description} LIKE ${`%${marker}%`}`
+    ));
+}
+
 function parseInspectionScheduleDate(date?: string | Date | null, time?: string | null) {
   if (!date) return undefined;
   if (date instanceof Date) return date;
@@ -1208,6 +1246,17 @@ export const approvalRouter = router({
           if (data.scheduledDate && !("status" in data)) data.status = "scheduled";
         }
         await approvalDb.updateInspection(input.id, data as any, ctx.tenant!.id);
+        if (data.status === "cancelled") {
+          try {
+            await cancelInspectionScheduleEvent({
+              tenantId: ctx.tenant!.id,
+              projectId: input.projectId,
+              inspectionId: input.id,
+            });
+          } catch (e) {
+            console.error("[Approvals] Failed to cancel archived inspection calendar event:", e);
+          }
+        }
         if (data.scheduledDate) {
           try {
             const db = await getDb();
@@ -1243,6 +1292,16 @@ export const approvalRouter = router({
             entityType: "inspection",
             entityId: input.id,
             summary: `Inspection result: ${input.data.result}`,
+            userId: ctx.user.id,
+            userName: ctx.user.name || "Unknown",
+          }, ctx.tenant!.id);
+        } else if (data.status === "cancelled") {
+          await approvalDb.createAuditEntry({
+            projectId: input.projectId,
+            eventType: "inspection_archived",
+            entityType: "inspection",
+            entityId: input.id,
+            summary: "Inspection archived",
             userId: ctx.user.id,
             userName: ctx.user.name || "Unknown",
           }, ctx.tenant!.id);

@@ -33,7 +33,7 @@ const TRIGGER_TYPE_OPTIONS = [
 const CHANNEL_OPTIONS = [
   { value: "sms", label: "SMS" },
   { value: "email", label: "Email" },
-  { value: "both", label: "Both" },
+  { value: "both", label: "SMS + Email" },
 ] as const;
 
 export default function TradeNotificationRulesManager() {
@@ -124,7 +124,7 @@ export default function TradeNotificationRulesManager() {
                 <BellRing className="h-4 w-4" /> Trade Notification Rules
               </CardTitle>
               <p className="text-xs text-muted-foreground mt-1">
-                Configure automated SMS/email notifications sent to trades based on schedule events.
+                Configure automated SMS/email notifications sent to trades based on schedule events. SMS/email sends are also mirrored into the trade portal notification feed.
               </p>
             </div>
             <Button size="sm" className="w-full sm:w-auto" onClick={() => setDialogOpen(true)}>

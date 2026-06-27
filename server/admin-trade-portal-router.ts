@@ -51,6 +51,10 @@ function portalNewsTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function stripHtml(value: string) {
+  return value.replace(/<[^>]*>/g, "").trim();
+}
+
 /** Parse Xero .NET date format /Date(ms+tz)/ to ISO string */
 function parseXeroDate(d: any): string | null {
   if (!d) return null;
@@ -526,11 +530,12 @@ export const adminTradePortalRouter = router({
       for (const installerId of targetIds) {
         const inst = installerMap[installerId];
 
-        // Always create portal message
-        if (input.channels.includes("portal")) {
+        // SMS/email announcements are mirrored into the trade portal notification feed
+        // so trades have a durable in-app copy even when the delivery channel is external.
+        if (input.channels.includes("portal") || input.channels.includes("sms") || input.channels.includes("email")) {
           await db.insert(tradeMessages).values({
             installerId,
-            content: input.content,
+            content: stripHtml(input.content),
             direction: "outbound",
             senderName: ctx.user!.name || "Office",
           });

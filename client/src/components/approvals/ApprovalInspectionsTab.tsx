@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Calendar, ShieldCheck, AlertTriangle, CheckCircle2, XCircle, Bug } from "lucide-react";
+import { Plus, Calendar, ShieldCheck, AlertTriangle, CheckCircle2, XCircle, Bug, Archive } from "lucide-react";
 import { toast } from "sonner";
 
 interface Props {
@@ -141,6 +141,17 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
       title: defectForm.title,
       description: defectForm.description || undefined,
       severity: defectForm.severity as any,
+    });
+  };
+
+  const handleArchiveInspection = (inspection: any) => {
+    if (!window.confirm(`Archive "${inspection.title}"? It will be removed from readiness counts and any linked calendar event will be cancelled.`)) {
+      return;
+    }
+    updateInspection.mutate({
+      id: inspection.id,
+      projectId,
+      data: { status: "cancelled" },
     });
   };
 
@@ -290,30 +301,42 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
                   </div>
                 </div>
 
-                {/* Actions for pending inspections */}
-                {!["passed", "cancelled"].includes(insp.status) && (
-                  <div className="flex gap-2 mt-3 pt-3 border-t">
+                {/* Actions */}
+                {insp.status !== "cancelled" && (
+                  <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
+                    {!["passed", "cancelled"].includes(insp.status) && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openScheduleForm(insp)}
+                        >
+                          <Calendar className="h-3.5 w-3.5 mr-1" />
+                          {insp.scheduledDate ? "Reschedule" : "Schedule"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setRecordingResult(recordingResult === insp.id ? null : insp.id)}
+                        >
+                          Record Result
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setAddingDefect(addingDefect === insp.id ? null : insp.id)}
+                        >
+                          <Bug className="h-3.5 w-3.5 mr-1" /> Add Defect
+                        </Button>
+                      </>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => openScheduleForm(insp)}
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => handleArchiveInspection(insp)}
                     >
-                      <Calendar className="h-3.5 w-3.5 mr-1" />
-                      {insp.scheduledDate ? "Reschedule" : "Schedule"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setRecordingResult(recordingResult === insp.id ? null : insp.id)}
-                    >
-                      Record Result
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setAddingDefect(addingDefect === insp.id ? null : insp.id)}
-                    >
-                      <Bug className="h-3.5 w-3.5 mr-1" /> Add Defect
+                      <Archive className="h-3.5 w-3.5 mr-1" /> Archive
                     </Button>
                   </div>
                 )}

@@ -799,6 +799,9 @@ function MessagesTab() {
                       <Mail className="w-4 h-4" /> Email
                     </label>
                   </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    SMS and email announcements are also posted to the trade portal notification feed.
+                  </p>
                 </div>
 
                 {channels.includes("email") && (

@@ -9,13 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
   CalendarDays, Plus, ChevronLeft, ChevronRight, Clock, Wrench,
   ClipboardCheck, Truck, Users, Bell, BellOff, Trash2, Package,
-  UserCircle, AlertTriangle, HelpCircle, CloudRain,
+  UserCircle, AlertTriangle, HelpCircle, CloudRain, ChevronsUpDown, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -44,6 +46,116 @@ const RESOURCE_TABS: { value: ResourceView; label: string; icon: any }[] = [
   { value: "unallocated", label: "Unalloc", icon: HelpCircle },
   { value: "equipment", label: "Equip", icon: Package },
 ];
+
+function normaliseSearchText(value: unknown) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function matchesAllSearchWords(value: string, search: string) {
+  const haystack = normaliseSearchText(value);
+  const terms = normaliseSearchText(search).split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  return terms.every(term => haystack.includes(term));
+}
+
+function jobSearchText(job: any) {
+  return [
+    job.id,
+    job.clientName,
+    job.quoteNumber,
+    job.accountNumber,
+    job.clientEmail,
+    job.clientPhone,
+    job.siteAddress,
+  ].filter(Boolean).join(" ");
+}
+
+function jobDisplayLabel(job: any) {
+  if (!job) return "Select job...";
+  return `${job.clientName || "Unnamed client"}${job.quoteNumber ? ` (#${job.quoteNumber})` : ""}`;
+}
+
+function JobCombobox({
+  jobs,
+  value,
+  onChange,
+  placeholder = "Select job...",
+  allowEmpty = false,
+}: {
+  jobs: any[];
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  allowEmpty?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedJob = jobs.find((job: any) => String(job.id) === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+        >
+          <span className={`truncate ${selectedJob ? "" : "text-muted-foreground"}`}>
+            {selectedJob ? jobDisplayLabel(selectedJob) : placeholder}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command filter={(candidate, search) => matchesAllSearchWords(candidate, search) ? 1 : 0}>
+          <CommandInput placeholder="Search client, job number, address..." />
+          <CommandList>
+            <CommandEmpty>No matching jobs found.</CommandEmpty>
+            <CommandGroup>
+              {allowEmpty && (
+                <CommandItem
+                  value="none no job unlinked"
+                  onSelect={() => {
+                    onChange("");
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={`mr-2 h-4 w-4 ${value ? "opacity-0" : "opacity-100"}`} />
+                  <span>No Job</span>
+                </CommandItem>
+              )}
+              {jobs.map((job: any) => {
+                const jobValue = String(job.id);
+                return (
+                  <CommandItem
+                    key={job.id}
+                    value={`${jobValue} ${jobSearchText(job)}`}
+                    onSelect={() => {
+                      onChange(jobValue);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check className={`mr-2 h-4 w-4 ${jobValue === value ? "opacity-100" : "opacity-0"}`} />
+                    <div className="min-w-0">
+                      <p className="truncate">{jobDisplayLabel(job)}</p>
+                      {job.siteAddress && (
+                        <p className="truncate text-xs text-muted-foreground">{job.siteAddress}</p>
+                      )}
+                    </div>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export default function ConstructionSchedule() {
   const isMobile = useIsMobile();
@@ -806,16 +918,11 @@ function EventForm({
     <div className="space-y-4">
       <div>
         <Label>Job *</Label>
-        <Select value={form.jobId} onValueChange={(v) => setForm({ ...form, jobId: v })}>
-          <SelectTrigger><SelectValue placeholder="Select job..." /></SelectTrigger>
-          <SelectContent>
-            {jobs.map((j: any) => (
-              <SelectItem key={j.id} value={String(j.id)}>
-                {j.clientName} {j.quoteNumber ? `(#${j.quoteNumber})` : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <JobCombobox
+          jobs={jobs}
+          value={form.jobId}
+          onChange={(jobId) => setForm({ ...form, jobId })}
+        />
       </div>
       <div>
         <Label>Title *</Label>
@@ -944,17 +1051,13 @@ function EquipmentBookingForm({
       </div>
       <div>
         <Label>Job (optional)</Label>
-        <Select value={form.jobId || "none"} onValueChange={(v) => setForm({ ...form, jobId: v === "none" ? "" : v })}>
-          <SelectTrigger><SelectValue placeholder="Link to job..." /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">No Job</SelectItem>
-            {jobs.map((j: any) => (
-              <SelectItem key={j.id} value={String(j.id)}>
-                {j.clientName} {j.quoteNumber ? `(#${j.quoteNumber})` : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <JobCombobox
+          jobs={jobs}
+          value={form.jobId}
+          onChange={(jobId) => setForm({ ...form, jobId })}
+          placeholder="Link to job..."
+          allowEmpty
+        />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
