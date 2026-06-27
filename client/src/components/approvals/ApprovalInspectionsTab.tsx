@@ -31,7 +31,9 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function ApprovalInspectionsTab({ projectId }: Props) {
   const [showNew, setShowNew] = useState(false);
-  const [newForm, setNewForm] = useState({ inspectionType: "", title: "", scheduledDate: "", inspectorName: "" });
+  const [newForm, setNewForm] = useState({ inspectionType: "", title: "", description: "" });
+  const [schedulingInspection, setSchedulingInspection] = useState<number | null>(null);
+  const [scheduleForm, setScheduleForm] = useState({ scheduledDate: "", scheduledTime: "", inspectorName: "" });
   const [recordingResult, setRecordingResult] = useState<number | null>(null);
   const [resultForm, setResultForm] = useState({ result: "", notes: "" });
   const [addingDefect, setAddingDefect] = useState<number | null>(null);
@@ -42,9 +44,9 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
 
   const createInspection = trpc.approvals.inspections.create.useMutation({
     onSuccess: () => {
-      toast.success("Inspection scheduled");
+      toast.success("Required inspection added");
       setShowNew(false);
-      setNewForm({ inspectionType: "", title: "", scheduledDate: "", inspectorName: "" });
+      setNewForm({ inspectionType: "", title: "", description: "" });
       utils.approvals.inspections.list.invalidate({ projectId });
     },
     onError: (err) => toast.error(err.message),
@@ -53,6 +55,8 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
   const updateInspection = trpc.approvals.inspections.update.useMutation({
     onSuccess: () => {
       toast.success("Inspection updated");
+      setSchedulingInspection(null);
+      setScheduleForm({ scheduledDate: "", scheduledTime: "", inspectorName: "" });
       setRecordingResult(null);
       setResultForm({ result: "", notes: "" });
       utils.approvals.inspections.list.invalidate({ projectId });
@@ -79,8 +83,33 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
       projectId,
       inspectionType: newForm.inspectionType,
       title: newForm.title,
-      scheduledDate: newForm.scheduledDate || undefined,
-      inspectorName: newForm.inspectorName || undefined,
+      description: newForm.description || undefined,
+    });
+  };
+
+  const openScheduleForm = (inspection: any) => {
+    setSchedulingInspection(schedulingInspection === inspection.id ? null : inspection.id);
+    setScheduleForm({
+      scheduledDate: inspection.scheduledDate ? new Date(inspection.scheduledDate).toISOString().slice(0, 10) : "",
+      scheduledTime: inspection.scheduledTime || "",
+      inspectorName: inspection.inspectorName || "",
+    });
+  };
+
+  const handleSchedule = (inspId: number) => {
+    if (!scheduleForm.scheduledDate) {
+      toast.error("Scheduled date is required");
+      return;
+    }
+    updateInspection.mutate({
+      id: inspId,
+      projectId,
+      data: {
+        scheduledDate: scheduleForm.scheduledDate,
+        scheduledTime: scheduleForm.scheduledTime || undefined,
+        inspectorName: scheduleForm.inspectorName || undefined,
+        status: "scheduled",
+      },
     });
   };
 
@@ -94,8 +123,9 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
       projectId,
       data: {
         status: resultForm.result,
+        result: resultForm.result === "passed" ? "pass" : "fail",
         resultNotes: resultForm.notes,
-        completedAt: new Date().toISOString(),
+        inspectedAt: new Date().toISOString(),
       },
     });
   };
@@ -158,12 +188,12 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
         <Dialog open={showNew} onOpenChange={setShowNew}>
           <DialogTrigger asChild>
             <Button size="sm">
-              <Plus className="h-4 w-4 mr-1" /> Schedule Inspection
+              <Plus className="h-4 w-4 mr-1" /> Add Required Inspection
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Schedule Inspection</DialogTitle>
+              <DialogTitle>Add Required Inspection</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
               <div>
@@ -186,23 +216,16 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
                 />
               </div>
               <div>
-                <Label>Inspector Name</Label>
-                <Input
-                  placeholder="e.g. John Smith (PCA)"
-                  value={newForm.inspectorName}
-                  onChange={(e) => setNewForm({ ...newForm, inspectorName: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label>Scheduled Date</Label>
-                <Input
-                  type="date"
-                  value={newForm.scheduledDate}
-                  onChange={(e) => setNewForm({ ...newForm, scheduledDate: e.target.value })}
+                <Label>Notes</Label>
+                <Textarea
+                  placeholder="Optional notes or inspection trigger, e.g. before concrete pour"
+                  value={newForm.description}
+                  onChange={(e) => setNewForm({ ...newForm, description: e.target.value })}
+                  rows={3}
                 />
               </div>
               <Button onClick={handleCreate} disabled={createInspection.isPending} className="w-full">
-                {createInspection.isPending ? "Creating..." : "Schedule Inspection"}
+                {createInspection.isPending ? "Creating..." : "Add Requirement"}
               </Button>
             </div>
           </DialogContent>
@@ -216,7 +239,7 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
       ) : !allInspections.length ? (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
-            No inspections scheduled. Add inspections as required by the construction certificate.
+            No inspections recorded. Add required inspections now, then schedule them when the job timing is known.
           </CardContent>
         </Card>
       ) : (
@@ -238,16 +261,25 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
                         {insp.inspectionType.replace(/_/g, " ")}
                         {insp.inspectorName && ` • ${insp.inspectorName}`}
                       </p>
+                      {insp.description && (
+                        <p className="text-xs text-muted-foreground mt-1">{insp.description}</p>
+                      )}
                       {insp.resultNotes && (
                         <p className="text-xs text-muted-foreground mt-1 italic">{insp.resultNotes}</p>
                       )}
                     </div>
                   </div>
                   <div className="text-right text-xs text-muted-foreground">
-                    {insp.scheduledDate && (
+                    {insp.scheduledDate ? (
                       <p className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
                         {new Date(insp.scheduledDate).toLocaleDateString()}
+                        {insp.scheduledTime ? ` ${insp.scheduledTime}` : ""}
+                      </p>
+                    ) : (
+                      <p className="flex items-center gap-1">
+                        <Calendar className="h-3 w-3" />
+                        Not scheduled
                       </p>
                     )}
                     {insp.defectCount > 0 && (
@@ -264,6 +296,14 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
                     <Button
                       variant="outline"
                       size="sm"
+                      onClick={() => openScheduleForm(insp)}
+                    >
+                      <Calendar className="h-3.5 w-3.5 mr-1" />
+                      {insp.scheduledDate ? "Reschedule" : "Schedule"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => setRecordingResult(recordingResult === insp.id ? null : insp.id)}
                     >
                       Record Result
@@ -275,6 +315,46 @@ export function ApprovalInspectionsTab({ projectId }: Props) {
                     >
                       <Bug className="h-3.5 w-3.5 mr-1" /> Add Defect
                     </Button>
+                  </div>
+                )}
+
+                {/* Schedule form */}
+                {schedulingInspection === insp.id && (
+                  <div className="mt-3 pt-3 border-t space-y-3">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div>
+                        <Label className="text-xs">Scheduled Date *</Label>
+                        <Input
+                          type="date"
+                          value={scheduleForm.scheduledDate}
+                          onChange={(e) => setScheduleForm({ ...scheduleForm, scheduledDate: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Time</Label>
+                        <Input
+                          type="time"
+                          value={scheduleForm.scheduledTime}
+                          onChange={(e) => setScheduleForm({ ...scheduleForm, scheduledTime: e.target.value })}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Inspector</Label>
+                        <Input
+                          placeholder="e.g. PCA / certifier"
+                          value={scheduleForm.inspectorName}
+                          onChange={(e) => setScheduleForm({ ...scheduleForm, inspectorName: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={() => handleSchedule(insp.id)} disabled={updateInspection.isPending}>
+                        {updateInspection.isPending ? "Saving..." : "Save Schedule"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => { setSchedulingInspection(null); setScheduleForm({ scheduledDate: "", scheduledTime: "", inspectorName: "" }); }}>
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
                 )}
 

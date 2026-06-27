@@ -28,6 +28,88 @@ import {
   upsertHbcfBuilderProfile,
 } from "./hbcf-service";
 
+async function createOrUpdateInspectionScheduleEvent(input: {
+  tenantId: number;
+  userId: number;
+  projectId: number;
+  inspectionId: number;
+  title: string;
+  inspectionType: string;
+  scheduledDate?: Date | null;
+  scheduledTime?: string | null;
+}) {
+  if (!input.scheduledDate) return;
+  const db = await getDb();
+  if (!db) return;
+
+  const [project] = await db.select({ crmJobId: approvalProjects.crmJobId, crmLeadId: approvalProjects.crmLeadId })
+    .from(approvalProjects)
+    .where(and(eq(approvalProjects.id, input.projectId), eq(approvalProjects.tenantId, input.tenantId)));
+
+  let jobId: number | null = null;
+  if (project?.crmJobId) {
+    const [job] = await db.select({ id: constructionJobs.id })
+      .from(constructionJobs)
+      .where(and(eq(constructionJobs.id, project.crmJobId), eq(constructionJobs.tenantId, input.tenantId)));
+    if (job) jobId = job.id;
+  } else if (project?.crmLeadId) {
+    const [job] = await db.select({ id: constructionJobs.id })
+      .from(constructionJobs)
+      .where(and(eq(constructionJobs.leadId, project.crmLeadId), eq(constructionJobs.tenantId, input.tenantId)));
+    if (job) jobId = job.id;
+  }
+
+  if (!jobId) return;
+
+  const marker = `[approval-inspection:${input.inspectionId}]`;
+  const description = `${input.inspectionType} inspection - scheduled from Building Approvals module\n${marker}`;
+  const values = {
+    tenantId: input.tenantId,
+    jobId,
+    title: `[Approval] ${input.title}`,
+    description,
+    startTime: input.scheduledDate,
+    allDay: !input.scheduledTime,
+    eventType: "inspection" as const,
+    createdBy: input.userId,
+  };
+
+  const [existing] = await db.select({ id: constructionScheduleEvents.id })
+    .from(constructionScheduleEvents)
+    .where(and(
+      eq(constructionScheduleEvents.tenantId, input.tenantId),
+      eq(constructionScheduleEvents.jobId, jobId),
+      eq(constructionScheduleEvents.eventType, "inspection"),
+      sql`${constructionScheduleEvents.description} LIKE ${`%${marker}%`}`
+    ))
+    .limit(1);
+
+  if (existing) {
+    await db.update(constructionScheduleEvents)
+      .set({
+        title: values.title,
+        description: values.description,
+        startTime: values.startTime,
+        allDay: values.allDay,
+      })
+      .where(eq(constructionScheduleEvents.id, existing.id));
+    return;
+  }
+
+  await db.insert(constructionScheduleEvents).values(values);
+}
+
+function parseInspectionScheduleDate(date?: string | Date | null, time?: string | null) {
+  if (!date) return undefined;
+  if (date instanceof Date) return date;
+  const trimmed = String(date).trim();
+  if (!trimmed) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return new Date(`${trimmed}T${time || "09:00"}:00`);
+  }
+  return new Date(trimmed);
+}
+
 function hbcfFlagForValue(value?: string | null, location?: Record<string, unknown> | null) {
   const requirement = hbcfRequirementFieldsForAmount(value, "Project", location as any);
   if (requirement.hbcfRequired) {
@@ -1078,9 +1160,11 @@ export const approvalRouter = router({
         blockingGate: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
+        const scheduledDate = parseInspectionScheduleDate(input.scheduledDate, input.scheduledTime);
         const id = await approvalDb.createInspection({
           ...input,
-          scheduledDate: input.scheduledDate ? new Date(input.scheduledDate) : undefined,
+          status: scheduledDate ? "scheduled" : "required",
+          scheduledDate,
           createdByUserId: ctx.user.id,
         }, ctx.tenant!.id);
         await approvalDb.createAuditEntry({
@@ -1088,48 +1172,28 @@ export const approvalRouter = router({
           eventType: "inspection_created",
           entityType: "inspection",
           entityId: id,
-          summary: `Inspection scheduled: ${input.title} (${input.inspectionType})`,
+          summary: scheduledDate
+            ? `Inspection scheduled: ${input.title} (${input.inspectionType})`
+            : `Inspection required: ${input.title} (${input.inspectionType})`,
           userId: ctx.user.id,
           userName: ctx.user.name || "Unknown",
         }, ctx.tenant!.id);
 
-        // Auto-populate into construction project plan (schedule events)
-        try {
-          const db = await getDb();
-          if (db) {
-            const [project] = await db.select({ crmJobId: approvalProjects.crmJobId, crmLeadId: approvalProjects.crmLeadId })
-              .from(approvalProjects)
-              .where(and(eq(approvalProjects.id, input.projectId), eq(approvalProjects.tenantId, ctx.tenant!.id)));
-            let jobId: number | null = null;
-            if (project?.crmJobId) {
-              const [job] = await db.select({ id: constructionJobs.id })
-                .from(constructionJobs)
-                .where(and(eq(constructionJobs.id, project.crmJobId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
-              if (job) jobId = job.id;
-            } else if (project?.crmLeadId) {
-              // Find construction job by leadId
-              const [job] = await db.select({ id: constructionJobs.id })
-                .from(constructionJobs)
-                .where(and(eq(constructionJobs.leadId, project.crmLeadId), eq(constructionJobs.tenantId, ctx.tenant!.id)));
-              if (job) jobId = job.id;
-            }
-            if (jobId) {
-              const startDate = input.scheduledDate ? new Date(input.scheduledDate) : new Date();
-              await db.insert(constructionScheduleEvents).values({
-                tenantId: ctx.tenant!.id,
-                jobId,
-                title: `[Approval] ${input.title}`,
-                description: `${input.inspectionType} inspection — auto-created from Building Approvals module`,
-                startTime: startDate,
-                allDay: true,
-                eventType: "inspection",
-                createdBy: ctx.user.id,
-              });
-            }
+        if (scheduledDate) {
+          try {
+            await createOrUpdateInspectionScheduleEvent({
+              tenantId: ctx.tenant!.id,
+              userId: ctx.user.id,
+              projectId: input.projectId,
+              inspectionId: id,
+              title: input.title,
+              inspectionType: input.inspectionType,
+              scheduledDate,
+              scheduledTime: input.scheduledTime,
+            });
+          } catch (e) {
+            console.error("[Approvals] Failed to populate scheduled inspection into construction calendar:", e);
           }
-        } catch (e) {
-          // Non-critical: log but don't fail the inspection creation
-          console.error("[Approvals] Failed to auto-populate inspection into project plan:", e);
         }
 
         return { id };
@@ -1138,7 +1202,40 @@ export const approvalRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number(), projectId: z.number(), data: z.record(z.string(), z.any()) }))
       .mutation(async ({ ctx, input }) => {
-        await approvalDb.updateInspection(input.id, input.data as any, ctx.tenant!.id);
+        const data: Record<string, any> = { ...input.data };
+        if ("scheduledDate" in data) {
+          data.scheduledDate = parseInspectionScheduleDate(data.scheduledDate, data.scheduledTime);
+          if (data.scheduledDate && !("status" in data)) data.status = "scheduled";
+        }
+        await approvalDb.updateInspection(input.id, data as any, ctx.tenant!.id);
+        if (data.scheduledDate) {
+          try {
+            const db = await getDb();
+            const [inspection] = db
+              ? await db.select({
+                title: approvalInspections.title,
+                inspectionType: approvalInspections.inspectionType,
+              })
+                .from(approvalInspections)
+                .where(and(eq(approvalInspections.id, input.id), eq(approvalInspections.projectId, input.projectId)))
+                .limit(1)
+              : [];
+            if (inspection) {
+              await createOrUpdateInspectionScheduleEvent({
+                tenantId: ctx.tenant!.id,
+                userId: ctx.user.id,
+                projectId: input.projectId,
+                inspectionId: input.id,
+                title: inspection.title,
+                inspectionType: inspection.inspectionType,
+                scheduledDate: data.scheduledDate,
+                scheduledTime: data.scheduledTime,
+              });
+            }
+          } catch (e) {
+            console.error("[Approvals] Failed to update scheduled inspection calendar event:", e);
+          }
+        }
         if (input.data.result) {
           await approvalDb.createAuditEntry({
             projectId: input.projectId,
