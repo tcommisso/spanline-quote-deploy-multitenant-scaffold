@@ -1633,13 +1633,21 @@ export const appRouter = router({
 
       // Build map: specField -> product tab/sub-tab sources
       const specFieldToTabs: Record<string, { tabKey: string; tabLabel: string; subTabFilter?: string; subTabLabel?: string }[]> = {};
-      const fallbackSpecFieldForTab = (tabKey: string, tabLabel: string) => {
+      const fallbackSpecFieldsForTab = (tabKey: string, tabLabel: string, parentTabKey = "") => {
         const value = `${tabKey} ${tabLabel}`.toLowerCase().replace(/[_-]+/g, " ");
-        if (value.includes("back channel")) return "specBackChannelType";
-        if (value.includes("side channel")) return "specSideChannelsType";
-        if (value.includes("flashing")) return "specFlashingsType";
-        if (value.includes("infill") || value.includes("twinwall")) return "specBracketInfillType";
-        return "";
+        const parentValue = parentTabKey.toLowerCase().replace(/[_-]+/g, " ");
+        const fields: string[] = [];
+        if (value.includes("back channel")) fields.push("specBackChannelType");
+        if (value.includes("side channel")) fields.push("specSideChannelsType");
+        if (value.includes("flashing")) fields.push("specFlashingsType");
+        if (value.includes("infill") || value.includes("twinwall")) fields.push("specBracketInfillType");
+
+        // Back/side channel products are commonly kept under Roof > Channels.
+        // Use that shared catalogue source for both channel spec dropdowns.
+        const isRoofChannelSubtab = parentValue.includes("roof") && /\b(channels?|chnnels?)\b/.test(value);
+        if (isRoofChannelSubtab) fields.push("specBackChannelType", "specSideChannelsType");
+
+        return Array.from(new Set(fields));
       };
       const normalizeSubTab = (value: string) => value.replace(/_/g, " ").trim().toLowerCase();
       const addSpecFieldSource = (specField: string, source: { tabKey: string; tabLabel: string; subTabFilter?: string; subTabLabel?: string }) => {
@@ -1652,23 +1660,25 @@ export const appRouter = router({
       };
       for (const tab of tabs) {
         const meta = tab.metadata as any;
-        const specField = meta?.specField || fallbackSpecFieldForTab(tab.key, tab.value);
-        if (specField) {
+        const specFields = meta?.specField ? [meta.specField] : fallbackSpecFieldsForTab(tab.key, tab.value);
+        for (const specField of specFields) {
           addSpecFieldSource(specField, { tabKey: tab.key, tabLabel: tab.value });
         }
       }
       for (const subTab of subTabs) {
         const tabKey = subTab.description || "";
         if (!tabKey) continue;
-        const specField = fallbackSpecFieldForTab(subTab.key, subTab.value);
-        if (!specField) continue;
+        const specFields = fallbackSpecFieldsForTab(subTab.key, subTab.value, tabKey);
+        if (specFields.length === 0) continue;
         const parentTab = tabs.find(tab => tab.key === tabKey);
-        addSpecFieldSource(specField, {
-          tabKey,
-          tabLabel: parentTab?.value || tabKey,
-          subTabFilter: normalizeSubTab(subTab.key.split("::")[1] || subTab.key),
-          subTabLabel: subTab.value,
-        });
+        for (const specField of specFields) {
+          addSpecFieldSource(specField, {
+            tabKey,
+            tabLabel: parentTab?.value || tabKey,
+            subTabFilter: normalizeSubTab(subTab.key.split("::")[1] || subTab.key),
+            subTabLabel: subTab.value,
+          });
+        }
       }
 
       // For each specField, fetch products from all mapped tabs and group by sub-tab
