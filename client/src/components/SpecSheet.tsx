@@ -2343,7 +2343,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 )}
                 <ColourField label="Roof Top Colour" value={form.specRoofTopColour || ""} onChange={(v) => update("specRoofTopColour", v)} colours={getColoursForProduct(form.specRoofType, "roof")} />
                 <ColourField label="Roof Bottom Colour" value={form.specRoofBottomColour || ""} onChange={(v) => update("specRoofBottomColour", v)} colours={getColoursForProductBottom(form.specRoofType, "roof")} />
-                <SelectField label="Ceiling Finish" value={form.specFinishType || ""} onChange={(v) => update("specFinishType", v)} options={["none", "Smooth", "Luxaline", "Micraline", "Embossed"]} />
                 <SelectField label="Fall Direction" value={form.specFallDirection || ""} onChange={(v) => update("specFallDirection", v)} options={["A-B", "B-C", "C-D", "D-A"]} />
                 <MultiSelectField label="Angle Cutting" value={form.specAngleCutting || ""} onChange={(v) => {
                   update("specAngleCutting", v);
@@ -4261,7 +4260,6 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PrintRow label="Roof Type" value={form.specRoofType} />
                 <PrintRow label="Top Colour" value={form.specRoofTopColour} isColour />
                 <PrintRow label="Bottom Colour" value={form.specRoofBottomColour} isColour />
-                <PrintRow label="Ceiling Finish" value={form.specFinishType} />
                 <PrintRow label="Fall Direction" value={form.specFallDirection} />
                 <PrintRow label="House Walls" value={form.specHouseWalls ? form.specHouseWalls.split(",").join(", ") : ""} />
                 <PrintRow label="Angle Cutting" value={form.specAngleCutting} />
