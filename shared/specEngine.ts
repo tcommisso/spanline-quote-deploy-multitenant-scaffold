@@ -76,8 +76,18 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
-const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor)\b/gi;
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor|workItemQty|workChecklistQty|checklistQty|workItemQuantity)\b/gi;
 const WALL_SHEET_COVER_WIDTH_MM = 1140;
+const WORK_CHECKLIST_SPEC_FIELDS = new Set([
+  "specWallWorkItems",
+  "specExistingChecks",
+  "specPlumbChecks",
+  "specStairsChecks",
+  "specConcreteItemChecks",
+  "specElecExtraWork",
+  "specFloorWorkItems",
+  "specDemolitionWorkItems",
+]);
 
 function formatTakeoffNumber(value: number): string {
   return value.toFixed(3).replace(/\.?0+$/, "");
@@ -187,6 +197,38 @@ function readNumber(record: Record<string, unknown>, keys: string[], fallback = 
     if (Number.isFinite(numeric) && numeric > 0) return numeric;
   }
   return fallback;
+}
+
+function isWorkChecklistSpecField(field: string): boolean {
+  return WORK_CHECKLIST_SPEC_FIELDS.has(field);
+}
+
+function workChecklistRows(value: unknown): Record<string, unknown>[] {
+  return parseSpecArray(value)
+    .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
+}
+
+function workChecklistLabel(row: Record<string, unknown>): string {
+  return readString(row, ["item", "task", "label", "name", "description"]);
+}
+
+function workChecklistProductMatch(row: Record<string, unknown>, label: string): string {
+  return readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]) || label;
+}
+
+function workChecklistUnit(row: Record<string, unknown>, fallback: string | null | undefined): string {
+  return readString(row, ["unit", "uom", "measureUnit"]) || fallback || "ea";
+}
+
+function workChecklistQty(row: Record<string, unknown>): number {
+  const qty = readPositiveNumber(row, ["qty", "quantity", "workItemQty", "count", "amount"]);
+  return qty > 0 ? qty : 1;
+}
+
+function shouldCostWorkChecklistRow(row: Record<string, unknown>): boolean {
+  if (row.checked !== true) return false;
+  const responsibility = readString(row, ["responsibility"]).toLowerCase();
+  return responsibility !== "by client" && responsibility !== "client";
 }
 
 function numberTokens(value: unknown): number[] {
@@ -823,6 +865,74 @@ function buildWindowDoorScheduleItems(
   return items;
 }
 
+function buildWorkChecklistItems(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown,
+  products: ProductLookup[],
+  markupRates: MarkupRates,
+  defaultMarkup: number
+): GeneratedItem[] | null {
+  if (!isWorkChecklistSpecField(mapping.specField)) return null;
+
+  const items: GeneratedItem[] = [];
+  for (const row of workChecklistRows(fieldValue)) {
+    if (!shouldCostWorkChecklistRow(row)) continue;
+
+    const label = workChecklistLabel(row);
+    const productMatchValue = workChecklistProductMatch(row, label);
+    const rowQty = workChecklistQty(row);
+    const rowUnit = workChecklistUnit(row, mapping.uom);
+    const rowSpecValues: SpecValues = {
+      ...specValues,
+      workItemQty: rowQty,
+      workChecklistQty: rowQty,
+      checklistQty: rowQty,
+      workItemQuantity: rowQty,
+      workItemProduct: productMatchValue,
+      workItemLabel: label,
+      workItemNotes: readString(row, ["notes", "note"]),
+      workItemUnit: rowUnit,
+    };
+
+    const product = mapping.productId
+      ? products.find(p => p.id === mapping.productId) || null
+      : findProductBySpecMatch(products, mapping.tabName, mapping.productMatch ? rowSpecValues[mapping.productMatch] : productMatchValue);
+    const qty = evaluateFormula(mapping.qtyFormula || "workItemQty", rowSpecValues);
+    if (qty <= 0) continue;
+
+    const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+    const description = mapping.description
+      ? `${mapping.description} - ${label || productMatchValue || mapping.name}`.trim()
+      : (product?.name || label || mapping.name);
+    const colour = mapping.colourField ? String(specValues[mapping.colourField] || "") : "";
+    const bottomColour = mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "";
+    const notes = [
+      `Work checklist takeoff: ${label || mapping.name}`,
+      `qty ${formatTakeoffNumber(rowQty)} ${rowUnit}`,
+      product ? `matched product: ${product.name}` : `product match: ${productMatchValue || "none"}`,
+      rowSpecValues.workItemNotes ? `notes: ${rowSpecValues.workItemNotes}` : "",
+    ].filter(Boolean).join("; ");
+
+    items.push({
+      specMappingId: mapping.id,
+      productId: product?.id || null,
+      tabName: mapping.tabName,
+      description,
+      colour,
+      bottomColour,
+      uom: rowUnit,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate,
+      sellRate,
+      notes,
+      source: "auto",
+    });
+  }
+
+  return items;
+}
+
 /**
  * Main generation function: evaluates all active mappings against spec values
  * and produces quote line items.
@@ -861,6 +971,19 @@ export function generateItemsFromSpec(
     );
     if (windowDoorScheduleItems) {
       items.push(...windowDoorScheduleItems);
+      continue;
+    }
+
+    const workChecklistItems = buildWorkChecklistItems(
+      mapping,
+      specValues,
+      fieldValue,
+      products,
+      markupRates,
+      defaultMarkup,
+    );
+    if (workChecklistItems) {
+      items.push(...workChecklistItems);
       continue;
     }
 

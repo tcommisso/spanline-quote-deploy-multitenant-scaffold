@@ -50,6 +50,7 @@ const PAGE_SIZE = 25;
 interface EditingProduct {
   id: number;
   productCode: string | null;
+  tabName: string;
   name: string;
   subTab: string | null;
   uom: string;
@@ -236,6 +237,7 @@ export default function ProductTable() {
     setEditing({
       id: product.id,
       productCode: product.productCode || null,
+      tabName: product.tabName,
       name: product.name,
       subTab: product.subTab || null,
       uom: product.uom,
@@ -280,7 +282,7 @@ export default function ProductTable() {
     upsertMutation.mutate({
       id: editing.id,
       productCode: editing.productCode || null,
-      tabName: product.tabName,
+      tabName: editing.tabName,
       subTab: editing.subTab,
       name: editing.name,
       uom: editing.uom,
@@ -648,9 +650,25 @@ export default function ProductTable() {
                         )}
                       </td>
                       <td className="py-1.5 px-3">
-                        <Badge variant="outline" className="text-[10px] font-normal">
-                          {TAB_LABELS[product.tabName as ComponentTabName] || product.tabName}
-                        </Badge>
+                        {isEditing ? (
+                          <Select
+                            value={editing.tabName}
+                            onValueChange={(v) => setEditing(prev => prev ? { ...prev, tabName: v, subTab: null } : prev)}
+                          >
+                            <SelectTrigger className="h-7 text-xs w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {tabsInData.map(tab => (
+                                <SelectItem key={tab} value={tab}>{TAB_LABELS[tab as ComponentTabName] || tab}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] font-normal">
+                            {TAB_LABELS[product.tabName as ComponentTabName] || product.tabName}
+                          </Badge>
+                        )}
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
@@ -660,7 +678,7 @@ export default function ProductTable() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {subTabRows.filter(st => st.description === product.tabName).map(st => {
+                              {subTabRows.filter(st => st.description === editing.tabName).map(st => {
                                 const name = st.key.includes("::") ? st.key.split("::")[1] : st.key;
                                 return <SelectItem key={st.key} value={name}>{name}</SelectItem>;
                               })}

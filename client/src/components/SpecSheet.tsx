@@ -23,7 +23,7 @@ import { ColourSwatch, ColourSelectPreview, getColourHex, parseCombinationColour
 import CouncilSelect from "@/components/CouncilSelect";
 import { Checkbox } from "@/components/ui/checkbox";
 import FilteredSelect, { type FilteredSelectCategory } from "@/components/FilteredSelect";
-import { SortableChecklist } from "@/components/SortableChecklist";
+import { SortableChecklist, type CheckItem } from "@/components/SortableChecklist";
 import RoofPlanDiagram from "@/components/RoofPlanDiagram";
 import GutterPlanDiagram from "@/components/GutterPlanDiagram";
 import QuoteRevisionHistory from "@/components/QuoteRevisionHistory";
@@ -790,11 +790,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
   // ─── JSON-backed state for complex fields ───
-  type CheckItem = { item: string; checked: boolean; notes: string; responsibility?: "" | "By Builder" | "By Client" };
   type LightTypeRow = { type: string; qty: number };
   type GpoRow = { type: "Single GPO" | "Double GPO"; location: "Indoor" | "Outdoor"; qty: number; onIwp?: boolean };
   type BeamEntry = { type: "Steel" | "Aluminium"; size: string; lm: number };
-  type ElecExtraItem = { task: string; checked: boolean; responsibility: "" | "By Builder" | "By Client" };
+  type ElecExtraItem = CheckItem & { task: string; responsibility: "" | "By Builder" | "By Client" };
   type WindowEntry = { style: "Sliding" | "Awning" | "Fixed"; height: number; width: number; qty: number; screen?: string };
 
   const WINDOW_HEIGHTS = [600, 800, 900, 1000, 1200, 1300, 1400, 1500, 1800, 2000, 2100];
@@ -812,6 +811,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     2600: [3, 4], 3000: [4], 3200: [4, 5, 6], 3400: [4, 5, 6],
     3700: [5, 6], 3800: [6], 4200: [5, 6], 4400: [7], 5000: [7], 5100: [7], 5800: [7],
   };
+  const checklistLabel = (row: CheckItem) => row.item || row.task || "";
+  const checklistDetail = (row: CheckItem) => [
+    row.responsibility,
+    row.qty !== undefined && row.qty !== "" ? `${row.qty} ${row.unit || "ea"}` : "",
+    row.productMatch ? `Product: ${row.productMatch}` : "",
+    row.notes,
+  ].filter(Boolean).join(" - ");
 
   const [iwpEntries, setIwpEntries] = useState<IwpEntry[]>([]);
   const [wallWorkItems, setWallWorkItems] = useState<CheckItem[]>([]);
@@ -2142,40 +2148,20 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
 
               {/* Work Checklist */}
               <div className="mt-3">
-                <div className="flex items-center justify-between mb-2">
-                  <Label className="text-xs font-medium text-muted-foreground">Work Checklist</Label>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setWallWorkItems([
-                      { item: "Timber Stud wall", checked: false, notes: "", responsibility: "" },
-                      { item: "Brick wall", checked: false, notes: "", responsibility: "" },
-                      { item: "Plastering", checked: false, notes: "", responsibility: "" },
-                      { item: "Painting", checked: false, notes: "", responsibility: "" },
-                    ])}>
-                      Load Default Items
-                    </Button>
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setWallWorkItems(prev => [...prev, { item: "", checked: false, notes: "", responsibility: "" }])}>
-                      <Plus className="h-3 w-3 mr-1" /> Add Item
-                    </Button>
-                  </div>
-                </div>
-                {wallWorkItems.map((wi, idx) => (
-                  <div key={idx} className="flex items-center gap-2 mb-2 border-b border-dashed pb-2">
-                    <Checkbox checked={wi.checked} onCheckedChange={(v) => { const next = [...wallWorkItems]; next[idx] = { ...next[idx], checked: !!v }; setWallWorkItems(next); }} className="h-4 w-4" />
-                    <Input className="h-8 text-sm flex-1" placeholder="Work item" value={wi.item} onChange={(e) => { const next = [...wallWorkItems]; next[idx] = { ...next[idx], item: e.target.value }; setWallWorkItems(next); }} />
-                    <label className="flex items-center gap-1 text-xs whitespace-nowrap">
-                      <Checkbox checked={wi.responsibility === "By Builder"} onCheckedChange={(v) => { const next = [...wallWorkItems]; next[idx] = { ...next[idx], responsibility: v ? "By Builder" : "" }; setWallWorkItems(next); }} className="h-3.5 w-3.5" />
-                      Builder
-                    </label>
-                    <label className="flex items-center gap-1 text-xs whitespace-nowrap">
-                      <Checkbox checked={wi.responsibility === "By Client"} onCheckedChange={(v) => { const next = [...wallWorkItems]; next[idx] = { ...next[idx], responsibility: v ? "By Client" : "" }; setWallWorkItems(next); }} className="h-3.5 w-3.5" />
-                      Client
-                    </label>
-                    <Input className="h-8 text-sm w-24" placeholder="m² / notes" value={wi.notes} onChange={(e) => { const next = [...wallWorkItems]; next[idx] = { ...next[idx], notes: e.target.value }; setWallWorkItems(next); }} />
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setWallWorkItems(prev => prev.filter((_, i) => i !== idx))}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
+                <SortableChecklist
+                  label="Work Checklist"
+                  items={wallWorkItems}
+                  onChange={setWallWorkItems}
+                  placeholder="Wall work item..."
+                  notesPlaceholder="Notes (optional)..."
+                  showResponsibility
+                  defaultItems={[
+                    { item: "Timber Stud wall", checked: false, notes: "", responsibility: "" },
+                    { item: "Brick wall", checked: false, notes: "", responsibility: "" },
+                    { item: "Plastering", checked: false, notes: "", responsibility: "" },
+                    { item: "Painting", checked: false, notes: "", responsibility: "" },
+                  ]}
+                />
               </div>
 
               {/* General Notes */}
@@ -2912,64 +2898,21 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
 
               {/* Floor Work Checklist */}
               <div className="mt-4 border-t pt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <Label className="text-sm font-medium">Site Work Checklist</Label>
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setFloorWorkItems(prev => [...prev, { task: "", checked: false, responsibility: "" }])}>
-                    <Plus className="h-3 w-3 mr-1" /> Add Item
-                  </Button>
-                </div>
-
-                {floorWorkItems.length === 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground italic mb-2">No items added. Load defaults or add custom items.</p>
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setFloorWorkItems([
-                      { task: "Earthworks - ground preparation", checked: false, responsibility: "" },
-                      { task: "Landscaping", checked: false, responsibility: "" },
-                      { task: "Backfilling", checked: false, responsibility: "" },
-                      { task: "Dirt disposal", checked: false, responsibility: "" },
-                      { task: "Retaining walls", checked: false, responsibility: "" },
-                    ])}>
-                      Load Default Items
-                    </Button>
-                  </div>
-                )}
-                {floorWorkItems.length > 0 && (
-                  <div className="space-y-1">
-                    {floorWorkItems.map((row, idx) => (
-                      <div key={idx} className="flex items-center gap-2 py-1 border-b border-dashed last:border-0">
-                        <Checkbox checked={row.checked} onCheckedChange={(c) => {
-                          const next = [...floorWorkItems];
-                          next[idx] = { ...next[idx], checked: !!c };
-                          setFloorWorkItems(next);
-                        }} />
-                        <Input className="h-7 text-xs flex-1 min-w-0" value={row.task} onChange={(e) => {
-                          const next = [...floorWorkItems];
-                          next[idx] = { ...next[idx], task: e.target.value };
-                          setFloorWorkItems(next);
-                        }} />
-                        <label className="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer">
-                          <Checkbox checked={row.responsibility === "By Builder"} onCheckedChange={(c) => {
-                            const next = [...floorWorkItems];
-                            next[idx] = { ...next[idx], responsibility: c ? "By Builder" : "" };
-                            setFloorWorkItems(next);
-                          }} />
-                          Builder
-                        </label>
-                        <label className="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer">
-                          <Checkbox checked={row.responsibility === "By Client"} onCheckedChange={(c) => {
-                            const next = [...floorWorkItems];
-                            next[idx] = { ...next[idx], responsibility: c ? "By Client" : "" };
-                            setFloorWorkItems(next);
-                          }} />
-                          Client
-                        </label>
-                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive shrink-0" onClick={() => setFloorWorkItems(prev => prev.filter((_, i) => i !== idx))}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <SortableChecklist
+                  label="Site Work Checklist"
+                  items={floorWorkItems}
+                  onChange={(items) => setFloorWorkItems(items as ElecExtraItem[])}
+                  placeholder="Site work item..."
+                  notesPlaceholder="Notes (optional)..."
+                  showResponsibility
+                  defaultItems={[
+                    { task: "Earthworks - ground preparation", checked: false, responsibility: "" },
+                    { task: "Landscaping", checked: false, responsibility: "" },
+                    { task: "Backfilling", checked: false, responsibility: "" },
+                    { task: "Dirt disposal", checked: false, responsibility: "" },
+                    { task: "Retaining walls", checked: false, responsibility: "" },
+                  ]}
+                />
               </div>
             </AccordionContent>
           </AccordionItem>
@@ -3441,72 +3384,28 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
 
               {/* Extra Electrical Work */}
               <div className="mt-4 border-t pt-3">
-                <div className="flex items-center justify-between mb-2">
-                  <Label className="text-sm font-medium">Work Checklist</Label>
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setElecExtraWork(prev => [...prev, { task: "", checked: false, responsibility: "" }])}>
-                    <Plus className="h-3 w-3 mr-1" /> Add Item
-                  </Button>
-                </div>
-
-                {/* Responsibility assignment items - vertical list */}
-                {elecExtraWork.length === 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground italic mb-2">No items added. Load defaults or add custom items.</p>
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setElecExtraWork([
-                      { task: "Light cabling for future use", checked: false, responsibility: "" },
-                      { task: "Light cabling only (Connection by Owner)", checked: false, responsibility: "" },
-                      { task: "Make safe for works (usually required with Demolition of existing structures)", checked: false, responsibility: "" },
-                      { task: "Remove Solar Panels", checked: false, responsibility: "" },
-                      { task: "Reinstall Solar Panels", checked: false, responsibility: "" },
-                      { task: "Remove air conditioner", checked: false, responsibility: "" },
-                      { task: "Reinstall air conditioner", checked: false, responsibility: "" },
-                      { task: "Remove lights", checked: false, responsibility: "" },
-                      { task: "Reinstall lights", checked: false, responsibility: "" },
-                      { task: "Remove power points", checked: false, responsibility: "" },
-                      { task: "Reinstall power points", checked: false, responsibility: "" },
-                      { task: "Power Line within 1.5m of structure", checked: false, responsibility: "" },
-                    ])}>
-                      Load Default Items
-                    </Button>
-                  </div>
-                )}
-                {elecExtraWork.length > 0 && (
-                  <div className="space-y-1">
-                    {elecExtraWork.map((row, idx) => (
-                      <div key={idx} className="flex items-center gap-2 py-1 border-b border-dashed last:border-0">
-                        <Checkbox checked={row.checked} onCheckedChange={(c) => {
-                          const next = [...elecExtraWork];
-                          next[idx] = { ...next[idx], checked: !!c };
-                          setElecExtraWork(next);
-                        }} />
-                        <Input className="h-7 text-xs flex-1 min-w-0" value={row.task} onChange={(e) => {
-                          const next = [...elecExtraWork];
-                          next[idx] = { ...next[idx], task: e.target.value };
-                          setElecExtraWork(next);
-                        }} />
-                        <label className="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer">
-                          <Checkbox checked={row.responsibility === "By Builder"} onCheckedChange={(c) => {
-                            const next = [...elecExtraWork];
-                            next[idx] = { ...next[idx], responsibility: c ? "By Builder" : "" };
-                            setElecExtraWork(next);
-                          }} />
-                          Builder
-                        </label>
-                        <label className="flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer">
-                          <Checkbox checked={row.responsibility === "By Client"} onCheckedChange={(c) => {
-                            const next = [...elecExtraWork];
-                            next[idx] = { ...next[idx], responsibility: c ? "By Client" : "" };
-                            setElecExtraWork(next);
-                          }} />
-                          Client
-                        </label>
-                        <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive shrink-0" onClick={() => setElecExtraWork(prev => prev.filter((_, i) => i !== idx))}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <SortableChecklist
+                  label="Work Checklist"
+                  items={elecExtraWork}
+                  onChange={(items) => setElecExtraWork(items as ElecExtraItem[])}
+                  placeholder="Electrical work item..."
+                  notesPlaceholder="Notes (optional)..."
+                  showResponsibility
+                  defaultItems={[
+                    { task: "Light cabling for future use", checked: false, responsibility: "" },
+                    { task: "Light cabling only (Connection by Owner)", checked: false, responsibility: "" },
+                    { task: "Make safe for works (usually required with Demolition of existing structures)", checked: false, responsibility: "" },
+                    { task: "Remove Solar Panels", checked: false, responsibility: "" },
+                    { task: "Reinstall Solar Panels", checked: false, responsibility: "" },
+                    { task: "Remove air conditioner", checked: false, responsibility: "" },
+                    { task: "Reinstall air conditioner", checked: false, responsibility: "" },
+                    { task: "Remove lights", checked: false, responsibility: "" },
+                    { task: "Reinstall lights", checked: false, responsibility: "" },
+                    { task: "Remove power points", checked: false, responsibility: "" },
+                    { task: "Reinstall power points", checked: false, responsibility: "" },
+                    { task: "Power Line within 1.5m of structure", checked: false, responsibility: "" },
+                  ]}
+                />
               </div>
 
               {/* Electrical Notes */}
@@ -4186,11 +4085,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   ))}
                 </div>
               )}
-              {wallWorkItems.filter(w => w.checked || w.item).length > 0 && (
+              {wallWorkItems.filter(w => w.checked || checklistLabel(w)).length > 0 && (
                 <div className="mt-2">
                   <p className="text-xs font-medium">Work Checklist:</p>
-                  {wallWorkItems.filter(w => w.item).map((w, i) => (
-                    <p key={i} className="text-xs ml-2">{w.checked ? "✓" : "□"} {w.item}{w.responsibility ? ` (${w.responsibility})` : ""}{w.notes ? ` — ${w.notes}` : ""}</p>
+                  {wallWorkItems.filter(w => checklistLabel(w)).map((w, i) => (
+                    <p key={i} className="text-xs ml-2">{w.checked ? "✓" : "□"} {checklistLabel(w)}{checklistDetail(w) ? ` — ${checklistDetail(w)}` : ""}</p>
                   ))}
                 </div>
               )}
@@ -4385,14 +4284,14 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     <thead>
                       <tr className="border-b">
                         <th className="text-left py-0.5 px-2">Task</th>
-                        <th className="text-left py-0.5 px-2">Responsibility</th>
+                        <th className="text-left py-0.5 px-2">Detail</th>
                       </tr>
                     </thead>
                     <tbody>
                       {floorWorkItems.filter(r => r.checked).map((r, i) => (
                         <tr key={i} className="border-b border-dashed">
-                          <td className="py-1 px-2">{r.task}</td>
-                          <td className="py-1 px-2">{r.responsibility || "\u2014"}</td>
+                          <td className="py-1 px-2">{checklistLabel(r)}</td>
+                          <td className="py-1 px-2">{checklistDetail(r) || "\u2014"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4415,7 +4314,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               {stairsChecks.filter(c => c.checked).length > 0 && (
                 <div className="spec-3col mt-2">
                   {stairsChecks.filter(c => c.checked).map((c, i) => (
-                    <PrintRow key={i} label={c.item} value={c.notes || "\u2713"} />
+                    <PrintRow key={i} label={checklistLabel(c)} value={checklistDetail(c) || "\u2713"} />
                   ))}
                 </div>
               )}
@@ -4536,14 +4435,14 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     <thead>
                       <tr className="border-b">
                         <th className="text-left py-1 px-2">Task</th>
-                        <th className="text-left py-1 px-2">Responsibility</th>
+                        <th className="text-left py-1 px-2">Detail</th>
                       </tr>
                     </thead>
                     <tbody>
                       {elecExtraWork.filter(r => r.checked).map((r, i) => (
                         <tr key={i} className="border-b border-dashed">
-                          <td className="py-1 px-2">{r.task}</td>
-                          <td className="py-1 px-2">{r.responsibility || "—"}</td>
+                          <td className="py-1 px-2">{checklistLabel(r)}</td>
+                          <td className="py-1 px-2">{checklistDetail(r) || "—"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4564,7 +4463,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               <h3>Concreting</h3>
               <div className="spec-3col">
                 {concreteChecks.filter(c => c.checked).map((c, i) => (
-                  <PrintRow key={i} label={c.item} value={[c.responsibility, c.notes].filter(Boolean).join(" - ") || "\u2713"} />
+                  <PrintRow key={i} label={checklistLabel(c)} value={checklistDetail(c) || "\u2713"} />
                 ))}
               </div>
               <div className="spec-3col mt-1">
@@ -4582,7 +4481,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               <h3>Demolition Works</h3>
               <div className="spec-3col">
                 {demolitionWorkItems.filter(c => c.checked).map((c, i) => (
-                  <PrintRow key={i} label={c.item} value={[c.responsibility, c.notes].filter(Boolean).join(" - ") || "\u2713"} />
+                  <PrintRow key={i} label={checklistLabel(c)} value={checklistDetail(c) || "\u2713"} />
                 ))}
               </div>
               {form.specDemolitionNotes && <PrintRow label="Notes" value={form.specDemolitionNotes} />}
@@ -4594,7 +4493,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               <h3>Work on Existing House</h3>
               <div className="spec-3col">
                 {existingChecks.filter(c => c.checked).map((c, i) => (
-                  <PrintRow key={i} label={c.item} value={[c.responsibility, c.notes].filter(Boolean).join(" - ") || "\u2713"} />
+                  <PrintRow key={i} label={checklistLabel(c)} value={checklistDetail(c) || "\u2713"} />
                 ))}
               </div>
               {form.specExistingNotes && <PrintRow label="Notes" value={form.specExistingNotes} />}
@@ -4606,7 +4505,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               <h3>Plumbing & Drainage</h3>
               <div className="spec-3col">
                 {plumbChecks.filter(c => c.checked).map((c, i) => (
-                  <PrintRow key={i} label={c.item} value={[c.responsibility, c.notes].filter(Boolean).join(" - ") || "\u2713"} />
+                  <PrintRow key={i} label={checklistLabel(c)} value={checklistDetail(c) || "\u2713"} />
                 ))}
               </div>
               {form.specPlumbNotes && <PrintRow label="Notes" value={form.specPlumbNotes} />}

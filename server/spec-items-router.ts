@@ -753,7 +753,7 @@ export const specItemsRouter = router({
 
         // ── Posts ──
         { name: "Posts from spec count", tabName: "posts", specField: "specPostsNumber", condition: "> 0", productMatch: "specPostsType", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 50 },
-        { name: "Post Fixings", tabName: "posts", specField: "specPostsFixing", condition: "!= ''", productMatch: "specPostsFixing", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 51 },
+        { name: "Post Fixings", tabName: "posts_fixing", specField: "specPostsFixing", condition: "!= ''", productMatch: "specPostsFixing", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 51 },
         { name: "Post Lengths", tabName: "posts", specField: "specPostSize", condition: "!= ''", productMatch: "specPostSize", qtyFormula: "specPostsNumber", description: null, colourField: "specPostsColour", bottomColourField: null, uom: "ea", sortOrder: 52 },
 
         // ── Gutters & downpipes ──
@@ -772,12 +772,14 @@ export const specItemsRouter = router({
         { name: "Glass Screens", tabName: "glass", specField: "specGlassScreens", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specGlassScreens", description: "Glass Screens", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 76 },
         { name: "Glass Options Allowance", tabName: "glass", specField: "specGlassWindows", condition: "!= ''", productMatch: "specGlassWindows", qtyFormula: "1", description: null, colourField: "specGlassTint", bottomColourField: null, uom: "ea", sortOrder: 77 },
         { name: "Pet Door", tabName: "glass", specField: "specGlassPetDoor", condition: "!= ''", productMatch: "specGlassPetDoor", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 78 },
+        { name: "Wall Work Checklist", tabName: "walls", specField: "specWallWorkItems", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 79 },
 
         // ── Concrete ──
         { name: "Concrete Slab (m²)", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specConcreteArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 80 },
         { name: "Concrete Area Fallback", tabName: "concrete", specField: "specConcreteType", condition: "!= ''", productMatch: "specConcreteType", qtyFormula: "specArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 81 },
         { name: "Concrete Finish", tabName: "concrete", specField: "specConcreteFinish", condition: "!= ''", productMatch: "specConcreteFinish", qtyFormula: "specConcreteArea", description: null, colourField: "specConcreteColour", bottomColourField: null, uom: "m2", sortOrder: 82 },
         { name: "Concrete Pier Holes", tabName: "concrete", specField: "specConcreteItemChecks", condition: "contains Pier", productId: null, productMatch: null, qtyFormula: "1", description: "Pier Holes", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 83 },
+        { name: "Concrete Work Checklist", tabName: "concrete", specField: "specConcreteItemChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 84 },
 
         // ── Electrical ──
         { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
@@ -789,19 +791,23 @@ export const specItemsRouter = router({
         { name: "Electrical Two-Way Switches", tabName: "electrical", specField: "specElecSwitchTwoWay", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchTwoWay", description: "Two-Way Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 96 },
         { name: "Electrical Dimmer Switches", tabName: "electrical", specField: "specElecSwitchDimmer", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchDimmer", description: "Dimmer Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 97 },
         { name: "Electrical Remove/Reinstall", tabName: "electrical", specField: "specElecRemoveReinstall", condition: "!= ''", productMatch: "specElecRemoveReinstall", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 98 },
+        { name: "Electrical Work Checklist", tabName: "electrical", specField: "specElecExtraWork", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 99 },
 
         // ── Plumbing ──
         { name: "Plumbing Fitoffs", tabName: "plumbing", specField: "specPlumbFitoffs", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbFitoffs", description: "Plumbing Fitoffs", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 100 },
         { name: "Plumbing Pipes", tabName: "plumbing", specField: "specPlumbPipes", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specPlumbPipes", description: "Plumbing Pipes", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 101 },
         { name: "Stormwater Allowance", tabName: "plumbing", specField: "specPlumbStormwater", condition: "!= ''", productMatch: "specPlumbStormwater", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 102 },
         { name: "Gas Allowance", tabName: "plumbing", specField: "specPlumbGas", condition: "!= ''", productMatch: "specPlumbGas", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 103 },
+        { name: "Plumbing Work Checklist", tabName: "plumbing", specField: "specPlumbChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 104 },
 
         // ── Flooring, stairs & balustrade ──
         { name: "Flooring (m²)", tabName: "flooring", specField: "specFloorFinish", condition: "!= ''", productMatch: "specFloorFinish", qtyFormula: "specArea", description: null, colourField: null, bottomColourField: null, uom: "m2", sortOrder: 110 },
         { name: "Subfloor (m²)", tabName: "flooring", specField: "specSubfloorM2", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specSubfloorM2", description: "Subfloor", colourField: null, bottomColourField: null, uom: "m2", sortOrder: 111 },
         { name: "Floor Prep", tabName: "flooring", specField: "specFloorPrep", condition: "!= ''", productMatch: "specFloorPrep", qtyFormula: "specArea", description: null, colourField: null, bottomColourField: null, uom: "m2", sortOrder: 112 },
+        { name: "Floor Work Checklist", tabName: "flooring", specField: "specFloorWorkItems", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 113 },
         { name: "Stairs Steps", tabName: "stairs", specField: "specStairsSteps", condition: "> 0", productMatch: "specStairsType", qtyFormula: "specStairsSteps", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 120 },
         { name: "Stairs Gate", tabName: "stairs", specField: "specStairsGate", condition: "!= ''", productMatch: "specStairsGate", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 121 },
+        { name: "Stairs Work Checklist", tabName: "stairs", specField: "specStairsChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 122 },
         { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLM", description: null, colourField: null, bottomColourField: null, uom: "LM", sortOrder: 130 },
         { name: "Balustrade Posts", tabName: "balustrade", specField: "specBalustradePosts", condition: "> 0", productMatch: "specBalPostType", qtyFormula: "specBalustradePosts", description: null, colourField: "specBalPostColour", bottomColourField: null, uom: "ea", sortOrder: 131 },
         { name: "Balustrade Glass Spigots", tabName: "balustrade", specField: "specBalGlassSpigots", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specBalGlassSpigots", description: "Glass Spigots", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 132 },
@@ -812,7 +818,8 @@ export const specItemsRouter = router({
         { name: "Existing Fascia Work", tabName: "existing", specField: "specExistingFascia", condition: "!= ''", productMatch: "specExistingFascia", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 142 },
         { name: "Existing Wall Work", tabName: "existing", specField: "specExistingWalls", condition: "!= ''", productMatch: "specExistingWalls", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 143 },
         { name: "Existing Beam Work", tabName: "existing", specField: "specExistingBeams", condition: "!= ''", productMatch: "specExistingBeams", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 144 },
-        { name: "Demolition Allowance", tabName: "demolition", specField: "specDemolitionWorkItems", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Demolition Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 150 },
+        { name: "Existing Work Checklist", tabName: "existing", specField: "specExistingChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 145 },
+        { name: "Demolition Work Checklist", tabName: "demolition", specField: "specDemolitionWorkItems", condition: "!= ''", productId: null, productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 150 },
 
         // ── Site allowances ──
         { name: "Difficult Access Allowance", tabName: "site", specField: "specSiteAccess", condition: "!= ''", productId: null, productMatch: null, qtyFormula: "1", description: "Difficult Access Allowance", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 160 },
@@ -836,6 +843,8 @@ export const specItemsRouter = router({
         "Windows Allowance",
         "Doors Allowance",
         "Glass Options Allowance",
+        "Concrete Pier Holes",
+        "Demolition Allowance",
       ];
 
       let created = 0;

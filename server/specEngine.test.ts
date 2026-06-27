@@ -262,6 +262,64 @@ describe("generateItemsFromSpec attachment descriptions", () => {
   });
 });
 
+describe("generateItemsFromSpec post fixing matching", () => {
+  it("matches the hard-coded post fixing dropdown against the dedicated posts_fixing catalogue tab", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 350,
+        name: "Post Fixings",
+        tabName: "posts_fixing",
+        specField: "specPostsFixing",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "specPostsFixing",
+        qtyFormula: "specPostsNumber",
+        description: null,
+        colourField: "specPostsColour",
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 51,
+        active: true,
+      }],
+      {
+        specPostsFixing: "Welded Base Plate",
+        specPostsNumber: 3,
+        specPostsColour: "Basal",
+      },
+      [
+        product({
+          id: 70,
+          name: "Welded Base Plate",
+          tabName: "POSTS_FIXING",
+          uom: "ea",
+          materials: "12",
+          installLabour: "6",
+          fixedSell: "44",
+          coverageWidth: null,
+        }),
+        product({
+          id: 71,
+          name: "Welded Base Plate",
+          tabName: "posts",
+          uom: "ea",
+          materials: "1",
+          fixedSell: "2",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].productId).toBe(70);
+    expect(items[0].description).toBe("Welded Base Plate");
+    expect(items[0].qty).toBe(3);
+    expect(items[0].colour).toBe("Basal");
+    expect(items[0].sellRate).toBe(44);
+  });
+});
+
 describe("generateItemsFromSpec wall entry matching", () => {
   it("calculates IWP wall LM from each wall width and product-specific cover width", () => {
     const items = generateItemsFromSpec(
@@ -353,5 +411,134 @@ describe("generateItemsFromSpec wall entry matching", () => {
     expect(items).toHaveLength(1);
     expect(items[0].qty).toBe(14.4);
     expect(items[0].uom).toBe("LM");
+  });
+});
+
+describe("generateItemsFromSpec work checklist matching", () => {
+  it("expands checked builder-owned checklist rows into product-matched line items", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 600,
+        name: "Demolition Work Checklist",
+        tabName: "demolition",
+        specField: "specDemolitionWorkItems",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "workItemProduct",
+        qtyFormula: "workItemQty",
+        description: null,
+        colourField: null,
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 150,
+        active: true,
+      }],
+      {
+        specDemolitionWorkItems: [
+          {
+            item: "Demolish existing concrete slab",
+            checked: true,
+            responsibility: "By Builder",
+            qty: 24,
+            unit: "m2",
+            productMatch: "Concrete slab demolition",
+            notes: "include disposal",
+          },
+          {
+            item: "Remove pavers",
+            checked: true,
+            responsibility: "By Client",
+            qty: 8,
+            unit: "m2",
+            productMatch: "Paver removal",
+          },
+          {
+            item: "Unchecked task",
+            checked: false,
+            qty: 2,
+          },
+        ],
+      },
+      [
+        product({
+          id: 60,
+          name: "Concrete slab demolition",
+          tabName: "demolition",
+          uom: "m2",
+          materials: "12",
+          installLabour: "8",
+          fixedSell: "55",
+          coverageWidth: null,
+        }),
+        product({
+          id: 61,
+          name: "Paver removal",
+          tabName: "demolition",
+          uom: "m2",
+          materials: "4",
+          fixedSell: "20",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].productId).toBe(60);
+    expect(items[0].description).toBe("Concrete slab demolition");
+    expect(items[0].qty).toBe(24);
+    expect(items[0].uom).toBe("m2");
+    expect(items[0].costRate).toBe(20);
+    expect(items[0].sellRate).toBe(55);
+    expect(items[0].notes).toContain("Work checklist takeoff: Demolish existing concrete slab");
+    expect(items[0].notes).toContain("matched product: Concrete slab demolition");
+    expect(items[0].notes).toContain("notes: include disposal");
+  });
+
+  it("falls back to the checklist label and a quantity of one when row fields are blank", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 601,
+        name: "Electrical Work Checklist",
+        tabName: "electrical",
+        specField: "specElecExtraWork",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "workItemProduct",
+        qtyFormula: "workItemQty",
+        description: null,
+        colourField: null,
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 99,
+        active: true,
+      }],
+      {
+        specElecExtraWork: [
+          { task: "Make safe for works", checked: true, responsibility: "" },
+        ],
+      },
+      [
+        product({
+          id: 62,
+          name: "Make safe for works",
+          tabName: "electrical",
+          uom: "ea",
+          materials: "0",
+          installLabour: "95",
+          fixedSell: "190",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].productId).toBe(62);
+    expect(items[0].description).toBe("Make safe for works");
+    expect(items[0].qty).toBe(1);
+    expect(items[0].sellRate).toBe(190);
   });
 });

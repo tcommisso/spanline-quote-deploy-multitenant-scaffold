@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -22,7 +21,40 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export type CheckItem = { item: string; checked: boolean; notes: string; responsibility?: "" | "By Builder" | "By Client" };
+export type WorkChecklistUnit = "" | "ea" | "LM" | "m" | "m2" | "m3" | "hr" | "day" | "lump";
+export type CheckItem = {
+  item?: string;
+  task?: string;
+  checked: boolean;
+  notes?: string;
+  responsibility?: "" | "By Builder" | "By Client";
+  qty?: string | number;
+  unit?: WorkChecklistUnit | string;
+  productMatch?: string;
+};
+
+const WORK_CHECKLIST_UNITS: WorkChecklistUnit[] = ["ea", "LM", "m", "m2", "m3", "hr", "day", "lump"];
+
+function getChecklistLabel(row: CheckItem): string {
+  return row.item ?? row.task ?? "";
+}
+
+function patchChecklistLabel(row: CheckItem, value: string): CheckItem {
+  if (row.task !== undefined && row.item === undefined) return { ...row, task: value };
+  return { ...row, item: value };
+}
+
+function normalizeChecklistItem(row: CheckItem): CheckItem {
+  return {
+    ...row,
+    checked: !!row.checked,
+    notes: row.notes ?? "",
+    responsibility: row.responsibility ?? "",
+    unit: row.unit || "ea",
+    qty: row.qty ?? "",
+    productMatch: row.productMatch ?? "",
+  };
+}
 
 interface SortableChecklistProps {
   label: string;
@@ -32,6 +64,7 @@ interface SortableChecklistProps {
   notesPlaceholder?: string;
   defaultItems?: CheckItem[];
   showResponsibility?: boolean;
+  showPricingFields?: boolean;
 }
 
 function SortableItem({
@@ -43,6 +76,7 @@ function SortableItem({
   placeholder,
   notesPlaceholder,
   showResponsibility,
+  showPricingFields,
 }: {
   id: string;
   row: CheckItem;
@@ -52,6 +86,7 @@ function SortableItem({
   placeholder: string;
   notesPlaceholder: string;
   showResponsibility: boolean;
+  showPricingFields: boolean;
 }) {
   const {
     attributes,
@@ -95,17 +130,57 @@ function SortableItem({
         <Input
           className="h-7 text-sm"
           placeholder={placeholder}
-          value={row.item}
+          value={getChecklistLabel(row)}
           onChange={(e) => {
             const next = [...items];
-            next[index] = { ...next[index], item: e.target.value };
+            next[index] = patchChecklistLabel(next[index], e.target.value);
             onChange(next);
           }}
         />
+        {showPricingFields && (
+          <div className="grid grid-cols-1 sm:grid-cols-[6rem_6rem_minmax(0,1fr)] gap-1">
+            <Input
+              className="h-7 text-xs"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="Qty"
+              value={row.qty ?? ""}
+              onChange={(e) => {
+                const next = [...items];
+                next[index] = { ...next[index], qty: e.target.value };
+                onChange(next);
+              }}
+            />
+            <select
+              className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              value={row.unit || "ea"}
+              onChange={(e) => {
+                const next = [...items];
+                next[index] = { ...next[index], unit: e.target.value };
+                onChange(next);
+              }}
+            >
+              {WORK_CHECKLIST_UNITS.map(unit => (
+                <option key={unit} value={unit}>{unit}</option>
+              ))}
+            </select>
+            <Input
+              className="h-7 text-xs"
+              placeholder="Product match (optional)"
+              value={row.productMatch ?? ""}
+              onChange={(e) => {
+                const next = [...items];
+                next[index] = { ...next[index], productMatch: e.target.value };
+                onChange(next);
+              }}
+            />
+          </div>
+        )}
         <Input
           className="h-7 text-xs text-muted-foreground"
           placeholder={notesPlaceholder}
-          value={row.notes}
+          value={row.notes ?? ""}
           onChange={(e) => {
             const next = [...items];
             next[index] = { ...next[index], notes: e.target.value };
@@ -159,9 +234,8 @@ export function SortableChecklist({
   notesPlaceholder = "Notes (optional)...",
   defaultItems,
   showResponsibility = false,
+  showPricingFields = true,
 }: SortableChecklistProps) {
-  const [ids] = useState(() => items.map((_, i) => `item-${i}`));
-
   // Generate stable IDs based on index
   const getIds = (list: CheckItem[]) => list.map((_, i) => `sortable-${i}`);
 
@@ -190,7 +264,7 @@ export function SortableChecklist({
           variant="outline"
           size="sm"
           className="h-6 text-xs"
-          onClick={() => onChange([...items, { item: "", checked: false, notes: "", responsibility: "" }])}
+          onClick={() => onChange([...items, normalizeChecklistItem({ item: "", checked: false })])}
         >
           <Plus className="h-3 w-3 mr-1" /> Add Item
         </Button>
@@ -204,7 +278,7 @@ export function SortableChecklist({
             variant="outline"
             size="sm"
             className="h-6 text-xs"
-            onClick={() => onChange(defaultItems)}
+            onClick={() => onChange(defaultItems.map(normalizeChecklistItem))}
           >
             Load Default Items
           </Button>
@@ -224,6 +298,7 @@ export function SortableChecklist({
                 placeholder={placeholder}
                 notesPlaceholder={notesPlaceholder}
                 showResponsibility={showResponsibility}
+                showPricingFields={showPricingFields}
               />
             ))}
           </SortableContext>
