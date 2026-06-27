@@ -292,6 +292,146 @@ function ApproveLineDialog({
   );
 }
 
+function EditInvoiceLineDialog({
+  line,
+  jobs,
+  milestones,
+  pending,
+  onCancel,
+  onSave,
+}: {
+  line: any;
+  jobs: any[];
+  milestones: any[];
+  pending: boolean;
+  onCancel: () => void;
+  onSave: (payload: {
+    description: string;
+    quantity: string;
+    unitPrice: string;
+    amount: string;
+    gstAmount: string;
+    jobId: number | null;
+    workOrderId?: number | null;
+    milestoneId: number | null;
+  }) => void;
+}) {
+  const [description, setDescription] = useState(line.description || "");
+  const [quantity, setQuantity] = useState(String(line.quantity ?? "1"));
+  const [unitPrice, setUnitPrice] = useState(String(line.unitPrice ?? ""));
+  const [amount, setAmount] = useState(String(line.amount ?? ""));
+  const [gstAmount, setGstAmount] = useState(String(line.gstAmount ?? "0"));
+  const [jobId, setJobId] = useState(line.jobId ? String(line.jobId) : "none");
+  const [milestoneId, setMilestoneId] = useState(line.milestoneId ? String(line.milestoneId) : "none");
+
+  const selectedJobId = jobId !== "none" ? Number(jobId) : null;
+  const availableMilestones = selectedJobId
+    ? milestones.filter((milestone: any) => milestone.jobId === selectedJobId)
+    : [];
+  const originalJobId = line.jobId ?? null;
+  const nextJobId = selectedJobId;
+  const jobChanged = originalJobId !== nextJobId;
+
+  const saveDisabled =
+    pending ||
+    !description.trim() ||
+    amountNumber(quantity) <= 0 ||
+    amountNumber(amount) < 0 ||
+    amountNumber(gstAmount) < 0 ||
+    (unitPrice !== "" && amountNumber(unitPrice) < 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={onCancel}>
+      <div className="bg-background p-6 rounded-xl max-w-2xl w-full shadow-xl max-h-[90vh] overflow-y-auto" onClick={event => event.stopPropagation()}>
+        <h3 className="font-semibold mb-1">Edit Invoice Line</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          Update claimed line details before approval.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs">Description</Label>
+            <Textarea value={description} onChange={event => setDescription(event.target.value)} rows={3} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Quantity</Label>
+              <Input type="number" min="0" step="0.01" value={quantity} onChange={event => setQuantity(event.target.value)} />
+            </div>
+            <div>
+              <Label className="text-xs">Unit $</Label>
+              <Input type="number" min="0" step="0.01" value={unitPrice} onChange={event => setUnitPrice(event.target.value)} />
+            </div>
+            <div>
+              <Label className="text-xs">Amount ex GST</Label>
+              <Input type="number" min="0" step="0.01" value={amount} onChange={event => setAmount(event.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">GST</Label>
+              <Input type="number" min="0" step="0.01" value={gstAmount} onChange={event => setGstAmount(event.target.value)} />
+            </div>
+            <div>
+              <Label className="text-xs">Job</Label>
+              <Select value={jobId} onValueChange={(value) => {
+                setJobId(value);
+                setMilestoneId("none");
+              }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No job</SelectItem>
+                  {jobs.map((job: any) => (
+                    <SelectItem key={job.id} value={String(job.id)}>
+                      {job.quoteNumber || `Job #${job.id}`} {job.siteAddress ? `- ${job.siteAddress}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">PO Milestone</Label>
+              <Select
+                value={milestoneId}
+                disabled={!selectedJobId || availableMilestones.length === 0}
+                onValueChange={setMilestoneId}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No milestone</SelectItem>
+                  {availableMilestones.map((milestone: any) => (
+                    <SelectItem key={milestone.id} value={String(milestone.id)}>
+                      {milestone.stage || `Milestone #${milestone.id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 justify-end mt-5">
+          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button
+            onClick={() => onSave({
+              description: description.trim(),
+              quantity,
+              unitPrice,
+              amount,
+              gstAmount,
+              jobId: nextJobId,
+              workOrderId: jobChanged ? null : undefined,
+              milestoneId: milestoneId === "none" ? null : Number(milestoneId),
+            })}
+            disabled={saveDisabled}
+          >
+            {pending ? <RotateCw className="h-4 w-4 mr-1 animate-spin" /> : <Pencil className="h-4 w-4 mr-1" />}
+            Save Line
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Invoice Detail Dialog ──────────────────────────────────────────────────
 
 function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; open: boolean; onClose: () => void }) {
@@ -318,6 +458,16 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
   const approveMutation = trpc.tradeInvoice.approveInvoiceLine.useMutation({
     onSuccess: (res) => {
       toast.success(res.allApproved ? "All lines approved — invoice approved!" : "Line approval recorded");
+      utils.tradeInvoice.getInvoiceDetail.invalidate({ invoiceId });
+      utils.tradeInvoice.invoiceStats.invalidate();
+      utils.tradeInvoice.listInvoices.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const updateLineMutation = trpc.tradeInvoice.updateInvoiceLine.useMutation({
+    onSuccess: () => {
+      toast.success("Invoice line updated");
       utils.tradeInvoice.getInvoiceDetail.invalidate({ invoiceId });
       utils.tradeInvoice.invoiceStats.invalidate();
       utils.tradeInvoice.listInvoices.invalidate();
@@ -385,6 +535,7 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
   const [rejectComment, setRejectComment] = useState("");
   const [rejectLineId, setRejectLineId] = useState<number | null>(null);
   const [approvingLine, setApprovingLine] = useState<any | null>(null);
+  const [editingLine, setEditingLine] = useState<any | null>(null);
   const [annotatePhoto, setAnnotatePhoto] = useState<{ url: string; id: number; caption?: string } | null>(null);
 
   if (!open) return null;
@@ -578,12 +729,14 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                           <th className="p-2 text-right">Approved</th>
                           <th className="p-2 text-right">GST</th>
                           <th className="p-2">Status</th>
-                          <th className="p-2 w-20">Actions</th>
+                          <th className="p-2 w-36">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {data.lines.map((line) => {
                           const adjusted = lineHasAdjustment(line);
+                          const canEditLine = ["draft", "submitted", "under_review", "pending_approval"].includes(data.invoice.status)
+                            && line.approvalStatus === "pending";
                           return (
                             <tr key={line.id} className={`border-b hover:bg-muted/30 ${
                               line.approvalStatus === "rejected" ? "bg-red-50/50" :
@@ -614,8 +767,17 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                               </td>
                               <td className="p-2"><StatusBadge status={line.approvalStatus || "pending"} /></td>
                               <td className="p-2">
-                                {line.approvalStatus === "pending" && data.invoice.status === "pending_approval" && (
-                                  <div className="flex gap-1">
+                                {(canEditLine || (line.approvalStatus === "pending" && data.invoice.status === "pending_approval")) && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {canEditLine && (
+                                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs"
+                                        onClick={() => setEditingLine(line)}
+                                        disabled={updateLineMutation.isPending}>
+                                        <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                                      </Button>
+                                    )}
+                                    {line.approvalStatus === "pending" && data.invoice.status === "pending_approval" && (
+                                      <>
                                     <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-green-600 hover:bg-green-100"
                                       onClick={() => setApprovingLine(line)}
                                       disabled={approveMutation.isPending}>
@@ -625,6 +787,8 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                                       onClick={() => setRejectLineId(line.id)}>
                                       <XCircle className="h-4 w-4" />
                                     </Button>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                               </td>
@@ -868,6 +1032,30 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                 adjustmentReason: payload.adjustmentReason,
               }, {
                 onSettled: () => setApprovingLine(null),
+              });
+            }}
+          />
+        )}
+        {editingLine && data && (
+          <EditInvoiceLineDialog
+            line={editingLine}
+            jobs={data.jobs || []}
+            milestones={data.milestones || []}
+            pending={updateLineMutation.isPending}
+            onCancel={() => setEditingLine(null)}
+            onSave={(payload) => {
+              updateLineMutation.mutate({
+                lineId: editingLine.id,
+                description: payload.description,
+                quantity: payload.quantity,
+                unitPrice: payload.unitPrice || undefined,
+                amount: payload.amount,
+                gstAmount: payload.gstAmount,
+                jobId: payload.jobId,
+                workOrderId: payload.workOrderId,
+                milestoneId: payload.milestoneId,
+              }, {
+                onSettled: () => setEditingLine(null),
               });
             }}
           />

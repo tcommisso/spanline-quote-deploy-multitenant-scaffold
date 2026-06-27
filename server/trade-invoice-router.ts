@@ -505,6 +505,13 @@ export const tradeInvoiceRouter = router({
       const db = await requireDb();
       const { lineId, ...updates } = input;
       const line = await requireInvoiceLineAccess(db, ctx, lineId);
+      const invoice = await requireInvoiceAccess(db, ctx, line.invoiceId);
+      if (invoice.status === "approved" || invoice.status === "paid") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Approved or paid invoices cannot be edited" });
+      }
+      if (line.approvalStatus !== "pending") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Only pending invoice lines can be edited" });
+      }
       const cleanUpdates: any = {};
       if (updates.description !== undefined) cleanUpdates.description = updates.description;
       if (updates.quantity !== undefined) cleanUpdates.quantity = updates.quantity;
@@ -538,11 +545,22 @@ export const tradeInvoiceRouter = router({
           if (targetWorkOrderId != null && milestone.workOrderId !== targetWorkOrderId) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Milestone does not belong to the selected work order" });
           }
+          if (cleanUpdates.workOrderId == null) cleanUpdates.workOrderId = milestone.workOrderId;
         }
         cleanUpdates.milestoneId = updates.milestoneId;
       }
 
       await db.update(tradeInvoiceLines).set(cleanUpdates).where(eq(tradeInvoiceLines.id, lineId));
+      const invoiceLines = await db.select()
+        .from(tradeInvoiceLines)
+        .where(eq(tradeInvoiceLines.invoiceId, line.invoiceId));
+      const invoiceAmount = invoiceLines.reduce((sum: number, invoiceLine: any) => sum + moneyNumber(invoiceLine.amount), 0);
+      const invoiceGstAmount = invoiceLines.reduce((sum: number, invoiceLine: any) => sum + moneyNumber(invoiceLine.gstAmount), 0);
+      await db.update(tradeInvoices).set({
+        amount: moneyString(invoiceAmount),
+        gstAmount: moneyString(invoiceGstAmount),
+        totalWithGst: moneyString(invoiceAmount + invoiceGstAmount),
+      }).where(eq(tradeInvoices.id, line.invoiceId));
       return { success: true };
     }),
 
