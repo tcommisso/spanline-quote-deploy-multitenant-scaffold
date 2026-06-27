@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Plus, AlertTriangle, CheckCircle2, Upload, FileText, X, Loader2, ShieldCheck, Clock, CalendarClock, FileUp, Brain, Check } from "lucide-react";
+import { Plus, AlertTriangle, CheckCircle2, Upload, FileText, X, Loader2, ShieldCheck, CalendarClock, FileUp, Brain, Check, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface Props {
@@ -48,6 +48,7 @@ export function ApprovalConditionsTab({ projectId }: Props) {
   const [parsedConditions, setParsedConditions] = useState<any[] | null>(null);
   const [importDocTitle, setImportDocTitle] = useState("");
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
+  const [removingId, setRemovingId] = useState<number | null>(null);
 
   const { data: conditions, isLoading } = trpc.approvals.conditions.list.useQuery({ projectId });
   const utils = trpc.useUtils();
@@ -101,6 +102,18 @@ export function ApprovalConditionsTab({ projectId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
+  const removeCondition = trpc.approvals.conditions.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Condition removed");
+      setRemovingId(null);
+      utils.approvals.conditions.list.invalidate({ projectId });
+    },
+    onError: (err) => {
+      toast.error(err.message);
+      setRemovingId(null);
+    },
+  });
+
   const handleCreate = () => {
     if (!newForm.title) {
       toast.error("Title is required");
@@ -138,6 +151,12 @@ export function ApprovalConditionsTab({ projectId }: Props) {
       evidenceNotes: evidenceNotes || undefined,
       evidenceFiles: filePayloads.length > 0 ? filePayloads : undefined,
     });
+  };
+
+  const handleRemoveCondition = (condition: any) => {
+    if (!window.confirm(`Remove "${condition.title}" from this approval? This cannot be undone.`)) return;
+    setRemovingId(condition.id);
+    removeCondition.mutate({ id: condition.id, projectId });
   };
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -463,6 +482,20 @@ export function ApprovalConditionsTab({ projectId }: Props) {
                               Satisfy
                             </Button>
                           )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-muted-foreground hover:text-destructive"
+                            disabled={removingId === condition.id}
+                            onClick={() => handleRemoveCondition(condition)}
+                          >
+                            {removingId === condition.id ? (
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4 mr-1" />
+                            )}
+                            Remove
+                          </Button>
                         </div>
                       </div>
                       {condition.description && (

@@ -413,6 +413,19 @@ export async function updateCondition(id: number, data: Partial<InsertApprovalCo
   await db.update(approvalConditions).set(data).where(eq(approvalConditions.id, id));
 }
 
+export async function deleteCondition(id: number, projectId: number, tenantId?: number | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await assertApprovalProjectAccess(projectId, tenantId);
+  const [condition] = await db.select().from(approvalConditions)
+    .where(and(eq(approvalConditions.id, id), eq(approvalConditions.projectId, projectId)))
+    .limit(1);
+  if (!condition) throw new Error("Condition not found");
+  await db.delete(approvalConditions)
+    .where(and(eq(approvalConditions.id, id), eq(approvalConditions.projectId, projectId)));
+  return condition;
+}
+
 // ─── Tasks ──────────────────────────────────────────────────────────────────
 export async function createTask(data: InsertApprovalTask, tenantId?: number | null) {
   const db = await getDb();

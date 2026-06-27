@@ -894,6 +894,29 @@ export const approvalRouter = router({
         return { success: true };
       }),
 
+    delete: protectedProcedure
+      .input(z.object({ id: z.number(), projectId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const condition = await approvalDb.deleteCondition(input.id, input.projectId, ctx.tenant!.id);
+        await approvalDb.createAuditEntry({
+          projectId: input.projectId,
+          eventType: "condition_removed",
+          entityType: "condition",
+          entityId: input.id,
+          summary: `Condition removed: ${condition.title}`,
+          userId: ctx.user.id,
+          userName: ctx.user.name || "Unknown",
+          details: {
+            conditionNumber: condition.conditionNumber,
+            title: condition.title,
+            category: condition.category,
+            status: condition.status,
+            isBlocking: condition.isBlocking,
+          },
+        }, ctx.tenant!.id);
+        return { success: true };
+      }),
+
     satisfy: protectedProcedure
       .input(z.object({
         id: z.number(),
