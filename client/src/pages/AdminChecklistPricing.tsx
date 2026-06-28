@@ -3,9 +3,9 @@ import { ChecklistPricingEditor } from "./AdminSettings";
 export default function AdminChecklistPricing() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-4">
-      <h1 className="text-2xl font-bold">Checklist Item Pricing</h1>
+      <h1 className="text-2xl font-bold">Additional Costs Pricing</h1>
       <p className="text-sm text-muted-foreground">
-        Define checklist items with pricing. When a design adviser checks an item on the spec sheet, they are automatically added to the quote's Additional Costs.
+        Define priced extra-cost items for the spec sheet's Additional Costs (Priced) section. These are separate from the default work checklist items in each spec section.
       </p>
       <ChecklistPricingEditor />
     </div>

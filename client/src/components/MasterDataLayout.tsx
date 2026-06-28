@@ -84,7 +84,7 @@ const menuGroups: MenuGroup[] = [
       { label: "Small Job Surcharge", path: "/admin/master-data/pricing/small-job-surcharge", icon: AlertTriangle },
       { label: "Construction Mgmt", path: "/admin/master-data/pricing/construction-mgmt", icon: Building },
       { label: "Home Warranty", path: "/admin/master-data/pricing/home-warranty", icon: Shield },
-      { label: "Checklist Pricing", path: "/admin/checklist-pricing", icon: ListChecks },
+      { label: "Additional Costs Pricing", path: "/admin/checklist-pricing", icon: ListChecks },
     ],
   },
 ];

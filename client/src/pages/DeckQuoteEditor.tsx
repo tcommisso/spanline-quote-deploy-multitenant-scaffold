@@ -1571,7 +1571,7 @@ export default function DeckQuoteEditor() {
                     )}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">No checklist items configured. Add them in Admin Settings → Checklist Pricing.</p>
+                  <p className="text-sm text-muted-foreground">No priced additional cost items configured. Add them in Admin Settings → Additional Costs Pricing.</p>
                 )}
               </AccordionContent>
             </AccordionItem>

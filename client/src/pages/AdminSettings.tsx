@@ -1217,7 +1217,7 @@ export function ChecklistPricingEditor() {
   if (error) {
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-        Could not load checklist pricing: {error.message}
+        Could not load additional costs pricing: {error.message}
       </div>
     );
   }
@@ -1225,7 +1225,7 @@ export function ChecklistPricingEditor() {
   return (
     <div className="space-y-4 pb-4">
       <p className="text-xs text-muted-foreground">
-        Define checklist items with pricing. When a design adviser checks an item on the spec sheet, they enter a quantity and the line total (price × qty) flows into the quote's Additional Costs.
+        Define priced extra-cost items. When a design adviser selects one in Additional Costs (Priced), they enter a quantity and the line total (price × qty) flows into the quote's Additional Costs.
       </p>
 
       {/* Add New Item */}
@@ -1289,7 +1289,7 @@ export function ChecklistPricingEditor() {
 
       {/* Items List grouped by section */}
       {Object.keys(grouped).length === 0 && (
-        <p className="text-sm text-muted-foreground italic py-2">No checklist items configured yet. Add items above.</p>
+        <p className="text-sm text-muted-foreground italic py-2">No additional cost items configured yet. Add items above.</p>
       )}
 
       {Object.entries(grouped).map(([section, sectionItems]) => (

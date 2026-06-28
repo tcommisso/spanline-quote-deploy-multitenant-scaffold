@@ -4066,7 +4066,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
               <div className="space-y-4">
                 <p className="text-xs text-muted-foreground">Select items and enter quantities. Line totals flow into the quote's Additional Costs.</p>
                 {(!activeChecklistItems || activeChecklistItems.length === 0) ? (
-                  <p className="text-xs text-muted-foreground italic">No checklist items configured. Admin can add items in Settings → Checklist Pricing.</p>
+                  <p className="text-xs text-muted-foreground italic">No priced additional cost items configured. Admin can add items in Settings → Additional Costs Pricing.</p>
                 ) : (
                   <>
                     {/* Group by section */}
