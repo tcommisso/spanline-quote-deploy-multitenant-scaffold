@@ -300,6 +300,17 @@ async function recalculateTradeFlashingOrderTotals(db: any, tenantId: number, or
     .where(and(eq(flashingOrders.id, orderId), eq(flashingOrders.tenantId, tenantId)));
 }
 
+async function nextTradeFlashingOrderNumber(db: any, tenantId: number) {
+  const [row] = await db
+    .select({
+      maxNumber: sql<number>`COALESCE(MAX(CAST(SUBSTRING(${flashingOrders.orderNumber}, 4) AS UNSIGNED)), 0)`,
+    })
+    .from(flashingOrders)
+    .where(eq(flashingOrders.tenantId, tenantId));
+  const next = Number(row?.maxNumber || 0) + 1;
+  return `FL-${String(next).padStart(4, "0")}`;
+}
+
 async function findTradePortalFlashingSupplier(db: any, ctx: any) {
   const access = requireTradeAccessVisible(ctx, ctx.tradeAccess);
   const tenantId = tradePortalTenantId(ctx);
@@ -630,6 +641,139 @@ export const tradePortalRouter = router({
         .offset(parsed.offset);
 
       return { orders, total: totalRow?.total || 0, supplierName: supplier.name };
+    }),
+
+  searchFlashingJobs: protectedTradePortalProcedure
+    .input(z.object({
+      search: z.string().optional().default(""),
+      limit: z.number().int().min(1).max(50).default(25),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const installerId = ctx.tradeAccess.installerId;
+      const visibleJobIds = await getVisibleTradeJobIds(db, ctx, installerId);
+      if (visibleJobIds.length === 0) return [];
+
+      const parsed = input || { search: "", limit: 25 };
+      const conditions = tradeJobConditions(ctx, inArray(constructionJobs.id, visibleJobIds));
+      const search = parsed.search?.trim();
+      if (search) {
+        const pattern = `%${search.toLowerCase()}%`;
+        conditions.push(or(
+          like(sql`LOWER(${constructionJobs.clientName})`, pattern),
+          like(sql`LOWER(${constructionJobs.quoteNumber})`, pattern),
+          like(sql`LOWER(${constructionJobs.siteAddress})`, pattern),
+          like(sql`LOWER(${constructionJobs.status})`, pattern),
+        )!);
+      }
+
+      const jobs = await db.select({
+        id: constructionJobs.id,
+        jobNumber: constructionJobs.quoteNumber,
+        clientName: constructionJobs.clientName,
+        siteAddress: constructionJobs.siteAddress,
+        status: constructionJobs.status,
+        scheduledStart: constructionJobs.scheduledStart,
+        scheduledEnd: constructionJobs.scheduledEnd,
+        updatedAt: constructionJobs.updatedAt,
+      })
+        .from(constructionJobs)
+        .where(and(...conditions))
+        .orderBy(desc(constructionJobs.updatedAt))
+        .limit(parsed.limit);
+
+      const jobIds = jobs.map((job: any) => job.id);
+      if (jobIds.length === 0) return [];
+
+      const linkedOrders = await db.select({
+        id: flashingOrders.id,
+        orderNumber: flashingOrders.orderNumber,
+        jobId: flashingOrders.jobId,
+        status: flashingOrders.status,
+        updatedAt: flashingOrders.updatedAt,
+      })
+        .from(flashingOrders)
+        .where(and(
+          ...tradePortalFlashingOrderScope(ctx, supplier, inArray(flashingOrders.jobId, jobIds)),
+          sql`${flashingOrders.status} NOT IN ('cancelled', 'archived')`,
+        ))
+        .orderBy(desc(flashingOrders.updatedAt));
+
+      const latestOrderByJob = new Map<number, typeof linkedOrders[number]>();
+      for (const order of linkedOrders) {
+        if (order.jobId && !latestOrderByJob.has(order.jobId)) {
+          latestOrderByJob.set(order.jobId, order);
+        }
+      }
+
+      return jobs.map((job: any) => {
+        const order = latestOrderByJob.get(job.id);
+        return {
+          ...job,
+          flashingOrderId: order?.id ?? null,
+          flashingOrderNumber: order?.orderNumber ?? null,
+          flashingOrderStatus: order?.status ?? null,
+          flashingOrderUpdatedAt: order?.updatedAt ?? null,
+        };
+      });
+    }),
+
+  createFlashingOrderForJob: protectedTradePortalProcedure
+    .input(z.object({ jobId: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const tenantId = tradePortalTenantId(ctx);
+      const job = await requireTradeJobAccess(db, ctx, input.jobId);
+
+      const [existing] = await db.select({
+        id: flashingOrders.id,
+        orderNumber: flashingOrders.orderNumber,
+      })
+        .from(flashingOrders)
+        .where(and(
+          ...tradePortalFlashingOrderScope(ctx, supplier, eq(flashingOrders.jobId, input.jobId)),
+          sql`${flashingOrders.status} NOT IN ('cancelled', 'archived')`,
+        ))
+        .orderBy(desc(flashingOrders.updatedAt))
+        .limit(1);
+
+      if (existing) {
+        return { id: existing.id, orderNumber: existing.orderNumber, created: false };
+      }
+
+      const orderNumber = await nextTradeFlashingOrderNumber(db, tenantId);
+      const requestedByName = supplier.name || ctx.tradeAccess.email || "Trade Portal";
+      const [result] = await db.insert(flashingOrders).values({
+        tenantId,
+        orderNumber,
+        jobId: job.id,
+        jobNumber: job.quoteNumber || null,
+        clientName: job.clientName || null,
+        siteAddress: job.siteAddress || null,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        requestedByUserId: null,
+        requestedByName,
+        requestedByEmail: ctx.tradeAccess.email || null,
+        deliveryMethod: "pickup",
+        siteNotes: null,
+        createdBy: null,
+      });
+
+      const orderId = Number(result.insertId);
+      await db.insert(flashingOrderStatusHistory).values({
+        tenantId,
+        orderId,
+        fromStatus: null,
+        toStatus: "draft",
+        changedByUserId: null,
+        changedByName: `${requestedByName} (Trade Portal)`,
+        notes: "Order created from an allocated trade portal job.",
+      });
+
+      return { id: orderId, orderNumber, created: true };
     }),
 
   getFlashingOrder: protectedTradePortalProcedure

@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
-import { ArrowRight, CalendarDays, FileText, Plus, Search } from "lucide-react";
+import { ArrowRight, Briefcase, CalendarDays, FileText, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 
 const PAGE_SIZE = 25;
@@ -74,6 +74,11 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
   const portalOrdersQuery = trpc.tradePortal.listFlashingOrders.useQuery(orderListInput, { enabled: portalMode });
   const ordersQuery = portalMode ? portalOrdersQuery : adminOrdersQuery;
   const jobsQuery = trpc.flashing.jobsForSelect.useQuery({ search: "" }, { enabled: !portalMode });
+  const portalJobSearchEnabled = portalMode && search.trim().length > 0;
+  const portalJobsQuery = trpc.tradePortal.searchFlashingJobs.useQuery(
+    { search, limit: PAGE_SIZE },
+    { enabled: portalJobSearchEnabled },
+  );
 
   const createMutation = trpc.flashing.createOrder.useMutation({
     onSuccess: (result) => {
@@ -84,7 +89,19 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
     onError: (error) => toast.error(error.message),
   });
 
+  const createPortalOrderMutation = trpc.tradePortal.createFlashingOrderForJob.useMutation({
+    onSuccess: (result) => {
+      toast.success(result.created ? `Created ${result.orderNumber}` : `Opening ${result.orderNumber}`);
+      utils.tradePortal.listFlashingOrders.invalidate();
+      utils.tradePortal.searchFlashingJobs.invalidate();
+      navigate(`/trade-portal/flashing-orders/${result.id}`);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
   const orders = ordersQuery.data?.orders || [];
+  const portalJobs = portalJobsQuery.data || [];
+  const showPortalJobMatches = portalJobSearchEnabled && portalJobs.length > 0;
   const total = ordersQuery.data?.total || 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -105,6 +122,14 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
 
   const openOrder = (id: number) => {
     navigate(`${portalMode ? "/trade-portal" : "/construction"}/flashing-orders/${id}`);
+  };
+
+  const openOrCreatePortalJobOrder = (job: any) => {
+    if (job.flashingOrderId) {
+      openOrder(job.flashingOrderId);
+      return;
+    }
+    createPortalOrderMutation.mutate({ jobId: job.id });
   };
 
   return (
@@ -198,7 +223,7 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
                   setSearch(event.target.value);
                   setOffset(0);
                 }}
-                placeholder="Search order, job, client, or site..."
+                placeholder={portalMode ? "Search allocated jobs, orders, clients, or sites..." : "Search order, job, client, or site..."}
               />
             </div>
             <select
@@ -216,133 +241,191 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
             </select>
           </div>
 
-          {ordersQuery.isLoading ? (
+          {ordersQuery.isLoading || (portalJobSearchEnabled && portalJobsQuery.isLoading) ? (
             <div className="flex justify-center py-16"><Spinner /></div>
-          ) : orders.length === 0 ? (
+          ) : orders.length === 0 && !showPortalJobMatches ? (
             <div className="rounded-md border border-dashed p-10 text-center">
               <FileText className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
               <p className="font-medium">No flashing orders yet</p>
               <p className="text-sm text-muted-foreground">
-                {portalMode
+                {portalMode && search.trim()
+                  ? "No matching flashing orders or allocated jobs were found."
+                  : portalMode
                   ? "There are no flashing orders assigned to your supplier account yet."
                   : "Create the first order to start designing flashing profiles."}
               </p>
             </div>
           ) : (
             <>
-            <div className="space-y-3 xl:hidden">
-              {orders.map((order: any) => (
-                <button
-                  key={order.id}
-                  type="button"
-                  onClick={() => openOrder(order.id)}
-                  className="w-full rounded-lg border bg-background p-4 text-left shadow-sm transition hover:bg-muted/30 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-slate-900"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{order.orderNumber}</div>
-                      <div className="mt-1 text-base font-semibold leading-tight text-foreground">{order.clientName || "Manual order"}</div>
-                      <div className="mt-1 line-clamp-2 text-sm leading-snug text-muted-foreground">
-                        {order.jobNumber || order.siteAddress || "No job linked"}
+            {orders.length > 0 && (
+              <>
+              <div className="space-y-3 xl:hidden">
+                {orders.map((order: any) => (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => openOrder(order.id)}
+                    className="w-full rounded-lg border bg-background p-4 text-left shadow-sm transition hover:bg-muted/30 active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{order.orderNumber}</div>
+                        <div className="mt-1 text-base font-semibold leading-tight text-foreground">{order.clientName || "Manual order"}</div>
+                        <div className="mt-1 line-clamp-2 text-sm leading-snug text-muted-foreground">
+                          {order.jobNumber || order.siteAddress || "No job linked"}
+                        </div>
+                      </div>
+                      <Badge variant="outline" className={`shrink-0 ${STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}`}>
+                        {STATUS_LABELS[order.status] || order.status}
+                      </Badge>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+                      <div className="rounded-md bg-muted/40 p-2">
+                        <div className="text-sm font-semibold text-foreground">{order.lineCount || 0}</div>
+                        Lines
+                      </div>
+                      <div className="rounded-md bg-muted/40 p-2">
+                        <div className="text-sm font-semibold text-foreground">{Number(order.totalLinealMetres || 0).toFixed(2)}</div>
+                        LM
+                      </div>
+                      <div className="rounded-md bg-muted/40 p-2">
+                        <div className="text-sm font-semibold text-foreground">{formatCurrency(order.totalExGst)}</div>
+                        Total
+                      </div>
+                      <div className="rounded-md bg-muted/40 p-2">
+                        <div className="text-sm font-semibold text-foreground">{formatDate(order.updatedAt)}</div>
+                        Updated
                       </div>
                     </div>
-                    <Badge variant="outline" className={`shrink-0 ${STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}`}>
-                      {STATUS_LABELS[order.status] || order.status}
-                    </Badge>
-                  </div>
 
-                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
-                    <div className="rounded-md bg-muted/40 p-2">
-                      <div className="text-sm font-semibold text-foreground">{order.lineCount || 0}</div>
-                      Lines
+                    <div className="mt-4 flex h-11 items-center justify-between rounded-md bg-slate-900 px-4 text-sm font-semibold text-white">
+                      <span>Open / edit order</span>
+                      <ArrowRight className="h-4 w-4" />
                     </div>
-                    <div className="rounded-md bg-muted/40 p-2">
-                      <div className="text-sm font-semibold text-foreground">{Number(order.totalLinealMetres || 0).toFixed(2)}</div>
-                      LM
-                    </div>
-                    <div className="rounded-md bg-muted/40 p-2">
-                      <div className="text-sm font-semibold text-foreground">{formatCurrency(order.totalExGst)}</div>
-                      Total
-                    </div>
-                    <div className="rounded-md bg-muted/40 p-2">
-                      <div className="text-sm font-semibold text-foreground">{formatDate(order.updatedAt)}</div>
-                      Updated
-                    </div>
-                  </div>
+                  </button>
+                ))}
+              </div>
 
-                  <div className="mt-4 flex h-11 items-center justify-between rounded-md bg-slate-900 px-4 text-sm font-semibold text-white">
-                    <span>Open / edit order</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            <div className="hidden overflow-x-auto rounded-md border xl:block">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50 text-muted-foreground">
-                  <tr>
-                    <th className="text-left px-4 py-3 font-medium">Order</th>
-                    <th className="text-left px-4 py-3 font-medium">Client / Job</th>
-                    <th className="text-left px-4 py-3 font-medium">Status</th>
-                    <th className="text-right px-4 py-3 font-medium">Lines</th>
-                    <th className="text-right px-4 py-3 font-medium">LM</th>
-                    <th className="text-right px-4 py-3 font-medium">Total</th>
-                    <th className="text-left px-4 py-3 font-medium">Updated</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((order: any) => (
-                    <tr
-                      key={order.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => openOrder(order.id)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          openOrder(order.id);
-                        }
-                      }}
-                      className="cursor-pointer border-t hover:bg-muted/30 focus:bg-muted/30 focus:outline-none"
-                    >
-                      <td className="px-4 py-3 font-semibold">{order.orderNumber}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{order.clientName || "Manual order"}</div>
-                        <div className="text-xs text-muted-foreground">{order.jobNumber || order.siteAddress || "No job linked"}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant="outline" className={STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}>
-                          {STATUS_LABELS[order.status] || order.status}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">{order.lineCount || 0}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{Number(order.totalLinealMetres || 0).toFixed(2)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{formatCurrency(order.totalExGst)}</td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          <CalendarDays className="h-3.5 w-3.5" />
-                          {formatDate(order.updatedAt)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openOrder(order.id);
-                          }}
-                        >
-                          Open <ArrowRight className="h-4 w-4 ml-1.5" />
-                        </Button>
-                      </td>
+              <div className="hidden overflow-x-auto rounded-md border xl:block">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 text-muted-foreground">
+                    <tr>
+                      <th className="text-left px-4 py-3 font-medium">Order</th>
+                      <th className="text-left px-4 py-3 font-medium">Client / Job</th>
+                      <th className="text-left px-4 py-3 font-medium">Status</th>
+                      <th className="text-right px-4 py-3 font-medium">Lines</th>
+                      <th className="text-right px-4 py-3 font-medium">LM</th>
+                      <th className="text-right px-4 py-3 font-medium">Total</th>
+                      <th className="text-left px-4 py-3 font-medium">Updated</th>
+                      <th className="px-4 py-3" />
                     </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map((order: any) => (
+                      <tr
+                        key={order.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openOrder(order.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openOrder(order.id);
+                          }
+                        }}
+                        className="cursor-pointer border-t hover:bg-muted/30 focus:bg-muted/30 focus:outline-none"
+                      >
+                        <td className="px-4 py-3 font-semibold">{order.orderNumber}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{order.clientName || "Manual order"}</div>
+                          <div className="text-xs text-muted-foreground">{order.jobNumber || order.siteAddress || "No job linked"}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant="outline" className={STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}>
+                            {STATUS_LABELS[order.status] || order.status}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums">{order.lineCount || 0}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{Number(order.totalLinealMetres || 0).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{formatCurrency(order.totalExGst)}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          <span className="inline-flex items-center gap-1">
+                            <CalendarDays className="h-3.5 w-3.5" />
+                            {formatDate(order.updatedAt)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openOrder(order.id);
+                            }}
+                          >
+                            Open <ArrowRight className="h-4 w-4 ml-1.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              </>
+            )}
+
+            {showPortalJobMatches && (
+              <div className={orders.length > 0 ? "border-t pt-4" : ""}>
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Briefcase className="h-4 w-4 text-primary" />
+                  Allocated jobs matching search
+                </div>
+                <div className="space-y-3">
+                  {portalJobs.map((job: any) => (
+                    <div key={job.id} className="rounded-lg border bg-background p-4 shadow-sm">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            {job.jobNumber || `Job ${job.id}`}
+                          </div>
+                          <div className="mt-1 text-base font-semibold leading-tight text-foreground">
+                            {job.clientName || "Unnamed client"}
+                          </div>
+                          <div className="mt-1 line-clamp-2 text-sm leading-snug text-muted-foreground">
+                            {job.siteAddress || "No site address recorded"}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="capitalize">{String(job.status || "unknown").replace(/_/g, " ")}</Badge>
+                            {job.flashingOrderNumber && (
+                              <Badge variant="outline" className={STATUS_CLASSES[job.flashingOrderStatus] || STATUS_CLASSES.draft}>
+                                {job.flashingOrderNumber}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          className="h-11 w-full sm:w-auto"
+                          variant={job.flashingOrderId ? "outline" : "default"}
+                          disabled={createPortalOrderMutation.isPending}
+                          onClick={() => openOrCreatePortalJobOrder(job)}
+                        >
+                          {createPortalOrderMutation.isPending && !job.flashingOrderId ? (
+                            <Spinner className="mr-2 h-4 w-4" />
+                          ) : job.flashingOrderId ? (
+                            <ArrowRight className="mr-2 h-4 w-4" />
+                          ) : (
+                            <Plus className="mr-2 h-4 w-4" />
+                          )}
+                          {job.flashingOrderId ? "Open order" : "Start flashing order"}
+                        </Button>
+                      </div>
+                    </div>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              </div>
+            )}
             </>
           )}
 
