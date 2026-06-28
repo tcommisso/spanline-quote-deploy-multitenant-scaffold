@@ -174,6 +174,16 @@ function normaliseLookup(value: unknown): string {
     .trim();
 }
 
+function quoteRequiresHomeWarranty(quote: any): boolean {
+  const haystack = [
+    quote?.region,
+    quote?.siteAddress,
+    quote?.suburb,
+    quote?.localCouncil,
+  ].filter(Boolean).join(" ").toUpperCase();
+  return /\bNSW\b/.test(haystack) || haystack.includes("NEW SOUTH WALES");
+}
+
 function quoteComponentSubtotal(components: any[]) {
   return (components || []).reduce((sum: number, comp: any) => {
     if (comp.included === false) return sum;
@@ -390,10 +400,13 @@ export const appRouter = router({
         const discountPct = parseFloat(quote.discountPercent || "0") / 100;
         const council = parseFloat(quote.councilFees || "0");
         const warranty = parseFloat(quote.homeWarranty || "0");
+        const professionalCost = parseFloat((quote as any).otherCost || "0");
+        const professionalCostDescription = (quote as any).otherCostDescription || "Professional Costs";
         if (delivery > 0) adjustments.push({ name: "Delivery", amount: delivery });
         if (travel > 0) adjustments.push({ name: "Travel Allowance", amount: travel });
         if (constMgmt > 0) adjustments.push({ name: "Construction Management", amount: constMgmt });
-        const adjustedSell = componentSubtotal + delivery + travel + constMgmt;
+        if (professionalCost > 0) adjustments.push({ name: professionalCostDescription, amount: professionalCost });
+        const adjustedSell = componentSubtotal + delivery + travel + constMgmt + professionalCost;
         if (complexity > 0) adjustments.push({ name: `Complexity Loading (${(complexity * 100).toFixed(0)}%)`, amount: adjustedSell * complexity });
         const afterComplexity = adjustedSell * (1 + complexity);
         if (discountPct > 0) adjustments.push({ name: `Discount (${(discountPct * 100).toFixed(0)}%)`, amount: -afterComplexity * discountPct });
@@ -494,6 +507,8 @@ export const appRouter = router({
         discountPercent: z.string().optional(),
         councilFees: z.string().optional(),
         homeWarranty: z.string().optional(),
+        otherCost: z.string().optional(),
+        otherCostDescription: z.string().optional(),
         validUntil: z.string().nullable().optional(),
         outcomeReason: z.string().nullable().optional(),
       }))
@@ -513,7 +528,7 @@ export const appRouter = router({
 
         // Log revision for financial/status changes
         try {
-          const financialFields = ["deliveryAmount", "travelAllowance", "travelDistanceKm", "smallJobSurcharge", "constructionMgmtAmount", "constructionMgmtPercent", "complexityLoading", "discountPercent", "councilFees", "homeWarranty"];
+          const financialFields = ["deliveryAmount", "travelAllowance", "travelDistanceKm", "smallJobSurcharge", "constructionMgmtAmount", "constructionMgmtPercent", "complexityLoading", "discountPercent", "councilFees", "homeWarranty", "otherCost", "otherCostDescription"];
           const changes: Array<{ field: string; oldValue: any; newValue: any }> = [];
           for (const field of financialFields) {
             if ((input as any)[field] !== undefined && (input as any)[field] !== (quote as any)[field]) {
@@ -554,6 +569,7 @@ export const appRouter = router({
             totalSell += parseFloat(updatedQuote.deliveryAmount || "0");
             totalSell += parseFloat(updatedQuote.travelAllowance || "0");
             totalSell += parseFloat(updatedQuote.constructionMgmtAmount || "0");
+            totalSell += parseFloat((updatedQuote as any).otherCost || "0");
             totalSell += parseFloat(updatedQuote.councilFees || "0");
             totalSell += parseFloat(updatedQuote.homeWarranty || "0");
           }
@@ -691,12 +707,12 @@ export const appRouter = router({
         // 5. Recalculate Home Warranty from the HOW tier table where applicable.
         const travel = quote.includeTravelAllowance ? money(quote.travelAllowance) : 0;
         const council = money(quote.councilFees);
+        const professionalCost = money((quote as any).otherCost);
         const complexityMultiplier = 1 + complexityTotal / 100;
         const discountMultiplier = 1 - money(quote.discountPercent) / 100;
-        const preWarrantyTotal = ((subtotal + autoDelivery + travel + mgmtTotal) * complexityMultiplier * discountMultiplier) + council;
-        const region = String(quote.region || "").trim().toUpperCase();
+        const preWarrantyTotal = ((subtotal + autoDelivery + travel + mgmtTotal + professionalCost) * complexityMultiplier * discountMultiplier) + council;
         const howRows = await db.getMasterDataByCategory("home_warranty", ctx.tenant?.id ?? null);
-        const homeWarranty = region === "ACT" ? 0 : calculateHomeWarrantyAmount(preWarrantyTotal, howRows);
+        const homeWarranty = quoteRequiresHomeWarranty(quote) ? calculateHomeWarrantyAmount(preWarrantyTotal, howRows) : 0;
         updates.homeWarranty = homeWarranty.toFixed(2);
 
         await db.updateQuote(input.id, updates, tenantId, quoteScopeOptionsForContext(ctx));
@@ -1125,7 +1141,11 @@ export const appRouter = router({
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
-        const siteAddress = normalizeApiAddress(quote.siteAddress);
+        const siteAddress = normalizeApiAddress([
+          quote.siteAddress,
+          quote.suburb,
+          quote.region,
+        ].filter(Boolean).join(", "));
         if (!siteAddress) throw new Error("Site address is required to calculate travel distance");
 
         // Get all branch addresses from branches table

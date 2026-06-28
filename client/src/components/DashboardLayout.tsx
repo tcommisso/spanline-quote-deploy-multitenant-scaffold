@@ -279,7 +279,6 @@ const adminGroups: AdminGroup[] = [
     items: [
       { icon: Users, label: "People", path: "/admin/people" },
       { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
-      { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
       { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
       { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
       { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },

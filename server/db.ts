@@ -1053,12 +1053,13 @@ function calculateStructureQuoteTotalExGst(
   const delivery = quote.includeDelivery ? num(quote.deliveryAmount) : 0;
   const travel = quote.includeTravelAllowance ? num(quote.travelAllowance) : 0;
   const constructionMgmt = quote.includeConstructionMgmt ? num(quote.constructionMgmtAmount) : 0;
+  const professionalCost = num((quote as any).otherCost);
   const complexity = num(quote.complexityLoading) / 100;
   const discount = num(quote.discountPercent) / 100;
   const council = num(quote.councilFees);
   const warranty = num(quote.homeWarranty);
 
-  const adjustedSell = subtotalSell + delivery + travel + constructionMgmt;
+  const adjustedSell = subtotalSell + delivery + travel + constructionMgmt + professionalCost;
   const afterComplexity = adjustedSell * (1 + complexity);
   const afterDiscount = afterComplexity * (1 - discount);
   return afterDiscount + council + warranty;
@@ -1174,6 +1175,15 @@ export async function getAnalytics(userId?: number) {
     componentsByQuote.get(c.quoteId)!.push(c);
   }
 
+  const allDetails = await db.select({
+    quoteId: quoteDetails.quoteId,
+    data: quoteDetails.data,
+  }).from(quoteDetails);
+  const detailByQuote = new Map<number, Record<string, any>>();
+  for (const detail of allDetails) {
+    detailByQuote.set(detail.quoteId, (detail.data as Record<string, any>) || {});
+  }
+
   // Calculate value per quote
   const quoteValues: { id: number; userId: number; month: string; status: string; value: number; clientName: string; quoteNumber: string; createdAt: Date; designAdvisor: string | null }[] = [];
   for (const q of allQuotes) {
@@ -1188,6 +1198,7 @@ export async function getAnalytics(userId?: number) {
     value += parseFloat(q.deliveryAmount || "0");
     value += parseFloat(q.travelAllowance || "0");
     value += parseFloat(q.constructionMgmtAmount || "0");
+    value += parseFloat(detailByQuote.get(q.id)?.otherCost || "0");
     value += parseFloat(q.councilFees || "0");
     value += parseFloat(q.homeWarranty || "0");
     quoteValues.push({ id: q.id, userId: q.userId, month: q.month, status: q.status, value, clientName: q.clientName, quoteNumber: q.quoteNumber, createdAt: q.createdAt, designAdvisor: q.designAdvisor || null });

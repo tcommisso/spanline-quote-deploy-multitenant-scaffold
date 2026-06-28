@@ -20,9 +20,19 @@ import ProductImport from "@/components/ProductImport";
 import CatalogueImportDialog from "@/components/CatalogueImportDialog";
 import { isAdminRole } from "@shared/const";
 
+function safeText(value: unknown, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function safeNumberText(value: unknown, fallback = "0") {
+  const text = safeText(value).trim();
+  return text || fallback;
+}
+
 /** Tiny inline thumbnail that matches product by code or name to product_images table */
 function ProductImageThumb({ code, name }: { code: string | null; name: string }) {
-  const searchKey = code || name.split(" ")[0] || "";
+  const searchKey = code || safeText(name).split(" ")[0] || "";
   const { data: images } = trpc.planConverter.getProductImagesByCode.useQuery(
     { code: searchKey },
     { enabled: searchKey.length > 1, staleTime: 60_000 * 5 }
@@ -169,10 +179,11 @@ export default function ProductTable() {
   // Sub-tabs for the currently selected tab filter
   const subTabsForTab = useMemo(() => {
     if (tabFilter === "all") return [];
-    return subTabRows.filter(st => st.description === tabFilter).map(st => {
+    return subTabRows.filter(st => safeText(st.description) === tabFilter).map(st => {
       // Extract the subtab name from the key format "parent::subtab"
-      const parts = st.key.split("::");
-      return parts.length > 1 ? parts[1] : st.key;
+      const key = safeText(st.key);
+      const parts = key.split("::");
+      return parts.length > 1 ? parts[1] : key;
     });
   }, [tabFilter, subTabRows]);
 
@@ -180,19 +191,19 @@ export default function ProductTable() {
   const filtered = useMemo(() => {
     let result = [...productRows];
     if (tabFilter !== "all") {
-      result = result.filter(p => p.tabName === tabFilter);
+      result = result.filter(p => safeText(p.tabName) === tabFilter);
     }
     if (subTabFilter !== "all") {
-      result = result.filter(p => p.subTab === subTabFilter);
+      result = result.filter(p => safeText(p.subTab) === subTabFilter);
     }
     if (search.trim()) {
       const q = search.toLowerCase();
       result = result.filter(p =>
-        p.name.toLowerCase().includes(q) ||
-        p.tabName.toLowerCase().includes(q) ||
-        (p.subTab || "").toLowerCase().includes(q) ||
-        (p.markupCategory || "").toLowerCase().includes(q) ||
-        (p.productCode || "").toLowerCase().includes(q)
+        safeText(p.name).toLowerCase().includes(q) ||
+        safeText(p.tabName).toLowerCase().includes(q) ||
+        safeText(p.subTab).toLowerCase().includes(q) ||
+        safeText(p.markupCategory).toLowerCase().includes(q) ||
+        safeText(p.productCode).toLowerCase().includes(q)
       );
     }
     return result;
@@ -203,17 +214,18 @@ export default function ProductTable() {
 
   // Unique tabs: dynamic from master data + any tabs found in existing product data
   const tabsInData = useMemo(() => {
-    const fromData = Array.from(new Set(productRows.map(p => p.tabName)));
-    const fromMasterData = tabRows.map(t => t.key);
+    const fromData = Array.from(new Set(productRows.map(p => safeText(p.tabName)).filter(Boolean)));
+    const fromMasterData = tabRows.map(t => safeText(t.key)).filter(Boolean);
     const all = Array.from(new Set([...fromMasterData, ...fromData]));
     return all.sort();
   }, [productRows, tabRows]);
 
   // Dynamic UoMs list from master data + any UoMs found in existing product data
   const uomOptions = useMemo(() => {
-    const fromData = Array.from(new Set(productRows.map(p => p.uom)));
-    const fromMasterData = uomRows.map(u => u.key);
-    return Array.from(new Set([...fromMasterData, ...fromData])).sort();
+    const fromData = Array.from(new Set(productRows.map(p => safeText(p.uom)).filter(Boolean)));
+    const fromMasterData = uomRows.map(u => safeText(u.key)).filter(Boolean);
+    const all = Array.from(new Set([...fromMasterData, ...fromData, "m", "ea"]));
+    return all.sort();
   }, [productRows, uomRows]);
 
   // Toggle selection
@@ -238,17 +250,17 @@ export default function ProductTable() {
     setEditing({
       id: product.id,
       productCode: product.productCode || null,
-      tabName: product.tabName,
-      name: product.name,
+      tabName: safeText(product.tabName, "uncategorised"),
+      name: safeText(product.name, "Unnamed product"),
       subTab: product.subTab || null,
-      uom: product.uom,
-      baseCost: product.baseCost,
-      materials: product.materials || "0",
-      installLabour: product.installLabour || "0",
-      consumables: product.consumables || "0",
+      uom: safeText(product.uom, "ea"),
+      baseCost: safeNumberText(product.baseCost),
+      materials: safeNumberText(product.materials),
+      installLabour: safeNumberText(product.installLabour),
+      consumables: safeNumberText(product.consumables),
       markupCategory: product.markupCategory,
       fixedSell: product.fixedSell,
-      powderCoatSurcharge: product.powderCoatSurcharge || "0",
+      powderCoatSurcharge: safeNumberText(product.powderCoatSurcharge),
       colourGroup: (product as any).colourGroup || null,
       colourGroupBottom: (product as any).colourGroupBottom || null,
       coverageWidth: (product as any).coverageWidth ?? null,
@@ -626,23 +638,27 @@ export default function ProductTable() {
                  {paginated.map((product: NonNullable<typeof allProducts>[number]) => {
                   const editingRow = editing?.id === product.id ? editing : null;
                   const isEditing = Boolean(editingRow);
-                  const mat = product.materials || "0";
-                  const lab = product.installLabour || "0";
-                  const con = product.consumables || "0";
+                  const productName = safeText(product.name, "Unnamed product");
+                  const productTab = safeText(product.tabName, "uncategorised");
+                  const productSubTab = safeText(product.subTab);
+                  const productUom = safeText(product.uom, "ea");
+                  const mat = safeNumberText(product.materials);
+                  const lab = safeNumberText(product.installLabour);
+                  const con = safeNumberText(product.consumables);
                   // Cost Amount is always computed as sum of breakdown fields
                   const computedCostAmt = isEditing ? editingRow!.baseCost : sumCostBreakdown(mat, lab, con);
                   const sellRate = calcSellRate(
                     computedCostAmt,
                     isEditing ? editingRow!.markupCategory : product.markupCategory,
                     isEditing ? editingRow!.fixedSell : product.fixedSell,
-                    isEditing ? editingRow!.powderCoatSurcharge : (product.powderCoatSurcharge || "0")
+                    isEditing ? editingRow!.powderCoatSurcharge : safeNumberText(product.powderCoatSurcharge)
                   );
 
                   return (
                     <tr key={product.id} className={`border-b border-border/30 transition-colors ${isEditing ? "bg-blue-50/50 dark:bg-blue-950/20" : "hover:bg-muted/20"} ${selected.has(product.id) ? "bg-blue-50/30 dark:bg-blue-950/10" : ""}`}>
                       {isAdmin && <td className="py-1.5 px-2 text-center"><input type="checkbox" checked={selected.has(product.id)} onChange={() => toggleSelect(product.id)} className="h-3.5 w-3.5 rounded border-gray-300" /></td>}
                       <td className="py-1.5 px-1 text-center">
-                        <ProductImageThumb code={product.productCode} name={product.name} />
+                        <ProductImageThumb code={product.productCode} name={productName} />
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
@@ -668,7 +684,7 @@ export default function ProductTable() {
                           </Select>
                         ) : (
                           <Badge variant="outline" className="text-[10px] font-normal">
-                            {TAB_LABELS[product.tabName as ComponentTabName] || product.tabName}
+                            {TAB_LABELS[productTab as ComponentTabName] || productTab}
                           </Badge>
                         )}
                       </td>
@@ -680,14 +696,15 @@ export default function ProductTable() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {subTabRows.filter(st => st.description === editingRow!.tabName).map(st => {
-                                const name = st.key.includes("::") ? st.key.split("::")[1] : st.key;
+                              {subTabRows.filter(st => safeText(st.description) === editingRow!.tabName).map(st => {
+                                const key = safeText(st.key);
+                                const name = key.includes("::") ? key.split("::")[1] : key;
                                 return <SelectItem key={st.key} value={name}>{name}</SelectItem>;
                               })}
                             </SelectContent>
                           </Select>
                         ) : (
-                          <span className="text-muted-foreground text-[10px]">{product.subTab || "—"}</span>
+                          <span className="text-muted-foreground text-[10px]">{productSubTab || "—"}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-3">
@@ -714,7 +731,7 @@ export default function ProductTable() {
                             )}
                           </div>
                         ) : (
-                          <span className="font-medium">{product.name}</span>
+                          <span className="font-medium">{productName}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-2 text-center">
@@ -728,7 +745,7 @@ export default function ProductTable() {
                             </SelectContent>
                           </Select>
                         ) : (
-                          <span className="text-muted-foreground">{product.uom}</span>
+                          <span className="text-muted-foreground">{productUom}</span>
                         )}
                       </td>
 
@@ -786,7 +803,7 @@ export default function ProductTable() {
                         {isEditing ? (
                           <Input type="number" step="0.01" value={editingRow!.powderCoatSurcharge} onChange={(e) => setEditing(prev => prev ? { ...prev, powderCoatSurcharge: e.target.value } : prev)} className="h-7 text-xs text-right w-14" />
                         ) : (
-                          <span className="font-mono text-muted-foreground">{parseFloat(product.powderCoatSurcharge || "0") > 0 ? `$${parseFloat(product.powderCoatSurcharge || "0").toFixed(2)}` : "—"}</span>
+                          <span className="font-mono text-muted-foreground">{parseFloat(safeNumberText(product.powderCoatSurcharge)) > 0 ? `$${parseFloat(safeNumberText(product.powderCoatSurcharge)).toFixed(2)}` : "—"}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-2 text-right">
@@ -878,7 +895,7 @@ export default function ProductTable() {
                             <Button variant="ghost" size="sm" onClick={() => startEditing(product)} className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground">
                               <Pencil className="h-3 w-3" />
                             </Button>
-                            <Button variant="ghost" size="sm" onClick={() => setDeleteTarget({ id: product.id, name: product.name })} className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive">
+                            <Button variant="ghost" size="sm" onClick={() => setDeleteTarget({ id: product.id, name: productName })} className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive">
                               <Trash2 className="h-3 w-3" />
                             </Button>
                           </div>

@@ -71,7 +71,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
   const categories = categoriesQuery.data || [];
 
   // Fetch category assignments for all visible suppliers
-  const supplierIds = useMemo(() => suppliers.map(s => s.id), [suppliers]);
+  const supplierIds = useMemo(() => suppliers.filter((s: any) => s.id > 0).map(s => s.id), [suppliers]);
   const assignmentsQuery = trpc.supplierCategories.getForSuppliers.useQuery(
     { supplierIds },
     { enabled: supplierIds.length > 0 }
@@ -153,17 +153,24 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
   // Filter suppliers by selected category
   const filteredSuppliers = useMemo(() => {
     if (!filterCategoryId) return suppliers;
+    const selectedCategory = typeof filterCategoryId === "number"
+      ? categories.find((category: any) => category.id === filterCategoryId)
+      : null;
+    const selectedCategoryName = String(selectedCategory?.name || "").trim().toLowerCase();
     if (filterCategoryId === "untagged") {
       return suppliers.filter(s => {
         const cats = categoryAssignments[s.id] || [];
-        return cats.length === 0;
+        const installerCategory = (s as any).isInstallerOnly ? String((s as any).category || "").trim() : "";
+        return cats.length === 0 && !installerCategory;
       });
     }
     return suppliers.filter(s => {
       const cats = categoryAssignments[s.id] || [];
-      return cats.some(c => c.categoryId === filterCategoryId);
+      const installerCategory = (s as any).isInstallerOnly ? String((s as any).category || "").trim().toLowerCase() : "";
+      return cats.some(c => c.categoryId === filterCategoryId)
+        || Boolean(selectedCategoryName && installerCategory === selectedCategoryName);
     });
-  }, [suppliers, filterCategoryId, categoryAssignments]);
+  }, [suppliers, filterCategoryId, categoryAssignments, categories]);
 
   function resetForm() {
     setForm({ name: "", abn: "", contactName: "", phone: "", email: "", address: "", category: "", paymentTerms: "", defaultGlCode: "", notes: "", tradePortalFlashingOrdersEnabled: false });
@@ -171,6 +178,10 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
   }
 
   function startEdit(s: typeof suppliers[0]) {
+    if ((s as any).isInstallerOnly || s.id < 0) {
+      toast.info("This is a trade portal record. Edit the trade from People & Portals.");
+      return;
+    }
     setForm({
       name: s.name,
       abn: (s as any).abn || "",
@@ -222,6 +233,11 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
 
   function confirmPendingSupplierAction() {
     if (!pendingSupplierAction) return;
+    if (pendingSupplierAction.supplierId < 0) {
+      toast.info("This is a trade portal record. Edit it from People & Portals.");
+      setPendingSupplierAction(null);
+      return;
+    }
     if (pendingSupplierAction.type === "deactivate") {
       deleteMutation.mutate({ id: pendingSupplierAction.supplierId });
     } else {
@@ -501,12 +517,14 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
         <div className="text-center py-12 text-muted-foreground">
           <Building2 className="h-12 w-12 mx-auto mb-3 opacity-30" />
           <p>No suppliers found</p>
-          <p className="text-sm">Add your first supplier to get started</p>
+          <p className="text-sm">Add a supplier, sync from Xero, or create trade records in People & Portals.</p>
         </div>
       ) : (
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {filteredSuppliers.map((s) => {
             const supplierCats = categoryAssignments[s.id] || [];
+            const isInstallerOnly = Boolean((s as any).isInstallerOnly || s.id < 0);
+            const installerCategory = isInstallerOnly ? ((s as any).category || (s as any).tradeType || "") : "";
             return (
               <Card key={s.id} className={`${!s.isActive ? "opacity-50" : ""}`}>
                 <CardHeader className="pb-2">
@@ -523,10 +541,12 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                       )}
                     </div>
                     <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(s)}>
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      {isAdmin && s.isActive && (
+                      {!isInstallerOnly && (
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(s)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      {!isInstallerOnly && isAdmin && s.isActive && (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -541,7 +561,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                           <UserPlus className="h-3.5 w-3.5" />
                         </Button>
                       )}
-                      {s.isActive && (
+                      {!isInstallerOnly && s.isActive && (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -558,7 +578,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                     </div>
                   </div>
                   {/* Category tags */}
-                  {supplierCats.length > 0 && (
+                  {(supplierCats.length > 0 || installerCategory) && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {supplierCats.map(cat => (
                         <Badge
@@ -570,6 +590,16 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                           {cat.name}
                         </Badge>
                       ))}
+                      {installerCategory && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          {installerCategory}
+                        </Badge>
+                      )}
+                      {isInstallerOnly && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-300 bg-blue-50 text-blue-700">
+                          Trade Portal
+                        </Badge>
+                      )}
                     </div>
                   )}
                 </CardHeader>

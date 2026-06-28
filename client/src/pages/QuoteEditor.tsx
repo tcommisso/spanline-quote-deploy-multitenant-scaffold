@@ -188,8 +188,10 @@ export default function QuoteEditor({ id }: { id: number }) {
       const discount = parseFloat(quote.discountPercent || "0") / 100;
       const council = parseFloat(quote.councilFees || "0");
       const warranty = parseFloat(quote.homeWarranty || "0");
+      const professionalCost = parseFloat((quote as any).otherCost || "0");
+      const professionalCostDescription = (quote as any).otherCostDescription || "Professional Costs";
 
-      const adjustedSell = subtotalSell + delivery + travel + smallJob + constMgmt;
+      const adjustedSell = subtotalSell + delivery + travel + smallJob + constMgmt + professionalCost;
       const afterComplexity = adjustedSell * (1 + complexity);
       const afterDiscount = afterComplexity * (1 - discount);
       const grandTotalExGst = afterDiscount + council + warranty;
@@ -210,6 +212,7 @@ export default function QuoteEditor({ id }: { id: number }) {
       if (travel > 0) adjustments.push({ name: "Travel Allowance", amount: travel });
       if (smallJob > 0) adjustments.push({ name: "Small Job Surcharge", amount: smallJob });
       if (constMgmt > 0) adjustments.push({ name: "Construction Management", amount: constMgmt });
+      if (professionalCost > 0) adjustments.push({ name: professionalCostDescription, amount: professionalCost });
       if (complexity > 0) adjustments.push({ name: `Complexity Loading (${(complexity * 100).toFixed(0)}%)`, amount: adjustedSell * complexity });
       if (discount > 0) adjustments.push({ name: `Discount (${(discount * 100).toFixed(0)}%)`, amount: -afterComplexity * discount });
       if (council > 0) adjustments.push({ name: "Council Fees", amount: council });

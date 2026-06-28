@@ -1137,9 +1137,14 @@ const SECTION_OPTIONS = [
   "other",
 ];
 
+function safeAdminText(value: unknown, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
 export function ChecklistPricingEditor() {
   const utils = trpc.useUtils();
-  const { data: items, isLoading } = trpc.checklistItems.listAll.useQuery();
+  const { data: items, isLoading, error } = trpc.checklistItems.listAll.useQuery();
   const createMut = trpc.checklistItems.create.useMutation({
     onSuccess: () => {
       utils.checklistItems.listAll.invalidate();
@@ -1177,7 +1182,13 @@ export function ChecklistPricingEditor() {
 
   const startEdit = (item: any) => {
     setEditingId(item.id);
-    setEditData({ label: item.label, unitPrice: String(item.unitPrice), unit: item.unit, section: item.section, isActive: item.isActive });
+    setEditData({
+      label: safeAdminText(item.label),
+      unitPrice: safeAdminText(item.unitPrice, "0"),
+      unit: (safeAdminText(item.unit, "each") as "each" | "m" | "m2" | "lump"),
+      section: safeAdminText(item.section, "other"),
+      isActive: item.isActive !== false,
+    });
   };
 
   const handleUpdate = () => {
@@ -1191,8 +1202,9 @@ export function ChecklistPricingEditor() {
   };
 
   // Group items by section
-  const grouped = (items || []).reduce<Record<string, typeof items>>((acc, item) => {
-    const section = item.section || "other";
+  const itemRows = Array.isArray(items) ? items : [];
+  const grouped = itemRows.reduce<Record<string, typeof itemRows>>((acc, item) => {
+    const section = safeAdminText(item.section, "other");
     if (!acc[section]) acc[section] = [];
     acc[section]!.push(item);
     return acc;
@@ -1200,6 +1212,14 @@ export function ChecklistPricingEditor() {
 
   if (isLoading) {
     return <div className="flex items-center gap-2 py-4"><Loader2 className="h-4 w-4 animate-spin" /><span className="text-sm text-muted-foreground">Loading...</span></div>;
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        Could not load checklist pricing: {error.message}
+      </div>
+    );
   }
 
   return (

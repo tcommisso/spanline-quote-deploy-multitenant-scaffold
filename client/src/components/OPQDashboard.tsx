@@ -80,6 +80,7 @@ export default function OPQDashboard({ quoteId }: { quoteId: number }) {
   const discount = parseFloat(quote.discountPercent || "0") / 100;
   const council = parseFloat(quote.councilFees || "0");
   const warranty = parseFloat(quote.homeWarranty || "0");
+  const professionalCost = parseFloat((quote as any).otherCost || "0");
 
   // Small job surcharge: apply % if subtotal < threshold
   const smallJobThreshold = parseFloat(priceSettings.smallJobThreshold || "0");
@@ -87,7 +88,7 @@ export default function OPQDashboard({ quoteId }: { quoteId: number }) {
   const smallJobApplies = smallJobThreshold > 0 && subtotalSell < smallJobThreshold;
   const smallJobAmount = smallJobApplies ? subtotalSell * smallJobPct : 0;
 
-  const adjustedSell = subtotalSell + delivery + travel + smallJobAmount + checklistPricingTotal;
+  const adjustedSell = subtotalSell + delivery + travel + smallJobAmount + checklistPricingTotal + professionalCost;
   const afterConstMgmt = adjustedSell * (1 + constMgmtPct);
   const afterComplexity = afterConstMgmt * (1 + complexity);
   const afterDiscount = afterComplexity * (1 - discount);
@@ -203,5 +204,4 @@ function AdjLine({ label, value, bold }: { label: string; value: number; bold?: 
     </div>
   );
 }
-
 

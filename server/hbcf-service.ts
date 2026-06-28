@@ -10,6 +10,7 @@ import {
   hbcfPolicyMatches,
   hbcfSyncLogs,
   quoteComponents,
+  quoteDetails,
   quotes,
   type HbcfBuilderProfile,
   type InsertHbcfBuilderProfile,
@@ -1243,6 +1244,11 @@ export async function calculateQuoteHbcfValue(quoteId: number, tenantId?: number
     .where(and(...scopedConditions(quotes, tenantId, eq(quotes.id, quoteId))))
     .limit(1);
   if (!quote) throw new Error("Quote not found");
+  const [detail] = await db.select()
+    .from(quoteDetails)
+    .where(eq(quoteDetails.quoteId, quoteId))
+    .limit(1);
+  const detailData = (detail?.data as Record<string, any>) || {};
   const components = await db.select().from(quoteComponents).where(eq(quoteComponents.quoteId, quoteId));
   const componentSubtotal = components.reduce((sum, comp: any) => {
     if (comp.included === false) return sum;
@@ -1253,11 +1259,12 @@ export async function calculateQuoteHbcfValue(quoteId: number, tenantId?: number
   const travel = quote.includeTravelAllowance ? Number(quote.travelAllowance || 0) : 0;
   const smallJob = quote.includeSmallJobSurcharge ? Number(quote.smallJobSurcharge || 0) : 0;
   const constructionMgmt = quote.includeConstructionMgmt ? Number(quote.constructionMgmtAmount || 0) : 0;
+  const professionalCost = Number(detailData.otherCost || 0);
   const complexity = Number(quote.complexityLoading || 0) / 100;
   const discount = Number(quote.discountPercent || 0) / 100;
   const council = Number(quote.councilFees || 0);
   const homeWarranty = Number(quote.homeWarranty || 0);
-  const adjustedSell = componentSubtotal + delivery + travel + smallJob + constructionMgmt;
+  const adjustedSell = componentSubtotal + delivery + travel + smallJob + constructionMgmt + professionalCost;
   const afterComplexity = adjustedSell * (1 + complexity);
   const afterDiscount = afterComplexity * (1 - discount);
   return afterDiscount + council + homeWarranty;

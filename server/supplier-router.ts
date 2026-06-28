@@ -39,6 +39,10 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function normaliseSupplierKey(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
 async function requireSupplierAccess(db: any, ctx: any, supplierId: number) {
   const [supplier] = await db.select()
     .from(suppliers)
@@ -85,9 +89,78 @@ export const supplierRouter = router({
         }
       }
       appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
-      return db.select().from(suppliers)
+      const supplierRows = await db.select().from(suppliers)
         .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(suppliers.name);
+
+      if (input?.supplierScope !== "construction") {
+        return supplierRows;
+      }
+
+      const installerConditions: any[] = [];
+      if (input?.activeOnly !== false) {
+        installerConditions.push(eq(constructionInstallers.active, true));
+      }
+      if (input?.search) {
+        const s = `%${input.search}%`;
+        installerConditions.push(or(
+          like(constructionInstallers.name, s),
+          like(constructionInstallers.email, s),
+          like(constructionInstallers.phone, s),
+          like(constructionInstallers.speciality, s),
+        )!);
+      }
+      appendTenantScope(installerConditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
+
+      const installerRows = await db.select().from(constructionInstallers)
+        .where(installerConditions.length > 0 ? and(...installerConditions) : undefined)
+        .orderBy(constructionInstallers.name);
+
+      const supplierKeys = new Set<string>();
+      for (const supplier of supplierRows) {
+        const emailKey = normaliseSupplierKey(supplier.email);
+        const nameKey = normaliseSupplierKey(supplier.name);
+        if (emailKey) supplierKeys.add(`email:${emailKey}`);
+        if (nameKey) supplierKeys.add(`name:${nameKey}`);
+      }
+
+      const installerSupplierRows = installerRows
+        .filter((installer: any) => {
+          const emailKey = normaliseSupplierKey(installer.email);
+          const nameKey = normaliseSupplierKey(installer.name);
+          return !(emailKey && supplierKeys.has(`email:${emailKey}`))
+            && !(nameKey && supplierKeys.has(`name:${nameKey}`));
+        })
+        .map((installer: any) => ({
+          id: -installer.id,
+          tenantId: installer.tenantId,
+          name: installer.name,
+          abn: installer.abn || null,
+          contactName: installer.name,
+          phone: installer.phone || null,
+          email: installer.email || null,
+          address: installer.address || null,
+          category: installer.speciality || installer.tradeType || null,
+          supplierScope: "construction",
+          paymentTerms: null,
+          defaultGlCode: null,
+          notes: "Trade portal record. Edit this trade from People & Portals.",
+          xeroContactId: installer.xeroContactId || null,
+          xeroConnectionId: null,
+          xeroTenantId: null,
+          lastXeroSyncAt: installer.lastXeroSyncAt || null,
+          tradePortalFlashingOrdersEnabled: false,
+          isActive: Boolean(installer.active),
+          createdBy: null,
+          createdAt: installer.createdAt,
+          updatedAt: installer.updatedAt,
+          isInstallerOnly: true,
+          installerId: installer.id,
+          tradeType: installer.tradeType,
+        }));
+
+      return [...supplierRows, ...installerSupplierRows]
+        .sort((a: any, b: any) => normaliseSupplierKey(a.name).localeCompare(normaliseSupplierKey(b.name)));
     }),
 
   categories: protectedProcedure.query(async ({ ctx }) => {

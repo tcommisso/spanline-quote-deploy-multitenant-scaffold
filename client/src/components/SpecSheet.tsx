@@ -465,6 +465,21 @@ function getHowAmount(grandTotalExGst: number, tiers: HowTier[] = HOW_TIERS): nu
   return howAmount;
 }
 
+function formatHowTierLabel(tier: HowTier): string {
+  const amount = `$${tier.amount.toLocaleString()}`;
+  return `${tier.label} - ${amount}`;
+}
+
+function quoteLooksNsw(quote: any): boolean {
+  const haystack = [
+    quote?.region,
+    quote?.siteAddress,
+    quote?.suburb,
+    quote?.localCouncil,
+  ].filter(Boolean).join(" ").toUpperCase();
+  return /\bNSW\b/.test(haystack) || haystack.includes("NEW SOUTH WALES");
+}
+
 export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
@@ -538,6 +553,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
         complexityOverride,
         councilFees,
         homeWarranty,
+        otherCost: professionalCost,
+        otherCostDescription: professionalCostDescription || "Professional Costs",
         includeDelivery: parseFloat(deliveryAmount) > 0,
         includeTravelAllowance: parseFloat(travelAllowance) > 0,
         includeSmallJobSurcharge: false,
@@ -576,6 +593,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [complexityOverride, setComplexityOverride] = useState(false);
   const [councilFees, setCouncilFees] = useState("0");
   const [homeWarranty, setHomeWarranty] = useState("0");
+  const [professionalCost, setProfessionalCost] = useState("0");
+  const [professionalCostDescription, setProfessionalCostDescription] = useState("Professional Costs");
 
   // Load adjustment values from quote
   useEffect(() => {
@@ -589,6 +608,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       setComplexityOverride(!!(quote as any).complexityOverride);
       setCouncilFees((quote as any).councilFees || "0");
       setHomeWarranty((quote as any).homeWarranty || "0");
+      setProfessionalCost((quote as any).otherCost || "0");
+      setProfessionalCostDescription((quote as any).otherCostDescription || "Professional Costs");
     }
   }, [quote]);
 
@@ -633,6 +654,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       complexityOverride,
       councilFees,
       homeWarranty,
+      otherCost: professionalCost,
+      otherCostDescription: professionalCostDescription || "Professional Costs",
       includeDelivery: parseFloat(deliveryAmount) > 0,
       includeTravelAllowance: parseFloat(travelAllowance) > 0,
       includeSmallJobSurcharge: false,
@@ -642,14 +665,14 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       onSuccess: () => { setAdjSaveStatus("saved"); setTimeout(() => setAdjSaveStatus("idle"), 2000); },
       onError: () => { setAdjSaveStatus("idle"); },
     });
-  }, [quoteId, deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty, adjUpdateMutation, quote]);
+  }, [quoteId, deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty, professionalCost, professionalCostDescription, adjUpdateMutation, quote]);
 
   useEffect(() => {
     if (!adjHasLoadedRef.current) return;
     if (adjAutoSaveTimerRef.current) clearTimeout(adjAutoSaveTimerRef.current);
     adjAutoSaveTimerRef.current = setTimeout(() => { performAdjSave(); }, 9000);
     return () => { if (adjAutoSaveTimerRef.current) clearTimeout(adjAutoSaveTimerRef.current); };
-  }, [deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty]);
+  }, [deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty, professionalCost, professionalCostDescription]);
 
   const skipFormResetRef = useRef(false);
   const pendingAiDescRef = useRef<string | null>(null);
@@ -4345,21 +4368,47 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     )}
                   </div>
 
-                  {/* Home Warranty (HOW) - hidden for ACT */}
-                  {(priceSettings.regionHowFlags[(quote as any)?.region || ""] !== undefined ? priceSettings.regionHowFlags[(quote as any)?.region || ""] : ((quote as any)?.region || "").toUpperCase() !== "ACT") && (
+                  {/* Professional Costs */}
                   <div className="space-y-1.5">
-                    <Label className="text-xs flex items-center gap-1">
-                      Home Warranty (HOW) $
-                      {priceSettings.regionHowFlags[(quote as any)?.region || ""] && <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-50 text-amber-700">HOW Region</Badge>}
-                    </Label>
+                    <Label className="text-xs">Professional Costs $</Label>
                     <Input
                       type="number"
                       step="0.01"
-                      value={homeWarranty}
-                      onChange={(e) => setHomeWarranty(e.target.value)}
+                      value={professionalCost}
+                      onChange={(e) => setProfessionalCost(e.target.value)}
                       className="h-8 text-sm"
                       placeholder="0.00"
                     />
+                    <Input
+                      value={professionalCostDescription}
+                      onChange={(e) => setProfessionalCostDescription(e.target.value)}
+                      className="h-8 text-xs"
+                      placeholder="Professional Costs"
+                    />
+                  </div>
+
+                  {/* Home Warranty (HOW) - NSW only */}
+                  {quoteLooksNsw(quote) && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs flex items-center gap-1">
+                      Home Warranty (HOW) $
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-50 text-amber-700">NSW</Badge>
+                    </Label>
+                    <select
+                      value={(parseFloat(homeWarranty || "0") || 0).toFixed(2)}
+                      onChange={(e) => setHomeWarranty(e.target.value)}
+                      className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value="0">None</option>
+                      {priceSettings.homeWarrantyTiers.map((tier) => {
+                        const value = (parseFloat(String(tier.amount || 0)) || 0).toFixed(2);
+                        return (
+                          <option key={`${tier.label}-${value}`} value={value}>
+                            {formatHowTierLabel(tier)}
+                          </option>
+                        );
+                      })}
+                    </select>
                     {(() => {
                       const quoteBase = parseFloat((quote as any)?.totalSellPriceEx || "0")
                         || (parseFloat((quote as any)?.totalRRPInc || "0") / 1.1)
@@ -4369,11 +4418,12 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                           + parseFloat(deliveryAmount || "0")
                           + parseFloat(travelAllowance || "0")
                           + parseFloat(constructionMgmtAmount || "0")
-                          + parseFloat(councilFees || "0"),
+                          + parseFloat(councilFees || "0")
+                          + parseFloat(professionalCost || "0"),
                         priceSettings.homeWarrantyTiers,
                       );
                       return suggestedHow > 0 ? (
-                        <button type="button" onClick={() => setHomeWarranty(String(suggestedHow))} className="text-[10px] text-blue-600 hover:underline cursor-pointer">
+                        <button type="button" onClick={() => setHomeWarranty(suggestedHow.toFixed(2))} className="text-[10px] text-blue-600 hover:underline cursor-pointer">
                           Suggested: ${suggestedHow} (click to apply)
                         </button>
                       ) : null;
