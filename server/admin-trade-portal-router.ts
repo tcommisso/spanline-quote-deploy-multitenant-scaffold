@@ -17,7 +17,7 @@ import {
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
 import { storagePut } from "./storage";
-import { getXeroContacts, getXeroInvoices, getXeroPayments, updateXeroContact, type XeroInvoice, type XeroContact } from "./xero-client";
+import { getXeroContacts, updateXeroContact, type XeroContact } from "./xero-client";
 import { getValidAccessToken } from "./xero-client";
 import { sendNotificationEmail } from "./email";
 import * as vocphone from "./vocphone";
@@ -26,6 +26,7 @@ import { triggerPushRemittanceCreated, triggerPushTradeNewsPublished } from "./p
 import { logNotification } from "./notification-gateway";
 import { buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { getXeroBillsForTrade, getXeroPaymentRemittancesForTrade } from "./trade-remittance-xero";
 
 function generateToken(length = 64): string {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
@@ -53,19 +54,6 @@ function portalNewsTenantConditions(ctx: any, ...baseConditions: any[]) {
 
 function stripHtml(value: string) {
   return value.replace(/<[^>]*>/g, "").trim();
-}
-
-/** Parse Xero .NET date format /Date(ms+tz)/ to ISO string */
-function parseXeroDate(d: any): string | null {
-  if (!d) return null;
-  if (typeof d === 'string') {
-    const match = d.match(/\/Date\((\d+)([+-]\d+)?\)\//);
-    if (match) return new Date(parseInt(match[1], 10)).toISOString();
-    const parsed = new Date(d);
-    if (!isNaN(parsed.getTime())) return parsed.toISOString();
-  }
-  if (d instanceof Date && !isNaN(d.getTime())) return d.toISOString();
-  return null;
 }
 
 export const adminTradePortalRouter = router({
@@ -196,38 +184,14 @@ export const adminTradePortalRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
-      if (!auth) return { connected: false, bills: [], error: "No active Xero connection" };
-      const routing = { connectionId: auth.xeroConnectionId };
       const [installer] = await db.select().from(constructionInstallers)
         .where(and(...installerTenantConditions(ctx, input.installerId))).limit(1);
-      if (!installer?.xeroContactId) {
-        return { connected: true, bills: [], error: "Trade not linked to Xero. Click 'Link to Xero' to match." };
-      }
+      if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Trade not found" });
       try {
-        const result = await getXeroInvoices({
-          where: `Type=="ACCPAY"&&Contact.ContactID==guid("${installer.xeroContactId}")`,
-        }, routing);
-        const bills = (result.Invoices || []).map((inv: XeroInvoice) => ({
-          invoiceId: inv.InvoiceID,
-          invoiceNumber: inv.InvoiceNumber,
-          date: parseXeroDate(inv.Date),
-          dueDate: parseXeroDate(inv.DueDate),
-          status: inv.Status,
-          reference: inv.Reference,
-          subTotal: inv.SubTotal,
-          totalTax: inv.TotalTax,
-          total: inv.Total,
-          amountDue: inv.AmountDue,
-          amountPaid: inv.AmountPaid,
-          lineItems: (inv.LineItems || []).map(li => ({
-            description: li.Description,
-            quantity: li.Quantity,
-            unitAmount: li.UnitAmount,
-            lineAmount: li.LineAmount,
-          })),
-        }));
-        return { connected: true, bills, error: null };
+        return await getXeroBillsForTrade({
+          appTenantId: ctx.tenant?.id,
+          installer,
+        });
       } catch (err: any) {
         console.error("[Xero Bills] Error fetching bills:", err.message);
         return { connected: true, bills: [], error: err.message };
@@ -798,9 +762,9 @@ export const adminTradePortalRouter = router({
   reconcileXeroPayments: adminProcedure.mutation(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-    const auth = await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" });
-    if (!auth) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection. Please connect Xero first." });
-    const routing = { connectionId: auth.xeroConnectionId };
+    if (!(await getValidAccessToken({ appTenantId: ctx.tenant?.id, moduleKey: "trade_portal" }))) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No active Xero connection. Please connect Xero first." });
+    }
 
     // Get all trades linked to Xero
     const linkedTrades = await db.select({
@@ -838,49 +802,45 @@ export const adminTradePortalRouter = router({
 
     for (const trade of linkedTrades) {
       try {
-        // Fetch ACCPAY (bills) for this trade's Xero contact
-        const invoiceResult = await getXeroInvoices({
-          where: `Type=="ACCPAY"&&Contact.ContactID==guid("${trade.xeroContactId}")&&Status=="PAID"`,
-        }, routing);
+        const paymentResult = await getXeroPaymentRemittancesForTrade({
+          appTenantId: ctx.tenant?.id,
+          installer: trade,
+          timeoutMs: 45000,
+        });
+        if (!paymentResult.connected) {
+          throw new Error(paymentResult.error || "No active Xero connection");
+        }
+        if (paymentResult.error) {
+          errors++;
+          details.push({ trade: trade.name, action: `error: ${paymentResult.error}` });
+          continue;
+        }
 
-        for (const invoice of (invoiceResult.Invoices || [])) {
-          // Fetch payments for this invoice
-          if (!invoice.InvoiceID) continue;
-          try {
-            const paymentResult = await getXeroPayments({
-              where: `Invoice.InvoiceID==guid("${invoice.InvoiceID}")`,
-            }, routing);
-            for (const payment of (paymentResult.Payments || [])) {
-              if (!payment.PaymentID) continue;
-              if (existingPaymentIds.has(payment.PaymentID)) {
-                skipped++;
-                continue;
-              }
-              // Create remittance record
-              await db.insert(tradeRemittances).values({
-                installerId: trade.id,
-                amount: String(payment.Amount || 0),
-                date: payment.Date ? new Date(payment.Date) : new Date(),
-                reference: payment.Reference || invoice.InvoiceNumber || null,
-                notes: `Auto-synced from Xero. Invoice: ${invoice.InvoiceNumber || invoice.InvoiceID}`,
-                source: "xero",
-                xeroPaymentId: payment.PaymentID,
-                xeroInvoiceId: invoice.InvoiceID,
-                xeroInvoiceNumber: invoice.InvoiceNumber || null,
-              });
-              existingPaymentIds.add(payment.PaymentID);
-              created++;
-              details.push({
-                trade: trade.name,
-                action: "created",
-                amount: payment.Amount,
-                ref: payment.Reference || invoice.InvoiceNumber,
-              });
-            }
-          } catch (payErr: any) {
-            console.error(`[Reconcile] Error fetching payments for invoice ${invoice.InvoiceID}:`, payErr.message);
-            errors++;
+        for (const payment of paymentResult.remittances) {
+          if (!payment.xeroPaymentId) continue;
+          if (existingPaymentIds.has(payment.xeroPaymentId)) {
+            skipped++;
+            continue;
           }
+          await db.insert(tradeRemittances).values({
+            installerId: trade.id,
+            amount: payment.amount,
+            date: payment.date,
+            reference: payment.reference,
+            notes: payment.notes,
+            source: "xero",
+            xeroPaymentId: payment.xeroPaymentId,
+            xeroInvoiceId: payment.xeroInvoiceId,
+            xeroInvoiceNumber: payment.xeroInvoiceNumber,
+          });
+          existingPaymentIds.add(payment.xeroPaymentId);
+          created++;
+          details.push({
+            trade: trade.name,
+            action: "created",
+            amount: Number(payment.amount || 0),
+            ref: payment.reference || payment.xeroInvoiceNumber || undefined,
+          });
         }
       } catch (err: any) {
         console.error(`[Reconcile] Error processing trade ${trade.name}:`, err.message);
@@ -1157,43 +1117,49 @@ export const adminTradePortalRouter = router({
 
       for (const trade of linkedTrades) {
         try {
-          // Get payments for this contact from Xero
-          const paymentsResult = await getXeroPayments({ where: `Invoice.Contact.ContactID=guid("${trade.xeroContactId}")` }, routing);
-          const payments = paymentsResult.Payments || [];
+          const paymentsResult = await getXeroPaymentRemittancesForTrade({
+            appTenantId: ctx.tenant?.id,
+            connectionId: auth.xeroConnectionId,
+            installer: trade,
+            timeoutMs: 45000,
+          });
+          if (!paymentsResult.connected) {
+            throw new Error(paymentsResult.error || "No active Xero connection");
+          }
+          if (paymentsResult.error) {
+            throw new Error(paymentsResult.error);
+          }
 
-          for (const payment of payments) {
-            const paymentId = payment.PaymentID;
+          for (const payment of paymentsResult.remittances) {
+            const paymentId = payment.xeroPaymentId;
             if (!paymentId || syncedPaymentIds.has(paymentId)) {
               skipped++;
               continue;
             }
 
-            const invoiceId = payment.Invoice?.InvoiceID;
-            const invoiceNumber = payment.Invoice?.InvoiceNumber;
-
             try {
               // Create remittance record
               const [remittance] = await db.insert(tradeRemittances).values({
                 installerId: trade.id,
-                amount: String(payment.Amount || "0"),
-                date: payment.Date ? new Date(payment.Date) : new Date(),
-                reference: `Xero: ${invoiceNumber || invoiceId || paymentId}`,
-                notes: `Auto-synced from Xero payment ${paymentId}`,
+                amount: payment.amount,
+                date: payment.date,
+                reference: payment.reference,
+                notes: payment.notes,
                 source: "xero",
                 xeroPaymentId: paymentId,
-                xeroInvoiceId: invoiceId || null,
-                xeroInvoiceNumber: invoiceNumber || null,
+                xeroInvoiceId: payment.xeroInvoiceId,
+                xeroInvoiceNumber: payment.xeroInvoiceNumber,
               }).$returningId();
 
               // Log the sync
               await db.insert(xeroPaymentSyncLog).values({
                 xeroPaymentId: paymentId,
-                xeroInvoiceId: invoiceId || null,
-                xeroInvoiceNumber: invoiceNumber || null,
+                xeroInvoiceId: payment.xeroInvoiceId,
+                xeroInvoiceNumber: payment.xeroInvoiceNumber,
                 installerId: trade.id,
                 remittanceId: remittance.id,
-                amount: String(payment.Amount || "0"),
-                paymentDate: payment.Date ? new Date(payment.Date) : new Date(),
+                amount: payment.amount,
+                paymentDate: payment.date,
                 status: "synced",
               });
 
@@ -1203,10 +1169,10 @@ export const adminTradePortalRouter = router({
               // Log the error but continue
               await db.insert(xeroPaymentSyncLog).values({
                 xeroPaymentId: paymentId,
-                xeroInvoiceId: invoiceId || null,
-                xeroInvoiceNumber: invoiceNumber || null,
+                xeroInvoiceId: payment.xeroInvoiceId,
+                xeroInvoiceNumber: payment.xeroInvoiceNumber,
                 installerId: trade.id,
-                amount: String(payment.Amount || "0"),
+                amount: payment.amount,
                 paymentDate: new Date(),
                 status: "error",
                 errorMessage: err.message,

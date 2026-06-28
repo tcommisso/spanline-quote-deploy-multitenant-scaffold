@@ -25,6 +25,7 @@ import { assertRateLimit } from "./_core/rateLimit";
 import { buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from "./_core/tenant-scope";
 import { sendNotificationEmail } from "./email";
+import { getXeroPaymentRemittancesForTrade } from "./trade-remittance-xero";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1134,7 +1135,39 @@ export const tradePortalRouter = router({
         ...tradeInstallerConditions(ctx),
       ))
       .orderBy(desc(tradeRemittances.date));
-    return rows.map((row) => row.remittance);
+    const persistedRemittances = rows.map((row) => row.remittance);
+    const persistedXeroPaymentIds = new Set(
+      persistedRemittances.map((remittance) => remittance.xeroPaymentId).filter(Boolean)
+    );
+
+    const [installer] = await db.select({
+      id: constructionInstallers.id,
+      xeroContactId: constructionInstallers.xeroContactId,
+    })
+      .from(constructionInstallers)
+      .where(and(...tradeInstallerConditions(ctx, eq(constructionInstallers.id, ctx.tradeAccess.installerId))))
+      .limit(1);
+
+    let liveXeroRemittances: any[] = [];
+    if (installer?.xeroContactId) {
+      try {
+        const xeroResult = await getXeroPaymentRemittancesForTrade({
+          appTenantId: tradePortalTenantId(ctx),
+          installer,
+          timeoutMs: 45000,
+        });
+        if (xeroResult.error) {
+          console.warn("[TradePortal] Xero remittances unavailable:", xeroResult.error);
+        }
+        liveXeroRemittances = xeroResult.remittances
+          .filter((remittance) => !persistedXeroPaymentIds.has(remittance.xeroPaymentId));
+      } catch (err: any) {
+        console.warn("[TradePortal] Failed to fetch live Xero remittances:", err?.message || err);
+      }
+    }
+
+    return [...persistedRemittances, ...liveXeroRemittances]
+      .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }),
 
   // ─── Invoice Submission ─────────────────────────────────────────────────────

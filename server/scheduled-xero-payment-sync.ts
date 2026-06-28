@@ -11,9 +11,10 @@ import { authenticateScheduledRequest } from "./_core/scheduled-auth";
 import { getDb } from "./db";
 import { constructionInstallers, tradeRemittances, xeroPaymentSyncLog } from "../drizzle/schema";
 import { eq, and, isNull, or, sql } from "drizzle-orm";
-import { getValidAccessToken, getXeroInvoices, getXeroPayments } from "./xero-client";
+import { getValidAccessToken } from "./xero-client";
 import { notifyOwner } from "./_core/notification";
 import { resolveScheduledXeroConnectionScopes } from "./xero-entity-routing";
+import { getXeroPaymentRemittancesForTrade } from "./trade-remittance-xero";
 
 type XeroAuth = {
   accessToken: string;
@@ -27,7 +28,6 @@ async function syncTradePaymentsForScope(
   auth: XeroAuth,
   appTenantId: number | null,
 ) {
-  const routing = { connectionId: auth.xeroConnectionId };
   const linkedTradeConditions: any[] = [
     eq(constructionInstallers.active, true),
     sql`${constructionInstallers.xeroContactId} IS NOT NULL`,
@@ -69,42 +69,38 @@ async function syncTradePaymentsForScope(
 
   for (const trade of linkedTrades) {
     try {
-      // Fetch ACCPAY (bills) for this trade's Xero contact.
-      const invoiceResult = await getXeroInvoices({
-        where: `Type=="ACCPAY"&&Contact.ContactID==guid("${trade.xeroContactId}")&&Status=="PAID"`,
-      }, routing);
+      const paymentResult = await getXeroPaymentRemittancesForTrade({
+        appTenantId,
+        connectionId: auth.xeroConnectionId,
+        installer: trade,
+        timeoutMs: 45000,
+      });
+      if (!paymentResult.connected) {
+        throw new Error(paymentResult.error || "No active Xero connection");
+      }
+      if (paymentResult.error) {
+        throw new Error(paymentResult.error);
+      }
 
-      for (const invoice of (invoiceResult.Invoices || [])) {
-        if (!invoice.InvoiceID) continue;
-        try {
-          const paymentResult = await getXeroPayments({
-            where: `Invoice.InvoiceID==guid("${invoice.InvoiceID}")`,
-          }, routing);
-          for (const payment of (paymentResult.Payments || [])) {
-            if (!payment.PaymentID) continue;
-            if (existingPaymentIds.has(payment.PaymentID)) {
-              skipped++;
-              continue;
-            }
-            await db.insert(tradeRemittances).values({
-              installerId: trade.id,
-              amount: String(payment.Amount || 0),
-              date: payment.Date ? new Date(payment.Date) : new Date(),
-              reference: payment.Reference || invoice.InvoiceNumber || null,
-              notes: `Auto-synced from Xero (nightly). Invoice: ${invoice.InvoiceNumber || invoice.InvoiceID}`,
-              source: "xero",
-              xeroPaymentId: payment.PaymentID,
-              xeroInvoiceId: invoice.InvoiceID,
-              xeroInvoiceNumber: invoice.InvoiceNumber || null,
-            });
-            existingPaymentIds.add(payment.PaymentID);
-            created++;
-          }
-        } catch (payErr: any) {
-          console.error(`[XeroPaymentSync] Error fetching payments for invoice ${invoice.InvoiceID}:`, payErr.message);
-          errors++;
-          errorDetails.push(`${trade.name}: payment fetch error for ${invoice.InvoiceNumber || invoice.InvoiceID}`);
+      for (const payment of paymentResult.remittances) {
+        if (!payment.xeroPaymentId) continue;
+        if (existingPaymentIds.has(payment.xeroPaymentId)) {
+          skipped++;
+          continue;
         }
+        await db.insert(tradeRemittances).values({
+          installerId: trade.id,
+          amount: payment.amount,
+          date: payment.date,
+          reference: payment.reference,
+          notes: payment.notes,
+          source: "xero",
+          xeroPaymentId: payment.xeroPaymentId,
+          xeroInvoiceId: payment.xeroInvoiceId,
+          xeroInvoiceNumber: payment.xeroInvoiceNumber,
+        });
+        existingPaymentIds.add(payment.xeroPaymentId);
+        created++;
       }
     } catch (err: any) {
       console.error(`[XeroPaymentSync] Error processing trade ${trade.name}:`, err.message);
