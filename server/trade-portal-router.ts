@@ -12,6 +12,7 @@ import {
   projectSubcontracts, tradeInvoiceLines,
   chatChannels, chatMessages, chatChannelMembers,
   suppliers, flashingOrders, flashingOrderLines, flashingOrderStatusHistory,
+  flashingProfileTemplates,
   approvalProjects, approvalInspections, constructionJobInstructions,
   tradeJobInstructionActions,
   type PaymentMilestone,
@@ -1146,21 +1147,29 @@ export const tradePortalRouter = router({
       const db = await requireDb();
       const supplier = await requireTradePortalFlashingSupplier(db, ctx);
       const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
-      const [lines, statusHistory] = await Promise.all([
+      const tenantId = tradePortalTenantId(ctx);
+      const [lines, statusHistory, templates] = await Promise.all([
         db.select().from(flashingOrderLines)
           .where(and(
             eq(flashingOrderLines.orderId, input.id),
-            eq(flashingOrderLines.tenantId, tradePortalTenantId(ctx)),
+            eq(flashingOrderLines.tenantId, tenantId),
           ))
           .orderBy(flashingOrderLines.lineNumber, flashingOrderLines.id),
         db.select().from(flashingOrderStatusHistory)
           .where(and(
             eq(flashingOrderStatusHistory.orderId, input.id),
-            eq(flashingOrderStatusHistory.tenantId, tradePortalTenantId(ctx)),
+            eq(flashingOrderStatusHistory.tenantId, tenantId),
           ))
           .orderBy(desc(flashingOrderStatusHistory.createdAt)),
+        db.select().from(flashingProfileTemplates)
+          .where(and(
+            eq(flashingProfileTemplates.tenantId, tenantId),
+            eq(flashingProfileTemplates.isActive, true),
+          ))
+          .orderBy(flashingProfileTemplates.category, flashingProfileTemplates.name)
+          .limit(200),
       ]);
-      return { order, lines, statusHistory, templates: [] };
+      return { order, lines, statusHistory, templates };
     }),
 
   updateFlashingOrder: protectedTradePortalProcedure

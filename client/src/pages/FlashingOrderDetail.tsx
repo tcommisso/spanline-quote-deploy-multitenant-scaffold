@@ -52,6 +52,7 @@ type FoldDetails = {
 
 type FlashingLineDraft = {
   id?: number;
+  templateId?: number | null;
   profileName: string;
   category: string;
   materialType: string;
@@ -162,6 +163,7 @@ const DEFAULT_FOLD_DETAILS: FoldDetails = {
 
 const DEFAULT_LINE: FlashingLineDraft = {
   id: undefined as number | undefined,
+  templateId: null,
   profileName: "Custom flashing",
   category: "custom",
   materialType: "Colorbond",
@@ -1069,7 +1071,158 @@ function FoldDimensionTable({
           Edit segment dimensions and identify special fold types such as crush folds, hooks, and beak / turn downs.
         </p>
       </div>
-      <div className="overflow-x-auto">
+      <div className="space-y-3 p-3 md:hidden">
+        {segments.map((segment) => {
+          const key = segmentKey(segment.index);
+          const segmentAngle = getSegmentAngle(details, geometry, segment.index);
+          return (
+            <div key={`mobile-${key}`} className="rounded-md border bg-background p-3">
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">Segment {segment.index + 1}</p>
+                  <p className="text-xs text-muted-foreground">Point {segment.index + 1} to {segment.index + 2}</p>
+                </div>
+                <Badge variant="outline">Run</Badge>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Dimension</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      key={`${key}-mobile-${Math.round(segment.length)}`}
+                      type="number"
+                      min={1}
+                      defaultValue={Math.round(details.segmentLengths?.[key] ?? segment.length)}
+                      onBlur={(event) => updateSegmentLength(segment.index, event.target.value)}
+                      className="h-10 text-right"
+                    />
+                    <span className="text-xs text-muted-foreground">mm</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Angle</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      key={`${key}-mobile-angle-${Math.round(segmentAngle)}`}
+                      type="number"
+                      min={0}
+                      max={359}
+                      defaultValue={Math.round(segmentAngle)}
+                      onBlur={(event) => updateSegmentAngle(segment.index, event.target.value)}
+                      className="h-10 text-right"
+                    />
+                    <span className="text-xs text-muted-foreground">deg</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {folds.map((fold) => {
+          const key = foldKey(fold.pointIndex);
+          const foldAngle = getFoldAngle(details, fold.pointIndex);
+          return (
+            <div key={`mobile-${key}`} className="rounded-md border bg-muted/10 p-3">
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">Fold {fold.foldNumber}</p>
+                  <p className="text-xs text-muted-foreground">Point {fold.pointIndex + 1} - {Math.round(fold.point.x)}, {Math.round(fold.point.y)}</p>
+                </div>
+                <Badge variant="outline">Fold</Badge>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Angle</label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      key={`${key}-mobile-angle-${Math.round(foldAngle)}`}
+                      type="number"
+                      min={0}
+                      max={180}
+                      defaultValue={Math.round(foldAngle)}
+                      onBlur={(event) => updateFoldAngle(fold.pointIndex, event.target.value)}
+                      className="h-10 text-right"
+                    />
+                    <span className="text-xs text-muted-foreground">deg</span>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Fold Type</label>
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-2 text-sm"
+                    value={details.foldTypes?.[key] || "standard"}
+                    onChange={(event) => updateFoldType(fold.pointIndex, event.target.value)}
+                  >
+                    {FOLD_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Notes</label>
+                  <Input
+                    value={details.foldNotes?.[key] || ""}
+                    onChange={(event) => updateFoldNote(fold.pointIndex, event.target.value)}
+                    placeholder="Optional fold note"
+                    className="h-10"
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {endTreatmentRows.map((endTreatment) => (
+          <div key={`mobile-${endTreatment.key}`} className="rounded-md border bg-amber-50/40 p-3">
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold">{endTreatment.label}</p>
+                <p className="text-xs text-muted-foreground">{endTreatment.pointLabel}</p>
+              </div>
+              <Badge variant="outline">End</Badge>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Treatment Type</label>
+                <select
+                  className="h-10 w-full rounded-md border border-input bg-background px-2 text-sm"
+                  value={details.endTreatments?.[endTreatment.key] || "none"}
+                  onChange={(event) => updateEndTreatment(endTreatment.key, event.target.value)}
+                >
+                  {END_TREATMENT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Length</label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={0}
+                    value={details.endTreatmentLengths?.[endTreatment.key] ?? ""}
+                    onChange={(event) => updateEndTreatmentLength(endTreatment.key, event.target.value)}
+                    placeholder={endTreatment.placeholder}
+                    className="h-10 text-right"
+                  />
+                  <span className="text-xs text-muted-foreground">mm</span>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Notes</label>
+                <Input
+                  value={details.endTreatmentNotes?.[endTreatment.key] || ""}
+                  onChange={(event) => updateEndTreatmentNote(endTreatment.key, event.target.value)}
+                  placeholder="Optional end treatment note"
+                  className="h-10"
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[900px] text-sm">
           <thead className="bg-muted/40 text-muted-foreground">
             <tr>
@@ -1381,7 +1534,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
     internalNotes: "",
   });
   const [line, setLine] = useState(DEFAULT_LINE);
-  const [activeSection, setActiveSection] = useState<WorkflowSectionKey>("design");
+  const [activeSection, setActiveSection] = useState<WorkflowSectionKey>("templates");
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<any | null>(null);
   const [templateForm, setTemplateForm] = useState<TemplateEditForm>(DEFAULT_TEMPLATE_FORM);
@@ -1701,6 +1854,12 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       detail: order.supplierName || order.requestedDeliveryAt ? "Details recorded" : "Delivery and notes",
     },
     {
+      key: "templates",
+      label: "Templates",
+      detail: templates.length > 0 ? "Choose a profile" : "Start from blank",
+      count: String(templates.length),
+    },
+    {
       key: "design",
       label: "Design",
       detail: line.id ? "Editing saved line" : "Draw profile",
@@ -1719,21 +1878,13 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       count: subjectAreaPhoto?.url ? "1" : undefined,
     },
     {
-      key: "templates",
-      label: "Templates",
-      detail: "Reuse common profiles",
-      count: String(templates.length),
-    },
-    {
       key: "timeline",
-      label: "Timeline",
-      detail: "Status history",
-      count: String(history.length),
+      label: portalMode ? "Review" : "Timeline",
+      detail: portalMode ? "Submit when ready" : "Status history",
+      count: portalMode ? (lines.length > 0 ? String(lines.length) : undefined) : String(history.length),
     },
   ];
-  const workflowSections = allWorkflowSections.filter((section) => (
-    !portalMode || ["overview", "design", "lines", "photo"].includes(section.key)
-  ));
+  const workflowSections = allWorkflowSections;
 
   const handleSubjectPhotoUpload = (file?: File | null) => {
     if (!file) return;
@@ -1813,6 +1964,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
   const editLine = (existing: any) => {
     setLine({
       id: existing.id,
+      templateId: existing.templateId ?? null,
       profileName: existing.profileName || "Custom flashing",
       category: existing.category || "custom",
       materialType: existing.materialType || "Colorbond",
@@ -1834,6 +1986,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
   const loadTemplate = (template: any) => {
     setLine({
       ...DEFAULT_LINE,
+      templateId: Number(template.id) || null,
       profileName: template.name,
       category: template.category || "custom",
       materialType: template.defaultMaterialType || "Colorbond",
@@ -1923,16 +2076,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
             {isExportingPdf ? <Spinner className="h-4 w-4 mr-1.5" /> : <Download className="h-4 w-4 mr-1.5" />}
             Export PDF
           </Button>
-          {portalMode ? (
-            <Button
-              type="button"
-              onClick={() => submitForReview.mutate({ id: order.id })}
-              disabled={submitForReview.isPending || lines.length === 0 || !["draft", "supplier_received"].includes(order.status)}
-            >
-              {submitForReview.isPending ? <Spinner className="h-4 w-4 mr-1.5" /> : <Upload className="h-4 w-4 mr-1.5" />}
-              {order.status === "supplier_received" ? "Resubmit for Review" : "Submit for Review"}
-            </Button>
-          ) : (
+          {!portalMode && (
             <select
               className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               value={order.status}
@@ -2398,20 +2542,26 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
           <Card className={cn(activeSection !== "templates" && "hidden")}>
             <CardHeader className="flex flex-row items-center justify-between gap-3">
               <CardTitle className="text-base">Profile Templates</CardTitle>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => seedTemplates.mutate()}
-                disabled={seedTemplates.isPending}
-              >
-                {seedTemplates.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Plus className="mr-1.5 h-4 w-4" />}
-                Seed Standards
-              </Button>
+              {!portalMode && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => seedTemplates.mutate()}
+                  disabled={seedTemplates.isPending}
+                >
+                  {seedTemplates.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Plus className="mr-1.5 h-4 w-4" />}
+                  Seed Standards
+                </Button>
+              )}
             </CardHeader>
             <CardContent className="space-y-2">
               {templates.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Saved profiles will appear here. Seed the standard flashing profiles to start from the order guide templates.</p>
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                  {portalMode
+                    ? "No shared profile templates are available yet. Start a custom profile, then construction can add templates for future orders."
+                    : "Saved profiles will appear here. Seed the standard flashing profiles to start from the order guide templates."}
+                </div>
               ) : templates.map((template: any) => (
                 <div
                   key={template.id}
@@ -2433,47 +2583,94 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.notes}</p>
                     )}
                   </button>
-                  <div className="flex flex-wrap items-center justify-end gap-2 border-t p-2">
-                    <Button type="button" size="sm" variant="outline" onClick={() => openTemplateEditor(template)}>
-                      <Pencil className="mr-1.5 h-3.5 w-3.5" />
-                      Edit
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={duplicateTemplate.isPending}
-                      onClick={() => duplicateTemplate.mutate({ id: Number(template.id), name: `${template.name} copy` })}
-                    >
-                      <Copy className="mr-1.5 h-3.5 w-3.5" />
-                      Duplicate
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="text-destructive hover:text-destructive"
-                      disabled={archiveTemplate.isPending}
-                      onClick={() => {
-                        if (window.confirm(`Archive template "${template.name}"?`)) {
-                          archiveTemplate.mutate({ id: Number(template.id) });
-                        }
-                      }}
-                    >
-                      <Archive className="mr-1.5 h-3.5 w-3.5" />
-                      Archive
-                    </Button>
-                  </div>
+                  {!portalMode && (
+                    <div className="flex flex-wrap items-center justify-end gap-2 border-t p-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => openTemplateEditor(template)}>
+                        <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                        Edit
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={duplicateTemplate.isPending}
+                        onClick={() => duplicateTemplate.mutate({ id: Number(template.id), name: `${template.name} copy` })}
+                      >
+                        <Copy className="mr-1.5 h-3.5 w-3.5" />
+                        Duplicate
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        disabled={archiveTemplate.isPending}
+                        onClick={() => {
+                          if (window.confirm(`Archive template "${template.name}"?`)) {
+                            archiveTemplate.mutate({ id: Number(template.id) });
+                          }
+                        }}
+                      >
+                        <Archive className="mr-1.5 h-3.5 w-3.5" />
+                        Archive
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
+              <div className="flex justify-end pt-2">
+                <Button type="button" variant="outline" onClick={() => setActiveSection("design")}>
+                  <Plus className="mr-1.5 h-4 w-4" />
+                  Start Custom Profile
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
           <Card className={cn(activeSection !== "timeline" && "hidden")}>
             <CardHeader>
-              <CardTitle className="text-base">Status Timeline</CardTitle>
+              <CardTitle className="text-base">{portalMode ? "Review & Submit" : "Status Timeline"}</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
+              {portalMode && (
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Profiles</p>
+                      <p className="font-semibold">{lines.length}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Total LM</p>
+                      <p className="font-semibold">{Number(order.totalLinealMetres || 0).toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Folds</p>
+                      <p className="font-semibold">{orderFoldCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Status</p>
+                      <p className="font-semibold">{STATUS_LABELS[order.status] || order.status}</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      {lines.length === 0
+                        ? "Add at least one flashing profile before submitting."
+                        : ["draft", "supplier_received"].includes(order.status)
+                          ? "Submit when all profiles, folds, end treatments, and site photo details are ready for construction review."
+                          : "This order has already moved past supplier editing."}
+                    </p>
+                    <Button
+                      type="button"
+                      onClick={() => submitForReview.mutate({ id: order.id })}
+                      disabled={submitForReview.isPending || lines.length === 0 || !["draft", "supplier_received"].includes(order.status)}
+                    >
+                      {submitForReview.isPending ? <Spinner className="h-4 w-4 mr-1.5" /> : <Upload className="h-4 w-4 mr-1.5" />}
+                      {order.status === "supplier_received" ? "Resubmit for Review" : "Submit for Review"}
+                    </Button>
+                  </div>
+                </div>
+              )}
               {history.length === 0 ? (
                 <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
                   No status changes recorded yet.

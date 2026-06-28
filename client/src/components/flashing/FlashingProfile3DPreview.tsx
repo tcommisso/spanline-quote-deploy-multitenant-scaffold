@@ -95,8 +95,7 @@ export function FlashingProfile3DPreview({
       const scene = new THREE.Scene();
       scene.background = new THREE.Color("#020617");
 
-      const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 1000);
-      camera.position.set(58, 36, 92);
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 2000);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -119,8 +118,10 @@ export function FlashingProfile3DPreview({
 
       const profileBox = new THREE.Box3().setFromObject(group);
       const profileCenter = profileBox.getCenter(new THREE.Vector3());
-      const profileSize = profileBox.getSize(new THREE.Vector3());
       group.position.sub(profileCenter);
+      const profileSphere = profileBox.getBoundingSphere(new THREE.Sphere());
+      const viewSize = clamp(profileSphere.radius * 2.45, 72, 260);
+      const cameraDistance = clamp(profileSphere.radius * 7, 360, 900);
 
       scene.add(group);
       scene.add(new THREE.HemisphereLight("#e0f2fe", "#1e293b", 1.6));
@@ -131,26 +132,22 @@ export function FlashingProfile3DPreview({
       rimLight.position.set(-40, 18, -36);
       scene.add(rimLight);
 
-      const grid = new THREE.GridHelper(140, 14, "#334155", "#1e293b");
-      grid.position.y = -18;
+      const grid = new THREE.GridHelper(Math.max(viewSize * 1.8, 140), 14, "#334155", "#1e293b");
+      grid.position.y = -viewSize * 0.34;
       scene.add(grid);
-
-      const maxProfileDimension = Math.max(profileSize.x, profileSize.y, profileSize.z, 1);
-      const cameraDistance = clamp(maxProfileDimension * 1.85, 95, 240);
-      const target = new THREE.Vector3(0, 0, 0);
-      camera.position.set(cameraDistance * 0.55, cameraDistance * 0.32, cameraDistance);
 
       let width = 1;
       let height = 1;
       let isPointerDown = false;
       let lastPointerX = 0;
       let lastPointerY = 0;
-      let rotationY = -0.62;
-      let rotationX = -0.28;
+      let rotationY = -0.66;
+      let rotationX = -0.42;
 
       const renderScene = () => {
         group.rotation.set(rotationX, rotationY, 0);
-        camera.lookAt(target);
+        camera.position.set(0, 0, cameraDistance);
+        camera.lookAt(0, 0, 0);
         renderer.render(scene, camera);
       };
 
@@ -158,7 +155,11 @@ export function FlashingProfile3DPreview({
         width = Math.max(1, mount.clientWidth);
         height = Math.max(260, mount.clientHeight || 340);
         renderer.setSize(width, height, false);
-        camera.aspect = width / height;
+        const aspect = width / height;
+        camera.left = -(viewSize * aspect) / 2;
+        camera.right = (viewSize * aspect) / 2;
+        camera.top = viewSize / 2;
+        camera.bottom = -viewSize / 2;
         camera.updateProjectionMatrix();
         renderScene();
       };
