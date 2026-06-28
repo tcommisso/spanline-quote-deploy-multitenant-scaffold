@@ -135,7 +135,7 @@ type EndTreatmentAnnotation = {
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
   submitted: "Submitted",
-  supplier_received: "Supplier Received",
+  supplier_received: "Trade Portal Request pending review",
   in_production: "In Production",
   purchase_ordered: "Purchase Ordered",
   ready: "Ready",

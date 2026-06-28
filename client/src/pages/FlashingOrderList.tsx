@@ -15,7 +15,7 @@ const PAGE_SIZE = 25;
 const STATUS_LABELS: Record<string, string> = {
   draft: "Draft",
   submitted: "Submitted",
-  supplier_received: "Supplier Received",
+  supplier_received: "Trade Portal Request pending review",
   in_production: "In Production",
   purchase_ordered: "Purchase Ordered",
   ready: "Ready",
@@ -275,7 +275,7 @@ export default function FlashingOrderList(props: FlashingOrderListProps | any = 
                           {order.jobNumber || order.siteAddress || "No job linked"}
                         </div>
                       </div>
-                      <Badge variant="outline" className={`shrink-0 ${STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}`}>
+                      <Badge variant="outline" className={`max-w-[13rem] shrink-0 whitespace-normal text-right leading-tight sm:max-w-none ${STATUS_CLASSES[order.status] || STATUS_CLASSES.draft}`}>
                         {STATUS_LABELS[order.status] || order.status}
                       </Badge>
                     </div>
