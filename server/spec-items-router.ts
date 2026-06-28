@@ -817,7 +817,7 @@ export const specItemsRouter = router({
         { name: "Concrete Work Checklist", tabName: "concrete", specField: "specConcreteItemChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 84 },
 
         // ── Electrical ──
-        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
+        { name: "Electrical Lights", tabName: "electrical", specField: "specElecLightTypes", condition: "!= ''", productMatch: "lightType", qtyFormula: "lightQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
         { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: "specElecFanType", qtyFormula: "specElecFan", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 91 },
         { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 92 },
         { name: "Electrical GPOs", tabName: "electrical", specField: "specElecGpos", condition: "!= ''", productId: null, productMatch: "gpoType", qtyFormula: "gpoQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 93 },
@@ -888,10 +888,17 @@ export const specItemsRouter = router({
         "Balustrade (LM)",
       ];
       const isStaleStarterMapping = (mapping: any, template: any) => {
+        if (template.name === "Electrical Lights") {
+          return mapping.specField === "specElecLights"
+            && mapping.qtyFormula === "specElecLights"
+            && mapping.productMatch === "specElecLightType";
+        }
         if (template.name === "Electrical GPOs") {
           return mapping.specField === "specElecGpos"
-            && mapping.qtyFormula === "specElecGpos"
-            && !mapping.productMatch;
+            && (
+              (mapping.qtyFormula === "specElecGpos" && !mapping.productMatch)
+              || mapping.condition === "> 0"
+            );
         }
         if (template.name === "Balustrade Glass Spigots") {
           return mapping.specField === "specBalGlassSpigots"

@@ -58,7 +58,7 @@ export interface WindowDoorOptionModifier {
 }
 
 export interface GeneratedItem {
-  specMappingId: number;
+  specMappingId: number | null;
   productId: number | null;
   tabName: string;
   description: string;
@@ -76,7 +76,7 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
-const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor|workItemQty|workChecklistQty|checklistQty|workItemQuantity|gpoQty|gpoOnIwp)\b/gi;
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor|workItemQty|workChecklistQty|checklistQty|workItemQuantity|lightQty|lightRowQty|gpoQty|gpoOnIwp)\b/gi;
 const WALL_SHEET_COVER_WIDTH_MM = 1140;
 const WORK_CHECKLIST_SPEC_FIELDS = new Set([
   "specWallWorkItems",
@@ -225,7 +225,7 @@ function workChecklistLabel(row: Record<string, unknown>): string {
 }
 
 function workChecklistProductMatch(row: Record<string, unknown>, label: string): string {
-  return readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]) || label;
+  return label || readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]);
 }
 
 function workChecklistUnit(row: Record<string, unknown>, fallback: string | null | undefined): string {
@@ -250,6 +250,26 @@ function electricalGpoRows(value: unknown): Record<string, unknown>[] {
     .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
 }
 
+function electricalLightRows(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown
+): Record<string, unknown>[] {
+  if (mapping.specField !== "specElecLightTypes" && mapping.specField !== "specElecLights") return [];
+  const source = mapping.specField === "specElecLightTypes" ? fieldValue : specValues.specElecLightTypes;
+  return parseSpecArray(source)
+    .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
+}
+
+function electricalLightType(row: Record<string, unknown>): string {
+  return readString(row, ["type", "lightType", "product", "productName"]) || "Light";
+}
+
+function electricalLightQty(row: Record<string, unknown>): number {
+  const qty = readPositiveNumber(row, ["qty", "quantity", "lightQty", "lightRowQty", "count", "amount"]);
+  return qty > 0 ? qty : 1;
+}
+
 function electricalGpoType(row: Record<string, unknown>): string {
   return readString(row, ["type", "gpoType", "product", "productName"]) || "GPO";
 }
@@ -265,6 +285,37 @@ function electricalGpoQty(row: Record<string, unknown>): number {
 
 function electricalGpoOnIwp(row: Record<string, unknown>): boolean {
   return row.onIwp === true || row.iwp === true || row.installOnIwp === true;
+}
+
+function additionalCostRows(specValues: SpecValues): Record<string, unknown>[] {
+  const source = specValues.specChecklistSelections ?? specValues.checklistSelections ?? specValues.additionalCosts;
+  return parseSpecArray(source)
+    .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
+}
+
+function additionalCostLabel(row: Record<string, unknown>): string {
+  return readString(row, ["label", "name", "description", "item"]);
+}
+
+function additionalCostQty(row: Record<string, unknown>): number {
+  const qty = readPositiveNumber(row, ["qty", "quantity", "count", "amount"]);
+  return qty > 0 ? qty : 1;
+}
+
+function additionalCostUnit(row: Record<string, unknown>): string {
+  return readString(row, ["unit", "uom", "measureUnit"]) || "ea";
+}
+
+function additionalCostUnitPrice(row: Record<string, unknown>, qty: number): number {
+  const unitPrice = readPositiveNumber(row, ["unitPrice", "price", "sellRate", "rate"]);
+  if (unitPrice > 0) return unitPrice;
+
+  const total = readPositiveNumber(row, ["total", "lineTotal", "amountTotal"]);
+  return total > 0 && qty > 0 ? total / qty : 0;
+}
+
+function additionalCostSection(row: Record<string, unknown>): string {
+  return readString(row, ["section", "category", "group"]);
 }
 
 function numberTokens(value: unknown): number[] {
@@ -985,7 +1036,10 @@ function findProductForGpoRow(
   const configuredMatch = mapping.productMatch
     ? rowSpecValues[mapping.productMatch]
     : type;
+  const onIwp = Number(rowSpecValues.gpoOnIwp || 0) > 0;
   const candidates = Array.from(new Set([
+    onIwp && location ? `${type} ${location} IWP` : "",
+    onIwp ? `${type} IWP` : "",
     configuredMatch,
     type,
     location ? `${type} ${location}` : "",
@@ -1040,6 +1094,130 @@ function buildElectricalGpoItems(
       `GPO takeoff: ${label || mapping.name}`,
       `qty ${formatTakeoffNumber(rowQty)} ${resolvedUom}`,
       onIwp ? "install on IWP" : "",
+      product ? `matched product: ${product.name}` : `product match: ${type || "none"}`,
+    ].filter(Boolean).join("; ");
+
+    items.push({
+      specMappingId: mapping.id,
+      productId: product?.id || null,
+      tabName: mapping.tabName,
+      description,
+      colour: mapping.colourField ? String(specValues[mapping.colourField] || "") : "",
+      bottomColour: mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "",
+      uom: resolvedUom,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate,
+      sellRate,
+      notes,
+      source: "auto",
+    });
+  }
+
+  return items;
+}
+
+function buildAdditionalCostItems(specValues: SpecValues): GeneratedItem[] {
+  const items: GeneratedItem[] = [];
+
+  for (const row of additionalCostRows(specValues)) {
+    const label = additionalCostLabel(row);
+    if (!label) continue;
+
+    const qty = additionalCostQty(row);
+    const unitPrice = additionalCostUnitPrice(row, qty);
+    if (qty <= 0 || unitPrice <= 0) continue;
+
+    const unit = additionalCostUnit(row);
+    const section = additionalCostSection(row);
+    const notes = [
+      section ? `Additional cost section: ${section}` : "",
+      `qty ${formatTakeoffNumber(qty)} ${unit}`,
+      row.itemId != null ? `item id ${row.itemId}` : "",
+    ].filter(Boolean).join("; ");
+
+    items.push({
+      specMappingId: null,
+      productId: null,
+      tabName: "additional_costs",
+      description: label,
+      colour: "",
+      bottomColour: "",
+      uom: unit,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate: unitPrice,
+      sellRate: unitPrice,
+      notes,
+      source: "auto",
+    });
+  }
+
+  return items;
+}
+
+function findProductForLightRow(
+  products: ProductLookup[],
+  mapping: SpecMapping,
+  rowSpecValues: SpecValues,
+): ProductLookup | null {
+  if (mapping.productId) {
+    return products.find(p => p.id === mapping.productId) || null;
+  }
+
+  const type = String(rowSpecValues.lightType || rowSpecValues.specElecLightType || "");
+  const configuredMatch = mapping.productMatch
+    ? rowSpecValues[mapping.productMatch]
+    : type;
+  const candidates = Array.from(new Set([
+    configuredMatch,
+    type,
+  ].filter(value => value !== undefined && value !== null && String(value).trim() !== "")));
+
+  for (const matchValue of candidates) {
+    const product = findProductBySpecMatch(products, mapping.tabName, matchValue);
+    if (product) return product;
+  }
+
+  return null;
+}
+
+function buildElectricalLightItems(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown,
+  products: ProductLookup[],
+  markupRates: MarkupRates,
+  defaultMarkup: number
+): GeneratedItem[] | null {
+  const rows = electricalLightRows(mapping, specValues, fieldValue);
+  if (rows.length === 0) return null;
+
+  const items: GeneratedItem[] = [];
+  for (const row of rows) {
+    const rowQty = electricalLightQty(row);
+    if (rowQty <= 0) continue;
+
+    const type = electricalLightType(row);
+    const rowSpecValues: SpecValues = {
+      ...specValues,
+      lightQty: rowQty,
+      lightRowQty: rowQty,
+      lightType: type,
+      specElecLights: rowQty,
+      specElecLightType: type,
+    };
+
+    const product = findProductForLightRow(products, mapping, rowSpecValues);
+    const qty = evaluateFormula(mapping.qtyFormula || "lightQty", rowSpecValues);
+    if (qty <= 0) continue;
+
+    const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+    const resolvedUom = mapping.uom || product?.uom || "ea";
+    const description = mapping.description
+      ? `${mapping.description} - ${type}`.trim()
+      : (product?.name || type || mapping.name);
+    const notes = [
+      `Light takeoff: ${type || mapping.name}`,
+      `qty ${formatTakeoffNumber(rowQty)} ${resolvedUom}`,
       product ? `matched product: ${product.name}` : `product match: ${type || "none"}`,
     ].filter(Boolean).join("; ");
 
@@ -1168,6 +1346,19 @@ export function generateItemsFromSpec(
     );
     if (workChecklistItems) {
       items.push(...workChecklistItems);
+      continue;
+    }
+
+    const electricalLightItems = buildElectricalLightItems(
+      mapping,
+      specValues,
+      fieldValue,
+      products,
+      markupRates,
+      defaultMarkup,
+    );
+    if (electricalLightItems) {
+      items.push(...electricalLightItems);
       continue;
     }
 
@@ -1365,6 +1556,8 @@ export function generateItemsFromSpec(
     items.push(baseItem);
     items.push(...buildWindowDoorModifierItems(mapping, baseItem, specValues, optionModifiers));
   }
+
+  items.push(...buildAdditionalCostItems(specValues));
 
   return items;
 }

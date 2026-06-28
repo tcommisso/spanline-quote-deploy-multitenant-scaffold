@@ -544,3 +544,239 @@ describe("generateItemsFromSpec work checklist matching", () => {
     expect(items[0].sellRate).toBe(190);
   });
 });
+
+describe("generateItemsFromSpec electrical light rows", () => {
+  it("expands each selected light type row into its own priced item", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 700,
+        name: "Electrical Lights",
+        tabName: "electrical",
+        specField: "specElecLightTypes",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "lightType",
+        qtyFormula: "lightQty",
+        description: null,
+        colourField: null,
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 90,
+        active: true,
+      }],
+      {
+        specElecLightTypes: [
+          { type: "LED Oyster", qty: 1 },
+          { type: "LED Downlight", qty: 4 },
+        ],
+      },
+      [
+        product({
+          id: 70,
+          name: "LED Oyster",
+          tabName: "electrical",
+          subTab: "Lights",
+          uom: "ea",
+          materials: "55",
+          installLabour: "20",
+          fixedSell: "165",
+          coverageWidth: null,
+        }),
+        product({
+          id: 71,
+          name: "LED Downlight",
+          tabName: "electrical",
+          subTab: "Lights",
+          uom: "ea",
+          materials: "40",
+          installLabour: "15",
+          fixedSell: "125",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ productId: 70, description: "LED Oyster", qty: 1, sellRate: 165 });
+    expect(items[1]).toMatchObject({ productId: 71, description: "LED Downlight", qty: 4, sellRate: 125 });
+    expect(items[1].notes).toContain("Light takeoff: LED Downlight");
+  });
+
+  it("uses light rows for legacy aggregate light mappings when row data exists", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 701,
+        name: "Electrical Lights",
+        tabName: "electrical",
+        specField: "specElecLights",
+        condition: "> 0",
+        productId: null,
+        productMatch: "specElecLightType",
+        qtyFormula: "specElecLights",
+        description: "Electrical Lights",
+        colourField: null,
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 90,
+        active: true,
+      }],
+      {
+        specElecLights: 5,
+        specElecLightTypes: [
+          { type: "LED Oyster", qty: 1 },
+          { type: "LED Downlight", qty: 4 },
+        ],
+      },
+      [
+        product({
+          id: 72,
+          name: "LED Oyster",
+          tabName: "electrical",
+          uom: "ea",
+          fixedSell: "165",
+          coverageWidth: null,
+        }),
+        product({
+          id: 73,
+          name: "LED Downlight",
+          tabName: "electrical",
+          uom: "ea",
+          fixedSell: "125",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items.map(item => item.qty)).toEqual([1, 4]);
+    expect(items.map(item => item.productId)).toEqual([72, 73]);
+    expect(items[0].description).toBe("Electrical Lights - LED Oyster");
+  });
+});
+
+describe("generateItemsFromSpec electrical GPO rows", () => {
+  it("prefers IWP-specific products when the GPO row is marked for IWP", () => {
+    const items = generateItemsFromSpec(
+      [{
+        id: 800,
+        name: "Electrical GPOs",
+        tabName: "electrical",
+        specField: "specElecGpos",
+        condition: "!= ''",
+        productId: null,
+        productMatch: "gpoType",
+        qtyFormula: "gpoQty",
+        description: null,
+        colourField: null,
+        bottomColourField: null,
+        uom: "ea",
+        sortOrder: 93,
+        active: true,
+      }],
+      {
+        specElecGpos: [
+          { type: "Double GPO", location: "Indoor", qty: 2, onIwp: true },
+        ],
+      },
+      [
+        product({
+          id: 80,
+          name: "Double GPO Indoor",
+          tabName: "electrical",
+          subTab: "gpo's",
+          uom: "ea",
+          fixedSell: "40",
+          coverageWidth: null,
+        }),
+        product({
+          id: 81,
+          name: "Double GPO Indoor IWP",
+          tabName: "electrical",
+          subTab: "gpo's",
+          uom: "ea",
+          fixedSell: "289",
+          coverageWidth: null,
+        }),
+      ],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ productId: 81, description: "Double GPO Indoor IWP", qty: 2, sellRate: 289 });
+    expect(items[0].notes).toContain("install on IWP");
+  });
+});
+
+describe("generateItemsFromSpec additional cost selections", () => {
+  it("adds selected priced additional costs as quote item rows without requiring mappings", () => {
+    const items = generateItemsFromSpec(
+      [],
+      {
+        specChecklistSelections: [
+          {
+            itemId: 1,
+            label: "Professional Site Clean",
+            unitPrice: 800,
+            qty: 1,
+            total: 800,
+            section: "Finishing",
+            unit: "each",
+          },
+          {
+            itemId: 2,
+            label: "Mobile Scaffold per day",
+            unitPrice: 200,
+            qty: 5,
+            total: 1000,
+            section: "Site Works",
+            unit: "each",
+          },
+        ],
+      },
+      [],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      specMappingId: null,
+      productId: null,
+      tabName: "additional_costs",
+      description: "Professional Site Clean",
+      qty: 1,
+      uom: "each",
+      costRate: 800,
+      sellRate: 800,
+    });
+    expect(items[1]).toMatchObject({
+      description: "Mobile Scaffold per day",
+      qty: 5,
+      costRate: 200,
+      sellRate: 200,
+    });
+    expect(items[1].notes).toContain("Additional cost section: Site Works");
+  });
+
+  it("derives unit price from saved line total when only a total is available", () => {
+    const items = generateItemsFromSpec(
+      [],
+      {
+        specChecklistSelections: [
+          { label: "Bobcat per day", qty: 2, total: 400, unit: "each" },
+        ],
+      },
+      [],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ description: "Bobcat per day", qty: 2, sellRate: 200 });
+  });
+});
