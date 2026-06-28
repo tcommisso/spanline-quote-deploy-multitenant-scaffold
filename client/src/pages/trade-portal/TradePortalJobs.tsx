@@ -1,12 +1,18 @@
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { useRoute, Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import {
   MapPin, Phone, Users, FileText, Download, ChevronRight,
   ArrowLeft, Briefcase, Calendar, Clock, HardHat,
-  ClipboardCheck, AlertTriangle, ShieldCheck,
+  ClipboardCheck, AlertTriangle, ShieldCheck, CheckCircle2,
+  Upload, Loader2, Camera,
 } from "lucide-react";
 
 // ─── Job List View ──────────────────────────────────────────────────────────
@@ -116,6 +122,12 @@ function instructionStatusClass(status?: string | null) {
   return "bg-blue-100 text-blue-700 border-blue-200";
 }
 
+function tradeActionStatusClass(status?: string | null) {
+  if (status === "completed") return "bg-green-100 text-green-700 border-green-200";
+  if (status === "acknowledged") return "bg-primary/10 text-primary border-primary/20";
+  return "bg-slate-100 text-slate-600 border-slate-200";
+}
+
 function instructionIcon(sourceType?: string | null) {
   if (sourceType === "approval_inspection") return ShieldCheck;
   if (sourceType === "subcontract_inspection") return FileText;
@@ -135,9 +147,88 @@ function formatInstructionDate(item: any) {
   return parts.join(" - ");
 }
 
+function evidenceFileUrl(file: any) {
+  return file?.url || "";
+}
+
+function isImageEvidence(file: any) {
+  return String(file?.mimeType || "").startsWith("image/");
+}
+
 // ─── Job Detail View ────────────────────────────────────────────────────────
 function JobDetailView({ jobId }: { jobId: number }) {
   const { data: job, isLoading } = trpc.tradePortal.getJobDetail.useQuery({ jobId });
+  const utils = trpc.useUtils();
+  const [evidenceTarget, setEvidenceTarget] = useState<any | null>(null);
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceCaption, setEvidenceCaption] = useState("");
+  const [isReadingEvidence, setIsReadingEvidence] = useState(false);
+
+  const refreshJob = () => utils.tradePortal.getJobDetail.invalidate({ jobId });
+  const updateInstructionAction = trpc.tradePortal.updateJobInstructionAction.useMutation({
+    onSuccess: () => {
+      refreshJob();
+      toast.success("Instruction updated");
+    },
+    onError: (err) => toast.error(err.message || "Failed to update instruction"),
+  });
+  const uploadEvidence = trpc.tradePortal.uploadJobInstructionEvidence.useMutation({
+    onSuccess: () => {
+      refreshJob();
+      setEvidenceTarget(null);
+      setEvidenceFile(null);
+      setEvidenceCaption("");
+      toast.success("Evidence uploaded");
+    },
+    onError: (err) => toast.error(err.message || "Failed to upload evidence"),
+  });
+
+  const handleInstructionAction = (item: any, actionStatus: "acknowledged" | "completed") => {
+    updateInstructionAction.mutate({
+      jobId,
+      sourceType: item.sourceType,
+      sourceId: item.sourceId,
+      sourceKey: item.sourceKey || undefined,
+      actionStatus,
+    });
+  };
+
+  const openEvidenceDialog = (item: any) => {
+    setEvidenceTarget(item);
+    setEvidenceFile(null);
+    setEvidenceCaption("");
+  };
+
+  const handleEvidenceUpload = async () => {
+    if (!evidenceTarget || !evidenceFile) {
+      toast.error("Select a file to upload");
+      return;
+    }
+    setIsReadingEvidence(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Unable to read file"));
+        reader.readAsDataURL(evidenceFile);
+      });
+      const fileBase64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      uploadEvidence.mutate({
+        jobId,
+        sourceType: evidenceTarget.sourceType,
+        sourceId: evidenceTarget.sourceId,
+        sourceKey: evidenceTarget.sourceKey || undefined,
+        fileBase64,
+        fileName: evidenceFile.name,
+        fileMimeType: evidenceFile.type || "application/octet-stream",
+        caption: evidenceCaption.trim() || undefined,
+      });
+    } catch (err: any) {
+      toast.error(err.message || "Unable to read file");
+    } finally {
+      setIsReadingEvidence(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -270,6 +361,11 @@ function JobDetailView({ jobId }: { jobId: number }) {
                         <Badge variant="outline" className={`text-[10px] ${instructionStatusClass(item.status)}`}>
                           {formatInstructionStatus(item.status)}
                         </Badge>
+                        {item.actionStatus && (
+                          <Badge variant="outline" className={`text-[10px] ${tradeActionStatusClass(item.actionStatus)}`}>
+                            {item.actionStatus === "completed" ? "Done by you" : "Acknowledged"}
+                          </Badge>
+                        )}
                         {item.isBlocking && <Badge variant="destructive" className="text-[10px]">Hold Point</Badge>}
                         {item.hasDefects && (
                           <Badge variant="destructive" className="text-[10px]">
@@ -290,6 +386,76 @@ function JobDetailView({ jobId }: { jobId: number }) {
                       {item.description && (
                         <p className="text-xs text-slate-700 whitespace-pre-wrap">{item.description}</p>
                       )}
+                      {item.evidenceFiles && item.evidenceFiles.length > 0 && (
+                        <div className="pt-2">
+                          <p className="mb-1 text-[11px] font-medium text-slate-600">Evidence</p>
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                            {item.evidenceFiles.map((file: any, idx: number) => {
+                              const url = evidenceFileUrl(file);
+                              return (
+                                <a
+                                  key={`${file.key || url}-${idx}`}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="overflow-hidden rounded-md border bg-white text-xs hover:bg-slate-50"
+                                >
+                                  {isImageEvidence(file) ? (
+                                    <img src={url} alt={file.caption || file.fileName || "Evidence"} className="h-20 w-full object-cover" loading="lazy" />
+                                  ) : (
+                                    <div className="flex h-20 items-center justify-center bg-slate-100">
+                                      <FileText className="h-5 w-5 text-muted-foreground" />
+                                    </div>
+                                  )}
+                                  <div className="space-y-0.5 p-1.5">
+                                    <p className="truncate font-medium">{file.caption || file.fileName || "Evidence"}</p>
+                                    {file.uploadedAt && (
+                                      <p className="text-[10px] text-muted-foreground">
+                                        {new Date(file.uploadedAt).toLocaleDateString("en-AU")}
+                                      </p>
+                                    )}
+                                  </div>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        {!item.actionStatus && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1 text-xs"
+                            onClick={() => handleInstructionAction(item, "acknowledged")}
+                            disabled={updateInstructionAction.isPending}
+                          >
+                            {updateInstructionAction.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                            Acknowledge
+                          </Button>
+                        )}
+                        {item.actionStatus !== "completed" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1 text-xs"
+                            onClick={() => handleInstructionAction(item, "completed")}
+                            disabled={updateInstructionAction.isPending}
+                          >
+                            {updateInstructionAction.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                            Mark Done
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 gap-1 text-xs"
+                          onClick={() => openEvidenceDialog(item)}
+                        >
+                          <Camera className="h-3.5 w-3.5" />
+                          Upload Evidence
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -440,6 +606,72 @@ function JobDetailView({ jobId }: { jobId: number }) {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={!!evidenceTarget} onOpenChange={(open) => {
+        if (!open) {
+          setEvidenceTarget(null);
+          setEvidenceFile(null);
+          setEvidenceCaption("");
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5 text-primary" />
+              Upload Evidence
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {evidenceTarget && (
+              <div className="rounded-md border bg-slate-50 p-3">
+                <p className="text-sm font-medium">{evidenceTarget.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {instructionCategoryLabels[evidenceTarget.category] || formatInstructionStatus(evidenceTarget.category)}
+                </p>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>File</Label>
+              <Input
+                type="file"
+                accept="image/*,.pdf,.doc,.docx"
+                capture="environment"
+                onChange={(event) => setEvidenceFile(event.target.files?.[0] || null)}
+              />
+              <p className="text-[11px] text-muted-foreground">Photos, PDFs, and documents up to 15MB.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Caption</Label>
+              <Input
+                value={evidenceCaption}
+                onChange={(event) => setEvidenceCaption(event.target.value)}
+                placeholder="Optional note"
+                maxLength={500}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEvidenceTarget(null);
+                setEvidenceFile(null);
+                setEvidenceCaption("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEvidenceUpload}
+              disabled={!evidenceFile || uploadEvidence.isPending || isReadingEvidence}
+              className="gap-1.5"
+            >
+              {uploadEvidence.isPending || isReadingEvidence ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              Upload
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

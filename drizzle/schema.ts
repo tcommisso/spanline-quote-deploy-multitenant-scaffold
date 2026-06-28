@@ -2933,6 +2933,37 @@ export const tradePhotos = mysqlTable("trade_photos", {
 });
 export type TradePhoto = typeof tradePhotos.$inferSelect;
 
+export const tradeJobInstructionActions = mysqlTable("trade_job_instruction_actions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
+  installerId: int("installerId").notNull().references(() => constructionInstallers.id, { onDelete: "cascade" }),
+  sourceType: mysqlEnum("sourceType", ["manual", "approval_inspection", "subcontract_inspection"]).notNull(),
+  sourceId: int("sourceId").notNull(),
+  sourceKey: varchar("sourceKey", { length: 128 }).default("").notNull(),
+  actionStatus: mysqlEnum("actionStatus", ["acknowledged", "completed"]).default("acknowledged").notNull(),
+  notes: text("notes"),
+  evidenceFiles: json("evidenceFiles").$type<Array<{
+    url: string;
+    key: string;
+    fileName: string;
+    mimeType: string;
+    size: number;
+    caption?: string | null;
+    uploadedAt: string;
+  }>>().default([]),
+  acknowledgedAt: timestamp("acknowledgedAt"),
+  completedAt: timestamp("completedAt"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_trade_job_instruction_actions_tenant").on(table.tenantId),
+  index("idx_trade_job_instruction_actions_job_installer").on(table.tenantId, table.jobId, table.installerId),
+  uniqueIndex("uq_trade_job_instruction_action_source").on(table.tenantId, table.jobId, table.installerId, table.sourceType, table.sourceId, table.sourceKey),
+]);
+export type TradeJobInstructionAction = typeof tradeJobInstructionActions.$inferSelect;
+export type InsertTradeJobInstructionAction = typeof tradeJobInstructionActions.$inferInsert;
+
 // ─── Trade Messages ─────────────────────────────────────────────────────────
 export const tradeMessages = mysqlTable("trade_messages", {
   id: int("id").autoincrement().primaryKey(),

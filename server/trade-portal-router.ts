@@ -13,6 +13,7 @@ import {
   chatChannels, chatMessages, chatChannelMembers,
   suppliers, flashingOrders, flashingOrderLines, flashingOrderStatusHistory,
   approvalProjects, approvalInspections, constructionJobInstructions,
+  tradeJobInstructionActions,
   type PaymentMilestone,
 } from "../drizzle/schema";
 import { publicProcedure, router, middleware } from "./_core/trpc";
@@ -85,6 +86,12 @@ function tradeJobConditions(ctx: any, ...baseConditions: any[]) {
 function tradeJobInstructionConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionJobInstructions.tenantId, tradePortalTenantId(ctx));
+  return conditions;
+}
+
+function tradeInstructionActionConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, tradeJobInstructionActions.tenantId, tradePortalTenantId(ctx));
   return conditions;
 }
 
@@ -208,6 +215,7 @@ async function getApprovalInspectionInstructionItems(db: any, ctx: any, job: typ
       id: `approval-inspection-${inspection.id}`,
       sourceType: "approval_inspection",
       sourceId: inspection.id,
+      sourceKey: "",
       sourceLabel: project?.projectNumber ? `Approval ${project.projectNumber}` : "Approval inspection",
       title: inspection.title || String(inspection.inspectionType || "Inspection").replace(/_/g, " "),
       description: inspection.resultNotes || inspection.description || null,
@@ -258,6 +266,7 @@ async function getManualTradeInstructionItems(db: any, ctx: any, jobId: number, 
     id: `manual-${row.id}`,
     sourceType: "manual",
     sourceId: row.id,
+    sourceKey: "",
     sourceLabel: row.assignedInstallerId ? "Trade instruction" : "Job instruction",
     title: row.title,
     description: row.description,
@@ -302,6 +311,7 @@ function getSubcontractInspectionInstructionItems(subcontracts: any[]) {
         id: `subcontract-inspection-${subcontract.id}-${key}`,
         sourceType: "subcontract_inspection",
         sourceId: subcontract.id,
+        sourceKey: key,
         sourceLabel: "Subcontract reminder",
         title: subcontractInspectionLabels[key] || `${key.replace(/_/g, " ")} inspection`,
         description: String(value).trim(),
@@ -319,6 +329,176 @@ function getSubcontractInspectionInstructionItems(subcontracts: any[]) {
         updatedAt: subcontract.updatedAt,
       }));
   });
+}
+
+const tradeInstructionSourceTypeSchema = z.enum(["manual", "approval_inspection", "subcontract_inspection"]);
+const tradeInstructionActionStatusSchema = z.enum(["acknowledged", "completed"]);
+
+function instructionActionKey(sourceType: string, sourceId: number, sourceKey?: string | null) {
+  return `${sourceType}:${sourceId}:${sourceKey || ""}`;
+}
+
+function normalizeInstructionSourceKey(value?: string | null) {
+  return String(value || "").trim();
+}
+
+function safeUploadFilename(filename: string) {
+  const cleaned = filename.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || "evidence-upload";
+}
+
+function visibleInstructionSourceMatches(item: any, sourceType: string, sourceId: number, sourceKey?: string | null) {
+  return item.sourceType === sourceType &&
+    Number(item.sourceId) === Number(sourceId) &&
+    normalizeInstructionSourceKey(item.sourceKey) === normalizeInstructionSourceKey(sourceKey);
+}
+
+async function getTradeInstructionActions(db: any, ctx: any, jobId: number, installerId: number) {
+  return db.select()
+    .from(tradeJobInstructionActions)
+    .where(and(
+      ...tradeInstructionActionConditions(ctx,
+        eq(tradeJobInstructionActions.jobId, jobId),
+        eq(tradeJobInstructionActions.installerId, installerId),
+      ),
+    ));
+}
+
+function attachTradeInstructionActions(items: any[], actions: any[]) {
+  const actionMap = new Map(actions.map((action: any) => [
+    instructionActionKey(action.sourceType, action.sourceId, action.sourceKey),
+    action,
+  ]));
+
+  return items.map((item) => {
+    const action = actionMap.get(instructionActionKey(item.sourceType, item.sourceId, item.sourceKey));
+    const evidenceFiles = Array.isArray(action?.evidenceFiles) ? action.evidenceFiles : [];
+    return {
+      ...item,
+      actionId: action?.id || null,
+      actionStatus: action?.actionStatus || null,
+      actionNotes: action?.notes || null,
+      acknowledgedAt: action?.acknowledgedAt || null,
+      completedAt: action?.completedAt || null,
+      evidenceFiles,
+      evidenceCount: evidenceFiles.length,
+    };
+  });
+}
+
+async function buildTradeJobInstructionItems(
+  db: any,
+  ctx: any,
+  job: typeof constructionJobs.$inferSelect,
+  subcontracts: any[],
+) {
+  const installerId = ctx.tradeAccess.installerId;
+  const [manualInstructionItems, approvalInspectionItems] = await Promise.all([
+    getManualTradeInstructionItems(db, ctx, job.id, installerId),
+    getApprovalInspectionInstructionItems(db, ctx, job),
+  ]);
+  const subcontractInstructionItems = getSubcontractInspectionInstructionItems(subcontracts);
+  const sortedItems = [
+    ...manualInstructionItems,
+    ...approvalInspectionItems,
+    ...subcontractInstructionItems,
+  ].sort((a: any, b: any) => {
+    if (a.isBlocking !== b.isBlocking) return a.isBlocking ? -1 : 1;
+    const aTime = a.dueAt ? new Date(a.dueAt).getTime() : Number.POSITIVE_INFINITY;
+    const bTime = b.dueAt ? new Date(b.dueAt).getTime() : Number.POSITIVE_INFINITY;
+    if (aTime !== bTime) return aTime - bTime;
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+
+  const actions = await getTradeInstructionActions(db, ctx, job.id, installerId);
+  return attachTradeInstructionActions(sortedItems, actions);
+}
+
+async function requireVisibleTradeInstructionSource(
+  db: any,
+  ctx: any,
+  input: { jobId: number; sourceType: string; sourceId: number; sourceKey?: string | null },
+) {
+  const job = await requireTradeJobAccess(db, ctx, input.jobId);
+  const subcontracts = await db.select()
+    .from(projectSubcontracts)
+    .where(and(
+      eq(projectSubcontracts.jobId, input.jobId),
+      eq(projectSubcontracts.installerId, ctx.tradeAccess.installerId),
+    ));
+  const items = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
+  const item = items.find((candidate) => visibleInstructionSourceMatches(candidate, input.sourceType, input.sourceId, input.sourceKey));
+  if (!item) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Instruction is not visible to this trade" });
+  }
+  return { job, item };
+}
+
+async function upsertTradeInstructionAction(
+  db: any,
+  ctx: any,
+  input: {
+    jobId: number;
+    sourceType: "manual" | "approval_inspection" | "subcontract_inspection";
+    sourceId: number;
+    sourceKey?: string | null;
+    actionStatus?: "acknowledged" | "completed";
+    notes?: string | null;
+    evidenceFiles?: any[];
+  },
+) {
+  const tenantId = tradePortalTenantId(ctx);
+  if (!tenantId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required for instruction actions" });
+  }
+
+  const installerId = ctx.tradeAccess.installerId;
+  const sourceKey = normalizeInstructionSourceKey(input.sourceKey);
+  const [existing] = await db.select()
+    .from(tradeJobInstructionActions)
+    .where(and(
+      eq(tradeJobInstructionActions.tenantId, tenantId),
+      eq(tradeJobInstructionActions.jobId, input.jobId),
+      eq(tradeJobInstructionActions.installerId, installerId),
+      eq(tradeJobInstructionActions.sourceType, input.sourceType),
+      eq(tradeJobInstructionActions.sourceId, input.sourceId),
+      eq(tradeJobInstructionActions.sourceKey, sourceKey),
+    ))
+    .limit(1);
+
+  const now = new Date();
+  const existingEvidence = Array.isArray(existing?.evidenceFiles) ? existing.evidenceFiles : [];
+  const nextEvidence = input.evidenceFiles || existingEvidence;
+  const requestedStatus = input.actionStatus || existing?.actionStatus || "acknowledged";
+  const nextStatus = existing?.actionStatus === "completed" ? "completed" : requestedStatus;
+  const values = {
+    actionStatus: nextStatus,
+    notes: input.notes !== undefined ? (input.notes || null) : (existing?.notes || null),
+    evidenceFiles: nextEvidence,
+    acknowledgedAt: existing?.acknowledgedAt || now,
+    completedAt: existing?.completedAt || (nextStatus === "completed" ? now : null),
+  };
+
+  if (existing) {
+    await db.update(tradeJobInstructionActions)
+      .set(values)
+      .where(and(
+        eq(tradeJobInstructionActions.id, existing.id),
+        eq(tradeJobInstructionActions.installerId, installerId),
+      ));
+    return { id: existing.id };
+  }
+
+  const [result] = await db.insert(tradeJobInstructionActions).values({
+    tenantId,
+    jobId: input.jobId,
+    installerId,
+    sourceType: input.sourceType,
+    sourceId: input.sourceId,
+    sourceKey,
+    ...values,
+  });
+  return { id: result.insertId };
 }
 
 async function requireWorkOrderAccess(db: any, ctx: any, workOrderId: number) {
@@ -2404,22 +2584,7 @@ export const tradePortalRouter = router({
           eq(projectSubcontracts.installerId, installerId),
         ));
 
-      const [manualInstructionItems, approvalInspectionItems] = await Promise.all([
-        getManualTradeInstructionItems(db, ctx, input.jobId, installerId),
-        getApprovalInspectionInstructionItems(db, ctx, job),
-      ]);
-      const subcontractInstructionItems = getSubcontractInspectionInstructionItems(subcontracts);
-      const jobInstructions = [
-        ...manualInstructionItems,
-        ...approvalInspectionItems,
-        ...subcontractInstructionItems,
-      ].sort((a: any, b: any) => {
-        if (a.isBlocking !== b.isBlocking) return a.isBlocking ? -1 : 1;
-        const aTime = a.dueAt ? new Date(a.dueAt).getTime() : Number.POSITIVE_INFINITY;
-        const bTime = b.dueAt ? new Date(b.dueAt).getTime() : Number.POSITIVE_INFINITY;
-        if (aTime !== bTime) return aTime - bTime;
-        return String(a.title || "").localeCompare(String(b.title || ""));
-      });
+      const jobInstructions = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
 
       return {
         job: {
@@ -2443,6 +2608,96 @@ export const tradePortalRouter = router({
         sharedFiles,
         subcontracts,
       };
+    }),
+
+  updateJobInstructionAction: protectedTradePortalProcedure
+    .input(z.object({
+      jobId: z.number(),
+      sourceType: tradeInstructionSourceTypeSchema,
+      sourceId: z.number(),
+      sourceKey: z.string().max(128).optional(),
+      actionStatus: tradeInstructionActionStatusSchema,
+      notes: z.string().max(2000).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireVisibleTradeInstructionSource(db, ctx, input);
+      const result = await upsertTradeInstructionAction(db, ctx, {
+        jobId: input.jobId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        sourceKey: input.sourceKey,
+        actionStatus: input.actionStatus,
+        notes: input.notes,
+      });
+      return { success: true, id: result.id };
+    }),
+
+  uploadJobInstructionEvidence: protectedTradePortalProcedure
+    .input(z.object({
+      jobId: z.number(),
+      sourceType: tradeInstructionSourceTypeSchema,
+      sourceId: z.number(),
+      sourceKey: z.string().max(128).optional(),
+      fileBase64: z.string().min(1),
+      fileName: z.string().trim().min(1).max(255),
+      fileMimeType: z.string().trim().min(1).max(128),
+      caption: z.string().max(500).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireVisibleTradeInstructionSource(db, ctx, input);
+
+      const installerId = ctx.tradeAccess.installerId;
+      const tenantId = tradePortalTenantId(ctx);
+      if (!tenantId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required for evidence uploads" });
+      }
+
+      const fileBuffer = Buffer.from(input.fileBase64, "base64");
+      if (fileBuffer.byteLength > 15 * 1024 * 1024) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Evidence file must be under 15MB" });
+      }
+
+      const suffix = crypto.randomBytes(6).toString("hex");
+      const safeName = safeUploadFilename(input.fileName);
+      const safeSourceKey = safeUploadFilename(normalizeInstructionSourceKey(input.sourceKey) || "source");
+      const fileKey = `trade-instruction-evidence/${tenantId}/${installerId}/${input.jobId}/${input.sourceType}-${input.sourceId}-${safeSourceKey}/${suffix}-${safeName}`;
+      const { key, url } = await storagePut(fileKey, fileBuffer, input.fileMimeType);
+
+      const sourceKey = normalizeInstructionSourceKey(input.sourceKey);
+      const [existing] = await db.select()
+        .from(tradeJobInstructionActions)
+        .where(and(
+          eq(tradeJobInstructionActions.tenantId, tenantId),
+          eq(tradeJobInstructionActions.jobId, input.jobId),
+          eq(tradeJobInstructionActions.installerId, installerId),
+          eq(tradeJobInstructionActions.sourceType, input.sourceType),
+          eq(tradeJobInstructionActions.sourceId, input.sourceId),
+          eq(tradeJobInstructionActions.sourceKey, sourceKey),
+        ))
+        .limit(1);
+      const existingEvidence = Array.isArray(existing?.evidenceFiles) ? existing.evidenceFiles : [];
+      const evidenceFile = {
+        url,
+        key,
+        fileName: input.fileName,
+        mimeType: input.fileMimeType,
+        size: fileBuffer.byteLength,
+        caption: input.caption || null,
+        uploadedAt: new Date().toISOString(),
+      };
+      const result = await upsertTradeInstructionAction(db, ctx, {
+        jobId: input.jobId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        sourceKey: input.sourceKey,
+        actionStatus: existing?.actionStatus || "acknowledged",
+        notes: existing?.notes || null,
+        evidenceFiles: [...existingEvidence, evidenceFile],
+      });
+
+      return { success: true, id: result.id, evidenceFile };
     }),
 
   // ─── Job List with shared file counts (for job details page) ───────────────
