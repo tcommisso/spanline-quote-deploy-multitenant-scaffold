@@ -953,7 +953,7 @@ export const adminTradePortalRouter = router({
       const routing = { connectionId: auth.xeroConnectionId };
 
       const [installer] = await db.select().from(constructionInstallers)
-        .where(eq(constructionInstallers.id, input.installerId)).limit(1);
+        .where(and(...installerTenantConditions(ctx, input.installerId))).limit(1);
       if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Trade not found" });
       if (!installer.xeroContactId) throw new TRPCError({ code: "BAD_REQUEST", message: "Trade not linked to Xero" });
 
@@ -990,7 +990,7 @@ export const adminTradePortalRouter = router({
 
       await db.update(constructionInstallers)
         .set(updates)
-        .where(eq(constructionInstallers.id, input.installerId));
+        .where(and(...installerTenantConditions(ctx, input.installerId)));
 
       return {
         synced: true,
@@ -1010,7 +1010,7 @@ export const adminTradePortalRouter = router({
       const routing = { connectionId: auth.xeroConnectionId };
 
       const [installer] = await db.select().from(constructionInstallers)
-        .where(eq(constructionInstallers.id, input.installerId)).limit(1);
+        .where(and(...installerTenantConditions(ctx, input.installerId))).limit(1);
       if (!installer) throw new TRPCError({ code: "NOT_FOUND", message: "Trade not found" });
       if (!installer.xeroContactId) throw new TRPCError({ code: "BAD_REQUEST", message: "Trade not linked to Xero" });
 
@@ -1037,7 +1037,7 @@ export const adminTradePortalRouter = router({
       await updateXeroContact(installer.xeroContactId, xeroUpdate, routing);
       await db.update(constructionInstallers)
         .set({ lastXeroSyncAt: new Date() })
-        .where(eq(constructionInstallers.id, input.installerId));
+        .where(and(...installerTenantConditions(ctx, input.installerId)));
 
       return { pushed: true, contactId: installer.xeroContactId };
     }),
@@ -1054,6 +1054,7 @@ export const adminTradePortalRouter = router({
       .where(and(
         eq(constructionInstallers.active, true),
         sql`${constructionInstallers.xeroContactId} IS NOT NULL`,
+        ...installerTenantConditions(ctx),
       ));
 
     let synced = 0;
@@ -1099,7 +1100,7 @@ export const adminTradePortalRouter = router({
 
         await db.update(constructionInstallers)
           .set(updates)
-          .where(eq(constructionInstallers.id, trade.id));
+          .where(and(...installerTenantConditions(ctx, trade.id)));
 
         synced++;
         results.push({ id: trade.id, name: trade.name, status: "synced", updatedFields });

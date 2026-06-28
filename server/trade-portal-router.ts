@@ -70,13 +70,13 @@ function requireTradeAccessVisible(
 
 function tradeInstallerConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
-  appendTenantScope(conditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
+  appendTenantScope(conditions, constructionInstallers.tenantId, tradePortalTenantId(ctx));
   return conditions;
 }
 
 function tradeJobConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
-  appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+  appendTenantScope(conditions, constructionJobs.tenantId, tradePortalTenantId(ctx));
   return conditions;
 }
 

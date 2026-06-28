@@ -513,6 +513,12 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
       {/* Supplier list */}
       {suppliersQuery.isLoading ? (
         <div className="text-center py-12 text-muted-foreground">Loading suppliers...</div>
+      ) : suppliersQuery.isError ? (
+        <div className="text-center py-12 text-red-600">
+          <Building2 className="h-12 w-12 mx-auto mb-3 opacity-30" />
+          <p>Could not load suppliers</p>
+          <p className="text-sm text-muted-foreground">{suppliersQuery.error.message}</p>
+        </div>
       ) : filteredSuppliers.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
           <Building2 className="h-12 w-12 mx-auto mb-3 opacity-30" />

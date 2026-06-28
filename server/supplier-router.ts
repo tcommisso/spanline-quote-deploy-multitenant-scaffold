@@ -265,6 +265,14 @@ export const supplierRouter = router({
       let installerId: number;
       if (existingInstaller) {
         installerId = existingInstaller.id;
+        if (supplier.xeroContactId && !existingInstaller.xeroContactId) {
+          await db.update(constructionInstallers)
+            .set({
+              xeroContactId: supplier.xeroContactId,
+              lastXeroSyncAt: supplier.lastXeroSyncAt || new Date(),
+            })
+            .where(and(...installerTenantConditions(ctx, eq(constructionInstallers.id, installerId))));
+        }
       } else {
         // Create the installer from supplier details
         const [result] = await db.insert(constructionInstallers).values({
@@ -275,6 +283,8 @@ export const supplierRouter = router({
           speciality: supplier.category || null,
           tradeType: input.tradeType,
           address: supplier.address || null,
+          xeroContactId: supplier.xeroContactId || null,
+          lastXeroSyncAt: supplier.lastXeroSyncAt || null,
           active: true,
         }).$returningId();
         installerId = result.id;
