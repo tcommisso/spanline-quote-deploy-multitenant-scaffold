@@ -48,6 +48,7 @@ const menuGroups: MenuGroup[] = [
     items: [
       { label: "Products", path: "/admin/master-data/structure/products", icon: Package },
       { label: "Spec Mappings", path: "/admin/master-data/structure/spec-mappings", icon: Zap },
+      { label: "Checklist Defaults", path: "/admin/master-data/structure/checklist-defaults", icon: ListChecks },
       { label: "Tab Names", path: "/admin/master-data/structure/tab-names", icon: TableProperties },
       { label: "Sub-Tab Names", path: "/admin/master-data/structure/sub-tab-names", icon: TableProperties },
       { label: "UoM", path: "/admin/master-data/structure/uom", icon: Ruler },

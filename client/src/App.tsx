@@ -66,6 +66,7 @@ const ImportHistoryLog = lazy(() => import("./pages/ImportHistoryLog"));
 // Admin Sales Data sub-pages (lazy)
 const StructureProducts = lazy(() => import("./pages/admin/StructureProducts"));
 const StructureSpecMappings = lazy(() => import("./pages/admin/StructureSpecMappings"));
+const ChecklistDefaults = lazy(() => import("./pages/admin/ChecklistDefaults"));
 const StructureTabNames = lazy(() => import("./pages/admin/StructureTabNames"));
 const StructureUom = lazy(() => import("./pages/admin/StructureUom"));
 const StructureSubTabNames = lazy(() => import("./pages/admin/StructureSubTabNames"));
@@ -394,6 +395,7 @@ function MainRouter() {
         <Route path="/assistant" component={AssistantPage} />
         <Route path="/admin/master-data/structure/products">{() => <MasterDataPage><StructureProducts /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/structure/spec-mappings">{() => <MasterDataPage><StructureSpecMappings /></MasterDataPage>}</Route>
+        <Route path="/admin/master-data/structure/checklist-defaults">{() => <MasterDataPage><ChecklistDefaults /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/structure/tab-names">{() => <MasterDataPage><StructureTabNames /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/structure/sub-tab-names">{() => <MasterDataPage><StructureSubTabNames /></MasterDataPage>}</Route>
         <Route path="/admin/master-data/structure/uom">{() => <MasterDataPage><StructureUom /></MasterDataPage>}</Route>

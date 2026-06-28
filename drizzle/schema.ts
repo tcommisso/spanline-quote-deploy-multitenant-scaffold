@@ -5483,6 +5483,28 @@ export type ChecklistItem = typeof checklistItems.$inferSelect;
 export type InsertChecklistItem = typeof checklistItems.$inferInsert;
 
 
+// ─── Work Checklist Defaults (tenant-editable spec sheet starter rows) ───────
+export const checklistDefaultItems = mysqlTable("checklist_default_items", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  section: varchar("section", { length: 64 }).notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  unit: varchar("unit", { length: 20 }).notNull().default("ea"),
+  responsibility: varchar("responsibility", { length: 32 }).notNull().default(""),
+  productMatch: varchar("productMatch", { length: 255 }).notNull().default(""),
+  notes: varchar("notes", { length: 500 }).notNull().default(""),
+  sortOrder: int("sortOrder").notNull().default(0),
+  isActive: boolean("isActive").notNull().default(true),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (t) => [
+  index("idx_checklist_default_items_tenant").on(t.tenantId),
+  index("idx_checklist_default_items_tenant_section").on(t.tenantId, t.section),
+]);
+export type ChecklistDefaultItem = typeof checklistDefaultItems.$inferSelect;
+export type InsertChecklistDefaultItem = typeof checklistDefaultItems.$inferInsert;
+
+
 // ─── Chat System ──────────────────────────────────────────────────────────
 export const chatChannels = mysqlTable("chat_channels", {
   id: int("id").autoincrement().primaryKey(),

@@ -24,6 +24,7 @@ import CouncilSelect from "@/components/CouncilSelect";
 import { Checkbox } from "@/components/ui/checkbox";
 import FilteredSelect, { type FilteredSelectCategory } from "@/components/FilteredSelect";
 import { SortableChecklist, type CheckItem } from "@/components/SortableChecklist";
+import { checklistDefaultFromLabel, getBuiltinWorkChecklistDefaults } from "@shared/spec-checklist-defaults";
 import RoofPlanDiagram from "@/components/RoofPlanDiagram";
 import GutterPlanDiagram from "@/components/GutterPlanDiagram";
 import QuoteRevisionHistory from "@/components/QuoteRevisionHistory";
@@ -1099,6 +1100,26 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   type ChecklistSelection = { itemId: number; label: string; unitPrice: number; qty: number; total: number; section: string; unit: string };
   const [checklistSelections, setChecklistSelections] = useState<ChecklistSelection[]>([]);
   const { data: activeChecklistItems } = trpc.checklistItems.listActive.useQuery();
+  const { data: tenantChecklistDefaults = [] } = trpc.checklistDefaults.listActive.useQuery(undefined, { staleTime: 60_000 });
+  const checklistDefaultsBySection = useMemo<Record<string, CheckItem[]>>(() => {
+    return tenantChecklistDefaults.reduce<Record<string, CheckItem[]>>((acc, row) => {
+      if (!row.section || !row.label) return acc;
+      const defaults = acc[row.section] ?? [];
+      defaults.push(checklistDefaultFromLabel(row.section, row.label, {
+        notes: row.notes || "",
+        responsibility: (row.responsibility || "") as "" | "By Builder" | "By Client",
+        unit: row.unit || "ea",
+        productMatch: row.productMatch || "",
+      }) as CheckItem);
+      acc[row.section] = defaults;
+      return acc;
+    }, {});
+  }, [tenantChecklistDefaults]);
+  const defaultChecklistItems = useCallback((section: string): CheckItem[] => {
+    const tenantDefaults = checklistDefaultsBySection[section];
+    if (tenantDefaults?.length) return tenantDefaults.map((row) => ({ ...row }));
+    return getBuiltinWorkChecklistDefaults(section).map((row) => ({ ...row })) as CheckItem[];
+  }, [checklistDefaultsBySection]);
 
   // Filter sections by category (legacy compat) + use ordered visible sections
   const filteredSections = useMemo(() => {
@@ -2449,12 +2470,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
                   lockItemLabels={!isSuperAdmin}
-                  defaultItems={[
-                    { item: "Timber Stud wall", checked: false, notes: "", responsibility: "" },
-                    { item: "Brick wall", checked: false, notes: "", responsibility: "" },
-                    { item: "Plastering", checked: false, notes: "", responsibility: "" },
-                    { item: "Painting", checked: false, notes: "", responsibility: "" },
-                  ]}
+                  defaultItems={defaultChecklistItems("walls")}
                 />
               </div>
 
@@ -3200,13 +3216,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
                   lockItemLabels={!isSuperAdmin}
-                  defaultItems={[
-                    { task: "Earthworks - ground preparation", checked: false, responsibility: "" },
-                    { task: "Landscaping", checked: false, responsibility: "" },
-                    { task: "Backfilling", checked: false, responsibility: "" },
-                    { task: "Dirt disposal", checked: false, responsibility: "" },
-                    { task: "Retaining walls", checked: false, responsibility: "" },
-                  ]}
+                  defaultItems={defaultChecklistItems("floor")}
                 />
               </div>
             </AccordionContent>
@@ -3397,16 +3407,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   placeholder="Stairs item..."
                   notesPlaceholder="Notes (optional)..."
                   lockItemLabels={!isSuperAdmin}
-                  defaultItems={[
-                    { item: "Timber Stairs", checked: false, notes: "" },
-                    { item: "Steel Stringers", checked: false, notes: "" },
-                    { item: "Spiral Staircase", checked: false, notes: "" },
-                    { item: "Landing/Platform", checked: false, notes: "" },
-                    { item: "Handrail", checked: false, notes: "" },
-                    { item: "Balustrade to Stairs", checked: false, notes: "" },
-                    { item: "Non-slip Nosing", checked: false, notes: "" },
-                    { item: "Under-stair Storage", checked: false, notes: "" },
-                  ]}
+                  defaultItems={defaultChecklistItems("stairs")}
                 />
               </div>
               {/* General notes */}
@@ -3880,20 +3881,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   notesPlaceholder="Notes (optional)..."
                   showResponsibility
                   lockItemLabels={!isSuperAdmin}
-                  defaultItems={[
-                    { task: "Light cabling for future use", checked: false, responsibility: "" },
-                    { task: "Light cabling only (Connection by Owner)", checked: false, responsibility: "" },
-                    { task: "Make safe for works (usually required with Demolition of existing structures)", checked: false, responsibility: "" },
-                    { task: "Remove Solar Panels", checked: false, responsibility: "" },
-                    { task: "Reinstall Solar Panels", checked: false, responsibility: "" },
-                    { task: "Remove air conditioner", checked: false, responsibility: "" },
-                    { task: "Reinstall air conditioner", checked: false, responsibility: "" },
-                    { task: "Remove lights", checked: false, responsibility: "" },
-                    { task: "Reinstall lights", checked: false, responsibility: "" },
-                    { task: "Remove power points", checked: false, responsibility: "" },
-                    { task: "Reinstall power points", checked: false, responsibility: "" },
-                    { task: "Power Line within 1.5m of structure", checked: false, responsibility: "" },
-                  ]}
+                  defaultItems={defaultChecklistItems("electrical")}
                 />
               </div>
 
@@ -3925,19 +3913,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
                 lockItemLabels={!isSuperAdmin}
-                defaultItems={[
-                  { item: "Patio Slab", checked: false, notes: "", responsibility: "" },
-                  { item: "Enclosure Slab", checked: false, notes: "", responsibility: "" },
-                  { item: "Topper Slab", checked: false, notes: "", responsibility: "" },
-                  { item: "Pier footings", checked: false, notes: "", responsibility: "" },
-                  { item: "Strip footings", checked: false, notes: "", responsibility: "" },
-                  { item: "Exposed aggregate", checked: false, notes: "", responsibility: "" },
-                  { item: "Broom finish", checked: false, notes: "", responsibility: "" },
-                  { item: "Coloured concrete", checked: false, notes: "", responsibility: "" },
-                  { item: "Stamped concrete", checked: false, notes: "", responsibility: "" },
-                  { item: "Rebate for tiles", checked: false, notes: "", responsibility: "" },
-                  { item: "Step down", checked: false, notes: "", responsibility: "" },
-                ]}
+                defaultItems={defaultChecklistItems("concreting")}
               />
               {/* Detail fields - only show when at least one checklist item is checked */}
               {concreteChecks.some(c => c.checked) && (<>
@@ -3970,16 +3946,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 notesPlaceholder="Qty m² or notes..."
                 showResponsibility
                 lockItemLabels={!isSuperAdmin}
-                defaultItems={[
-                  { item: "Demolish existing concrete slab", checked: false, notes: "", responsibility: "" },
-                  { item: "Demolish existing steel structure", checked: false, notes: "", responsibility: "" },
-                  { item: "Demolish existing timber structure", checked: false, notes: "", responsibility: "" },
-                  { item: "Demolish existing brick structure", checked: false, notes: "", responsibility: "" },
-                  { item: "Remove pavers", checked: false, notes: "", responsibility: "" },
-                  { item: "Disposal of waste", checked: false, notes: "", responsibility: "" },
-                  { item: "Repair/replace eaves, fascia", checked: false, notes: "", responsibility: "" },
-                  { item: "Onsite storage of recovered materials", checked: false, notes: "", responsibility: "" },
-                ]}
+                defaultItems={defaultChecklistItems("demolition")}
               />
               {/* General notes */}
               <div className="mt-4">
@@ -4003,16 +3970,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
                 lockItemLabels={!isSuperAdmin}
-                defaultItems={[
-                  { item: "Eave cut back", checked: false, notes: "", responsibility: "" },
-                  { item: "Stud Wall", checked: false, notes: "", responsibility: "" },
-                  { item: "Batten and Gyprock House Wall", checked: false, notes: "", responsibility: "" },
-                  { item: "Cut Brick Veneer Wall, install window/door with architrave", checked: false, notes: "", responsibility: "" },
-                  { item: "Replace Eave Ceiling", checked: false, notes: "", responsibility: "" },
-                  { item: "Replace Fascia", checked: false, notes: "", responsibility: "" },
-                  { item: "Repoint roof hips", checked: false, notes: "", responsibility: "" },
-                  { item: "Install Beams into Foam wall", checked: false, notes: "", responsibility: "" },
-                ]}
+                defaultItems={defaultChecklistItems("existingHouse")}
               />
               {/* General notes */}
               <div className="mt-4">
@@ -4036,17 +3994,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 notesPlaceholder="Notes (optional)..."
                 showResponsibility
                 lockItemLabels={!isSuperAdmin}
-                defaultItems={[
-                  { item: "Stormwater connection", checked: false, notes: "", responsibility: "" },
-                  { item: "Move hot water", checked: false, notes: "", responsibility: "" },
-                  { item: "Move Gas", checked: false, notes: "", responsibility: "" },
-                  { item: "Move or flash vent pipe", checked: false, notes: "", responsibility: "" },
-                  { item: "Move ORG", checked: false, notes: "", responsibility: "" },
-                  { item: "Move Tap", checked: false, notes: "", responsibility: "" },
-                  { item: "Fit-off Kitchenette", checked: false, notes: "", responsibility: "" },
-                  { item: "Fit-off Bathroom", checked: false, notes: "", responsibility: "" },
-                  { item: "Strip Drain", checked: false, notes: "", responsibility: "" },
-                ]}
+                defaultItems={defaultChecklistItems("plumbing")}
               />
               {/* General notes */}
               <div className="mt-4">

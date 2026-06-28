@@ -87,6 +87,7 @@ import { textBlocksRouter } from "./text-blocks-router";
 import { notificationLogRouter } from "./notification-log-router";
 import { appCentralRouter } from "./app-central-router";
 import { checklistItemsRouter } from "./checklist-items-router";
+import { checklistDefaultsRouter } from "./checklist-defaults-router";
 import { chatRouter } from "./chat-router";
 import { supportRouter } from "./support-router";
 import { invitationsRouter } from "./invitations-router";
@@ -2555,6 +2556,7 @@ ${SPANLINE_TECHNICAL_PROMPT}${techLibraryContext}${aiKnowledgeContext}${aiCorrec
   // ─── Spec-to-Items Engine ──────────────────────────────────────────────────
   specItems: specItemsRouter,
   checklistItems: checklistItemsRouter,
+  checklistDefaults: checklistDefaultsRouter,
   crm: crmRouter,
   designAdvisors: designAdvisorsRouter,
   vocphone: vocphoneRouter,
