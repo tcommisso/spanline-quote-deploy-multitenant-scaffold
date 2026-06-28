@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 export type WorkChecklistUnit = "" | "ea" | "LM" | "m" | "m2" | "m3" | "hr" | "day" | "lump";
 export type CheckItem = {
@@ -55,6 +56,12 @@ function normalizeChecklistItem(row: CheckItem): CheckItem {
     qty: row.qty ?? "",
     productMatch: row.productMatch ?? "",
   };
+}
+
+function hasPositiveQty(value: string | number | undefined): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  const numeric = typeof value === "number" ? value : Number.parseFloat(String(value));
+  return Number.isFinite(numeric) && numeric > 0;
 }
 
 interface SortableChecklistProps {
@@ -107,12 +114,16 @@ function SortableItem({
     opacity: isDragging ? 0.5 : 1,
   };
   const itemLabelLocked = lockItemLabels && !row.custom && getChecklistLabel(row).trim() !== "";
+  const requiresResponsibility = showResponsibility && row.checked && !row.responsibility;
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className="flex items-start gap-2 mb-2 p-2 border rounded-md bg-muted/20"
+      className={cn(
+        "flex items-start gap-2 mb-2 p-2 border rounded-md bg-muted/20",
+        requiresResponsibility && "border-amber-400 bg-amber-50/70"
+      )}
     >
       <button
         type="button"
@@ -162,8 +173,13 @@ function SortableItem({
               placeholder="Qty"
               value={row.qty ?? ""}
               onChange={(e) => {
+                const qty = e.target.value;
                 const next = [...items];
-                next[index] = { ...next[index], qty: e.target.value };
+                next[index] = {
+                  ...next[index],
+                  qty,
+                  checked: hasPositiveQty(qty) ? true : next[index].checked,
+                };
                 onChange(next);
               }}
             />
@@ -181,6 +197,11 @@ function SortableItem({
               ))}
             </select>
           </div>
+        )}
+        {requiresResponsibility && (
+          <p className="text-[11px] font-medium text-amber-700">
+            Select Builder or Client for this selected item.
+          </p>
         )}
         <Input
           className="h-7 text-xs text-muted-foreground"

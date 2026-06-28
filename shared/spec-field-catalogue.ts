@@ -182,6 +182,7 @@ export const SPEC_FIELDS: SpecFieldDefinition[] = [
   { value: "specElecLightType", label: "Elec Light Type (text)", type: "text", section: "Electrical" },
   { value: "specElecLightTypes", label: "Elec Light Types (JSON)", type: "json", section: "Electrical" },
   { value: "specElecFan", label: "Elec Fan", type: "num", section: "Electrical" },
+  { value: "specElecFanType", label: "Elec Fan Type", type: "text", section: "Electrical" },
   { value: "specElecPowerPoints", label: "Elec Power Points", type: "num", section: "Electrical" },
   { value: "specElecGpos", label: "Elec GPOs", type: "num", section: "Electrical" },
   { value: "specElecSwitches", label: "Elec Switches", type: "num", section: "Electrical" },
@@ -645,7 +646,13 @@ const SPEC_TERM_OVERRIDES: Record<string, Partial<SpecDefinedTerm>> = {
   specElecFan: {
     term: "Fan quantity",
     formulaExamples: ["specElecFan"],
-    notes: "Number of ceiling fans.",
+    productMatchField: "specElecFanType",
+    notes: "Number of ceiling fans. Use specElecFanType as the product match field for the selected fan product.",
+  },
+  specElecFanType: {
+    term: "Fan product selector",
+    formulaExamples: ["specElecFan"],
+    notes: "Selected fan product name from the Electrical > Fans product subgroup.",
   },
   specPlumbFitoffs: {
     term: "Plumbing fitoff quantity",

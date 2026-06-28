@@ -814,7 +814,7 @@ export const specItemsRouter = router({
 
         // ── Electrical ──
         { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
-        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: null, qtyFormula: "specElecFan", description: "Ceiling Fans", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 91 },
+        { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: "specElecFanType", qtyFormula: "specElecFan", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 91 },
         { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 92 },
         { name: "Electrical GPOs", tabName: "electrical", specField: "specElecGpos", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecGpos", description: "GPOs", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 93 },
         { name: "Electrical Switches", tabName: "electrical", specField: "specElecSwitches", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitches", description: "Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 94 },

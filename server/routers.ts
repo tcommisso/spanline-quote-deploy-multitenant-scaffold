@@ -1646,6 +1646,9 @@ export const appRouter = router({
         if (value.includes("flashing")) fields.push("specFlashingsType");
         if (value.includes("infill") || value.includes("twinwall")) fields.push("specBracketInfillType");
         if (value.includes("post fixing") || value.includes("posts fixing")) fields.push("specPostsFixing");
+        const isElectricalSource = parentValue.includes("electrical") || value.includes("electrical");
+        if (isElectricalSource && /\b(lights?|lighting)\b/.test(value)) fields.push("specElecLightType");
+        if (isElectricalSource && /\b(fans?)\b/.test(value)) fields.push("specElecFanType");
 
         // Back/side channel products are commonly kept under Roof > Channels.
         // Use that shared catalogue source for both channel spec dropdowns.

@@ -78,6 +78,18 @@ const HOUSE_ROOF_TYPE_OPTIONS = ["Tile", "Metal", "Flat", "Concrete", "Slate", "
 const EXISTING_HOUSE_WALL_OPTIONS = ["Brick Veneer", "Double Brick", "Rendered", "Weatherboard", "Hebel", "Cladding", "Concrete Block", "Other"];
 const YES_NO_OPTIONS = ["Yes", "No"];
 const ATTACHED_SIDE_OPTIONS = ["1 Side", "2 Side", "3 Side", "4 Side"];
+const ELECTRICAL_LIGHT_FALLBACK_OPTIONS = [
+  "LED Downlight",
+  "LED Oyster",
+  "LED Batten",
+  "LED Strip",
+  "LED Flood",
+  "Pendant",
+  "Wall Sconce",
+  "Spot Light",
+  "Garden Light",
+];
+const ELECTRICAL_FAN_FALLBACK_OPTIONS = ["Ceiling Fan", "Fan Point", "Exhaust Fan"];
 const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
 const BRACKET_INFILL_FALLBACK_OPTIONS = ["Glass", "Twinwall"];
 const POST_FIXING_OPTIONS = ["Footing", "Internal Bracket", "Welded Base Plate"];
@@ -555,6 +567,18 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const sideChannelsProductNames = useMemo(() => getSpecFieldAllOptions("specSideChannelsType"), [getSpecFieldAllOptions]);
   const flashingsProductNames = useMemo(() => getSpecFieldAllOptions("specFlashingsType"), [getSpecFieldAllOptions]);
   const bracketInfillProductNames = useMemo(() => getSpecFieldAllOptions("specBracketInfillType"), [getSpecFieldAllOptions]);
+  const electricalLightProductNames = useMemo(() => getSpecFieldAllOptions("specElecLightType"), [getSpecFieldAllOptions]);
+  const electricalFanProductNames = useMemo(() => getSpecFieldAllOptions("specElecFanType"), [getSpecFieldAllOptions]);
+  const electricalLightOptions = useMemo(
+    () => electricalLightProductNames.length > 0 ? electricalLightProductNames : ELECTRICAL_LIGHT_FALLBACK_OPTIONS,
+    [electricalLightProductNames]
+  );
+  const electricalFanOptions = useMemo(
+    () => electricalFanProductNames.length > 0 ? electricalFanProductNames : ELECTRICAL_FAN_FALLBACK_OPTIONS,
+    [electricalFanProductNames]
+  );
+  const defaultElectricalLightType = electricalLightOptions[0] || "LED Downlight";
+  const defaultElectricalFanType = electricalFanOptions[0] || "";
 
   // Category arrays for FilteredSelect (from dynamic specField mapping)
   const roofCategories = useMemo(() => getSpecFieldCategories("specRoofType"), [getSpecFieldCategories]);
@@ -568,6 +592,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const sideChannelsCategories = useMemo(() => getSpecFieldCategories("specSideChannelsType"), [getSpecFieldCategories]);
   const flashingsCategories = useMemo(() => getSpecFieldCategories("specFlashingsType"), [getSpecFieldCategories]);
   const bracketInfillCategories = useMemo(() => getSpecFieldCategories("specBracketInfillType"), [getSpecFieldCategories]);
+  const electricalLightCategories = useMemo(() => getSpecFieldCategories("specElecLightType"), [getSpecFieldCategories]);
+  const electricalFanCategories = useMemo(() => getSpecFieldCategories("specElecFanType"), [getSpecFieldCategories]);
 
   // Derive beam size options from product database, extracting just the dimension (e.g. "140×50")
   const dbSteelSizes = useMemo(() => {
@@ -843,6 +869,14 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const beamPositionList = useMemo(() => (form.specBeamPositions || "").split(";").filter(Boolean), [form.specBeamPositions]);
   const houseWallList = useMemo(() => (form.specHouseWalls || "").split(",").filter(Boolean), [form.specHouseWalls]);
   const bracketInfillOptions = bracketInfillProductNames.length > 0 ? bracketInfillProductNames : BRACKET_INFILL_FALLBACK_OPTIONS;
+  const totalElecLights = useMemo(
+    () => elecLightTypes.reduce((sum, row) => sum + (Number(row.qty) || 0), 0),
+    [elecLightTypes]
+  );
+  const legacyElecLightType = useMemo(() => {
+    const uniqueTypes = Array.from(new Set(elecLightTypes.map(row => row.type).filter(Boolean)));
+    return uniqueTypes.length === 1 ? uniqueTypes[0] : "";
+  }, [elecLightTypes]);
 
   const deriveBeamEntriesFromPlacement = useCallback((entries: BeamEntry[], positions = beamPositionList) => (
     syncBeamEntriesToPlacement(entries, positions, houseWallList, form.specWidth || "", form.specLength || "")
@@ -1142,6 +1176,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     specFields.specExistingChecks = existingChecks.length > 0 ? existingChecks : null;
     specFields.specPlumbChecks = plumbChecks.length > 0 ? plumbChecks : null;
     specFields.specElecLightTypes = elecLightTypes.length > 0 ? elecLightTypes : null;
+    specFields.specElecLights = totalElecLights > 0 ? String(totalElecLights) : null;
+    specFields.specElecLightType = legacyElecLightType || null;
     specFields.specElecGpos = elecGpos.length > 0 ? elecGpos : null;
     specFields.specBeamEntries = beamEntries.length > 0 ? beamEntries : null;
     specFields.specStairsChecks = stairsChecks.length > 0 ? stairsChecks : null;
@@ -1163,7 +1199,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
         setAutoSaveStatus("idle");
       },
     });
-  }, [quoteId, updateMutation, iwpEntries, wallWorkItems, existingChecks, plumbChecks, stairsChecks, concreteChecks, elecLightTypes, elecGpos, beamEntries, elecExtraWork, floorWorkItems, demolitionWorkItems, windowEntries, doorEntries, checklistSelections]);
+  }, [quoteId, updateMutation, iwpEntries, wallWorkItems, existingChecks, plumbChecks, stairsChecks, concreteChecks, elecLightTypes, totalElecLights, legacyElecLightType, elecGpos, beamEntries, elecExtraWork, floorWorkItems, demolitionWorkItems, windowEntries, doorEntries, checklistSelections]);
   performAutoSaveRef.current = performAutoSave;
 
   // Validation: required fields for the spec sheet
@@ -1203,6 +1239,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     specFields.specExistingChecks = existingChecks.length > 0 ? existingChecks : null;
     specFields.specPlumbChecks = plumbChecks.length > 0 ? plumbChecks : null;
     specFields.specElecLightTypes = elecLightTypes.length > 0 ? elecLightTypes : null;
+    specFields.specElecLights = totalElecLights > 0 ? String(totalElecLights) : null;
+    specFields.specElecLightType = legacyElecLightType || null;
     specFields.specElecGpos = elecGpos.length > 0 ? elecGpos : null;
     specFields.specBeamEntries = beamEntries.length > 0 ? beamEntries : null;
     specFields.specStairsChecks = stairsChecks.length > 0 ? stairsChecks : null;
@@ -3291,14 +3329,33 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionTrigger className="text-sm font-medium">Electrical</AccordionTrigger>
             <AccordionContent>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <SelectField label="Fan" value={form.specElecFan || ""} onChange={(v) => update("specElecFan", v)} options={["None", "1", "2", "3", "4"]} />
+                {electricalFanCategories.length > 0 ? (
+                  <FilteredSelect
+                    label="Fan Type"
+                    value={form.specElecFanType || ""}
+                    onChange={(v) => update("specElecFanType", v)}
+                    categories={electricalFanCategories}
+                  />
+                ) : (
+                  <SelectField label="Fan Type" value={form.specElecFanType || ""} onChange={(v) => update("specElecFanType", v)} options={electricalFanOptions} />
+                )}
+                <SelectField
+                  label="Fan Qty"
+                  value={form.specElecFan === "None" ? "" : form.specElecFan || ""}
+                  onChange={(v) => setForm(prev => ({
+                    ...prev,
+                    specElecFan: v,
+                    specElecFanType: v && !prev.specElecFanType ? defaultElectricalFanType : prev.specElecFanType,
+                  }))}
+                  options={["1", "2", "3", "4"]}
+                />
               </div>
 
               {/* Lights - multiple rows */}
               <div className="mt-4 border-t pt-3">
                 <div className="flex items-center justify-between mb-2">
                   <Label className="text-xs font-medium text-muted-foreground">Lights</Label>
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setElecLightTypes(prev => [...prev, { type: "LED Downlight", qty: 1 }])}>
+                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setElecLightTypes(prev => [...prev, { type: defaultElectricalLightType, qty: 1 }])}>
                     <Plus className="h-3 w-3 mr-1" /> Add Light
                   </Button>
                 </div>
@@ -3306,10 +3363,20 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   <div key={idx} className="flex items-center gap-2 mb-2">
                     <Select value={row.type} onValueChange={(v) => { const next = [...elecLightTypes]; next[idx] = { ...next[idx], type: v }; setElecLightTypes(next); }}>
                       <SelectTrigger className="h-8 text-sm flex-1 min-w-0">
-                        <SelectValue />
+                        <SelectValue placeholder="Select light..." />
                       </SelectTrigger>
                       <SelectContent>
-                        {["LED Downlight", "LED Oyster", "LED Batten", "LED Strip", "LED Flood", "Pendant", "Wall Sconce", "Spot Light", "Garden Light"].map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                        {electricalLightCategories.length > 0 ? (
+                          electricalLightCategories.map((cat, catIdx) => (
+                            <SelectGroup key={cat.id}>
+                              {catIdx > 0 && <SelectSeparator />}
+                              <SelectLabel>{cat.label}</SelectLabel>
+                              {cat.options.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+                            </SelectGroup>
+                          ))
+                        ) : (
+                          electricalLightOptions.map(o => <SelectItem key={o} value={o}>{o}</SelectItem>)
+                        )}
                       </SelectContent>
                     </Select>
                     <Input className="h-8 text-sm w-16" type="number" min={1} value={row.qty} onChange={(e) => { const next = [...elecLightTypes]; next[idx] = { ...next[idx], qty: parseInt(e.target.value) || 1 }; setElecLightTypes(next); }} />
@@ -3320,7 +3387,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 ))}
                 {elecLightTypes.length > 0 && (
                   <div className="flex items-center justify-end mt-1 text-xs text-muted-foreground font-medium">
-                    Total Lights: {elecLightTypes.reduce((sum, r) => sum + (r.qty || 0), 0)}
+                    Total Lights: {totalElecLights}
                   </div>
                 )}
               </div>
