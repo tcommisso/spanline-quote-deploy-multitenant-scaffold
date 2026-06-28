@@ -11,6 +11,7 @@ import { notifyOwner } from "./_core/notification";
 import { guardedSend } from "./notification-gateway";
 import { invokeLLM } from "./_core/llm";
 import { sendProposalEmail } from "./email";
+import { componentCatalogueTenantConditions } from "./component-catalogue-scope";
 import { RB100_SYSTEM_CONTEXT } from "./rb100-data";
 import { SPANLINE_TECHNICAL_PROMPT } from "../shared/spanline-technical-knowledge";
 import { deckRouter } from "./deck-router";
@@ -1830,13 +1831,13 @@ export const appRouter = router({
         search: z.string().optional().default(""),
         limit: z.number().int().min(1).max(200).optional().default(50),
       }))
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
         const { componentCatalogueProducts } = await import("../drizzle/schema");
         const { eq, and, like, or, sql, count } = await import("drizzle-orm");
         const rawDb = await db.getRawDb();
         if (!rawDb) return { items: [], total: 0 };
 
-        const conditions: any[] = [eq(componentCatalogueProducts.isActive, true)];
+        const conditions: any[] = componentCatalogueTenantConditions(ctx, eq(componentCatalogueProducts.isActive, true));
         if (input.category) {
           conditions.push(eq(componentCatalogueProducts.category, input.category));
         }

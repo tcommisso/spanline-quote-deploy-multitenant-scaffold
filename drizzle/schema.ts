@@ -3534,6 +3534,7 @@ export type InsertProductFavourite = typeof productFavourites.$inferInsert;
 // ─── Component Catalogue Products (replaces Teable) ─────────────────────────
 export const componentCatalogueProducts = mysqlTable("component_catalogue_products", {
   id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
   category: varchar("category", { length: 100 }).notNull(),
   spaCode: varchar("spaCode", { length: 100 }).notNull(),
   description: text("description").notNull(),

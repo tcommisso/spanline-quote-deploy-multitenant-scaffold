@@ -21,6 +21,11 @@ import { generateComponentOrderPdf } from "./smartshop-pdf.js";
 import { logNotification } from "./notification-gateway";
 import { sendNotificationEmail } from "./email";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import {
+  componentCatalogueTenantConditions,
+  componentCatalogueWhere,
+  requireComponentCatalogueTenantId,
+} from "./component-catalogue-scope";
 
 // The 14 product categories (same as before)
 const PRODUCT_CATEGORIES = [
@@ -48,8 +53,8 @@ const catalogueProductFilterSchema = z.object({
   includeInactive: z.boolean().optional().default(false),
 });
 
-function catalogueProductConditions(input: z.infer<typeof catalogueProductFilterSchema>) {
-  const conditions: any[] = [];
+function catalogueProductConditions(ctx: any, input: z.infer<typeof catalogueProductFilterSchema>) {
+  const conditions: any[] = componentCatalogueTenantConditions(ctx);
 
   if (input.category && PRODUCT_CATEGORIES.includes(input.category)) {
     conditions.push(eq(componentCatalogueProducts.category, input.category));
@@ -85,7 +90,7 @@ function catalogueProductConditions(input: z.infer<typeof catalogueProductFilter
     );
   }
 
-  return conditions.length > 0 ? and(...conditions) : undefined;
+  return and(...conditions);
 }
 
 function orderTemplateTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -332,31 +337,33 @@ export const smartshopRouter = router({
   }),
 
   /** List all distinct sub-groups */
-  subGroups: protectedProcedure.query(async () => {
+  subGroups: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
     const rows = await db
       .selectDistinct({ subGroup: componentCatalogueProducts.subGroup })
       .from(componentCatalogueProducts)
-      .where(and(
+      .where(and(...componentCatalogueTenantConditions(
+        ctx,
         eq(componentCatalogueProducts.isActive, true),
         sql`${componentCatalogueProducts.subGroup} IS NOT NULL AND ${componentCatalogueProducts.subGroup} != ''`
-      ))
+      )))
       .orderBy(componentCatalogueProducts.subGroup);
     return rows.map((r) => r.subGroup || "").filter(Boolean);
   }),
 
   /** List all distinct tags */
-  allTags: protectedProcedure.query(async () => {
+  allTags: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [];
     const rows = await db
       .selectDistinct({ tags: componentCatalogueProducts.tags })
       .from(componentCatalogueProducts)
-      .where(and(
+      .where(and(...componentCatalogueTenantConditions(
+        ctx,
         eq(componentCatalogueProducts.isActive, true),
         sql`${componentCatalogueProducts.tags} IS NOT NULL AND ${componentCatalogueProducts.tags} != ''`
-      ));
+      )));
     const tagSet = new Set<string>();
     for (const r of rows) {
       if (r.tags) {
@@ -372,15 +379,19 @@ export const smartshopRouter = router({
       productIds: z.array(z.number()),
       tags: z.string(), // comma-separated
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-      for (const id of input.productIds) {
-        await db.update(componentCatalogueProducts)
-          .set({ tags: input.tags })
-          .where(eq(componentCatalogueProducts.id, id));
-      }
-      return { updated: input.productIds.length };
+      const visibleProducts = await db
+        .select({ id: componentCatalogueProducts.id })
+        .from(componentCatalogueProducts)
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, input.productIds))));
+      const visibleIds = visibleProducts.map((product) => product.id);
+      if (visibleIds.length === 0) return { updated: 0 };
+      await db.update(componentCatalogueProducts)
+        .set({ tags: input.tags })
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, visibleIds))));
+      return { updated: visibleIds.length };
     }),
 
   /** Bulk update sub-group for multiple products */
@@ -389,15 +400,19 @@ export const smartshopRouter = router({
       productIds: z.array(z.number()),
       subGroup: z.string(),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-      for (const id of input.productIds) {
-        await db.update(componentCatalogueProducts)
-          .set({ subGroup: input.subGroup })
-          .where(eq(componentCatalogueProducts.id, id));
-      }
-      return { updated: input.productIds.length };
+      const visibleProducts = await db
+        .select({ id: componentCatalogueProducts.id })
+        .from(componentCatalogueProducts)
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, input.productIds))));
+      const visibleIds = visibleProducts.map((product) => product.id);
+      if (visibleIds.length === 0) return { updated: 0 };
+      await db.update(componentCatalogueProducts)
+        .set({ subGroup: input.subGroup })
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, visibleIds))));
+      return { updated: visibleIds.length };
     }),
 
   /** Soft-delete catalogue products in bulk */
@@ -405,13 +420,19 @@ export const smartshopRouter = router({
     .input(z.object({
       productIds: z.array(z.number().int().positive()).min(1).max(500),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const visibleProducts = await db
+        .select({ id: componentCatalogueProducts.id })
+        .from(componentCatalogueProducts)
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, input.productIds))));
+      const visibleIds = visibleProducts.map((product) => product.id);
+      if (visibleIds.length === 0) return { deleted: 0 };
       await db.update(componentCatalogueProducts)
         .set({ isActive: false })
-        .where(inArray(componentCatalogueProducts.id, input.productIds));
-      return { deleted: input.productIds.length };
+        .where(and(...componentCatalogueTenantConditions(ctx, inArray(componentCatalogueProducts.id, visibleIds))));
+      return { deleted: visibleIds.length };
     }),
 
   /** Fetch products from a category with optional search, sub-group, and tag filtering */
@@ -422,11 +443,11 @@ export const smartshopRouter = router({
         limit: z.number().int().min(1).max(500).optional().default(50),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return { products: [], total: 0 };
 
-      const whereClause = catalogueProductConditions(input);
+      const whereClause = catalogueProductConditions(ctx, input);
 
       // Get total count
       const [countResult] = await db
@@ -480,10 +501,10 @@ export const smartshopRouter = router({
   /** Export all matching catalogue products */
   exportCatalogueProducts: adminProcedure
     .input(catalogueProductFilterSchema)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
-      const whereClause = catalogueProductConditions(input);
+      const whereClause = catalogueProductConditions(ctx, input);
       const rows = await db
         .select({
           id: componentCatalogueProducts.id,
@@ -824,11 +845,13 @@ export const smartshopRouter = router({
         packQtySizes: z.string().optional().default(""),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database not available");
+      const tenantId = requireComponentCatalogueTenantId(ctx);
       // Save as an "Other" category product (or whichever category makes sense)
       await db.insert(componentCatalogueProducts).values({
+        tenantId,
         category: "Other",
         spaCode: input.spaCode,
         description: input.description,
@@ -1207,7 +1230,7 @@ export const smartshopRouter = router({
         colourGroup: z.string().optional().default(""),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -1226,7 +1249,7 @@ export const smartshopRouter = router({
           colourInputAllowed: input.colourInputAllowed,
           colourGroup: input.colourGroup,
         })
-        .where(eq(componentCatalogueProducts.id, input.id));
+        .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, input.id)));
 
       return { success: true };
     }),
@@ -1248,11 +1271,13 @@ export const smartshopRouter = router({
         colourGroup: z.string().optional().default(""),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      const tenantId = requireComponentCatalogueTenantId(ctx);
 
       await db.insert(componentCatalogueProducts).values({
+        tenantId,
         spaCode: input.spaCode,
         description: input.description,
         colour: input.colour,
@@ -1273,14 +1298,14 @@ export const smartshopRouter = router({
   /** Toggle active status (soft delete/restore) */
   toggleCatalogueProductActive: protectedProcedure
     .input(z.object({ id: z.number(), active: z.boolean() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
       await db
         .update(componentCatalogueProducts)
         .set({ isActive: input.active })
-        .where(eq(componentCatalogueProducts.id, input.id));
+        .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, input.id)));
 
       return { success: true };
     }),
@@ -1290,7 +1315,7 @@ export const smartshopRouter = router({
   /** Preview price changes from CSV content (returns diff) */
   previewPriceUpdate: protectedProcedure
     .input(z.object({ csvContent: z.string() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -1327,7 +1352,7 @@ export const smartshopRouter = router({
             description: componentCatalogueProducts.description,
           })
           .from(componentCatalogueProducts)
-          .where(eq(componentCatalogueProducts.spaCode, spaCode))
+          .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.spaCode, spaCode)))
           .limit(1);
 
         if (existing.length === 0) {
@@ -1364,7 +1389,7 @@ export const smartshopRouter = router({
         ),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -1376,7 +1401,7 @@ export const smartshopRouter = router({
         const existing = await db
           .select({ id: componentCatalogueProducts.id })
           .from(componentCatalogueProducts)
-          .where(eq(componentCatalogueProducts.spaCode, update.spaCode))
+          .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.spaCode, update.spaCode)))
           .limit(1);
 
         if (existing.length === 0) {
@@ -1391,7 +1416,7 @@ export const smartshopRouter = router({
         await db
           .update(componentCatalogueProducts)
           .set(setData)
-          .where(eq(componentCatalogueProducts.id, existing[0].id));
+          .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, existing[0].id)));
         updated++;
       }
 
@@ -1401,7 +1426,7 @@ export const smartshopRouter = router({
   /** Preview full catalogue upload from CSV content */
   previewCatalogueUpload: adminProcedure
     .input(z.object({ csvContent: z.string().min(1) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
 
@@ -1418,7 +1443,7 @@ export const smartshopRouter = router({
         if (normalisedSpaCode) seenSpaCodes.add(normalisedSpaCode);
 
         const existing = row.spaCode.trim()
-          ? await db.select().from(componentCatalogueProducts).where(eq(componentCatalogueProducts.spaCode, row.spaCode.trim())).limit(1)
+          ? await db.select().from(componentCatalogueProducts).where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.spaCode, row.spaCode.trim()))).limit(1)
           : [];
 
         if (existing.length === 0 && !row.description?.trim()) {
@@ -1460,9 +1485,10 @@ export const smartshopRouter = router({
   /** Create or update catalogue products from CSV content */
   applyCatalogueUpload: adminProcedure
     .input(z.object({ csvContent: z.string().min(1) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      const tenantId = requireComponentCatalogueTenantId(ctx);
 
       const rows = parseCatalogueUploadRows(input.csvContent);
       const seenSpaCodes = new Set<string>();
@@ -1480,13 +1506,14 @@ export const smartshopRouter = router({
         }
         seenSpaCodes.add(normalisedSpaCode);
 
-        const existing = await db.select().from(componentCatalogueProducts).where(eq(componentCatalogueProducts.spaCode, spaCode)).limit(1);
+        const existing = await db.select().from(componentCatalogueProducts).where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.spaCode, spaCode))).limit(1);
         if (existing.length === 0) {
           if (!row.description?.trim()) {
             invalid++;
             continue;
           }
           await db.insert(componentCatalogueProducts).values({
+            tenantId,
             spaCode,
             description: row.description.trim(),
             category: row.category?.trim() || "Other",
@@ -1511,7 +1538,7 @@ export const smartshopRouter = router({
 
         await db.update(componentCatalogueProducts)
           .set(catalogueUploadSetData(row))
-          .where(eq(componentCatalogueProducts.id, existing[0].id));
+          .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, existing[0].id)));
         updated++;
       }
 
@@ -1520,13 +1547,13 @@ export const smartshopRouter = router({
 
   // ─── Dynamic Categories ──────────────────────────────────────────────────
   /** Returns default categories plus active catalogue categories */
-  allCategories: protectedProcedure.query(async () => {
+  allCategories: protectedProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) return [...PRODUCT_CATEGORIES];
     const rows = await db
       .selectDistinct({ category: componentCatalogueProducts.category })
       .from(componentCatalogueProducts)
-      .where(eq(componentCatalogueProducts.isActive, true));
+      .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.isActive, true)));
     const merged = new Set([...PRODUCT_CATEGORIES, ...rows.map((row) => row.category).filter(Boolean)]);
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
   }),

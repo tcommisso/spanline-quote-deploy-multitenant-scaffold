@@ -6,6 +6,11 @@ import { inventoryStockItems, inventoryMovements, inventoryTransfers, componentC
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
 import { privateTenantConditions } from "./private-tenant-scope";
+import {
+  componentCatalogueTenantConditions,
+  componentCatalogueWhere,
+  requireComponentCatalogueTenantId,
+} from "./component-catalogue-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -1214,9 +1219,9 @@ export const inventoryRouter = router({
       query: z.string().min(1),
       category: z.string().optional(),
       limit: z.number().optional().default(20),
-    })).query(async ({ input }) => {
+    })).query(async ({ ctx, input }) => {
       const db = await requireDb();
-      const conditions: any[] = [eq(componentCatalogueProducts.isActive, true)];
+      const conditions: any[] = componentCatalogueTenantConditions(ctx, eq(componentCatalogueProducts.isActive, true));
       if (input.category) conditions.push(eq(componentCatalogueProducts.category, input.category));
       conditions.push(
         sql`(${componentCatalogueProducts.spaCode} LIKE ${`%${input.query}%`} OR ${componentCatalogueProducts.description} LIKE ${`%${input.query}%`})`
@@ -1243,6 +1248,13 @@ export const inventoryRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireStockItemAccess(db, ctx, input.stockItemId);
+      const [catalogueItem] = await db.select({ id: componentCatalogueProducts.id })
+        .from(componentCatalogueProducts)
+        .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, input.catalogueItemId)))
+        .limit(1);
+      if (!catalogueItem) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Catalogue item not found for this tenant" });
+      }
       await db.update(inventoryStockItems)
         .set({ catalogueItemId: input.catalogueItemId })
         .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.id, input.stockItemId))));
@@ -1271,9 +1283,11 @@ export const inventoryRouter = router({
       price: z.string().optional(),
       colour: z.string().optional(),
       tags: z.string().optional(),
-    })).mutation(async ({ input }) => {
+    })).mutation(async ({ input, ctx }) => {
       const db = await requireDb();
+      const tenantId = requireComponentCatalogueTenantId(ctx);
       const [result] = await db.insert(componentCatalogueProducts).values({
+        tenantId,
         spaCode: input.spaCode,
         description: input.description,
         category: input.category,
@@ -1294,7 +1308,7 @@ export const inventoryRouter = router({
       const db = await requireDb();
       const item = await requireStockItemAccess(db, ctx, input.stockItemId);
       if (!item?.catalogueItemId) return null;
-      const [catItem] = await db.select().from(componentCatalogueProducts).where(eq(componentCatalogueProducts.id, item.catalogueItemId));
+      const [catItem] = await db.select().from(componentCatalogueProducts).where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.id, item.catalogueItemId)));
       return catItem || null;
     }),
   }),
