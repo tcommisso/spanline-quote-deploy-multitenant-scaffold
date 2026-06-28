@@ -1453,6 +1453,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [validationErrors, setValidationErrors] = useState<Set<string>>(new Set());
 
   const handleSave = () => {
+    if (adjAutoSaveTimerRef.current) {
+      clearTimeout(adjAutoSaveTimerRef.current);
+      adjAutoSaveTimerRef.current = null;
+    }
+
     // Check required fields
     const missing = REQUIRED_FIELDS.filter(f => !form[f.key] || form[f.key].trim() === "");
     if (missing.length > 0) {
@@ -1495,6 +1500,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     specFields.specDoorEntries = doorEntries.length > 0 ? doorEntries : null;
     specFields.specChecklistSelections = checklistSelections.length > 0 ? checklistSelections : null;
 
+    performAdjSave();
     updateMutation.mutate({ id: quoteId, data: specFields });
   };
 
@@ -1680,8 +1686,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <Button variant="outline" size="sm" onClick={handleExportPDF} className="gap-1.5 text-xs h-7">
               <Printer className="h-3.5 w-3.5" /><span className="hidden sm:inline">Print / PDF</span>
             </Button>
-            <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending} className="gap-1.5 text-xs h-7">
-              <Save className="h-3.5 w-3.5" /> <span className="hidden sm:inline">{updateMutation.isPending ? "Saving..." : "Save"}</span>
+            <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending || adjUpdateMutation.isPending} className="gap-1.5 text-xs h-7">
+              <Save className="h-3.5 w-3.5" /> <span className="hidden sm:inline">{updateMutation.isPending || adjUpdateMutation.isPending ? "Saving..." : "Save"}</span>
             </Button>
           </div>
         </div>
@@ -4399,7 +4405,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       onChange={(e) => setHomeWarranty(e.target.value)}
                       className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                      <option value="0">None</option>
+                      <option value="0.00">None</option>
                       {priceSettings.homeWarrantyTiers.map((tier) => {
                         const value = (parseFloat(String(tier.amount || 0)) || 0).toFixed(2);
                         return (

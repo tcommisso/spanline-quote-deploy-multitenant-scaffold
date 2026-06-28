@@ -184,6 +184,25 @@ function quoteRequiresHomeWarranty(quote: any): boolean {
   return /\bNSW\b/.test(haystack) || haystack.includes("NEW SOUTH WALES");
 }
 
+function quoteTravelDestination(quote: any): string {
+  const siteAddress = normalizeApiAddress(quote?.siteAddress);
+  const suburb = normalizeApiAddress(quote?.suburb);
+  if (!siteAddress) return suburb;
+
+  const siteLookup = normaliseLookup(siteAddress);
+  const suburbLookup = normaliseLookup(suburb);
+  const parts = [siteAddress];
+
+  // `region` is a pricing/branch region and can contradict the physical site
+  // address. Only append the quote suburb when the stored site address is not
+  // already a complete formatted address containing it.
+  if (suburb && suburbLookup && !siteLookup.includes(suburbLookup)) {
+    parts.push(suburb);
+  }
+
+  return normalizeApiAddress(parts.join(", "));
+}
+
 function quoteComponentSubtotal(components: any[]) {
   return (components || []).reduce((sum: number, comp: any) => {
     if (comp.included === false) return sum;
@@ -1141,11 +1160,7 @@ export const appRouter = router({
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
-        const siteAddress = normalizeApiAddress([
-          quote.siteAddress,
-          quote.suburb,
-          quote.region,
-        ].filter(Boolean).join(", "));
+        const siteAddress = quoteTravelDestination(quote);
         if (!siteAddress) throw new Error("Site address is required to calculate travel distance");
 
         // Get all branch addresses from branches table
