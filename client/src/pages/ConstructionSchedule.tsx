@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef } from "react";
 import { OnboardingTour, TourHelpButton } from "@/components/OnboardingTour";
 import { HelpLink } from "@/components/HelpLink";
 import { workScheduleTour, TOUR_IDS } from "@/lib/tours";
@@ -182,7 +182,7 @@ function JobCombobox({
 
 export default function ConstructionSchedule() {
   const isMobile = useIsMobile();
-  const [viewMode, setViewMode] = useState<"day" | "week" | "month">(() => isMobile ? "day" : "month");
+  const [viewMode, setViewMode] = useState<"day" | "week" | "month">("week");
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [showCreateEvent, setShowCreateEvent] = useState(false);
   const [showBookEquipment, setShowBookEquipment] = useState(false);
@@ -193,15 +193,6 @@ export default function ConstructionSchedule() {
   const [resourceView, setResourceView] = useState<ResourceView>("all");
 
   const mobileContainerRef = useRef<HTMLDivElement>(null);
-
-  // Switch to day view when mobile is detected (useIsMobile returns false initially)
-  const mobileInitRef = useRef(false);
-  useEffect(() => {
-    if (isMobile && !mobileInitRef.current) {
-      mobileInitRef.current = true;
-      setViewMode("day");
-    }
-  }, [isMobile]);
 
   // Swipe left/right to navigate days on mobile
   useSwipeGesture(

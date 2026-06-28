@@ -65,7 +65,7 @@ function formatDayHeader(date: Date) {
 export default function TradePortalSchedule() {
   const isMobile = useIsMobile();
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [view, setView] = useState<"day" | "month" | "list">(isMobile ? "day" : "month");
+  const [view, setView] = useState<"day" | "month" | "list">("day");
 
   // Swipe handling for day view
   const touchStartX = useRef<number | null>(null);
