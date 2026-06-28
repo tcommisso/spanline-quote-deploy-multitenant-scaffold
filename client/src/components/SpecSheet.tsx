@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSepa
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { Save, Wand2, Printer, CheckCircle2, Circle, RefreshCw, BookmarkPlus, FileText, Search, Pencil, Check, Plus, Trash2, Copy, Eye, FileDown, ChevronLeft, ChevronRight, Menu, Lock, MapPin, Calculator, RefreshCcw } from "lucide-react";
+import { Save, Wand2, Printer, CheckCircle2, Circle, RefreshCw, BookmarkPlus, FileText, Search, Pencil, Check, Plus, Trash2, Copy, Eye, FileDown, ChevronLeft, ChevronRight, Menu, Lock, MapPin, Calculator, RefreshCcw, AlertCircle, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
@@ -37,6 +37,18 @@ import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
 import { calculateRakedGeometry, type RakedEdge } from "../../../shared/rakedGeometry";
+import {
+  calculateStairs,
+  DEFAULT_STAIR_INPUTS,
+  STAIR_LIMITS,
+  type HandrailStyle,
+  type RiserStyle,
+  type StairInputs,
+  type StairType,
+  type StringerMaterial,
+  type TreadMaterial,
+} from "../../../shared/stairCalc";
+import { DeckStairSideView } from "@/components/deck/DeckStairSideView";
 
 // ─── Section definitions for sidebar nav ───────────────────────────────────
 // Section categories for sub-tab filtering
@@ -53,6 +65,7 @@ const SECTIONS = [
   { id: "client", label: "Client & Job Info", requiredFields: [] as string[], category: "general" },
   { id: "siteDetails", label: "Site Details", requiredFields: [] as string[], category: "general" },
   { id: "dimensions", label: "Dimensions & Structure", requiredFields: ["specWidth", "specLength"], category: "structure" },
+  { id: "adjustments", label: "Adjustments", requiredFields: [] as string[], category: "general" },
   { id: "roof", label: "Roof", requiredFields: [] as string[], category: "exterior" },
   { id: "brackets", label: "Attachment & Brackets", requiredFields: [] as string[], category: "structure" },
   { id: "beams", label: "Beams, Channels & Flashings", requiredFields: [] as string[], category: "structure" },
@@ -70,7 +83,6 @@ const SECTIONS = [
   { id: "balustrade", label: "Balustrade", requiredFields: [] as string[], category: "interior" },
   { id: "stairs", label: "Stairs", requiredFields: [] as string[], category: "interior" },
   { id: "sitePlan", label: "Site Plan & Elevations", requiredFields: [] as string[], category: "structure" },
-  { id: "adjustments", label: "Adjustments", requiredFields: [] as string[], category: "general" },
   { id: "history", label: "Revision History", requiredFields: [] as string[], category: "general" },
 ] as const;
 
@@ -93,6 +105,30 @@ const ELECTRICAL_FAN_FALLBACK_OPTIONS = ["Ceiling Fan", "Fan Point", "Exhaust Fa
 const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
 const BRACKET_INFILL_FALLBACK_OPTIONS = ["Glass", "Twinwall"];
 const POST_FIXING_OPTIONS = ["Footing", "Internal Bracket", "Welded Base Plate"];
+const STAIR_TYPE_OPTIONS: { value: StairType; label: string }[] = [
+  { value: "straight", label: "Straight" },
+  { value: "l-shape", label: "L-Shape" },
+  { value: "u-shape", label: "U-Shape" },
+];
+const STAIR_TREAD_OPTIONS: { value: TreadMaterial; label: string }[] = [
+  { value: "matching", label: "Matching" },
+  { value: "timber", label: "Timber" },
+  { value: "aluminium", label: "Aluminium" },
+];
+const STAIR_RISER_OPTIONS: { value: RiserStyle; label: string }[] = [
+  { value: "open", label: "Open" },
+  { value: "closed", label: "Closed" },
+];
+const STAIR_STRINGER_OPTIONS: { value: StringerMaterial; label: string }[] = [
+  { value: "timber", label: "Timber" },
+  { value: "steel", label: "Steel" },
+  { value: "aluminium", label: "Aluminium" },
+];
+const STAIR_HANDRAIL_OPTIONS: { value: HandrailStyle; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "one-side", label: "One Side" },
+  { value: "both-sides", label: "Both" },
+];
 const BRACKET_METHOD_QUANTITY_FIELDS: Record<string, string> = {
   "Fascia brackets": "specFasciaBrackets",
   "Extenda brackets": "specExtendaBrackets",
@@ -261,6 +297,130 @@ function syncBeamEntriesToPlacement(
     return { ...entry, lm };
   });
   return changed ? next : entries;
+}
+
+function parsePositiveNumber(value: string | undefined | null, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNumberAtLeast(value: string | undefined | null, fallback: number, min = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
+}
+
+function optionValueFromLabel<T extends string>(options: { value: T; label: string }[], label: unknown, fallback: T): T {
+  const text = String(label || "").trim().toLowerCase();
+  return options.find(option => option.value === text || option.label.toLowerCase() === text)?.value || fallback;
+}
+
+function optionLabel<T extends string>(options: { value: T; label: string }[], value: T): string {
+  return options.find(option => option.value === value)?.label || value;
+}
+
+function buildStructureStairInputs(form: Record<string, string>): StairInputs {
+  const defaultRise = parsePositiveNumber(form.specFloorHeight, parsePositiveNumber(form.specFloorToGround, DEFAULT_STAIR_INPUTS.totalRise));
+  const stairType = optionValueFromLabel(STAIR_TYPE_OPTIONS, form.specStairsType, DEFAULT_STAIR_INPUTS.stairType);
+  return {
+    ...DEFAULT_STAIR_INPUTS,
+    totalRise: parsePositiveNumber(form.specStairsTotalRise, defaultRise),
+    targetRiser: parsePositiveNumber(form.specStairsRiserHeight, DEFAULT_STAIR_INPUTS.targetRiser),
+    targetGoing: parsePositiveNumber(form.specStairsGoingDepth, DEFAULT_STAIR_INPUTS.targetGoing),
+    stairWidth: parsePositiveNumber(form.specStairsWidth, DEFAULT_STAIR_INPUTS.stairWidth),
+    stairType,
+    treadMaterial: optionValueFromLabel(STAIR_TREAD_OPTIONS, form.specStairsTreads, DEFAULT_STAIR_INPUTS.treadMaterial),
+    riserStyle: optionValueFromLabel(STAIR_RISER_OPTIONS, form.specStairsRiser, DEFAULT_STAIR_INPUTS.riserStyle),
+    stringerMaterial: optionValueFromLabel(STAIR_STRINGER_OPTIONS, form.specStairsStringer, DEFAULT_STAIR_INPUTS.stringerMaterial),
+    handrailStyle: optionValueFromLabel(STAIR_HANDRAIL_OPTIONS, form.specStairsHandrail, DEFAULT_STAIR_INPUTS.handrailStyle),
+    nosing: parseNumberAtLeast(form.specStairsNosingOverhang, DEFAULT_STAIR_INPUTS.nosing, 0),
+    flights: stairType === "straight" ? 1 : 2,
+    landingDepth: parsePositiveNumber(form.specStairsLandingDepth, DEFAULT_STAIR_INPUTS.landingDepth),
+  };
+}
+
+function formatStairNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+}
+
+function StairStepperInput({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 10000,
+  step = 10,
+  unit = "mm",
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+}) {
+  return (
+    <div>
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="mt-1 flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-9 w-9 p-0"
+          onClick={() => onChange(Math.max(min, value - step))}
+        >
+          -
+        </Button>
+        <span className="min-w-[88px] text-center font-mono text-sm">
+          {formatStairNumber(value)}{unit}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-9 w-9 p-0"
+          onClick={() => onChange(Math.min(max, value + step))}
+        >
+          +
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StairSegmented<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  disabledValues = [],
+}: {
+  label: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  disabledValues?: T[];
+}) {
+  return (
+    <div>
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {options.map(option => (
+          <Button
+            key={option.value}
+            type="button"
+            variant={value === option.value ? "default" : "outline"}
+            className="h-10"
+            disabled={disabledValues.includes(option.value)}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // HOW tiers (default fallback if not configured in master data)
@@ -1106,6 +1266,40 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     });
   }, []);
 
+  const stairInputs = useMemo(() => buildStructureStairInputs(form), [form]);
+  const stairResult = useMemo(() => calculateStairs(stairInputs), [stairInputs]);
+  const updateStairInput = useCallback(<K extends keyof StairInputs>(key: K, value: StairInputs[K]) => {
+    setForm(prev => {
+      const current = buildStructureStairInputs(prev);
+      const nextInputs: StairInputs = { ...current, [key]: value };
+      if (key === "stairType") {
+        nextInputs.flights = value === "straight" ? 1 : 2;
+      }
+      const nextResult = calculateStairs(nextInputs);
+      return {
+        ...prev,
+        specStairsType: optionLabel(STAIR_TYPE_OPTIONS, nextInputs.stairType),
+        specStairsTotalRise: String(nextInputs.totalRise),
+        specStairsWidth: String(nextInputs.stairWidth),
+        specStairsRiserHeight: String(nextInputs.targetRiser),
+        specStairsGoingDepth: String(nextInputs.targetGoing),
+        specStairsNosingOverhang: String(nextInputs.nosing),
+        specStairsLandingDepth: String(nextInputs.landingDepth),
+        specStairsFlights: String(nextInputs.flights),
+        specStairsTreads: optionLabel(STAIR_TREAD_OPTIONS, nextInputs.treadMaterial),
+        specStairsRiser: optionLabel(STAIR_RISER_OPTIONS, nextInputs.riserStyle),
+        specStairsStringer: optionLabel(STAIR_STRINGER_OPTIONS, nextInputs.stringerMaterial),
+        specStairsHandrail: optionLabel(STAIR_HANDRAIL_OPTIONS, nextInputs.handrailStyle),
+        specStairsSteps: String(nextResult.geometry.numberOfGoings),
+        specStairsGoings: String(nextResult.geometry.numberOfGoings),
+        specStairsActualRiser: formatStairNumber(nextResult.geometry.actualRiser),
+        specStairsTotalRun: String(nextResult.geometry.totalGoing),
+        specStairsStringerLength: String(nextResult.geometry.stringerLength),
+        specStairsAngle: formatStairNumber(nextResult.geometry.stairAngle),
+      };
+    });
+  }, []);
+
   // Auto-set Box Gutter Overflow to "Yes" when gutter type includes "box"
   useEffect(() => {
     const isBox = (form.specGutterType || "").toLowerCase().includes("box");
@@ -1312,7 +1506,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       roof: ["specRoofType", "specRoofTopColour"],
       windows: ["specWindowsFrameColour", "specDoorsFrameColour"],
       floor: ["specFloorPrep", "specElecFrameType", "specFloorFinish", "specSubfloorM2"],
-      stairs: ["specStairsSteps", "specStairsStringer", "specStairsTreads"],
+      stairs: ["specStairsType", "specStairsTotalRise", "specStairsWidth", "specStairsSteps", "specStairsStringer", "specStairsTreads", "specStairsHandrail"],
       balustrade: ["specBalustradeTubular", "specBalustradeGlass", "specBalustradeWire"],
       electrical: ["specElecLights", "specElecSwitches", "specElecPowerPoints"],
       concreting: ["specConcreteType", "specConcreteFinish"],
@@ -2969,13 +3163,176 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
           <AccordionItem value="stairs" id="spec-section-stairs" className="border rounded-lg px-4">
             <AccordionTrigger className="text-sm font-medium">Stairs</AccordionTrigger>
             <AccordionContent>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                <Field label="Steps (qty)" placeholder="e.g. 4" value={form.specStairsSteps || ""} onChange={(v) => update("specStairsSteps", v)} />
-                <SelectField label="Stringer Type" value={form.specStairsStringer || ""} onChange={(v) => update("specStairsStringer", v)} options={["None", "Steel", "Aluminium", "Timber"]} />
-                <SelectField label="Treads" value={form.specStairsTreads || ""} onChange={(v) => update("specStairsTreads", v)} options={["None", "Timber", "Aluminium", "Composite", "Concrete"]} />
-                <SelectField label="Riser" value={form.specStairsRiser || ""} onChange={(v) => update("specStairsRiser", v)} options={["None", "Open", "Closed"]} />
-                <SelectField label="Gate" value={form.specStairsGate || ""} onChange={(v) => update("specStairsGate", v)} options={["None", "Top", "Bottom", "Both"]} />
-              </div>
+              <Card className="border-muted">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    Stair Design
+                    {stairResult.validation.valid ? (
+                      <Badge variant="secondary" className="gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> NCC Compliant
+                      </Badge>
+                    ) : (
+                      <Badge variant="destructive" className="gap-1">
+                        <AlertCircle className="h-3 w-3" /> Check Errors
+                      </Badge>
+                    )}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <StairSegmented
+                    label="Stair Type"
+                    options={STAIR_TYPE_OPTIONS}
+                    value={stairInputs.stairType}
+                    onChange={(value) => updateStairInput("stairType", value)}
+                  />
+
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <StairStepperInput
+                      label="Total Rise"
+                      value={stairInputs.totalRise}
+                      min={100}
+                      max={4000}
+                      step={50}
+                      onChange={(value) => updateStairInput("totalRise", value)}
+                    />
+                    <StairStepperInput
+                      label="Stair Width"
+                      value={stairInputs.stairWidth}
+                      min={600}
+                      max={2400}
+                      step={50}
+                      onChange={(value) => updateStairInput("stairWidth", value)}
+                    />
+                    <StairStepperInput
+                      label="Riser Height"
+                      value={stairInputs.targetRiser}
+                      min={STAIR_LIMITS.riserMin}
+                      max={STAIR_LIMITS.riserMax}
+                      step={5}
+                      onChange={(value) => updateStairInput("targetRiser", value)}
+                    />
+                    <StairStepperInput
+                      label="Going Depth"
+                      value={stairInputs.targetGoing}
+                      min={STAIR_LIMITS.goingMin}
+                      max={STAIR_LIMITS.goingMax}
+                      step={10}
+                      onChange={(value) => updateStairInput("targetGoing", value)}
+                    />
+                    <StairStepperInput
+                      label="Nosing Overhang"
+                      value={stairInputs.nosing}
+                      min={0}
+                      max={40}
+                      step={5}
+                      onChange={(value) => updateStairInput("nosing", value)}
+                    />
+                    {stairInputs.stairType !== "straight" && (
+                      <StairStepperInput
+                        label="Landing Depth"
+                        value={stairInputs.landingDepth}
+                        min={750}
+                        max={2400}
+                        step={50}
+                        onChange={(value) => updateStairInput("landingDepth", value)}
+                      />
+                    )}
+                  </div>
+
+                  <div className="border-t pt-4 space-y-4">
+                    <h4 className="text-sm font-semibold">Materials</h4>
+                    <StairSegmented
+                      label="Tread Material"
+                      options={STAIR_TREAD_OPTIONS}
+                      value={stairInputs.treadMaterial}
+                      onChange={(value) => updateStairInput("treadMaterial", value)}
+                    />
+                    <StairSegmented
+                      label="Riser Style"
+                      options={STAIR_RISER_OPTIONS}
+                      value={stairInputs.riserStyle}
+                      onChange={(value) => updateStairInput("riserStyle", value)}
+                    />
+                    <StairSegmented
+                      label="Stringer Material"
+                      options={STAIR_STRINGER_OPTIONS}
+                      value={stairInputs.stringerMaterial}
+                      onChange={(value) => updateStairInput("stringerMaterial", value)}
+                    />
+                    <StairSegmented
+                      label="Handrail"
+                      options={STAIR_HANDRAIL_OPTIONS}
+                      value={stairInputs.handrailStyle}
+                      disabledValues={stairResult.geometry.handrailRequired ? ["none"] : []}
+                      onChange={(value) => updateStairInput("handrailStyle", value)}
+                    />
+                    {stairResult.geometry.handrailRequired && (
+                      <p className="text-xs text-amber-700">Handrail is required when total rise exceeds 1000mm.</p>
+                    )}
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <h4 className="text-sm font-semibold">Geometry</h4>
+                    <div className="mt-2 grid grid-cols-1 gap-x-8 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                      <div><span className="text-muted-foreground">Risers:</span> <span className="font-mono">{stairResult.geometry.numberOfRisers}</span></div>
+                      <div><span className="text-muted-foreground">Actual riser:</span> <span className="font-mono">{formatStairNumber(stairResult.geometry.actualRiser)}mm</span></div>
+                      <div><span className="text-muted-foreground">Goings:</span> <span className="font-mono">{stairResult.geometry.numberOfGoings}</span></div>
+                      <div><span className="text-muted-foreground">Going depth:</span> <span className="font-mono">{stairResult.geometry.going}mm</span></div>
+                      <div><span className="text-muted-foreground">2R + G:</span> <span className={`font-mono ${stairResult.geometry.slopeValue < STAIR_LIMITS.slopeMin || stairResult.geometry.slopeValue > STAIR_LIMITS.slopeMax ? "text-destructive" : "text-green-600"}`}>{stairResult.geometry.slopeValue}mm</span></div>
+                      <div><span className="text-muted-foreground">Stair angle:</span> <span className="font-mono">{formatStairNumber(stairResult.geometry.stairAngle)}°</span></div>
+                      <div><span className="text-muted-foreground">Stringer length:</span> <span className="font-mono">{stairResult.geometry.stringerLength}mm</span></div>
+                      <div><span className="text-muted-foreground">Total run:</span> <span className="font-mono">{stairResult.geometry.totalGoing}mm</span></div>
+                      <div><span className="text-muted-foreground">Tread depth:</span> <span className="font-mono">{stairResult.geometry.treadDepth}mm ({stairResult.geometry.boardsPerTread} boards)</span></div>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <h4 className="text-sm font-semibold">Bill of Materials</h4>
+                    <div className="mt-2 grid grid-cols-1 gap-x-8 gap-y-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                      <div><span className="text-muted-foreground">Stringers:</span> <span className="font-mono">{stairResult.bom.stringerCount} x {stairResult.bom.stringerLengthMm}mm</span></div>
+                      <div><span className="text-muted-foreground">Tread boards:</span> <span className="font-mono">{stairResult.bom.treadBoards} x {stairResult.bom.treadCutLength}mm</span></div>
+                      {stairResult.bom.riserBoards > 0 && (
+                        <div><span className="text-muted-foreground">Riser boards:</span> <span className="font-mono">{stairResult.bom.riserBoards} x {stairResult.bom.riserCutLength}mm</span></div>
+                      )}
+                      {stairResult.bom.handrailLength > 0 && (
+                        <div><span className="text-muted-foreground">Handrail:</span> <span className="font-mono">{stairResult.bom.handrailLength}mm total</span></div>
+                      )}
+                      {stairResult.bom.balustradePosts > 0 && (
+                        <div><span className="text-muted-foreground">Posts:</span> <span className="font-mono">{stairResult.bom.balustradePosts}</span></div>
+                      )}
+                      {stairResult.bom.landingBoards > 0 && (
+                        <div><span className="text-muted-foreground">Landing boards:</span> <span className="font-mono">{stairResult.bom.landingBoards}</span></div>
+                      )}
+                    </div>
+                  </div>
+
+                  {(stairResult.validation.errors.length > 0 || stairResult.validation.warnings.length > 0) && (
+                    <div className="border-t pt-4 space-y-2">
+                      {stairResult.validation.errors.map((message, index) => (
+                        <p key={`stair-error-${index}`} className="flex items-start gap-2 text-xs text-destructive">
+                          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" /> {message}
+                        </p>
+                      ))}
+                      {stairResult.validation.warnings.map((message, index) => (
+                        <p key={`stair-warning-${index}`} className="flex items-start gap-2 text-xs text-amber-700">
+                          <Info className="mt-0.5 h-3 w-3 shrink-0" /> {message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="border-t pt-4">
+                    <h4 className="mb-2 text-sm font-semibold">Side View</h4>
+                    <div className="rounded-md border bg-white p-3">
+                      <DeckStairSideView geometry={stairResult.geometry} inputs={stairInputs} />
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <SelectField label="Gate" value={form.specStairsGate || ""} onChange={(v) => update("specStairsGate", v)} options={["None", "Top", "Bottom", "Both"]} />
+                  </div>
+                </CardContent>
+              </Card>
               {/* Stairs Checklist */}
               <div className="mt-4 border-t pt-3">
                 <SortableChecklist
@@ -4382,14 +4739,34 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             </div>
             )}
 
-            {(form.specStairsSteps || form.specStairsStringer || form.specStairsTreads || stairsChecks.some(c => c.checked) || form.specStairsNotes) && (
+            {(
+              form.specStairsType ||
+              form.specStairsTotalRise ||
+              form.specStairsWidth ||
+              form.specStairsSteps ||
+              form.specStairsStringer ||
+              form.specStairsTreads ||
+              form.specStairsHandrail ||
+              stairsChecks.some(c => c.checked) ||
+              form.specStairsNotes
+            ) && (
             <div className="spec-section">
               <h3>Stairs</h3>
               <div className="spec-3col">
-                <PrintRow label="Steps" value={form.specStairsSteps} />
-                <PrintRow label="Stringer" value={form.specStairsStringer} />
-                <PrintRow label="Treads" value={form.specStairsTreads} />
-                <PrintRow label="Riser" value={form.specStairsRiser} />
+                <PrintRow label="Stair Type" value={form.specStairsType} />
+                <PrintRow label="Total Rise" value={form.specStairsTotalRise} />
+                <PrintRow label="Stair Width" value={form.specStairsWidth} />
+                <PrintRow label="Steps / Treads" value={form.specStairsSteps} />
+                <PrintRow label="Actual Riser" value={form.specStairsActualRiser} />
+                <PrintRow label="Going Depth" value={form.specStairsGoingDepth} />
+                <PrintRow label="Goings" value={form.specStairsGoings} />
+                <PrintRow label="Total Run" value={form.specStairsTotalRun} />
+                <PrintRow label="Stringer Length" value={form.specStairsStringerLength} />
+                <PrintRow label="Stair Angle" value={form.specStairsAngle} />
+                <PrintRow label="Tread Material" value={form.specStairsTreads} />
+                <PrintRow label="Stringer Material" value={form.specStairsStringer} />
+                <PrintRow label="Riser Style" value={form.specStairsRiser} />
+                <PrintRow label="Handrail" value={form.specStairsHandrail} />
                 <PrintRow label="Gate" value={form.specStairsGate} />
               </div>
               {stairsChecks.filter(c => c.checked).length > 0 && (

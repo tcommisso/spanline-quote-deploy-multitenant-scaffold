@@ -204,8 +204,19 @@ function buildAddOnsDescription(spec: Record<string, unknown>): string | undefin
   if (wallWork.length > 0) items.push(`wall works: ${wallWork.join(", ")}`);
 
   const stairs = checkedItems(spec.specStairsChecks);
-  if (stairs.length > 0 || text(spec.specStairsSteps)) {
-    items.push(`stairs: ${list([text(spec.specStairsSteps) && `${text(spec.specStairsSteps)} steps`, ...stairs])}`);
+  const stairDetails = [
+    text(spec.specStairsType),
+    text(spec.specStairsSteps) && `${text(spec.specStairsSteps)} treads`,
+    text(spec.specStairsTotalRise) && `${text(spec.specStairsTotalRise)}mm total rise`,
+    text(spec.specStairsWidth) && `${text(spec.specStairsWidth)}mm wide`,
+    text(spec.specStairsTreads) && `${text(spec.specStairsTreads)} treads`,
+    text(spec.specStairsRiser) && `${text(spec.specStairsRiser)} risers`,
+    text(spec.specStairsStringer) && `${text(spec.specStairsStringer)} stringers`,
+    text(spec.specStairsHandrail) && `${text(spec.specStairsHandrail)} handrail`,
+    ...stairs,
+  ];
+  if (stairDetails.some(Boolean)) {
+    items.push(`stairs: ${list(stairDetails)}`);
   }
 
   const concrete = checkedItems(spec.specConcreteItemChecks);
