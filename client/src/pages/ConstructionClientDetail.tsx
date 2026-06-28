@@ -287,7 +287,7 @@ export default function ConstructionClientDetail() {
   const [, navigate] = useLocation();
   const jobId = Number(params.id);
 
-  const TAB_VALUES = ["overview", "check-measure", "site-plan", "building-authority", "progress", "financials", "tasks", "project-plan", "schedule", "activity", "contacts", "email-sms", "subcontracts", "inductions", "variations", "procurement", "plans", "plan-history", "shared-files", "completion"] as const;
+  const TAB_VALUES = ["overview", "check-measure", "site-plan", "building-authority", "instructions", "progress", "financials", "tasks", "project-plan", "schedule", "activity", "contacts", "email-sms", "subcontracts", "inductions", "variations", "procurement", "plans", "plan-history", "shared-files", "completion"] as const;
   const [activeTab, setActiveTab] = useState<string>("overview");
   const isMobile = useIsMobile();
 
@@ -296,6 +296,7 @@ export default function ConstructionClientDetail() {
     { value: "check-measure", label: "Check Measure", icon: Clipboard },
     { value: "site-plan", label: "Site Plan", icon: Ruler },
     { value: "building-authority", label: "Approvals Activity", icon: Building },
+    { value: "instructions", label: "Instructions", icon: ClipboardCheck },
     { value: "progress", label: "Progress Invoices", icon: HardHat },
     { value: "financials", label: "Financials", icon: DollarSign },
     { value: "tasks", label: "Tasks", icon: Wrench },
@@ -601,6 +602,11 @@ export default function ConstructionClientDetail() {
           )}
         </TabsContent>
 
+        {/* Instructions Tab */}
+        <TabsContent value="instructions" className="space-y-4">
+          <JobInstructionsTab jobId={jobId} assignments={assignments} />
+        </TabsContent>
+
         {/* Progress Tab */}
         <TabsContent value="progress" className="space-y-4">
           {/* Progress Invoices at the top — naturally leads to invoicing next stage */}
@@ -765,6 +771,324 @@ export default function ConstructionClientDetail() {
         </TabsContent>
       </Tabs>
       </div>
+    </div>
+  );
+}
+
+const JOB_INSTRUCTION_CATEGORIES = [
+  { value: "general", label: "General" },
+  { value: "inspection", label: "Inspection" },
+  { value: "hold_point", label: "Hold Point" },
+  { value: "site_access", label: "Site Access" },
+  { value: "safety", label: "Safety" },
+  { value: "completion_evidence", label: "Completion Evidence" },
+  { value: "contract_reminder", label: "Contract Reminder" },
+  { value: "other", label: "Other" },
+];
+
+const JOB_INSTRUCTION_STATUSES = [
+  { value: "open", label: "Open" },
+  { value: "acknowledged", label: "Acknowledged" },
+  { value: "done", label: "Done" },
+  { value: "blocked", label: "Blocked" },
+  { value: "not_applicable", label: "Not Applicable" },
+];
+
+const JOB_INSTRUCTION_PRIORITIES = [
+  { value: "normal", label: "Normal" },
+  { value: "important", label: "Important" },
+  { value: "urgent", label: "Urgent" },
+];
+
+function jobInstructionBadgeClass(value?: string | null) {
+  const normalized = String(value || "").toLowerCase();
+  if (["done", "passed"].includes(normalized)) return "bg-green-100 text-green-800 border-green-200";
+  if (["blocked", "failed"].includes(normalized)) return "bg-red-100 text-red-800 border-red-200";
+  if (["acknowledged", "scheduled", "booked", "important", "urgent"].includes(normalized)) return "bg-amber-100 text-amber-800 border-amber-200";
+  if (normalized === "not_applicable") return "bg-slate-100 text-slate-600 border-slate-200";
+  return "bg-blue-100 text-blue-800 border-blue-200";
+}
+
+function toDateInputValue(value?: string | Date | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments: any[] }) {
+  const utils = trpc.useUtils();
+  const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    category: "general",
+    status: "open",
+    priority: "normal",
+    visibleToTrade: true,
+    assignedInstallerId: "all",
+    isBlocking: false,
+    dueAt: "",
+    triggerLabel: "",
+  });
+
+  const resetForm = () => {
+    setEditingId(null);
+    setForm({
+      title: "",
+      description: "",
+      category: "general",
+      status: "open",
+      priority: "normal",
+      visibleToTrade: true,
+      assignedInstallerId: "all",
+      isBlocking: false,
+      dueAt: "",
+      triggerLabel: "",
+    });
+  };
+
+  const invalidate = () => utils.constructionClients.jobInstructions.invalidate({ jobId });
+  const createInstruction = trpc.constructionClients.createJobInstruction.useMutation({
+    onSuccess: () => {
+      invalidate();
+      resetForm();
+      toast.success("Instruction added");
+    },
+    onError: (err) => toast.error(err.message || "Failed to add instruction"),
+  });
+  const updateInstruction = trpc.constructionClients.updateJobInstruction.useMutation({
+    onSuccess: () => {
+      invalidate();
+      resetForm();
+      toast.success("Instruction updated");
+    },
+    onError: (err) => toast.error(err.message || "Failed to update instruction"),
+  });
+  const deleteInstruction = trpc.constructionClients.deleteJobInstruction.useMutation({
+    onSuccess: () => {
+      invalidate();
+      toast.success("Instruction deleted");
+    },
+    onError: (err) => toast.error(err.message || "Failed to delete instruction"),
+  });
+
+  const tradeOptions = assignments
+    .filter((assignment: any) => assignment.installerId)
+    .map((assignment: any) => ({
+      id: Number(assignment.installerId),
+      label: assignment.installer?.name || `Installer #${assignment.installerId}`,
+      role: assignment.role,
+    }));
+  const uniqueTradeOptions = Array.from(new Map(tradeOptions.map((trade) => [trade.id, trade])).values());
+
+  const saveInstruction = () => {
+    const payload = {
+      title: form.title.trim(),
+      description: form.description.trim() || null,
+      category: form.category as any,
+      status: form.status as any,
+      priority: form.priority as any,
+      visibleToTrade: form.visibleToTrade,
+      assignedInstallerId: form.assignedInstallerId === "all" ? null : Number(form.assignedInstallerId),
+      isBlocking: form.isBlocking,
+      dueAt: form.dueAt || null,
+      triggerLabel: form.triggerLabel.trim() || null,
+    };
+    if (!payload.title) {
+      toast.error("Instruction title is required");
+      return;
+    }
+    if (editingId) {
+      updateInstruction.mutate({ id: editingId, ...payload });
+    } else {
+      createInstruction.mutate({ jobId, ...payload });
+    }
+  };
+
+  const startEditing = (instruction: any) => {
+    setEditingId(instruction.id);
+    setForm({
+      title: instruction.title || "",
+      description: instruction.description || "",
+      category: instruction.category || "general",
+      status: instruction.status || "open",
+      priority: instruction.priority || "normal",
+      visibleToTrade: instruction.visibleToTrade !== false,
+      assignedInstallerId: instruction.assignedInstallerId ? String(instruction.assignedInstallerId) : "all",
+      isBlocking: !!instruction.isBlocking,
+      dueAt: toDateInputValue(instruction.dueAt),
+      triggerLabel: instruction.triggerLabel || "",
+    });
+  };
+
+  const isSaving = createInstruction.isPending || updateInstruction.isPending;
+  const instructions = instructionsQuery.data || [];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <ClipboardCheck className="h-4 w-4" />
+              Job Instructions
+            </CardTitle>
+            <Badge variant="secondary">{instructions.length}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {instructionsQuery.isLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => <div key={i} className="h-20 rounded-md bg-muted animate-pulse" />)}
+            </div>
+          ) : instructions.length === 0 ? (
+            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+              No job instructions recorded.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {instructions.map((instruction: any) => (
+                <div key={instruction.id} className={`rounded-md border p-3 ${instruction.isBlocking ? "border-red-200 bg-red-50/40" : "bg-background"}`}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium">{instruction.title}</p>
+                        {instruction.isBlocking && <Badge variant="destructive">Blocking</Badge>}
+                        <Badge variant="outline" className={jobInstructionBadgeClass(instruction.status)}>{formatDetailStatus(instruction.status)}</Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {formatDetailStatus(instruction.category)}
+                        {instruction.assignedInstallerName ? ` - ${instruction.assignedInstallerName}` : " - All visible trades"}
+                        {instruction.visibleToTrade ? " - Trade portal" : " - Internal"}
+                      </p>
+                      {instruction.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{instruction.description}</p>}
+                      {(instruction.dueAt || instruction.triggerLabel) && (
+                        <p className="text-xs text-muted-foreground">
+                          {instruction.dueAt ? `Due ${new Date(instruction.dueAt).toLocaleDateString("en-AU")}` : ""}
+                          {instruction.dueAt && instruction.triggerLabel ? " - " : ""}
+                          {instruction.triggerLabel || ""}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button variant="outline" size="sm" onClick={() => startEditing(instruction)}>Edit</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => {
+                          if (confirm("Delete this instruction?")) deleteInstruction.mutate({ id: instruction.id });
+                        }}
+                        disabled={deleteInstruction.isPending}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{editingId ? "Edit Instruction" : "Add Instruction"}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Title</Label>
+            <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} maxLength={255} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Details</Label>
+            <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={4} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select value={form.category} onValueChange={(value) => setForm({ ...form, category: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {JOB_INSTRUCTION_CATEGORIES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={form.status} onValueChange={(value) => setForm({ ...form, status: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {JOB_INSTRUCTION_STATUSES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Priority</Label>
+              <Select value={form.priority} onValueChange={(value) => setForm({ ...form, priority: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {JOB_INSTRUCTION_PRIORITIES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Trade</Label>
+              <Select value={form.assignedInstallerId} onValueChange={(value) => setForm({ ...form, assignedInstallerId: value })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All visible trades</SelectItem>
+                  {uniqueTradeOptions.map((trade) => (
+                    <SelectItem key={trade.id} value={String(trade.id)}>
+                      {trade.label}{trade.role ? ` - ${trade.role}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Due Date</Label>
+              <Input type="date" value={form.dueAt} onChange={(e) => setForm({ ...form, dueAt: e.target.value })} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Trigger</Label>
+              <Input value={form.triggerLabel} onChange={(e) => setForm({ ...form, triggerLabel: e.target.value })} maxLength={255} />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 rounded-md border p-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.visibleToTrade}
+              onChange={(e) => setForm({ ...form, visibleToTrade: e.target.checked })}
+              className="h-4 w-4"
+            />
+            Show in trade portal
+          </label>
+          <label className="flex items-center gap-2 rounded-md border p-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.isBlocking}
+              onChange={(e) => setForm({ ...form, isBlocking: e.target.checked })}
+              className="h-4 w-4"
+            />
+            Blocking / hold point
+          </label>
+          <div className="flex gap-2 pt-2">
+            <Button onClick={saveInstruction} disabled={isSaving || !form.title.trim()} className="gap-1.5">
+              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              {editingId ? "Save" : "Add"}
+            </Button>
+            {editingId && <Button variant="outline" onClick={resetForm}>Cancel</Button>}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

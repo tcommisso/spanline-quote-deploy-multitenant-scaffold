@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb, getTenantBrandingSettings } from "./db";
-import { eq, and, desc, gte, lte, asc, or, inArray, gt, sql, count, like } from "drizzle-orm";
+import { eq, and, desc, gte, lte, asc, or, inArray, gt, sql, count, like, isNull } from "drizzle-orm";
 import {
   tradePortalAccess, tradePortalSessions,
   tradeAvailabilities, tradeInvoices, tradeRemittances,
@@ -12,6 +12,7 @@ import {
   projectSubcontracts, tradeInvoiceLines,
   chatChannels, chatMessages, chatChannelMembers,
   suppliers, flashingOrders, flashingOrderLines, flashingOrderStatusHistory,
+  approvalProjects, approvalInspections, constructionJobInstructions,
   type PaymentMilestone,
 } from "../drizzle/schema";
 import { publicProcedure, router, middleware } from "./_core/trpc";
@@ -81,6 +82,12 @@ function tradeJobConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function tradeJobInstructionConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionJobInstructions.tenantId, tradePortalTenantId(ctx));
+  return conditions;
+}
+
 async function requireTradeJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select().from(constructionJobs)
     .where(and(...tradeJobConditions(ctx, eq(constructionJobs.id, jobId))))
@@ -135,6 +142,183 @@ async function getVisibleTradeJobIds(db: any, ctx: any, installerId: number) {
     ...assignmentRows.map((row: { jobId: number }) => row.jobId),
     ...scheduleRows.map((row: { jobId: number }) => row.jobId),
   ]));
+}
+
+function approvalProjectMatchConditions(job: typeof constructionJobs.$inferSelect) {
+  const matchConditions: any[] = [eq(approvalProjects.crmJobId, job.id)];
+  if (job.leadId) matchConditions.push(eq(approvalProjects.crmLeadId, job.leadId));
+  if (job.clientName && job.siteAddress) {
+    matchConditions.push(and(
+      eq(approvalProjects.clientName, job.clientName),
+      eq(approvalProjects.propertyAddress, job.siteAddress),
+    ));
+  }
+  return matchConditions;
+}
+
+async function getApprovalInspectionInstructionItems(db: any, ctx: any, job: typeof constructionJobs.$inferSelect) {
+  const tenantId = tradePortalTenantId(ctx);
+  const conditions: any[] = [];
+  appendTenantScope(conditions, approvalProjects.tenantId, tenantId);
+  conditions.push(or(...approvalProjectMatchConditions(job)));
+
+  const projects = await db.select({
+    id: approvalProjects.id,
+    projectNumber: approvalProjects.projectNumber,
+    name: approvalProjects.name,
+  })
+    .from(approvalProjects)
+    .where(and(...conditions))
+    .orderBy(desc(approvalProjects.updatedAt))
+    .limit(5);
+
+  if (projects.length === 0) return [];
+
+  const projectMap = Object.fromEntries(projects.map((project: any) => [project.id, project]));
+  const inspections = await db.select({
+    id: approvalInspections.id,
+    projectId: approvalInspections.projectId,
+    inspectionType: approvalInspections.inspectionType,
+    title: approvalInspections.title,
+    description: approvalInspections.description,
+    scheduledDate: approvalInspections.scheduledDate,
+    scheduledTime: approvalInspections.scheduledTime,
+    inspectorName: approvalInspections.inspectorName,
+    status: approvalInspections.status,
+    result: approvalInspections.result,
+    resultNotes: approvalInspections.resultNotes,
+    inspectedAt: approvalInspections.inspectedAt,
+    hasDefects: approvalInspections.hasDefects,
+    defectCount: approvalInspections.defectCount,
+    isBlocking: approvalInspections.isBlocking,
+    blockingGate: approvalInspections.blockingGate,
+    createdAt: approvalInspections.createdAt,
+    updatedAt: approvalInspections.updatedAt,
+  })
+    .from(approvalInspections)
+    .where(and(
+      inArray(approvalInspections.projectId, projects.map((project: any) => project.id)),
+      sql`${approvalInspections.status} != 'cancelled'`,
+    ))
+    .orderBy(asc(approvalInspections.scheduledDate), desc(approvalInspections.createdAt));
+
+  return inspections.map((inspection: any) => {
+    const project = projectMap[inspection.projectId];
+    return {
+      id: `approval-inspection-${inspection.id}`,
+      sourceType: "approval_inspection",
+      sourceId: inspection.id,
+      sourceLabel: project?.projectNumber ? `Approval ${project.projectNumber}` : "Approval inspection",
+      title: inspection.title || String(inspection.inspectionType || "Inspection").replace(/_/g, " "),
+      description: inspection.resultNotes || inspection.description || null,
+      category: "inspection",
+      status: inspection.status,
+      priority: inspection.isBlocking ? "urgent" : "important",
+      isBlocking: !!inspection.isBlocking,
+      dueAt: inspection.scheduledDate || inspection.inspectedAt || null,
+      scheduledTime: inspection.scheduledTime || null,
+      triggerLabel: inspection.blockingGate ? `Gate ${inspection.blockingGate}` : null,
+      inspectorName: inspection.inspectorName || null,
+      defectCount: inspection.defectCount || 0,
+      hasDefects: !!inspection.hasDefects,
+      createdAt: inspection.createdAt,
+      updatedAt: inspection.updatedAt,
+    };
+  });
+}
+
+async function getManualTradeInstructionItems(db: any, ctx: any, jobId: number, installerId: number) {
+  const rows = await db.select({
+    id: constructionJobInstructions.id,
+    title: constructionJobInstructions.title,
+    description: constructionJobInstructions.description,
+    category: constructionJobInstructions.category,
+    status: constructionJobInstructions.status,
+    priority: constructionJobInstructions.priority,
+    assignedInstallerId: constructionJobInstructions.assignedInstallerId,
+    isBlocking: constructionJobInstructions.isBlocking,
+    dueAt: constructionJobInstructions.dueAt,
+    triggerLabel: constructionJobInstructions.triggerLabel,
+    sortOrder: constructionJobInstructions.sortOrder,
+    createdAt: constructionJobInstructions.createdAt,
+    updatedAt: constructionJobInstructions.updatedAt,
+  })
+    .from(constructionJobInstructions)
+    .where(and(
+      ...tradeJobInstructionConditions(ctx, eq(constructionJobInstructions.jobId, jobId)),
+      eq(constructionJobInstructions.visibleToTrade, true),
+      or(
+        isNull(constructionJobInstructions.assignedInstallerId),
+        eq(constructionJobInstructions.assignedInstallerId, installerId),
+      ),
+    ))
+    .orderBy(desc(constructionJobInstructions.isBlocking), asc(constructionJobInstructions.sortOrder), asc(constructionJobInstructions.createdAt));
+
+  return rows.map((row: any) => ({
+    id: `manual-${row.id}`,
+    sourceType: "manual",
+    sourceId: row.id,
+    sourceLabel: row.assignedInstallerId ? "Trade instruction" : "Job instruction",
+    title: row.title,
+    description: row.description,
+    category: row.category,
+    status: row.status,
+    priority: row.priority,
+    isBlocking: !!row.isBlocking,
+    dueAt: row.dueAt,
+    scheduledTime: null,
+    triggerLabel: row.triggerLabel,
+    inspectorName: null,
+    defectCount: 0,
+    hasDefects: false,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }));
+}
+
+const subcontractInspectionLabels: Record<string, string> = {
+  footings: "Footings inspection",
+  slab: "Slab inspection",
+  plumbing: "Plumbing inspection",
+  framing: "Framing inspection",
+  roofing: "Roofing inspection",
+  other: "Other inspection",
+};
+
+function isMeaningfulSubcontractInstruction(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return !["n/a", "na", "none", "not applicable", "-"].includes(text.toLowerCase());
+}
+
+function getSubcontractInspectionInstructionItems(subcontracts: any[]) {
+  return subcontracts.flatMap((subcontract) => {
+    const inspections = subcontract.inspections && typeof subcontract.inspections === "object"
+      ? subcontract.inspections
+      : {};
+    return Object.entries(inspections)
+      .filter(([, value]) => isMeaningfulSubcontractInstruction(value))
+      .map(([key, value]) => ({
+        id: `subcontract-inspection-${subcontract.id}-${key}`,
+        sourceType: "subcontract_inspection",
+        sourceId: subcontract.id,
+        sourceLabel: "Subcontract reminder",
+        title: subcontractInspectionLabels[key] || `${key.replace(/_/g, " ")} inspection`,
+        description: String(value).trim(),
+        category: "contract_reminder",
+        status: "open",
+        priority: "important",
+        isBlocking: false,
+        dueAt: null,
+        scheduledTime: null,
+        triggerLabel: subcontract.tradeType || "Contract inspection requirement",
+        inspectorName: null,
+        defectCount: 0,
+        hasDefects: false,
+        createdAt: subcontract.createdAt,
+        updatedAt: subcontract.updatedAt,
+      }));
+  });
 }
 
 async function requireWorkOrderAccess(db: any, ctx: any, workOrderId: number) {
@@ -2220,6 +2404,23 @@ export const tradePortalRouter = router({
           eq(projectSubcontracts.installerId, installerId),
         ));
 
+      const [manualInstructionItems, approvalInspectionItems] = await Promise.all([
+        getManualTradeInstructionItems(db, ctx, input.jobId, installerId),
+        getApprovalInspectionInstructionItems(db, ctx, job),
+      ]);
+      const subcontractInstructionItems = getSubcontractInspectionInstructionItems(subcontracts);
+      const jobInstructions = [
+        ...manualInstructionItems,
+        ...approvalInspectionItems,
+        ...subcontractInstructionItems,
+      ].sort((a: any, b: any) => {
+        if (a.isBlocking !== b.isBlocking) return a.isBlocking ? -1 : 1;
+        const aTime = a.dueAt ? new Date(a.dueAt).getTime() : Number.POSITIVE_INFINITY;
+        const bTime = b.dueAt ? new Date(b.dueAt).getTime() : Number.POSITIVE_INFINITY;
+        if (aTime !== bTime) return aTime - bTime;
+        return String(a.title || "").localeCompare(String(b.title || ""));
+      });
+
       return {
         job: {
           id: job.id,
@@ -2237,6 +2438,7 @@ export const tradePortalRouter = router({
           notes: job.notes,
         },
         assignedTrades: allAssignments,
+        jobInstructions,
         workOrders,
         sharedFiles,
         subcontracts,
@@ -2250,14 +2452,7 @@ export const tradePortalRouter = router({
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
 
-      // Get all jobs this trade is assigned to
-      const assignments = await db.select({
-        jobId: constructionAssignments.jobId,
-      })
-        .from(constructionAssignments)
-        .where(eq(constructionAssignments.installerId, installerId));
-
-      const jobIds = assignments.map(a => a.jobId);
+      const jobIds = await getVisibleTradeJobIds(db, ctx, installerId);
       if (jobIds.length === 0) return [];
 
       const jobs = await db.select({

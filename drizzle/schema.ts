@@ -1398,6 +1398,46 @@ export const constructionAssignments = mysqlTable("construction_assignments", {
 export type ConstructionAssignment = typeof constructionAssignments.$inferSelect;
 export type InsertConstructionAssignment = typeof constructionAssignments.$inferInsert;
 
+export const constructionJobInstructions = mysqlTable("construction_job_instructions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),
+  jobId: int("jobId").notNull().references(() => constructionJobs.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description"),
+  category: mysqlEnum("category", [
+    "general",
+    "inspection",
+    "hold_point",
+    "site_access",
+    "safety",
+    "completion_evidence",
+    "contract_reminder",
+    "other",
+  ]).default("general").notNull(),
+  status: mysqlEnum("status", ["open", "acknowledged", "done", "blocked", "not_applicable"]).default("open").notNull(),
+  priority: mysqlEnum("priority", ["normal", "important", "urgent"]).default("normal").notNull(),
+  visibleToTrade: boolean("visibleToTrade").default(true).notNull(),
+  assignedInstallerId: int("assignedInstallerId").references(() => constructionInstallers.id, { onDelete: "set null" }),
+  isBlocking: boolean("isBlocking").default(false).notNull(),
+  dueAt: timestamp("dueAt"),
+  triggerLabel: varchar("triggerLabel", { length: 255 }),
+  sourceType: varchar("sourceType", { length: 64 }).default("manual").notNull(),
+  sourceId: int("sourceId"),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  createdByUserId: int("createdByUserId").references(() => users.id),
+  createdByName: varchar("createdByName", { length: 255 }),
+  updatedByUserId: int("updatedByUserId").references(() => users.id),
+  updatedByName: varchar("updatedByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_construction_job_instructions_tenant").on(table.tenantId),
+  index("idx_construction_job_instructions_tenant_job").on(table.tenantId, table.jobId),
+  index("idx_construction_job_instructions_trade").on(table.tenantId, table.jobId, table.visibleToTrade, table.assignedInstallerId),
+]);
+export type ConstructionJobInstruction = typeof constructionJobInstructions.$inferSelect;
+export type InsertConstructionJobInstruction = typeof constructionJobInstructions.$inferInsert;
+
 export const constructionProgress = mysqlTable("construction_progress", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id),

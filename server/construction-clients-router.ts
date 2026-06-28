@@ -5,17 +5,30 @@ import {
   constructionJobs, constructionProgress, constructionAssignments,
   constructionInstallers, constructionJobFinancials, constructionKanbanTasks,
   checkMeasureWorkbooks, constructionScheduleEvents, projectSubcontracts,
+  constructionJobInstructions,
   siteInductions, quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
   approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
   approvalLodgements, hbcfCertificates, suppliers,
 } from "../drizzle/schema";
-import { eq, desc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
+import { eq, desc, asc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 import { ENV } from "./_core/env";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+const jobInstructionCategorySchema = z.enum([
+  "general",
+  "inspection",
+  "hold_point",
+  "site_access",
+  "safety",
+  "completion_evidence",
+  "contract_reminder",
+  "other",
+]);
+const jobInstructionStatusSchema = z.enum(["open", "acknowledged", "done", "blocked", "not_applicable"]);
+const jobInstructionPrioritySchema = z.enum(["normal", "important", "urgent"]);
 
 async function requireDb() {
   const db = await getDb();
@@ -35,6 +48,12 @@ function installerTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function instructionTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionJobInstructions.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
 function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
   conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
 }
@@ -46,6 +65,67 @@ async function requireJobAccess(db: any, ctx: any, jobId: number) {
     .limit(1);
   if (!job) throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
   return job;
+}
+
+async function requireInstructionAccess(db: any, ctx: any, instructionId: number) {
+  const [instruction] = await db.select()
+    .from(constructionJobInstructions)
+    .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, instructionId))))
+    .limit(1);
+  if (!instruction) throw new TRPCError({ code: "NOT_FOUND", message: "Instruction not found" });
+  await requireJobAccess(db, ctx, instruction.jobId);
+  return instruction;
+}
+
+function trimNullable(value?: string | null) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+function parseInstructionDate(value?: string | null) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed.length <= 10 ? `${trimmed}T00:00:00` : trimmed);
+  if (Number.isNaN(date.getTime())) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid due date" });
+  }
+  return date;
+}
+
+function actorName(ctx: any) {
+  return ctx.user?.name || ctx.user?.email || null;
+}
+
+async function requireVisibleJobInstaller(db: any, ctx: any, jobId: number, installerId?: number | null) {
+  if (installerId == null) return;
+
+  const [installer] = await db.select({ id: constructionInstallers.id })
+    .from(constructionInstallers)
+    .where(and(...installerTenantConditions(ctx, eq(constructionInstallers.id, installerId))))
+    .limit(1);
+  if (!installer) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected trade is not available for this tenant" });
+  }
+
+  const [assignment] = await db.select({ id: constructionAssignments.id })
+    .from(constructionAssignments)
+    .where(and(
+      eq(constructionAssignments.jobId, jobId),
+      eq(constructionAssignments.installerId, installerId),
+    ))
+    .limit(1);
+  if (assignment) return;
+
+  const [scheduledEvent] = await db.select({ id: constructionScheduleEvents.id })
+    .from(constructionScheduleEvents)
+    .where(and(
+      eq(constructionScheduleEvents.jobId, jobId),
+      eq(constructionScheduleEvents.assignedInstallerId, installerId),
+    ))
+    .limit(1);
+  if (!scheduledEvent) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected trade is not assigned or scheduled on this job" });
+  }
 }
 
 function nullableName(value?: string | null) {
@@ -1143,6 +1223,142 @@ export const constructionClientsRouter = router({
         .limit(1);
 
       return row || null;
+    }),
+
+  jobInstructions: protectedProcedure
+    .input(z.object({ jobId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireJobAccess(db, ctx, input.jobId);
+
+      return db.select({
+        id: constructionJobInstructions.id,
+        jobId: constructionJobInstructions.jobId,
+        title: constructionJobInstructions.title,
+        description: constructionJobInstructions.description,
+        category: constructionJobInstructions.category,
+        status: constructionJobInstructions.status,
+        priority: constructionJobInstructions.priority,
+        visibleToTrade: constructionJobInstructions.visibleToTrade,
+        assignedInstallerId: constructionJobInstructions.assignedInstallerId,
+        assignedInstallerName: constructionInstallers.name,
+        isBlocking: constructionJobInstructions.isBlocking,
+        dueAt: constructionJobInstructions.dueAt,
+        triggerLabel: constructionJobInstructions.triggerLabel,
+        sortOrder: constructionJobInstructions.sortOrder,
+        createdByName: constructionJobInstructions.createdByName,
+        updatedByName: constructionJobInstructions.updatedByName,
+        createdAt: constructionJobInstructions.createdAt,
+        updatedAt: constructionJobInstructions.updatedAt,
+      })
+        .from(constructionJobInstructions)
+        .leftJoin(
+          constructionInstallers,
+          and(...installerTenantConditions(ctx, eq(constructionInstallers.id, constructionJobInstructions.assignedInstallerId))),
+        )
+        .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.jobId, input.jobId))))
+        .orderBy(desc(constructionJobInstructions.isBlocking), asc(constructionJobInstructions.sortOrder), asc(constructionJobInstructions.createdAt));
+    }),
+
+  createJobInstruction: protectedProcedure
+    .input(z.object({
+      jobId: z.number(),
+      title: z.string().trim().min(1).max(255),
+      description: z.string().max(5000).nullable().optional(),
+      category: jobInstructionCategorySchema.default("general"),
+      status: jobInstructionStatusSchema.default("open"),
+      priority: jobInstructionPrioritySchema.default("normal"),
+      visibleToTrade: z.boolean().default(true),
+      assignedInstallerId: z.number().nullable().optional(),
+      isBlocking: z.boolean().default(false),
+      dueAt: z.string().nullable().optional(),
+      triggerLabel: z.string().max(255).nullable().optional(),
+      sortOrder: z.number().int().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireJobAccess(db, ctx, input.jobId);
+      await requireVisibleJobInstaller(db, ctx, input.jobId, input.assignedInstallerId);
+      const tenantId = tenantIdFromContext(ctx);
+      if (!tenantId) throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required" });
+
+      const [result] = await db.insert(constructionJobInstructions).values({
+        tenantId,
+        jobId: input.jobId,
+        title: input.title,
+        description: trimNullable(input.description),
+        category: input.category,
+        status: input.status,
+        priority: input.priority,
+        visibleToTrade: input.visibleToTrade,
+        assignedInstallerId: input.assignedInstallerId ?? null,
+        isBlocking: input.isBlocking,
+        dueAt: parseInstructionDate(input.dueAt),
+        triggerLabel: trimNullable(input.triggerLabel),
+        sourceType: "manual",
+        sortOrder: input.sortOrder ?? 0,
+        createdByUserId: ctx.user?.id ?? null,
+        createdByName: actorName(ctx),
+        updatedByUserId: ctx.user?.id ?? null,
+        updatedByName: actorName(ctx),
+      }).$returningId();
+
+      return { id: result.id };
+    }),
+
+  updateJobInstruction: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      title: z.string().trim().min(1).max(255).optional(),
+      description: z.string().max(5000).nullable().optional(),
+      category: jobInstructionCategorySchema.optional(),
+      status: jobInstructionStatusSchema.optional(),
+      priority: jobInstructionPrioritySchema.optional(),
+      visibleToTrade: z.boolean().optional(),
+      assignedInstallerId: z.number().nullable().optional(),
+      isBlocking: z.boolean().optional(),
+      dueAt: z.string().nullable().optional(),
+      triggerLabel: z.string().max(255).nullable().optional(),
+      sortOrder: z.number().int().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const instruction = await requireInstructionAccess(db, ctx, input.id);
+      if ("assignedInstallerId" in input) {
+        await requireVisibleJobInstaller(db, ctx, instruction.jobId, input.assignedInstallerId);
+      }
+
+      const updates: Record<string, any> = {
+        updatedByUserId: ctx.user?.id ?? null,
+        updatedByName: actorName(ctx),
+      };
+      if (input.title !== undefined) updates.title = input.title;
+      if (input.description !== undefined) updates.description = trimNullable(input.description);
+      if (input.category !== undefined) updates.category = input.category;
+      if (input.status !== undefined) updates.status = input.status;
+      if (input.priority !== undefined) updates.priority = input.priority;
+      if (input.visibleToTrade !== undefined) updates.visibleToTrade = input.visibleToTrade;
+      if ("assignedInstallerId" in input) updates.assignedInstallerId = input.assignedInstallerId ?? null;
+      if (input.isBlocking !== undefined) updates.isBlocking = input.isBlocking;
+      if (input.dueAt !== undefined) updates.dueAt = parseInstructionDate(input.dueAt);
+      if (input.triggerLabel !== undefined) updates.triggerLabel = trimNullable(input.triggerLabel);
+      if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+
+      await db.update(constructionJobInstructions)
+        .set(updates)
+        .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, input.id))));
+
+      return { success: true };
+    }),
+
+  deleteJobInstruction: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireInstructionAccess(db, ctx, input.id);
+      await db.delete(constructionJobInstructions)
+        .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, input.id))));
+      return { success: true };
     }),
 
   updateProjectTeam: protectedProcedure

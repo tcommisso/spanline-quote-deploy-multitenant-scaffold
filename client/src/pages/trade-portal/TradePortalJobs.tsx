@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import {
   MapPin, Phone, Users, FileText, Download, ChevronRight,
   ArrowLeft, Briefcase, Calendar, Clock, HardHat,
+  ClipboardCheck, AlertTriangle, ShieldCheck,
 } from "lucide-react";
 
 // ─── Job List View ──────────────────────────────────────────────────────────
@@ -88,6 +89,50 @@ function JobListView() {
       ))}
     </div>
   );
+}
+
+const instructionCategoryLabels: Record<string, string> = {
+  general: "General",
+  inspection: "Inspection",
+  hold_point: "Hold Point",
+  site_access: "Site Access",
+  safety: "Safety",
+  completion_evidence: "Completion Evidence",
+  contract_reminder: "Contract Reminder",
+  other: "Other",
+};
+
+function formatInstructionStatus(value?: string | null) {
+  const text = String(value || "").trim();
+  return text ? text.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Open";
+}
+
+function instructionStatusClass(status?: string | null) {
+  const normalized = String(status || "").toLowerCase();
+  if (["done", "passed"].includes(normalized)) return "bg-green-100 text-green-700 border-green-200";
+  if (["blocked", "failed"].includes(normalized)) return "bg-red-100 text-red-700 border-red-200";
+  if (["scheduled", "booked", "acknowledged", "deferred"].includes(normalized)) return "bg-amber-100 text-amber-700 border-amber-200";
+  if (["not_applicable", "cancelled"].includes(normalized)) return "bg-slate-100 text-slate-600 border-slate-200";
+  return "bg-blue-100 text-blue-700 border-blue-200";
+}
+
+function instructionIcon(sourceType?: string | null) {
+  if (sourceType === "approval_inspection") return ShieldCheck;
+  if (sourceType === "subcontract_inspection") return FileText;
+  return ClipboardCheck;
+}
+
+function formatInstructionDate(item: any) {
+  const parts: string[] = [];
+  if (item.dueAt) {
+    const date = new Date(item.dueAt);
+    if (!Number.isNaN(date.getTime())) {
+      parts.push(date.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" }));
+    }
+  }
+  if (item.scheduledTime) parts.push(item.scheduledTime);
+  if (item.triggerLabel) parts.push(item.triggerLabel);
+  return parts.join(" - ");
 }
 
 // ─── Job Detail View ────────────────────────────────────────────────────────
@@ -190,6 +235,69 @@ function JobDetailView({ jobId }: { jobId: number }) {
           )}
         </CardContent>
       </Card>
+
+      {/* Job Instructions */}
+      {job.jobInstructions && job.jobInstructions.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <ClipboardCheck className="w-4 h-4" /> Job Instructions
+              </CardTitle>
+              <Badge variant="secondary">{job.jobInstructions.length}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {job.jobInstructions.map((item: any) => {
+              const Icon = instructionIcon(item.sourceType);
+              const meta = [
+                instructionCategoryLabels[item.category] || formatInstructionStatus(item.category),
+                item.sourceLabel,
+              ].filter(Boolean).join(" - ");
+              const dateText = formatInstructionDate(item);
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-lg border p-3 ${item.isBlocking ? "border-red-200 bg-red-50" : "bg-slate-50"}`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${item.isBlocking ? "bg-red-100 text-red-700" : "bg-primary/10 text-primary"}`}>
+                      {item.isBlocking ? <AlertTriangle className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-sm font-semibold">{item.title}</p>
+                        <Badge variant="outline" className={`text-[10px] ${instructionStatusClass(item.status)}`}>
+                          {formatInstructionStatus(item.status)}
+                        </Badge>
+                        {item.isBlocking && <Badge variant="destructive" className="text-[10px]">Hold Point</Badge>}
+                        {item.hasDefects && (
+                          <Badge variant="destructive" className="text-[10px]">
+                            {item.defectCount || 1} defect{(item.defectCount || 1) === 1 ? "" : "s"}
+                          </Badge>
+                        )}
+                      </div>
+                      {meta && <p className="text-xs text-muted-foreground">{meta}</p>}
+                      {dateText && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {dateText}
+                        </p>
+                      )}
+                      {item.inspectorName && (
+                        <p className="text-xs text-muted-foreground">Inspector: {item.inspectorName}</p>
+                      )}
+                      {item.description && (
+                        <p className="text-xs text-slate-700 whitespace-pre-wrap">{item.description}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Work Orders */}
       {job.workOrders && job.workOrders.length > 0 && (
