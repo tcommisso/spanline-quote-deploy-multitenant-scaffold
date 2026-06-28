@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb, getTenantBrandingSettings } from "./db";
-import { eq, and, desc, gte, lte, asc, or, inArray, gt, sql } from "drizzle-orm";
+import { eq, and, desc, gte, lte, asc, or, inArray, gt, sql, count, like } from "drizzle-orm";
 import {
   tradePortalAccess, tradePortalSessions,
   tradeAvailabilities, tradeInvoices, tradeRemittances,
@@ -11,6 +11,7 @@ import {
   portalNews, poMilestones, cmWorkOrders,
   projectSubcontracts, tradeInvoiceLines,
   chatChannels, chatMessages, chatChannelMembers,
+  suppliers, flashingOrders, flashingOrderLines, flashingOrderStatusHistory,
   type PaymentMilestone,
 } from "../drizzle/schema";
 import { publicProcedure, router, middleware } from "./_core/trpc";
@@ -172,6 +173,203 @@ function moneyNumber(value: unknown): number {
 
 function moneyString(value: number): string {
   return value.toFixed(2);
+}
+
+const tradeFlashingOrderStatuses = [
+  "draft",
+  "submitted",
+  "supplier_received",
+  "in_production",
+  "purchase_ordered",
+  "ready",
+  "completed",
+  "cancelled",
+  "archived",
+] as const;
+
+const tradeFlashingLineStatuses = [
+  "draft",
+  "ready",
+  "needs_clarification",
+  "approved",
+  "in_production",
+  "completed",
+  "cancelled",
+] as const;
+
+const tradeFlashingColourSides = ["inside", "outside", "both", "unspecified"] as const;
+const tradeFlashingSubjectPhotoType = "subject_area_photo";
+
+const tradeFlashingPointSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
+const tradeFlashingGeometrySchema = z.object({
+  points: z.array(tradeFlashingPointSchema).min(2),
+  gridSize: z.number().positive().default(20),
+  snapToGrid: z.boolean().default(true),
+  foldLabels: z.record(z.string(), z.string()).optional(),
+  foldDetails: z.record(z.string(), z.any()).optional(),
+  notes: z.string().optional(),
+});
+
+const tradeFlashingLineInputSchema = z.object({
+  id: z.number().optional(),
+  orderId: z.number(),
+  templateId: z.number().nullish(),
+  profileName: z.string().trim().min(1).max(255),
+  category: z.string().trim().max(128).default("custom"),
+  materialType: z.string().trim().max(128).default("Colorbond"),
+  gauge: z.string().trim().max(64).nullish(),
+  colour: z.string().trim().max(128).nullish(),
+  colourSide: z.enum(tradeFlashingColourSides).default("unspecified"),
+  finish: z.string().trim().max(128).nullish(),
+  quantity: z.number().int().min(1).max(999).default(1),
+  lengthMm: z.number().min(0).max(999999).default(0),
+  unitPrice: z.number().min(0).max(999999).default(0),
+  geometry: tradeFlashingGeometrySchema,
+  foldDetails: z.record(z.string(), z.any()).optional().default({}),
+  manufacturingNotes: z.string().nullish(),
+  status: z.enum(tradeFlashingLineStatuses).default("draft"),
+});
+
+function roundFlashingNumber(value: number) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function tradeFlashingDistance(a: z.infer<typeof tradeFlashingPointSchema>, b: z.infer<typeof tradeFlashingPointSchema>) {
+  return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+}
+
+function tradeFlashingProfileGirthMm(geometry: z.infer<typeof tradeFlashingGeometrySchema>) {
+  return geometry.points.slice(1).reduce((total, point, index) => total + tradeFlashingDistance(geometry.points[index], point), 0);
+}
+
+function tradeFlashingLineMetrics(input: z.infer<typeof tradeFlashingLineInputSchema>) {
+  const girthMm = roundFlashingNumber(tradeFlashingProfileGirthMm(input.geometry));
+  const totalLinealMetres = roundFlashingNumber((input.lengthMm * input.quantity) / 1000);
+  const bendCount = Math.max(0, input.geometry.points.length - 2);
+  const lineTotal = roundFlashingNumber(totalLinealMetres * input.unitPrice);
+  return { girthMm, totalLinealMetres, bendCount, lineTotal };
+}
+
+function normaliseFlashingAttachments(value: unknown): Array<Record<string, any>> {
+  return Array.isArray(value)
+    ? value.filter((attachment): attachment is Record<string, any> => !!attachment && typeof attachment === "object")
+    : [];
+}
+
+function uploadFlashingExtension(filename: string, mimeType: string) {
+  const cleanMime = mimeType.toLowerCase();
+  if (cleanMime === "image/png") return "png";
+  if (cleanMime === "image/webp") return "webp";
+  const fromName = filename.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (fromName && ["jpg", "jpeg", "png", "webp"].includes(fromName)) return fromName === "jpeg" ? "jpg" : fromName;
+  return "jpg";
+}
+
+async function recalculateTradeFlashingOrderTotals(db: any, tenantId: number, orderId: number) {
+  const lines = await db
+    .select({
+      id: flashingOrderLines.id,
+      quantity: flashingOrderLines.quantity,
+      girthMm: flashingOrderLines.girthMm,
+      totalLinealMetres: flashingOrderLines.totalLinealMetres,
+      lineTotal: flashingOrderLines.lineTotal,
+    })
+    .from(flashingOrderLines)
+    .where(and(eq(flashingOrderLines.orderId, orderId), eq(flashingOrderLines.tenantId, tenantId)));
+
+  const totals = lines.reduce((acc: { totalGirthMm: number; totalLinealMetres: number; totalExGst: number }, line: any) => {
+    acc.totalGirthMm += Number(line.girthMm || 0) * Number(line.quantity || 1);
+    acc.totalLinealMetres += Number(line.totalLinealMetres || 0);
+    acc.totalExGst += Number(line.lineTotal || 0);
+    return acc;
+  }, { totalGirthMm: 0, totalLinealMetres: 0, totalExGst: 0 });
+
+  await db
+    .update(flashingOrders)
+    .set({
+      lineCount: lines.length,
+      totalGirthMm: roundFlashingNumber(totals.totalGirthMm).toFixed(2),
+      totalLinealMetres: roundFlashingNumber(totals.totalLinealMetres).toFixed(2),
+      totalExGst: roundFlashingNumber(totals.totalExGst).toFixed(2),
+    })
+    .where(and(eq(flashingOrders.id, orderId), eq(flashingOrders.tenantId, tenantId)));
+}
+
+async function findTradePortalFlashingSupplier(db: any, ctx: any) {
+  const access = requireTradeAccessVisible(ctx, ctx.tradeAccess);
+  const tenantId = tradePortalTenantId(ctx);
+  if (!tenantId) return null;
+
+  const [installer] = await db.select()
+    .from(constructionInstallers)
+    .where(and(...tradeInstallerConditions(ctx, eq(constructionInstallers.id, access.installerId))))
+    .limit(1);
+
+  const email = String(access.email || installer?.email || "").trim().toLowerCase();
+  const installerEmail = String(installer?.email || "").trim().toLowerCase();
+  const installerName = String(installer?.name || "").trim().toLowerCase();
+  const matchConditions: any[] = [];
+  if (email) matchConditions.push(sql`LOWER(${suppliers.email}) = ${email}`);
+  if (installerEmail && installerEmail !== email) matchConditions.push(sql`LOWER(${suppliers.email}) = ${installerEmail}`);
+  if (installerName) matchConditions.push(sql`LOWER(${suppliers.name}) = ${installerName}`);
+  if (matchConditions.length === 0) return null;
+
+  const conditions: any[] = [
+    eq(suppliers.isActive, true),
+    eq(suppliers.tradePortalFlashingOrdersEnabled, true),
+    or(...matchConditions)!,
+  ];
+  appendTenantScope(conditions, suppliers.tenantId, tenantId);
+
+  const [supplier] = await db.select()
+    .from(suppliers)
+    .where(and(...conditions))
+    .orderBy(asc(suppliers.name))
+    .limit(1);
+
+  return supplier || null;
+}
+
+async function requireTradePortalFlashingSupplier(db: any, ctx: any) {
+  const supplier = await findTradePortalFlashingSupplier(db, ctx);
+  if (!supplier) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Flashing orders are not enabled for this trade portal account.",
+    });
+  }
+  return supplier;
+}
+
+function tradePortalFlashingOrderScope(ctx: any, supplier: typeof suppliers.$inferSelect, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, flashingOrders.tenantId, tradePortalTenantId(ctx));
+  const supplierMatchers: any[] = [eq(flashingOrders.supplierId, supplier.id)];
+  if (supplier.name) supplierMatchers.push(eq(flashingOrders.supplierName, supplier.name));
+  conditions.push(or(...supplierMatchers)!);
+  return conditions;
+}
+
+async function requireTradePortalFlashingOrder(db: any, ctx: any, supplier: typeof suppliers.$inferSelect, orderId: number) {
+  const [order] = await db.select()
+    .from(flashingOrders)
+    .where(and(...tradePortalFlashingOrderScope(ctx, supplier, eq(flashingOrders.id, orderId))))
+    .limit(1);
+  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "Flashing order not found." });
+  return order;
+}
+
+function assertTradePortalFlashingEditable(order: typeof flashingOrders.$inferSelect) {
+  if (!["draft", "supplier_received"].includes(order.status)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "This flashing order is already under construction review and cannot be edited from the trade portal.",
+    });
+  }
 }
 
 // ─── Trade Portal Auth Middleware ────────────────────────────────────────────
@@ -385,6 +583,273 @@ export const tradePortalRouter = router({
       speciality: installer?.speciality || null,
     };
   }),
+
+  // ─── Flashing Orders (supplier-scoped) ─────────────────────────────────────
+
+  getFlashingOrderAccess: protectedTradePortalProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    const supplier = await findTradePortalFlashingSupplier(db, ctx);
+    return supplier
+      ? { enabled: true, supplierId: supplier.id, supplierName: supplier.name }
+      : { enabled: false, supplierId: null, supplierName: null };
+  }),
+
+  listFlashingOrders: protectedTradePortalProcedure
+    .input(z.object({
+      search: z.string().optional().default(""),
+      status: z.enum(tradeFlashingOrderStatuses).optional(),
+      limit: z.number().int().min(1).max(100).default(25),
+      offset: z.number().int().min(0).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const parsed = input || { search: "", limit: 25, offset: 0 };
+      const conditions = tradePortalFlashingOrderScope(ctx, supplier);
+      const search = parsed.search?.trim();
+      if (parsed.status) conditions.push(eq(flashingOrders.status, parsed.status));
+      if (search) {
+        const pattern = `%${search.toLowerCase()}%`;
+        conditions.push(or(
+          like(sql`LOWER(${flashingOrders.orderNumber})`, pattern),
+          like(sql`LOWER(${flashingOrders.jobNumber})`, pattern),
+          like(sql`LOWER(${flashingOrders.clientName})`, pattern),
+          like(sql`LOWER(${flashingOrders.siteAddress})`, pattern),
+        )!);
+      }
+
+      const whereClause = and(...conditions);
+      const [totalRow] = await db.select({ total: count() }).from(flashingOrders).where(whereClause);
+      const orders = await db
+        .select()
+        .from(flashingOrders)
+        .where(whereClause)
+        .orderBy(desc(flashingOrders.updatedAt))
+        .limit(parsed.limit)
+        .offset(parsed.offset);
+
+      return { orders, total: totalRow?.total || 0, supplierName: supplier.name };
+    }),
+
+  getFlashingOrder: protectedTradePortalProcedure
+    .input(z.object({ id: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
+      const [lines, statusHistory] = await Promise.all([
+        db.select().from(flashingOrderLines)
+          .where(and(
+            eq(flashingOrderLines.orderId, input.id),
+            eq(flashingOrderLines.tenantId, tradePortalTenantId(ctx)),
+          ))
+          .orderBy(flashingOrderLines.lineNumber, flashingOrderLines.id),
+        db.select().from(flashingOrderStatusHistory)
+          .where(and(
+            eq(flashingOrderStatusHistory.orderId, input.id),
+            eq(flashingOrderStatusHistory.tenantId, tradePortalTenantId(ctx)),
+          ))
+          .orderBy(desc(flashingOrderStatusHistory.createdAt)),
+      ]);
+      return { order, lines, statusHistory, templates: [] };
+    }),
+
+  updateFlashingOrder: protectedTradePortalProcedure
+    .input(z.object({
+      id: z.number(),
+      requestedDeliveryAt: z.string().nullish(),
+      deliveryMethod: z.string().trim().max(64).nullish(),
+      priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+      siteNotes: z.string().nullish(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
+      assertTradePortalFlashingEditable(order);
+
+      await db.update(flashingOrders)
+        .set({
+          requestedDeliveryAt: input.requestedDeliveryAt ? new Date(input.requestedDeliveryAt) : null,
+          deliveryMethod: input.deliveryMethod ?? "pickup",
+          priority: input.priority,
+          siteNotes: input.siteNotes ?? null,
+        })
+        .where(and(eq(flashingOrders.id, input.id), eq(flashingOrders.tenantId, tradePortalTenantId(ctx))));
+      return { success: true };
+    }),
+
+  uploadFlashingSubjectPhoto: protectedTradePortalProcedure
+    .input(z.object({
+      id: z.number(),
+      base64: z.string().min(1),
+      filename: z.string().trim().min(1).max(255),
+      mimeType: z.string().trim().min(1).max(128),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
+      assertTradePortalFlashingEditable(order);
+      if (!input.mimeType.startsWith("image/")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Subject area photo must be an image." });
+      }
+
+      const buffer = Buffer.from(input.base64, "base64");
+      if (buffer.byteLength > 8 * 1024 * 1024) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Subject area photo must be under 8MB." });
+      }
+
+      const tenantId = tradePortalTenantId(ctx);
+      const ext = uploadFlashingExtension(input.filename, input.mimeType);
+      const key = `tenants/${tenantId}/flashing-orders/${input.id}/trade-subject-area-${generateToken(12)}.${ext}`;
+      const { url } = await storagePut(key, buffer, input.mimeType);
+      const attachment = {
+        type: tradeFlashingSubjectPhotoType,
+        url,
+        key,
+        fileName: input.filename,
+        mimeType: input.mimeType,
+        uploadedAt: new Date().toISOString(),
+        uploadedByName: supplier.name || ctx.tradeAccess.email || "Trade portal",
+      };
+      const attachments = [
+        ...normaliseFlashingAttachments(order.attachments).filter((item) => item.type !== tradeFlashingSubjectPhotoType),
+        attachment,
+      ];
+
+      await db.update(flashingOrders)
+        .set({ attachments })
+        .where(and(eq(flashingOrders.id, input.id), eq(flashingOrders.tenantId, tenantId)));
+      return attachment;
+    }),
+
+  removeFlashingSubjectPhoto: protectedTradePortalProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
+      assertTradePortalFlashingEditable(order);
+      const attachments = normaliseFlashingAttachments(order.attachments).filter((item) => item.type !== tradeFlashingSubjectPhotoType);
+      await db.update(flashingOrders)
+        .set({ attachments })
+        .where(and(eq(flashingOrders.id, input.id), eq(flashingOrders.tenantId, tradePortalTenantId(ctx))));
+      return { success: true };
+    }),
+
+  saveFlashingLine: protectedTradePortalProcedure
+    .input(tradeFlashingLineInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.orderId);
+      assertTradePortalFlashingEditable(order);
+      const tenantId = tradePortalTenantId(ctx);
+      const metrics = tradeFlashingLineMetrics(input);
+      const values = {
+        tenantId,
+        orderId: input.orderId,
+        templateId: input.templateId ?? null,
+        profileName: input.profileName,
+        category: input.category,
+        materialType: input.materialType,
+        gauge: input.gauge ?? null,
+        colour: input.colour ?? null,
+        colourSide: input.colourSide,
+        finish: input.finish ?? null,
+        quantity: input.quantity,
+        lengthMm: input.lengthMm.toFixed(2),
+        totalLinealMetres: metrics.totalLinealMetres.toFixed(2),
+        girthMm: metrics.girthMm.toFixed(2),
+        bendCount: metrics.bendCount,
+        unitPrice: input.unitPrice.toFixed(2),
+        lineTotal: metrics.lineTotal.toFixed(2),
+        geometry: input.geometry,
+        foldDetails: input.foldDetails,
+        manufacturingNotes: input.manufacturingNotes ?? null,
+        status: input.status,
+      };
+
+      let lineId = input.id;
+      if (lineId) {
+        const [line] = await db.select({ id: flashingOrderLines.id }).from(flashingOrderLines)
+          .where(and(eq(flashingOrderLines.id, lineId), eq(flashingOrderLines.orderId, input.orderId), eq(flashingOrderLines.tenantId, tenantId)))
+          .limit(1);
+        if (!line) throw new TRPCError({ code: "NOT_FOUND", message: "Flashing line not found." });
+        await db.update(flashingOrderLines)
+          .set(values)
+          .where(and(eq(flashingOrderLines.id, lineId), eq(flashingOrderLines.tenantId, tenantId)));
+      } else {
+        const [maxLine] = await db.select({ maxLine: sql<number>`COALESCE(MAX(${flashingOrderLines.lineNumber}), 0)` })
+          .from(flashingOrderLines)
+          .where(and(eq(flashingOrderLines.orderId, input.orderId), eq(flashingOrderLines.tenantId, tenantId)));
+        const [result] = await db.insert(flashingOrderLines).values({
+          ...values,
+          lineNumber: Number(maxLine?.maxLine || 0) + 1,
+        });
+        lineId = Number(result.insertId);
+      }
+
+      await recalculateTradeFlashingOrderTotals(db, tenantId, input.orderId);
+      return { id: lineId, ...metrics };
+    }),
+
+  deleteFlashingLine: protectedTradePortalProcedure
+    .input(z.object({ id: z.number(), orderId: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.orderId);
+      assertTradePortalFlashingEditable(order);
+      const tenantId = tradePortalTenantId(ctx);
+      await db.delete(flashingOrderLines)
+        .where(and(eq(flashingOrderLines.id, input.id), eq(flashingOrderLines.orderId, input.orderId), eq(flashingOrderLines.tenantId, tenantId)));
+      await recalculateTradeFlashingOrderTotals(db, tenantId, input.orderId);
+      return { success: true };
+    }),
+
+  submitFlashingOrderForReview: protectedTradePortalProcedure
+    .input(z.object({ id: z.number(), notes: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const supplier = await requireTradePortalFlashingSupplier(db, ctx);
+      const order = await requireTradePortalFlashingOrder(db, ctx, supplier, input.id);
+      assertTradePortalFlashingEditable(order);
+      const tenantId = tradePortalTenantId(ctx);
+      const [lineCountRow] = await db.select({ total: count() }).from(flashingOrderLines)
+        .where(and(eq(flashingOrderLines.orderId, input.id), eq(flashingOrderLines.tenantId, tenantId)));
+      if (!lineCountRow?.total) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Add at least one flashing line before submitting." });
+      }
+
+      await db.update(flashingOrders)
+        .set({
+          status: "supplier_received",
+          submittedAt: order.submittedAt || new Date(),
+          supplierId: supplier.id,
+          supplierName: supplier.name,
+        })
+        .where(and(eq(flashingOrders.id, input.id), eq(flashingOrders.tenantId, tenantId)));
+
+      await db.insert(flashingOrderStatusHistory).values({
+        tenantId,
+        orderId: input.id,
+        fromStatus: order.status,
+        toStatus: "supplier_received",
+        notes: input.notes || "Submitted from Trade Portal for construction review.",
+        changedByUserId: null,
+        changedByName: `${supplier.name} (Trade Portal)`,
+      });
+
+      await notifyOwner({
+        tenantId,
+        title: "Flashing order ready for review",
+        content: `${supplier.name} submitted ${order.orderNumber} for construction review${order.clientName ? ` (${order.clientName})` : ""}.`,
+      });
+
+      return { success: true };
+    }),
 
   // ─── Dashboard (Job Details) ────────────────────────────────────────────────
 

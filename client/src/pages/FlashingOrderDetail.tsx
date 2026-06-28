@@ -93,6 +93,10 @@ type FlashingAttachment = {
   uploadedByName?: string;
 };
 
+type FlashingOrderDetailProps = {
+  portalMode?: boolean;
+};
+
 const CANVAS_W = 560;
 const CANVAS_H = 320;
 
@@ -1211,58 +1215,112 @@ function FoldDimensionTable({
   );
 }
 
-export default function FlashingOrderDetail() {
+export default function FlashingOrderDetail(props: FlashingOrderDetailProps | any = {}) {
+  const portalMode = Boolean(props?.portalMode);
   const params = useParams<{ id: string }>();
   const orderId = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const detailQuery = trpc.flashing.getOrder.useQuery({ id: orderId }, { enabled: Number.isFinite(orderId) });
-  const updateOrder = trpc.flashing.updateOrder.useMutation({
+  const orderBasePath = portalMode ? "/trade-portal/flashing-orders" : "/construction/flashing-orders";
+  const adminDetailQuery = trpc.flashing.getOrder.useQuery({ id: orderId }, { enabled: !portalMode && Number.isFinite(orderId) });
+  const portalDetailQuery = trpc.tradePortal.getFlashingOrder.useQuery({ id: orderId }, { enabled: portalMode && Number.isFinite(orderId) });
+  const detailQuery = portalMode ? portalDetailQuery : adminDetailQuery;
+
+  const invalidateOrder = () => {
+    if (portalMode) {
+      utils.tradePortal.getFlashingOrder.invalidate({ id: orderId });
+      utils.tradePortal.listFlashingOrders.invalidate();
+    } else {
+      utils.flashing.getOrder.invalidate({ id: orderId });
+      utils.flashing.listOrders.invalidate();
+    }
+  };
+
+  const adminUpdateOrder = trpc.flashing.updateOrder.useMutation({
     onSuccess: () => {
       toast.success("Order details saved");
-      utils.flashing.getOrder.invalidate({ id: orderId });
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
-  const uploadSubjectPhoto = trpc.flashing.uploadSubjectPhoto.useMutation({
+  const portalUpdateOrder = trpc.tradePortal.updateFlashingOrder.useMutation({
+    onSuccess: () => {
+      toast.success("Order details saved");
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const adminUploadSubjectPhoto = trpc.flashing.uploadSubjectPhoto.useMutation({
     onSuccess: () => {
       toast.success("Subject area photo uploaded");
-      utils.flashing.getOrder.invalidate({ id: orderId });
-      utils.flashing.listOrders.invalidate();
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
-  const removeSubjectPhoto = trpc.flashing.removeSubjectPhoto.useMutation({
+  const portalUploadSubjectPhoto = trpc.tradePortal.uploadFlashingSubjectPhoto.useMutation({
+    onSuccess: () => {
+      toast.success("Subject area photo uploaded");
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const adminRemoveSubjectPhoto = trpc.flashing.removeSubjectPhoto.useMutation({
     onSuccess: () => {
       toast.success("Subject area photo removed");
-      utils.flashing.getOrder.invalidate({ id: orderId });
-      utils.flashing.listOrders.invalidate();
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const portalRemoveSubjectPhoto = trpc.tradePortal.removeFlashingSubjectPhoto.useMutation({
+    onSuccess: () => {
+      toast.success("Subject area photo removed");
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
   const updateStatus = trpc.flashing.updateStatus.useMutation({
     onSuccess: () => {
       toast.success("Status updated");
-      utils.flashing.getOrder.invalidate({ id: orderId });
-      utils.flashing.listOrders.invalidate();
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
-  const saveLine = trpc.flashing.saveLine.useMutation({
+  const submitForReview = trpc.tradePortal.submitFlashingOrderForReview.useMutation({
+    onSuccess: () => {
+      toast.success("Submitted for construction review");
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const adminSaveLine = trpc.flashing.saveLine.useMutation({
     onSuccess: () => {
       toast.success("Flashing line saved");
       setLine(DEFAULT_LINE);
       setActiveSection("lines");
-      utils.flashing.getOrder.invalidate({ id: orderId });
-      utils.flashing.listOrders.invalidate();
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
-  const deleteLine = trpc.flashing.deleteLine.useMutation({
+  const portalSaveLine = trpc.tradePortal.saveFlashingLine.useMutation({
+    onSuccess: () => {
+      toast.success("Flashing line saved");
+      setLine(DEFAULT_LINE);
+      setActiveSection("lines");
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const adminDeleteLine = trpc.flashing.deleteLine.useMutation({
     onSuccess: () => {
       toast.success("Line deleted");
-      utils.flashing.getOrder.invalidate({ id: orderId });
-      utils.flashing.listOrders.invalidate();
+      invalidateOrder();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const portalDeleteLine = trpc.tradePortal.deleteFlashingLine.useMutation({
+    onSuccess: () => {
+      toast.success("Line deleted");
+      invalidateOrder();
     },
     onError: (error) => toast.error(error.message),
   });
@@ -1308,6 +1366,11 @@ export default function FlashingOrderDetail() {
   const lines = detailQuery.data?.lines || [];
   const templates = detailQuery.data?.templates || [];
   const history = detailQuery.data?.statusHistory || [];
+  const isUpdatingOrder = adminUpdateOrder.isPending || portalUpdateOrder.isPending;
+  const isUploadingSubjectPhoto = adminUploadSubjectPhoto.isPending || portalUploadSubjectPhoto.isPending;
+  const isRemovingSubjectPhoto = adminRemoveSubjectPhoto.isPending || portalRemoveSubjectPhoto.isPending;
+  const isSavingLine = adminSaveLine.isPending || portalSaveLine.isPending;
+  const isDeletingLine = adminDeleteLine.isPending || portalDeleteLine.isPending;
 
   const [orderDraft, setOrderDraft] = useState({
     supplierName: "",
@@ -1618,7 +1681,7 @@ export default function FlashingOrderDetail() {
         <Card>
           <CardContent className="py-10 text-center">
             <p className="font-semibold">Flashing order not found</p>
-            <Button className="mt-4" onClick={() => navigate("/construction/flashing-orders")}>Back to Flashing Orders</Button>
+            <Button className="mt-4" onClick={() => navigate(orderBasePath)}>Back to Flashing Orders</Button>
           </CardContent>
         </Card>
       </div>
@@ -1626,7 +1689,7 @@ export default function FlashingOrderDetail() {
   }
 
   const subjectAreaPhoto = getSubjectAreaPhoto(order.attachments);
-  const workflowSections: Array<{
+  const allWorkflowSections: Array<{
     key: WorkflowSectionKey;
     label: string;
     detail: string;
@@ -1668,6 +1731,9 @@ export default function FlashingOrderDetail() {
       count: String(history.length),
     },
   ];
+  const workflowSections = allWorkflowSections.filter((section) => (
+    !portalMode || ["overview", "design", "lines", "photo"].includes(section.key)
+  ));
 
   const handleSubjectPhotoUpload = (file?: File | null) => {
     if (!file) return;
@@ -1686,27 +1752,39 @@ export default function FlashingOrderDetail() {
         toast.error("Could not read the image.");
         return;
       }
-      uploadSubjectPhoto.mutate({
+      const payload = {
         id: order.id,
         base64,
         filename: file.name,
         mimeType: file.type || "image/jpeg",
-      });
+      };
+      if (portalMode) portalUploadSubjectPhoto.mutate(payload);
+      else adminUploadSubjectPhoto.mutate(payload);
     };
     reader.onerror = () => toast.error("Could not read the image.");
     reader.readAsDataURL(file);
   };
 
   const saveOrderDetails = () => {
-    updateOrder.mutate({
-      id: order.id,
-      supplierName: orderDraft.supplierName || null,
-      requestedDeliveryAt: orderDraft.requestedDeliveryAt || null,
-      deliveryMethod: orderDraft.deliveryMethod,
-      priority: orderDraft.priority as any,
-      siteNotes: orderDraft.siteNotes || null,
-      internalNotes: orderDraft.internalNotes || null,
-    });
+    if (portalMode) {
+      portalUpdateOrder.mutate({
+        id: order.id,
+        requestedDeliveryAt: orderDraft.requestedDeliveryAt || null,
+        deliveryMethod: orderDraft.deliveryMethod,
+        priority: orderDraft.priority as any,
+        siteNotes: orderDraft.siteNotes || null,
+      });
+    } else {
+      adminUpdateOrder.mutate({
+        id: order.id,
+        supplierName: orderDraft.supplierName || null,
+        requestedDeliveryAt: orderDraft.requestedDeliveryAt || null,
+        deliveryMethod: orderDraft.deliveryMethod,
+        priority: orderDraft.priority as any,
+        siteNotes: orderDraft.siteNotes || null,
+        internalNotes: orderDraft.internalNotes || null,
+      });
+    }
   };
 
   const submitLine = () => {
@@ -1714,14 +1792,22 @@ export default function FlashingOrderDetail() {
       toast.error("Add at least two profile points before saving a flashing line.");
       return;
     }
-    saveLine.mutate({
+    const payload = {
       ...line,
       orderId: order.id,
       category: line.category || "custom",
       materialType: line.materialType || "Colorbond",
       colourSide: line.colourSide as any,
       status: line.status as any,
-    });
+    };
+    if (portalMode) portalSaveLine.mutate(payload);
+    else adminSaveLine.mutate(payload);
+  };
+
+  const handleDeleteLine = (existing: any) => {
+    const payload = { id: existing.id, orderId: order.id };
+    if (portalMode) portalDeleteLine.mutate(payload);
+    else adminDeleteLine.mutate(payload);
   };
 
   const editLine = (existing: any) => {
@@ -1813,7 +1899,7 @@ export default function FlashingOrderDetail() {
     <div className="p-4 sm:p-6 space-y-6 max-w-[1500px] mx-auto">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate("/construction/flashing-orders")}>
+          <Button variant="ghost" size="icon" onClick={() => navigate(orderBasePath)}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <div>
@@ -1837,13 +1923,24 @@ export default function FlashingOrderDetail() {
             {isExportingPdf ? <Spinner className="h-4 w-4 mr-1.5" /> : <Download className="h-4 w-4 mr-1.5" />}
             Export PDF
           </Button>
-          <select
-            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-            value={order.status}
-            onChange={(event) => updateStatus.mutate({ id: order.id, status: event.target.value as any })}
-          >
-            {Object.entries(STATUS_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-          </select>
+          {portalMode ? (
+            <Button
+              type="button"
+              onClick={() => submitForReview.mutate({ id: order.id })}
+              disabled={submitForReview.isPending || lines.length === 0 || !["draft", "supplier_received"].includes(order.status)}
+            >
+              {submitForReview.isPending ? <Spinner className="h-4 w-4 mr-1.5" /> : <Upload className="h-4 w-4 mr-1.5" />}
+              {order.status === "supplier_received" ? "Resubmit for Review" : "Submit for Review"}
+            </Button>
+          ) : (
+            <select
+              className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+              value={order.status}
+              onChange={(event) => updateStatus.mutate({ id: order.id, status: event.target.value as any })}
+            >
+              {Object.entries(STATUS_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          )}
         </div>
       </div>
 
@@ -2053,33 +2150,35 @@ export default function FlashingOrderDetail() {
                   <Plus className="h-4 w-4 mr-1.5" />
                   New Line
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    if (line.geometry.points.length < 2) {
-                      toast.error("Add at least two profile points before saving a template.");
-                      return;
-                    }
-                    saveTemplate.mutate({
-                      name: line.profileName,
-                      category: line.category,
-                      geometry: { ...line.geometry, foldDetails: line.foldDetails } as any,
-                      defaultMaterialType: line.materialType,
-                      defaultGauge: line.gauge,
-                      defaultColour: line.colour,
-                      defaultColourSide: line.colourSide as any,
-                      defaultQuantity: line.quantity,
-                      defaultLengthMm: line.lengthMm,
-                      notes: line.manufacturingNotes,
-                    });
-                  }}
-                >
-                  <Copy className="h-4 w-4 mr-1.5" />
-                  Save as Template
-                </Button>
-                <Button type="button" onClick={submitLine} disabled={saveLine.isPending}>
-                  {saveLine.isPending ? <Spinner className="h-4 w-4 mr-1.5" /> : <Save className="h-4 w-4 mr-1.5" />}
+                {!portalMode && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (line.geometry.points.length < 2) {
+                        toast.error("Add at least two profile points before saving a template.");
+                        return;
+                      }
+                      saveTemplate.mutate({
+                        name: line.profileName,
+                        category: line.category,
+                        geometry: { ...line.geometry, foldDetails: line.foldDetails } as any,
+                        defaultMaterialType: line.materialType,
+                        defaultGauge: line.gauge,
+                        defaultColour: line.colour,
+                        defaultColourSide: line.colourSide as any,
+                        defaultQuantity: line.quantity,
+                        defaultLengthMm: line.lengthMm,
+                        notes: line.manufacturingNotes,
+                      });
+                    }}
+                  >
+                    <Copy className="h-4 w-4 mr-1.5" />
+                    Save as Template
+                  </Button>
+                )}
+                <Button type="button" onClick={submitLine} disabled={isSavingLine}>
+                  {isSavingLine ? <Spinner className="h-4 w-4 mr-1.5" /> : <Save className="h-4 w-4 mr-1.5" />}
                   {line.id ? "Update Line" : "Add Line"}
                 </Button>
               </div>
@@ -2135,7 +2234,7 @@ export default function FlashingOrderDetail() {
                             <td className="px-3 py-2 text-right font-semibold">{formatCurrency(existing.lineTotal)}</td>
                             <td className="px-3 py-2 text-right">
                               <Button variant="ghost" size="sm" onClick={() => editLine(existing)}>Edit</Button>
-                              <Button variant="ghost" size="icon" onClick={() => deleteLine.mutate({ id: existing.id, orderId: order.id })}>
+                              <Button variant="ghost" size="icon" onClick={() => handleDeleteLine(existing)} disabled={isDeletingLine}>
                                 <Trash2 className="h-4 w-4 text-red-600" />
                               </Button>
                             </td>
@@ -2156,10 +2255,12 @@ export default function FlashingOrderDetail() {
               <CardTitle className="text-base">Order Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-sm font-medium">Supplier</label>
-                <Input value={orderDraft.supplierName} onChange={(event) => setOrderDraft({ ...orderDraft, supplierName: event.target.value })} placeholder="Supplier / manufacturer" />
-              </div>
+              {!portalMode && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium">Supplier</label>
+                  <Input value={orderDraft.supplierName} onChange={(event) => setOrderDraft({ ...orderDraft, supplierName: event.target.value })} placeholder="Supplier / manufacturer" />
+                </div>
+              )}
               <div className="space-y-1">
                 <label className="text-sm font-medium">Requested Delivery</label>
                 <Input type="date" value={orderDraft.requestedDeliveryAt} onChange={(event) => setOrderDraft({ ...orderDraft, requestedDeliveryAt: event.target.value })} />
@@ -2184,9 +2285,11 @@ export default function FlashingOrderDetail() {
                 </div>
               </div>
               <Textarea value={orderDraft.siteNotes} onChange={(event) => setOrderDraft({ ...orderDraft, siteNotes: event.target.value })} placeholder="Site / delivery notes" />
-              <Textarea value={orderDraft.internalNotes} onChange={(event) => setOrderDraft({ ...orderDraft, internalNotes: event.target.value })} placeholder="Internal notes" />
-              <Button className="w-full" onClick={saveOrderDetails} disabled={updateOrder.isPending}>
-                {updateOrder.isPending ? <Spinner className="h-4 w-4 mr-1.5" /> : <Save className="h-4 w-4 mr-1.5" />}
+              {!portalMode && (
+                <Textarea value={orderDraft.internalNotes} onChange={(event) => setOrderDraft({ ...orderDraft, internalNotes: event.target.value })} placeholder="Internal notes" />
+              )}
+              <Button className="w-full" onClick={saveOrderDetails} disabled={isUpdatingOrder}>
+                {isUpdatingOrder ? <Spinner className="h-4 w-4 mr-1.5" /> : <Save className="h-4 w-4 mr-1.5" />}
                 Save Details
               </Button>
             </CardContent>
@@ -2246,9 +2349,9 @@ export default function FlashingOrderDetail() {
                       type="button"
                       variant="outline"
                       onClick={() => subjectPhotoInputRef.current?.click()}
-                      disabled={uploadSubjectPhoto.isPending}
+                      disabled={isUploadingSubjectPhoto}
                     >
-                      {uploadSubjectPhoto.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <Upload className="mr-1.5 h-4 w-4" />}
+                      {isUploadingSubjectPhoto ? <Spinner className="mr-1.5 h-4 w-4" /> : <Upload className="mr-1.5 h-4 w-4" />}
                       Replace
                     </Button>
                     <Button
@@ -2262,10 +2365,13 @@ export default function FlashingOrderDetail() {
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => removeSubjectPhoto.mutate({ id: order.id })}
-                      disabled={removeSubjectPhoto.isPending}
+                      onClick={() => {
+                        if (portalMode) portalRemoveSubjectPhoto.mutate({ id: order.id });
+                        else adminRemoveSubjectPhoto.mutate({ id: order.id });
+                      }}
+                      disabled={isRemovingSubjectPhoto}
                     >
-                      {removeSubjectPhoto.isPending ? <Spinner className="mr-1.5 h-4 w-4" /> : <X className="mr-1.5 h-4 w-4" />}
+                      {isRemovingSubjectPhoto ? <Spinner className="mr-1.5 h-4 w-4" /> : <X className="mr-1.5 h-4 w-4" />}
                       Remove
                     </Button>
                   </div>
@@ -2274,11 +2380,11 @@ export default function FlashingOrderDetail() {
                 <button
                   type="button"
                   onClick={() => subjectPhotoInputRef.current?.click()}
-                  disabled={uploadSubjectPhoto.isPending}
+                  disabled={isUploadingSubjectPhoto}
                   className="flex min-h-52 w-full flex-col items-center justify-center gap-3 rounded-md border border-dashed bg-muted/20 p-5 text-center hover:bg-muted/35 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   <span className="rounded-full bg-background p-3 shadow-sm">
-                    {uploadSubjectPhoto.isPending ? <Spinner className="h-6 w-6" /> : <Camera className="h-6 w-6 text-muted-foreground" />}
+                    {isUploadingSubjectPhoto ? <Spinner className="h-6 w-6" /> : <Camera className="h-6 w-6 text-muted-foreground" />}
                   </span>
                   <span>
                     <span className="block text-sm font-medium">Upload subject area photo</span>

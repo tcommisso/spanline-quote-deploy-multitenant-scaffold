@@ -245,6 +245,8 @@ const TradePortalWhs = lazy(() => import("./pages/trade-portal/TradePortalWhs"))
 const TradePortalJobs = lazy(() => import("./pages/trade-portal/TradePortalJobs"));
 const TradePortalInductions = lazy(() => import("./pages/trade-portal/TradePortalInductions"));
 const TradePortalChat = lazy(() => import("./pages/trade-portal/TradePortalChat"));
+const TradePortalFlashingOrders = lazy(() => import("./pages/trade-portal/TradePortalFlashingOrders"));
+const TradePortalFlashingOrderDetail = lazy(() => import("./pages/trade-portal/TradePortalFlashingOrderDetail"));
 
 // DA Tracker
 const DaTrackerMap = lazy(() => import("./pages/DaTrackerMap"));
@@ -352,6 +354,8 @@ function TradePortalRouter() {
           <Route path="/trade-portal/invoices" component={TradePortalInvoices} />
           <Route path="/trade-portal/contracts" component={TradePortalContracts} />
           <Route path="/trade-portal/inductions" component={TradePortalInductions} />
+          <Route path="/trade-portal/flashing-orders/:id" component={TradePortalFlashingOrderDetail} />
+          <Route path="/trade-portal/flashing-orders" component={TradePortalFlashingOrders} />
           <Route path="/trade-portal/jobs/:jobId" component={TradePortalJobs} />
           <Route path="/trade-portal/jobs" component={TradePortalJobs} />
           <Route path="/trade-portal/whs" component={TradePortalWhs} />

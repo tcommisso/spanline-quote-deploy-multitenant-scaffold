@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import {
   LayoutDashboard, CalendarDays, CalendarCheck, User, Receipt,
-  FileUp, Newspaper, Camera, MessageSquare, MessagesSquare, LogOut, Menu, X, ChevronRight, FileSignature,
+  FileUp, Newspaper, Camera, MessageSquare, MessagesSquare, LogOut, Menu, X, ChevronRight, FileSignature, FileText,
   ClipboardCheck, ShieldCheck, Briefcase,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -28,6 +28,8 @@ const baseNavItems = [
   { href: "/trade-portal/messages", label: "Messages", icon: MessageSquare },
   { href: "/trade-portal/chat", label: "Team Chat", icon: MessagesSquare },
 ];
+
+const flashingOrdersNavItem = { href: "/trade-portal/flashing-orders", label: "Flashing Orders", icon: FileText };
 
 // Bottom nav shows the 5 most important items on mobile
 const bottomNavItems = [
@@ -52,14 +54,32 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
   const chatUnreadCount = chatUnreadQuery.data?.total || 0;
   const { data: whsDocs } = trpc.whs.tradePortalDocs.useQuery();
   const { data: branding } = trpc.tradePortal.getBranding.useQuery();
+  const flashingAccessQuery = trpc.tradePortal.getFlashingOrderAccess.useQuery(undefined, {
+    enabled: !!sessionToken,
+    retry: false,
+  });
+
+  const navItems = useMemo(() => {
+    const items = [...baseNavItems];
+    if (flashingAccessQuery.data?.enabled) {
+      const insertAfterJobs = items.findIndex(i => i.href === "/trade-portal/jobs");
+      items.splice(insertAfterJobs >= 0 ? insertAfterJobs + 1 : items.length, 0, flashingOrdersNavItem);
+    }
+    if (whsDocs && whsDocs.length > 0) {
+      // Insert WH&S before Messages
+      const msgIdx = items.findIndex(i => i.href === "/trade-portal/messages");
+      items.splice(msgIdx >= 0 ? msgIdx : items.length, 0, { href: "/trade-portal/whs", label: "WH&S", icon: ShieldCheck });
+    }
+    return items;
+  }, [flashingAccessQuery.data?.enabled, whsDocs]);
 
   // Set dynamic page title
   useEffect(() => {
-    const currentNav = [...baseNavItems].find(i => i.href === location);
+    const currentNav = navItems.find(i => i.href === location);
     const pageName = currentNav?.label || "Trade Portal";
     const company = branding?.companyName || "Trade Portal";
     document.title = `${company} | ${pageName}`;
-  }, [location, branding?.companyName]);
+  }, [location, branding?.companyName, navItems]);
 
   // Set favicon from company app icon
   useEffect(() => {
@@ -88,16 +108,6 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
       markNewsViewed.mutate();
     }
   }, [location]);
-
-  const navItems = useMemo(() => {
-    const items = [...baseNavItems];
-    if (whsDocs && whsDocs.length > 0) {
-      // Insert WH&S before Messages
-      const msgIdx = items.findIndex(i => i.href === "/trade-portal/messages");
-      items.splice(msgIdx >= 0 ? msgIdx : items.length, 0, { href: "/trade-portal/whs", label: "WH&S", icon: ShieldCheck });
-    }
-    return items;
-  }, [whsDocs]);
 
   const unreadCount = unreadQuery.data?.count || 0;
   const unreadNewsCount = unreadQuery.data?.news || 0;

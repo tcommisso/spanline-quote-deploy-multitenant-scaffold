@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { Plus, Search, Building2, Phone, Mail, MapPin, Pencil, Trash2, Package, RefreshCw, Loader2, Tag, X, UserPlus, Star } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
 
@@ -49,7 +50,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
 
   // Form state
   const [form, setForm] = useState({
-    name: "", abn: "", contactName: "", phone: "", email: "", address: "", category: "", paymentTerms: "", defaultGlCode: "", notes: "",
+    name: "", abn: "", contactName: "", phone: "", email: "", address: "", category: "", paymentTerms: "", defaultGlCode: "", notes: "", tradePortalFlashingOrdersEnabled: false,
   });
 
   const suppliersQuery = trpc.suppliers.list.useQuery({
@@ -165,7 +166,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
   }, [suppliers, filterCategoryId, categoryAssignments]);
 
   function resetForm() {
-    setForm({ name: "", abn: "", contactName: "", phone: "", email: "", address: "", category: "", paymentTerms: "", defaultGlCode: "", notes: "" });
+    setForm({ name: "", abn: "", contactName: "", phone: "", email: "", address: "", category: "", paymentTerms: "", defaultGlCode: "", notes: "", tradePortalFlashingOrdersEnabled: false });
     setSelectedCategoryIds([]);
   }
 
@@ -181,6 +182,7 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
       paymentTerms: (s as any).paymentTerms || "",
       defaultGlCode: (s as any).defaultGlCode || "",
       notes: s.notes || "",
+      tradePortalFlashingOrdersEnabled: Boolean((s as any).tradePortalFlashingOrdersEnabled),
     });
     // Load existing category assignments
     const existing = categoryAssignments[s.id] || [];
@@ -391,6 +393,21 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                 <label className="text-sm font-medium">Address</label>
                 <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="123 Industrial Ave, Melbourne VIC" />
               </div>
+              <div className="rounded-md border bg-muted/20 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <label className="text-sm font-medium">Trade Portal Flashing Orders</label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Allow this supplier's trade portal login to open and submit only their flashing orders for construction review.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.tradePortalFlashingOrdersEnabled}
+                    onCheckedChange={(checked) => setForm({ ...form, tradePortalFlashingOrdersEnabled: checked })}
+                    aria-label="Enable flashing orders in trade portal"
+                  />
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-sm font-medium">Payment Terms</label>
@@ -584,6 +601,11 @@ export default function SupplierDirectory({ supplierScope = "construction" }: Su
                     <p className="text-xs text-muted-foreground">GL: {(s as any).defaultGlCode}</p>
                   )}
                   {s.notes && <p className="text-xs text-muted-foreground mt-2 italic">{s.notes}</p>}
+                  {(s as any).tradePortalFlashingOrdersEnabled && (
+                    <Badge variant="outline" className="text-xs border-blue-300 bg-blue-50 text-blue-700">
+                      Trade Portal Flashing Orders
+                    </Badge>
+                  )}
                   {!s.isActive && <Badge variant="outline" className="text-xs text-red-500 border-red-300">Inactive</Badge>}
                 </CardContent>
               </Card>

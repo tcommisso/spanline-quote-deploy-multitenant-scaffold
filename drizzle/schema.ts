@@ -3455,6 +3455,7 @@ export const suppliers = mysqlTable("suppliers", {
   xeroConnectionId: int("xeroConnectionId").references(() => xeroConnections.id, { onDelete: "set null" }),
   xeroTenantId: varchar("xeroTenantId", { length: 128 }),
   lastXeroSyncAt: timestamp("lastXeroSyncAt"),
+  tradePortalFlashingOrdersEnabled: boolean("tradePortalFlashingOrdersEnabled").default(false).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

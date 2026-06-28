@@ -47,7 +47,12 @@ function formatCurrency(value: unknown) {
   return new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(Number(value || 0));
 }
 
-export default function FlashingOrderList() {
+type FlashingOrderListProps = {
+  portalMode?: boolean;
+};
+
+export default function FlashingOrderList(props: FlashingOrderListProps | any = {}) {
+  const portalMode = Boolean(props?.portalMode);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const [search, setSearch] = useState("");
@@ -59,13 +64,16 @@ export default function FlashingOrderList() {
   const [manualAddress, setManualAddress] = useState("");
   const [siteNotes, setSiteNotes] = useState("");
 
-  const ordersQuery = trpc.flashing.listOrders.useQuery({
+  const orderListInput = {
     search,
     status: status as any || undefined,
     limit: PAGE_SIZE,
     offset,
-  });
-  const jobsQuery = trpc.flashing.jobsForSelect.useQuery({ search: "" });
+  };
+  const adminOrdersQuery = trpc.flashing.listOrders.useQuery(orderListInput, { enabled: !portalMode });
+  const portalOrdersQuery = trpc.tradePortal.listFlashingOrders.useQuery(orderListInput, { enabled: portalMode });
+  const ordersQuery = portalMode ? portalOrdersQuery : adminOrdersQuery;
+  const jobsQuery = trpc.flashing.jobsForSelect.useQuery({ search: "" }, { enabled: !portalMode });
 
   const createMutation = trpc.flashing.createOrder.useMutation({
     onSuccess: (result) => {
@@ -96,7 +104,7 @@ export default function FlashingOrderList() {
   };
 
   const openOrder = (id: number) => {
-    navigate(`/construction/flashing-orders/${id}`);
+    navigate(`${portalMode ? "/trade-portal" : "/construction"}/flashing-orders/${id}`);
   };
 
   return (
@@ -108,16 +116,20 @@ export default function FlashingOrderList() {
             Flashing Orders
           </h1>
           <p className="text-sm text-muted-foreground">
-            Design, specify, and manage custom flashing profiles for manufacturing or supplier orders.
+            {portalMode
+              ? "Review, design, photograph, and submit the flashing orders assigned to your supplier account."
+              : "Design, specify, and manage custom flashing profiles for manufacturing or supplier orders."}
           </p>
         </div>
-        <Button onClick={() => setShowNew((value) => !value)} className="w-full sm:w-auto">
-          <Plus className="h-4 w-4 mr-1.5" />
-          New Flashing Order
-        </Button>
+        {!portalMode && (
+          <Button onClick={() => setShowNew((value) => !value)} className="w-full sm:w-auto">
+            <Plus className="h-4 w-4 mr-1.5" />
+            New Flashing Order
+          </Button>
+        )}
       </div>
 
-      {showNew && (
+      {!portalMode && showNew && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Create Flashing Order</CardTitle>
@@ -210,7 +222,11 @@ export default function FlashingOrderList() {
             <div className="rounded-md border border-dashed p-10 text-center">
               <FileText className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
               <p className="font-medium">No flashing orders yet</p>
-              <p className="text-sm text-muted-foreground">Create the first order to start designing flashing profiles.</p>
+              <p className="text-sm text-muted-foreground">
+                {portalMode
+                  ? "There are no flashing orders assigned to your supplier account yet."
+                  : "Create the first order to start designing flashing profiles."}
+              </p>
             </div>
           ) : (
             <>

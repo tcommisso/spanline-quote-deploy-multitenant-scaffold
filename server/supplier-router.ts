@@ -118,6 +118,7 @@ export const supplierRouter = router({
       supplierScope: supplierScopeSchema.optional(),
       paymentTerms: z.string().optional(),
       defaultGlCode: z.string().optional(),
+      tradePortalFlashingOrdersEnabled: z.boolean().optional(),
       notes: z.string().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -144,6 +145,7 @@ export const supplierRouter = router({
       supplierScope: supplierScopeSchema.optional(),
       paymentTerms: z.string().nullable().optional(),
       defaultGlCode: z.string().nullable().optional(),
+      tradePortalFlashingOrdersEnabled: z.boolean().optional(),
       notes: z.string().nullable().optional(),
       isActive: z.boolean().optional(),
     }))
