@@ -624,17 +624,18 @@ export default function ProductTable() {
                 )}
 
                  {paginated.map((product: NonNullable<typeof allProducts>[number]) => {
-                  const isEditing = editing?.id === product.id;
+                  const editingRow = editing?.id === product.id ? editing : null;
+                  const isEditing = Boolean(editingRow);
                   const mat = product.materials || "0";
                   const lab = product.installLabour || "0";
                   const con = product.consumables || "0";
                   // Cost Amount is always computed as sum of breakdown fields
-                  const computedCostAmt = isEditing ? editing.baseCost : sumCostBreakdown(mat, lab, con);
+                  const computedCostAmt = isEditing ? editingRow!.baseCost : sumCostBreakdown(mat, lab, con);
                   const sellRate = calcSellRate(
                     computedCostAmt,
-                    isEditing ? editing.markupCategory : product.markupCategory,
-                    isEditing ? editing.fixedSell : product.fixedSell,
-                    isEditing ? editing.powderCoatSurcharge : (product.powderCoatSurcharge || "0")
+                    isEditing ? editingRow!.markupCategory : product.markupCategory,
+                    isEditing ? editingRow!.fixedSell : product.fixedSell,
+                    isEditing ? editingRow!.powderCoatSurcharge : (product.powderCoatSurcharge || "0")
                   );
 
                   return (
@@ -645,7 +646,7 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
-                          <Input value={editing.productCode || ""} onChange={(e) => setEditing(prev => prev ? { ...prev, productCode: e.target.value || null } : prev)} placeholder="Code" className="h-7 text-xs w-16" />
+                          <Input value={editingRow!.productCode || ""} onChange={(e) => setEditing(prev => prev ? { ...prev, productCode: e.target.value || null } : prev)} placeholder="Code" className="h-7 text-xs w-16" />
                         ) : (
                           <span className="font-mono text-[10px] text-muted-foreground">{product.productCode || "—"}</span>
                         )}
@@ -653,7 +654,7 @@ export default function ProductTable() {
                       <td className="py-1.5 px-3">
                         {isEditing ? (
                           <Select
-                            value={editing.tabName}
+                            value={editingRow!.tabName}
                             onValueChange={(v) => setEditing(prev => prev ? { ...prev, tabName: v, subTab: null } : prev)}
                           >
                             <SelectTrigger className="h-7 text-xs w-full">
@@ -673,13 +674,13 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
-                          <Select value={editing.subTab || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, subTab: v === "_none" ? null : v } : prev)}>
+                          <Select value={editingRow!.subTab || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, subTab: v === "_none" ? null : v } : prev)}>
                             <SelectTrigger className="h-7 text-xs w-full">
                               <SelectValue placeholder="—" />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="_none">—</SelectItem>
-                              {subTabRows.filter(st => st.description === editing.tabName).map(st => {
+                              {subTabRows.filter(st => st.description === editingRow!.tabName).map(st => {
                                 const name = st.key.includes("::") ? st.key.split("::")[1] : st.key;
                                 return <SelectItem key={st.key} value={name}>{name}</SelectItem>;
                               })}
@@ -693,7 +694,7 @@ export default function ProductTable() {
                         {isEditing ? (
                           <div className="flex items-center gap-1.5">
                             <Input
-                              value={editing.name}
+                              value={editingRow!.name}
                               onChange={(e) => setEditing(prev => prev ? { ...prev, name: e.target.value } : prev)}
                               disabled={!isSuperAdmin}
                               title={!isSuperAdmin ? "Product names are locked because spec mapping uses them for matching. Super admins can edit this field." : undefined}
@@ -718,7 +719,7 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2 text-center">
                         {isEditing ? (
-                          <Select value={editing.uom} onValueChange={(v) => setEditing(prev => prev ? { ...prev, uom: v } : prev)}>
+                          <Select value={editingRow!.uom} onValueChange={(v) => setEditing(prev => prev ? { ...prev, uom: v } : prev)}>
                             <SelectTrigger className="h-7 text-xs w-16">
                               <SelectValue />
                             </SelectTrigger>
@@ -734,7 +735,7 @@ export default function ProductTable() {
                       {/* Materials */}
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" step="0.01" value={editing.materials} onChange={(e) => updateEditBreakdown("materials", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
+                          <Input type="number" step="0.01" value={editingRow!.materials} onChange={(e) => updateEditBreakdown("materials", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
                         ) : (
                           <span className="font-mono text-muted-foreground">{parseFloat(mat) > 0 ? `$${parseFloat(mat).toFixed(2)}` : "—"}</span>
                         )}
@@ -743,7 +744,7 @@ export default function ProductTable() {
                       {/* Install Labour */}
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" step="0.01" value={editing.installLabour} onChange={(e) => updateEditBreakdown("installLabour", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
+                          <Input type="number" step="0.01" value={editingRow!.installLabour} onChange={(e) => updateEditBreakdown("installLabour", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
                         ) : (
                           <span className="font-mono text-muted-foreground">{parseFloat(lab) > 0 ? `$${parseFloat(lab).toFixed(2)}` : "—"}</span>
                         )}
@@ -752,7 +753,7 @@ export default function ProductTable() {
                       {/* Consumables */}
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" step="0.01" value={editing.consumables} onChange={(e) => updateEditBreakdown("consumables", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
+                          <Input type="number" step="0.01" value={editingRow!.consumables} onChange={(e) => updateEditBreakdown("consumables", e.target.value)} className="h-7 text-xs text-right w-16 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" />
                         ) : (
                           <span className="font-mono text-muted-foreground">{parseFloat(con) > 0 ? `$${parseFloat(con).toFixed(2)}` : "—"}</span>
                         )}
@@ -767,7 +768,7 @@ export default function ProductTable() {
 
                       <td className="py-1.5 px-2">
                         {isEditing ? (
-                          <Select value={editing.markupCategory || "product_standard"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, markupCategory: v } : prev)}>
+                          <Select value={editingRow!.markupCategory || "product_standard"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, markupCategory: v } : prev)}>
                             <SelectTrigger className="h-7 text-xs w-full">
                               <SelectValue />
                             </SelectTrigger>
@@ -783,14 +784,14 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" step="0.01" value={editing.powderCoatSurcharge} onChange={(e) => setEditing(prev => prev ? { ...prev, powderCoatSurcharge: e.target.value } : prev)} className="h-7 text-xs text-right w-14" />
+                          <Input type="number" step="0.01" value={editingRow!.powderCoatSurcharge} onChange={(e) => setEditing(prev => prev ? { ...prev, powderCoatSurcharge: e.target.value } : prev)} className="h-7 text-xs text-right w-14" />
                         ) : (
                           <span className="font-mono text-muted-foreground">{parseFloat(product.powderCoatSurcharge || "0") > 0 ? `$${parseFloat(product.powderCoatSurcharge || "0").toFixed(2)}` : "—"}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" step="0.01" value={editing.fixedSell || ""} onChange={(e) => setEditing(prev => prev ? { ...prev, fixedSell: e.target.value || null } : prev)} placeholder="—" className="h-7 text-xs text-right w-14" />
+                          <Input type="number" step="0.01" value={editingRow!.fixedSell || ""} onChange={(e) => setEditing(prev => prev ? { ...prev, fixedSell: e.target.value || null } : prev)} placeholder="—" className="h-7 text-xs text-right w-14" />
                         ) : (
                           <span className="font-mono text-muted-foreground">{product.fixedSell && parseFloat(product.fixedSell) > 0 ? `$${parseFloat(product.fixedSell).toFixed(2)}` : "—"}</span>
                         )}
@@ -800,7 +801,7 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
-                          <Select value={editing.colourGroup || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, colourGroup: v === "_none" ? null : v } : prev)}>
+                          <Select value={editingRow!.colourGroup || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, colourGroup: v === "_none" ? null : v } : prev)}>
                             <SelectTrigger className="h-7 text-xs w-full">
                               <SelectValue placeholder="—" />
                             </SelectTrigger>
@@ -817,7 +818,7 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2">
                         {isEditing ? (
-                          <Select value={editing.colourGroupBottom || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, colourGroupBottom: v === "_none" ? null : v } : prev)}>
+                          <Select value={editingRow!.colourGroupBottom || "_none"} onValueChange={(v) => setEditing(prev => prev ? { ...prev, colourGroupBottom: v === "_none" ? null : v } : prev)}>
                             <SelectTrigger className="h-7 text-xs w-full">
                               <SelectValue placeholder="—" />
                             </SelectTrigger>
@@ -834,21 +835,21 @@ export default function ProductTable() {
                       </td>
                       <td className="py-1.5 px-2 text-right">
                         {isEditing ? (
-                          <Input type="number" value={editing.coverageWidth ?? ""} onChange={(e) => setEditing(prev => prev ? { ...prev, coverageWidth: e.target.value ? parseInt(e.target.value) : null } : prev)} placeholder="mm" className="h-7 text-xs text-right w-14" />
+                          <Input type="number" value={editingRow!.coverageWidth ?? ""} onChange={(e) => setEditing(prev => prev ? { ...prev, coverageWidth: e.target.value ? parseInt(e.target.value) : null } : prev)} placeholder="mm" className="h-7 text-xs text-right w-14" />
                         ) : (
                           <span className="text-muted-foreground text-[10px]">{(product as any).coverageWidth || "—"}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-1 text-center">
                         {isEditing ? (
-                          <Input type="number" value={editing.sortOrder} onChange={(e) => setEditing(prev => prev ? { ...prev, sortOrder: parseInt(e.target.value) || 0 } : prev)} className="h-7 text-xs text-center w-10" />
+                          <Input type="number" value={editingRow!.sortOrder} onChange={(e) => setEditing(prev => prev ? { ...prev, sortOrder: parseInt(e.target.value) || 0 } : prev)} className="h-7 text-xs text-center w-10" />
                         ) : (
                           <span className="text-muted-foreground">{product.sortOrder}</span>
                         )}
                       </td>
                       <td className="py-1.5 px-1 text-center">
                         {isEditing ? (
-                          <input type="checkbox" checked={editing.active} onChange={(e) => setEditing(prev => prev ? { ...prev, active: e.target.checked } : prev)} className="h-3.5 w-3.5 rounded border-gray-300" />
+                          <input type="checkbox" checked={editingRow!.active} onChange={(e) => setEditing(prev => prev ? { ...prev, active: e.target.checked } : prev)} className="h-3.5 w-3.5 rounded border-gray-300" />
                         ) : (
                           product.active !== false ? (
                             <Badge variant="secondary" className="text-[9px] bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">Active</Badge>

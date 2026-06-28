@@ -171,6 +171,7 @@ const constructionItems: MenuItem[] = [
 
 
   { icon: Receipt, label: "Purchase Orders", path: "/construction/purchase-orders" },
+  { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
   { icon: History, label: "Weather History", path: "/construction/weather-history" },
   { icon: CloudRain, label: "Rain Days", path: "/construction/rain-days" },
   { icon: FileText, label: "Invoice Review", path: "/admin/invoice-review" },
@@ -244,7 +245,6 @@ const financeItems: MenuItem[] = [
   { icon: CreditCard, label: "Subscriptions", path: "/admin/subscriptions" },
   { icon: CreditCard, label: "SaaS Billing", path: "/admin/saas-billing" },
   { icon: Sparkles, label: "Render Costs", path: "/admin/render-costs" },
-  { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
   { icon: ThumbsUp, label: "Supplier Feedback", path: "/admin/supplier-feedback" },
 ];
 
@@ -279,6 +279,7 @@ const adminGroups: AdminGroup[] = [
     items: [
       { icon: Users, label: "People", path: "/admin/people" },
       { icon: LayoutGrid, label: "Navigation Settings", path: "/admin/navigation-settings" },
+      { icon: Building2, label: "Construction Suppliers", path: "/admin/suppliers" },
       { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
       { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
       { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },

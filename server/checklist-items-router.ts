@@ -2,8 +2,8 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure, tenantAdminProcedure as adminProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { checklistItems } from "../drizzle/schema";
-import { and, eq, asc } from "drizzle-orm";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { and, eq, sql } from "drizzle-orm";
+import { appendTenantScope, isMultiTenancyMode, tenantIdFromContext } from "./_core/tenant-scope";
 
 // ─── DB Helpers ──────────────────────────────────────────────────────────────
 
@@ -13,22 +13,112 @@ function checklistTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
-async function listAllChecklistItems(ctx: any) {
+function rowsFromExecuteResult(result: unknown): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  return Array.isArray(result) ? result : [];
+}
+
+function errorText(error: unknown, seen = new Set<unknown>()): string {
+  if (error == null || seen.has(error)) return "";
+  seen.add(error);
+  if (typeof error === "string") return error;
+  if (typeof error !== "object") return String(error);
+  const err = error as Record<string, unknown>;
+  return [
+    err.message,
+    err.sqlMessage,
+    err.code,
+    err.errno,
+    err.sql,
+    err.cause ? errorText(err.cause, seen) : "",
+  ].filter(Boolean).join(" ");
+}
+
+function isMissingChecklistSchema(error: unknown) {
+  const message = errorText(error);
+  if (!/checklist_items/i.test(message)) return false;
+  return /(unknown column|no such column|doesn't exist|does not exist|er_no_such_table|er_bad_field_error)/i.test(message)
+    || /failed query:\s*select/i.test(message);
+}
+
+function quoteIdent(identifier: string) {
+  if (!/^[A-Za-z0-9_]+$/.test(identifier)) {
+    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  }
+  return `\`${identifier}\``;
+}
+
+async function checklistColumnSet(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
+  const [result] = await db.execute(sql.raw(`SHOW COLUMNS FROM ${quoteIdent("checklist_items")}`));
+  return new Set(rowsFromExecuteResult(result).map((row) => String(row.Field)));
+}
+
+function checklistSelectColumn(columnSet: Set<string>, column: string, alias: string, fallbackSql = "NULL") {
+  if (columnSet.has(column)) return `${quoteIdent(column)} AS ${quoteIdent(alias)}`;
+  return `${fallbackSql} AS ${quoteIdent(alias)}`;
+}
+
+function checklistTenantWhereSql(columnSet: Set<string>, ctx: any) {
+  const tenantId = tenantIdFromContext(ctx);
+  if (!columnSet.has("tenantId")) {
+    return isMultiTenancyMode() ? "1 = 0" : "1 = 1";
+  }
+  if (!tenantId) return isMultiTenancyMode() ? "1 = 0" : "1 = 1";
+  if (isMultiTenancyMode()) return `${quoteIdent("tenantId")} = ${Number(tenantId)}`;
+  return `(${quoteIdent("tenantId")} = ${Number(tenantId)} OR ${quoteIdent("tenantId")} IS NULL)`;
+}
+
+async function listChecklistItemsColumnAware(ctx: any, activeOnly: boolean) {
   const db = (await getDb())!;
-  return db
-    .select()
-    .from(checklistItems)
-    .where(and(...checklistTenantConditions(ctx)))
-    .orderBy(asc(checklistItems.section), asc(checklistItems.sortOrder));
+  try {
+    const columnSet = await checklistColumnSet(db);
+    const fields = [
+      checklistSelectColumn(columnSet, "id", "id", "0"),
+      checklistSelectColumn(columnSet, "tenantId", "tenantId"),
+      checklistSelectColumn(columnSet, "section", "section", "'general'"),
+      checklistSelectColumn(columnSet, "label", "label", "''"),
+      checklistSelectColumn(columnSet, "unitPrice", "unitPrice", "'0.00'"),
+      checklistSelectColumn(columnSet, "unit", "unit", "'each'"),
+      checklistSelectColumn(columnSet, "sortOrder", "sortOrder", "0"),
+      checklistSelectColumn(columnSet, "isActive", "isActive", "TRUE"),
+      checklistSelectColumn(columnSet, "createdAt", "createdAt"),
+      checklistSelectColumn(columnSet, "updatedAt", "updatedAt"),
+    ];
+    const conditions = [checklistTenantWhereSql(columnSet, ctx)];
+    if (activeOnly && columnSet.has("isActive")) conditions.push(`${quoteIdent("isActive")} = TRUE`);
+    const orderBy = [
+      columnSet.has("section") ? quoteIdent("section") : null,
+      columnSet.has("sortOrder") ? quoteIdent("sortOrder") : null,
+      columnSet.has("id") ? quoteIdent("id") : null,
+    ].filter(Boolean).join(", ");
+    const [result] = await db.execute(sql.raw(`
+      SELECT ${fields.join(", ")}
+      FROM ${quoteIdent("checklist_items")}
+      WHERE ${conditions.join(" AND ")}
+      ${orderBy ? `ORDER BY ${orderBy}` : ""}
+    `));
+    return rowsFromExecuteResult(result).map((row) => ({
+      ...row,
+      id: Number(row.id),
+      tenantId: row.tenantId == null ? null : Number(row.tenantId),
+      sortOrder: Number(row.sortOrder ?? 0),
+      isActive: row.isActive === true || row.isActive === 1 || row.isActive === "1",
+    }));
+  } catch (error) {
+    if (isMissingChecklistSchema(error)) {
+      console.warn("[checklist-items] checklist_items schema is not available; returning an empty checklist list.", error);
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function listAllChecklistItems(ctx: any) {
+  return listChecklistItemsColumnAware(ctx, false);
 }
 
 async function listActiveChecklistItems(ctx: any) {
-  const db = (await getDb())!;
-  return db
-    .select()
-    .from(checklistItems)
-    .where(and(...checklistTenantConditions(ctx, eq(checklistItems.isActive, true))))
-    .orderBy(asc(checklistItems.section), asc(checklistItems.sortOrder));
+  return listChecklistItemsColumnAware(ctx, true);
 }
 
 async function createChecklistItem(data: {

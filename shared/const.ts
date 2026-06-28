@@ -22,6 +22,7 @@ export type PermissionKey =
   | 'construction_calendar_availability'
   | 'construction_project_plan'
   | 'construction_purchase_orders'
+  | 'construction_suppliers'
   | 'construction_weather_history'
   | 'construction_rain_days'
   | 'construction_invoice_review'
@@ -108,6 +109,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   construction_calendar_availability: 'Calendar Availability',
   construction_project_plan: 'Project Plan',
   construction_purchase_orders: 'Purchase Orders',
+  construction_suppliers: 'Construction Suppliers',
   construction_weather_history: 'Weather History',
   construction_rain_days: 'Rain Days',
   construction_invoice_review: 'Invoice Review',
@@ -167,6 +169,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: true,
     construction_project_plan: true,
     construction_purchase_orders: true,
+    construction_suppliers: true,
     construction_weather_history: true,
     construction_rain_days: true,
     construction_invoice_review: true,
@@ -221,6 +224,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: false,
     construction_project_plan: false,
     construction_purchase_orders: false,
+    construction_suppliers: false,
     construction_weather_history: false,
     construction_rain_days: false,
     construction_invoice_review: false,
@@ -275,6 +279,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: true,
     construction_project_plan: true,
     construction_purchase_orders: true,
+    construction_suppliers: true,
     construction_weather_history: true,
     construction_rain_days: true,
     construction_invoice_review: true,
@@ -329,6 +334,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: true,
     construction_project_plan: true,
     construction_purchase_orders: true,
+    construction_suppliers: true,
     construction_weather_history: true,
     construction_rain_days: true,
     construction_invoice_review: false,
@@ -383,6 +389,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: false,
     construction_project_plan: false,
     construction_purchase_orders: false,
+    construction_suppliers: false,
     construction_weather_history: false,
     construction_rain_days: false,
     construction_invoice_review: false,
@@ -437,6 +444,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<UserRole, Record<PermissionKey, b
     construction_calendar_availability: false,
     construction_project_plan: false,
     construction_purchase_orders: false,
+    construction_suppliers: false,
     construction_weather_history: false,
     construction_rain_days: false,
     construction_invoice_review: false,
@@ -507,7 +515,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/admin/saas-billing', permission: 'finance' },
   { prefix: '/admin/render-costs', permission: 'finance' },
   { prefix: '/admin/support-submissions', permission: 'support_submissions' },
-  { prefix: '/admin/suppliers', permission: 'finance' },
+  { prefix: '/admin/suppliers', permission: 'construction_suppliers' },
   { prefix: '/admin/supplier-feedback', permission: 'finance' },
   { prefix: '/construction/ba-calendar', permission: 'approvals' },
   { prefix: '/construction/jobs', permission: 'construction_clients' },

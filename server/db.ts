@@ -69,6 +69,23 @@ export async function getDefaultTenantId(): Promise<number | null> {
 /** Alias for getDb - used by procedures needing direct Drizzle access */
 export const getRawDb = getDb;
 
+function rowsFromExecuteResult(result: unknown): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  return Array.isArray(result) ? result : [];
+}
+
+function quoteIdent(identifier: string) {
+  if (!/^[A-Za-z0-9_]+$/.test(identifier)) {
+    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  }
+  return `\`${identifier}\``;
+}
+
+async function tableColumnSet(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, tableName: string) {
+  const [result] = await db.execute(sql.raw(`SHOW COLUMNS FROM ${quoteIdent(tableName)}`));
+  return new Set(rowsFromExecuteResult(result).map((row) => String(row.Field)));
+}
+
 // ─── Users ───────────────────────────────────────────────────────────────────
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
@@ -668,24 +685,114 @@ export async function upsertSkyluxMatrix(data: InsertSkyluxMatrix, tenantId?: Te
 }
 
 // ─── Products ────────────────────────────────────────────────────────────────
+function productSelectColumn(columnSet: Set<string>, column: string, alias: string, fallbackSql = "NULL") {
+  if (columnSet.has(column)) return `${quoteIdent(column)} AS ${quoteIdent(alias)}`;
+  return `${fallbackSql} AS ${quoteIdent(alias)}`;
+}
+
+async function productTenantWhereSql(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  columnSet: Set<string>,
+  tenantId: TenantScope,
+) {
+  if (!columnSet.has("tenantId")) {
+    return isMultiTenancyMode() ? "1 = 0" : "1 = 1";
+  }
+
+  if (!tenantId) {
+    if (isMultiTenancyMode()) return "1 = 0";
+    const defaultTenantId = await getDefaultTenantId();
+    return defaultTenantId
+      ? `(${quoteIdent("tenantId")} = ${Number(defaultTenantId)} OR ${quoteIdent("tenantId")} IS NULL)`
+      : "1 = 0";
+  }
+
+  if (isMultiTenancyMode()) return `${quoteIdent("tenantId")} = ${Number(tenantId)}`;
+  return await canReadLegacyTenantRows(db, tenantId)
+    ? `(${quoteIdent("tenantId")} = ${Number(tenantId)} OR ${quoteIdent("tenantId")} IS NULL)`
+    : `${quoteIdent("tenantId")} = ${Number(tenantId)}`;
+}
+
+function normaliseProductRows(rows: any[]) {
+  return rows.map((row) => ({
+    ...row,
+    id: Number(row.id),
+    tenantId: row.tenantId == null ? null : Number(row.tenantId),
+    sortOrder: Number(row.sortOrder ?? 0),
+    coverageWidth: row.coverageWidth == null ? null : Number(row.coverageWidth),
+    active: row.active === true || row.active === 1 || row.active === "1",
+  }));
+}
+
+async function selectProductsColumnAware(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  tenantId: TenantScope,
+  options: { activeOnly?: boolean; id?: number; includeInactive?: boolean } = {},
+) {
+  const columnSet = await tableColumnSet(db, "products");
+  const baseCostFallback = columnSet.has("baseCost") ? quoteIdent("baseCost") : "'0.00'";
+  const fields = [
+    productSelectColumn(columnSet, "id", "id", "0"),
+    productSelectColumn(columnSet, "tenantId", "tenantId"),
+    productSelectColumn(columnSet, "productCode", "productCode"),
+    productSelectColumn(columnSet, "tabName", "tabName", "''"),
+    productSelectColumn(columnSet, "subTab", "subTab"),
+    productSelectColumn(columnSet, "name", "name", "''"),
+    productSelectColumn(columnSet, "uom", "uom", "'m'"),
+    productSelectColumn(columnSet, "baseCost", "baseCost", "'0.00'"),
+    productSelectColumn(columnSet, "materials", "materials", baseCostFallback),
+    productSelectColumn(columnSet, "installLabour", "installLabour", "'0.00'"),
+    productSelectColumn(columnSet, "consumables", "consumables", "'0.00'"),
+    productSelectColumn(columnSet, "markupCategory", "markupCategory"),
+    productSelectColumn(columnSet, "fixedSell", "fixedSell"),
+    productSelectColumn(columnSet, "powderCoatSurcharge", "powderCoatSurcharge", "'0.00'"),
+    productSelectColumn(columnSet, "colourGroup", "colourGroup"),
+    productSelectColumn(columnSet, "colourGroupBottom", "colourGroupBottom"),
+    productSelectColumn(columnSet, "coverageWidth", "coverageWidth"),
+    productSelectColumn(columnSet, "notes", "notes"),
+    productSelectColumn(columnSet, "sortOrder", "sortOrder", "0"),
+    productSelectColumn(columnSet, "active", "active", "TRUE"),
+    productSelectColumn(columnSet, "createdAt", "createdAt"),
+    productSelectColumn(columnSet, "updatedAt", "updatedAt"),
+  ];
+
+  const conditions = [await productTenantWhereSql(db, columnSet, tenantId)];
+  if (options.activeOnly !== false && columnSet.has("active")) {
+    conditions.push(`${quoteIdent("active")} = TRUE`);
+  }
+  if (options.id != null) {
+    conditions.push(columnSet.has("id") ? `${quoteIdent("id")} = ${Number(options.id)}` : "1 = 0");
+  }
+
+  const orderBy = [
+    columnSet.has("tabName") ? quoteIdent("tabName") : null,
+    columnSet.has("sortOrder") ? quoteIdent("sortOrder") : null,
+    columnSet.has("id") ? quoteIdent("id") : null,
+  ].filter(Boolean).join(", ");
+
+  const [result] = await db.execute(sql.raw(`
+    SELECT ${fields.join(", ")}
+    FROM ${quoteIdent("products")}
+    WHERE ${conditions.join(" AND ")}
+    ${orderBy ? `ORDER BY ${orderBy}` : ""}
+  `));
+  return normaliseProductRows(rowsFromExecuteResult(result));
+}
+
 export async function getProductsByTab(tabName: string, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions: any[] = [eq(products.tabName, tabName), eq(products.active, true)];
-  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
-  return db.select().from(products)
-    .where(and(...conditions))
-    .orderBy(products.sortOrder);
+  const rows = await selectProductsColumnAware(db, tenantId, { activeOnly: true });
+  return rows.filter((product) => product.tabName === tabName);
 }
 
 export async function getProductNamesByTabPattern(pattern: string, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions: any[] = [like(products.tabName, `%${pattern}%`), eq(products.active, true)];
-  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
-  const rows = await db.select({ name: products.name, subTab: products.subTab, colourGroup: products.colourGroup, colourGroupBottom: products.colourGroupBottom, coverageWidth: products.coverageWidth }).from(products)
-    .where(and(...conditions))
-    .orderBy(products.sortOrder);
+  const normalisedPattern = pattern.trim().toLowerCase();
+  const rows = (await selectProductsColumnAware(db, tenantId, { activeOnly: true })).filter((product) =>
+    String(product.tabName || "").toLowerCase().includes(normalisedPattern)
+  );
   // Deduplicate by name, keeping the first subTab, colourGroup, colourGroupBottom and coverageWidth found
   const seen = new Map<string, { subTab: string | null; colourGroup: string | null; colourGroupBottom: string | null; coverageWidth: number | null }>();
   for (const r of rows) {
@@ -697,17 +804,13 @@ export async function getProductNamesByTabPattern(pattern: string, tenantId?: Te
 export async function getAllProducts(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions: any[] = [eq(products.active, true)];
-  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
-  return db.select().from(products).where(and(...conditions)).orderBy(products.tabName, products.sortOrder);
+  return selectProductsColumnAware(db, tenantId, { activeOnly: true });
 }
 
 export async function getProductById(id: number, tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return undefined;
-  const conditions: any[] = [eq(products.id, id)];
-  await appendPrivateTenantCondition(db, conditions, products.tenantId, tenantId);
-  const result = await db.select().from(products).where(and(...conditions)).limit(1);
+  const result = await selectProductsColumnAware(db, tenantId, { activeOnly: false, id });
   return result[0];
 }
 
@@ -831,27 +934,7 @@ export async function bulkUpsertProducts(rows: Array<{
 export async function getAllProductsForExport(tenantId?: TenantScope) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = await scopedTenantConditions(db, products.tenantId, tenantId);
-  const query = db.select({
-    productCode: products.productCode,
-    tabName: products.tabName,
-    subTab: products.subTab,
-    name: products.name,
-    uom: products.uom,
-    baseCost: products.baseCost,
-    materials: products.materials,
-    installLabour: products.installLabour,
-    consumables: products.consumables,
-    markupCategory: products.markupCategory,
-    fixedSell: products.fixedSell,
-    powderCoatSurcharge: products.powderCoatSurcharge,
-    colourGroup: products.colourGroup,
-    coverageWidth: products.coverageWidth,
-    sortOrder: products.sortOrder,
-    active: products.active,
-  }).from(products);
-  return (conditions.length ? query.where(and(...conditions)) : query)
-    .orderBy(products.tabName, products.sortOrder);
+  return selectProductsColumnAware(db, tenantId, { activeOnly: false });
 }
 
 /**
@@ -969,14 +1052,13 @@ function calculateStructureQuoteTotalExGst(
   const subtotalSell = componentSell + skyluxSell + eclipseSell;
   const delivery = quote.includeDelivery ? num(quote.deliveryAmount) : 0;
   const travel = quote.includeTravelAllowance ? num(quote.travelAllowance) : 0;
-  const smallJob = quote.includeSmallJobSurcharge ? num(quote.smallJobSurcharge) : 0;
   const constructionMgmt = quote.includeConstructionMgmt ? num(quote.constructionMgmtAmount) : 0;
   const complexity = num(quote.complexityLoading) / 100;
   const discount = num(quote.discountPercent) / 100;
   const council = num(quote.councilFees);
   const warranty = num(quote.homeWarranty);
 
-  const adjustedSell = subtotalSell + delivery + travel + smallJob + constructionMgmt;
+  const adjustedSell = subtotalSell + delivery + travel + constructionMgmt;
   const afterComplexity = adjustedSell * (1 + complexity);
   const afterDiscount = afterComplexity * (1 - discount);
   return afterDiscount + council + warranty;
@@ -1105,7 +1187,6 @@ export async function getAnalytics(userId?: number) {
     }
     value += parseFloat(q.deliveryAmount || "0");
     value += parseFloat(q.travelAllowance || "0");
-    value += parseFloat(q.smallJobSurcharge || "0");
     value += parseFloat(q.constructionMgmtAmount || "0");
     value += parseFloat(q.councilFees || "0");
     value += parseFloat(q.homeWarranty || "0");

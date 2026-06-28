@@ -2,7 +2,7 @@ import { router, tenantAdminProcedure as adminProcedure, tenantProcedure as prot
 import { z } from "zod";
 import { getDb } from "./db";
 import { suppliers, constructionInstallers, tradePortalAccess, manufacturingPurchaseOrders, manufacturingOrders, constructionJobs } from "../drizzle/schema";
-import { eq, like, and, or, desc } from "drizzle-orm";
+import { eq, like, and, or, desc, isNull, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import crypto from "crypto";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -74,7 +74,15 @@ export const supplierRouter = router({
         conditions.push(eq(suppliers.category, input.category));
       }
       if (input?.supplierScope) {
-        conditions.push(eq(suppliers.supplierScope, input.supplierScope));
+        if (input.supplierScope === "construction") {
+          conditions.push(or(
+            isNull(suppliers.supplierScope),
+            eq(suppliers.supplierScope, ""),
+            ne(suppliers.supplierScope, "manufacturing"),
+          )!);
+        } else {
+          conditions.push(eq(suppliers.supplierScope, input.supplierScope));
+        }
       }
       appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
       return db.select().from(suppliers)

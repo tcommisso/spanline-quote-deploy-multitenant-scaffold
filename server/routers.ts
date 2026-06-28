@@ -162,6 +162,98 @@ function canAccessQuoteTenantRecord(
   return canAccessTenantRecord(ctx.tenant ?? null, record);
 }
 
+function money(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normaliseLookup(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function quoteComponentSubtotal(components: any[]) {
+  return (components || []).reduce((sum: number, comp: any) => {
+    if (comp.included === false) return sum;
+    const items = (comp.lineItems as any[]) || [];
+    return sum + items.reduce((itemSum: number, item: any) => itemSum + money(item.qty) * money(item.sellRate), 0);
+  }, 0);
+}
+
+async function getMasterRows(categories: string[], tenantId: number | null | undefined) {
+  const rows = await Promise.all(categories.map((category) => db.getMasterDataByCategory(category, tenantId ?? null)));
+  return rows.flat().sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+}
+
+async function getConstructionMgmtRows(tenantId: number | null | undefined) {
+  return getMasterRows(["construction_mgmt", "construction_mgmt_rates"], tenantId);
+}
+
+function selectConstructionMgmtAmount(quote: any, rows: any[]) {
+  const candidates = [
+    quote?.specRoofShape,
+    quote?.specRoofType,
+    quote?.descriptionOfWork,
+  ].map(normaliseLookup).filter(Boolean);
+  for (const row of rows) {
+    const key = normaliseLookup(row.key);
+    if (!key) continue;
+    if (candidates.some((value) => value.includes(key) || key.includes(value))) return money(row.value);
+  }
+  return 0;
+}
+
+function selectDeliveryAmount(quote: any, rows: any[]) {
+  const sorted = [...rows].sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  if (!sorted.length) return 0;
+  const haystack = normaliseLookup([
+    quote?.region,
+    quote?.suburb,
+    quote?.siteAddress,
+    quote?.localCouncil,
+  ].filter(Boolean).join(" "));
+  if (!haystack) return 0;
+
+  for (const row of sorted) {
+    const key = normaliseLookup(row.key).replace(/\bdelivery\b/g, "").trim();
+    if (!key) continue;
+    if (haystack.includes(key) || key.includes(haystack)) return money(row.value);
+    if (haystack.includes("act") && key.includes("act")) return money(row.value);
+    if (haystack.includes("canberra") && key.includes("canberra")) return money(row.value);
+    if (haystack.includes("yass") && key.includes("yass")) return money(row.value);
+    if (haystack.includes("goulburn") && key.includes("goulburn")) return money(row.value);
+    if ((haystack.includes("batemans") || haystack.includes("bay")) && key.includes("batemans")) return money(row.value);
+    if (haystack.includes("griffith") && key.includes("griffith")) return money(row.value);
+    if (haystack.includes("tumut") && key.includes("tumut")) return money(row.value);
+  }
+
+  const country = sorted.find((row: any) => normaliseLookup(row.key).includes("country"));
+  return country ? money(country.value) : 0;
+}
+
+function parseHomeWarrantyTier(row: any) {
+  const raw = String(row?.key ?? "").trim();
+  const amount = money(row?.value);
+  const range = raw.match(/^(\d+(?:\.\d+)?)\s*<\s*(\d+(?:\.\d+)?)$/);
+  if (range) return { min: Number(range[1]), max: Number(range[2]), amount };
+  const openEnded = raw.match(/^(\d+(?:\.\d+)?)\s*(?:>|and over|\+)?$/i);
+  if (openEnded) return { min: Number(openEnded[1]), max: Infinity, amount };
+  return null;
+}
+
+function calculateHomeWarrantyAmount(totalExGst: number, rows: any[]) {
+  const tiers = rows
+    .map(parseHomeWarrantyTier)
+    .filter((tier): tier is { min: number; max: number; amount: number } => Boolean(tier))
+    .sort((a, b) => a.min - b.min);
+  for (const tier of tiers) {
+    if (totalExGst >= tier.min && totalExGst <= tier.max) return tier.amount;
+  }
+  return 0;
+}
+
 type BrandingAssetKind = "customLogoUrl" | "appIconUrl" | "faviconUrl";
 
 const BRANDING_ASSET_META_KEYS: Record<BrandingAssetKind, string> = {
@@ -293,7 +385,6 @@ export const appRouter = router({
         const adjustments: Array<{ name: string; amount: number }> = [];
         const delivery = quote.includeDelivery ? parseFloat(quote.deliveryAmount || "0") : 0;
         const travel = quote.includeTravelAllowance ? parseFloat(quote.travelAllowance || "0") : 0;
-        const smallJob = quote.includeSmallJobSurcharge ? parseFloat(quote.smallJobSurcharge || "0") : 0;
         const constMgmt = quote.includeConstructionMgmt ? parseFloat(quote.constructionMgmtAmount || "0") : 0;
         const complexity = parseFloat(quote.complexityLoading || "0") / 100;
         const discountPct = parseFloat(quote.discountPercent || "0") / 100;
@@ -301,9 +392,8 @@ export const appRouter = router({
         const warranty = parseFloat(quote.homeWarranty || "0");
         if (delivery > 0) adjustments.push({ name: "Delivery", amount: delivery });
         if (travel > 0) adjustments.push({ name: "Travel Allowance", amount: travel });
-        if (smallJob > 0) adjustments.push({ name: "Small Job Surcharge", amount: smallJob });
         if (constMgmt > 0) adjustments.push({ name: "Construction Management", amount: constMgmt });
-        const adjustedSell = componentSubtotal + delivery + travel + smallJob + constMgmt;
+        const adjustedSell = componentSubtotal + delivery + travel + constMgmt;
         if (complexity > 0) adjustments.push({ name: `Complexity Loading (${(complexity * 100).toFixed(0)}%)`, amount: adjustedSell * complexity });
         const afterComplexity = adjustedSell * (1 + complexity);
         if (discountPct > 0) adjustments.push({ name: `Discount (${(discountPct * 100).toFixed(0)}%)`, amount: -afterComplexity * discountPct });
@@ -463,7 +553,6 @@ export const appRouter = router({
           if (updatedQuote) {
             totalSell += parseFloat(updatedQuote.deliveryAmount || "0");
             totalSell += parseFloat(updatedQuote.travelAllowance || "0");
-            totalSell += parseFloat(updatedQuote.smallJobSurcharge || "0");
             totalSell += parseFloat(updatedQuote.constructionMgmtAmount || "0");
             totalSell += parseFloat(updatedQuote.councilFees || "0");
             totalSell += parseFloat(updatedQuote.homeWarranty || "0");
@@ -533,23 +622,16 @@ export const appRouter = router({
           await db.updateQuote(input.id, { complexityLoading: String(total) } as any, tenantId, quoteScopeOptionsForContext(ctx));
         }
 
-        // Auto-calculate construction management % if not manually overridden
+        // Auto-calculate construction management amount if not manually overridden
         const quoteForMgmt = await db.getQuoteById(input.id, tenantId, quoteScopeOptionsForContext(ctx));
         if (quoteForMgmt && !(quoteForMgmt as any).constructionMgmtOverride) {
-          const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
-          const getMgmtRate = (key: string) => {
-            const entry = mgmtRates.find((r: any) => r.key.toLowerCase() === key.toLowerCase());
-            return entry ? parseFloat(entry.value) || 0 : 0;
-          };
-          let mgmtTotal = 0;
-          const roofShapeMgmt = (quoteForMgmt.specRoofShape || "").toLowerCase();
-          // Apply rate based on roof shape (e.g. gable, skillion, flat, hip)
-          for (const rate of mgmtRates) {
-            if (roofShapeMgmt.includes(rate.key.toLowerCase())) {
-              mgmtTotal += parseFloat(rate.value) || 0;
-            }
-          }
-          await db.updateQuote(input.id, { constructionMgmtPercent: String(mgmtTotal) } as any, tenantId, quoteScopeOptionsForContext(ctx));
+          const mgmtRates = await getConstructionMgmtRows(ctx.tenant?.id ?? null);
+          const mgmtTotal = selectConstructionMgmtAmount(quoteForMgmt, mgmtRates);
+          await db.updateQuote(input.id, {
+            constructionMgmtAmount: mgmtTotal.toFixed(2),
+            constructionMgmtPercent: "0",
+            includeConstructionMgmt: mgmtTotal > 0,
+          } as any, tenantId, quoteScopeOptionsForContext(ctx));
         }
 
         return { success: true };
@@ -584,49 +666,38 @@ export const appRouter = router({
         updates.complexityLoading = String(complexityTotal);
         updates.complexityOverride = false;
 
-        // 2. Recalculate construction management % (ignore override)
-        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
-        let mgmtTotal = 0;
-        for (const rate of mgmtRates) {
-          if (roofShape.includes(rate.key.toLowerCase())) {
-            mgmtTotal += parseFloat(rate.value) || 0;
-          }
-        }
-        updates.constructionMgmtPercent = String(mgmtTotal);
+        const components = await db.getComponentsByQuote(input.id);
+        const subtotal = quoteComponentSubtotal(components || []);
+
+        // 2. Recalculate construction management amount from the admin table
+        const mgmtRates = await getConstructionMgmtRows(ctx.tenant?.id ?? null);
+        const mgmtTotal = selectConstructionMgmtAmount(quote, mgmtRates);
+        updates.constructionMgmtAmount = mgmtTotal.toFixed(2);
+        updates.constructionMgmtPercent = "0";
+        updates.includeConstructionMgmt = mgmtTotal > 0;
         updates.constructionMgmtOverride = false;
 
-        // 3. Recalculate delivery (distance × rate × factor)
-        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate", ctx.tenant?.id ?? null);
-        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers", ctx.tenant?.id ?? null);
-        const ratePerKm = deliveryRateData.length > 0 ? parseFloat(deliveryRateData[0].value) || 0 : 0;
-        const distanceKm = Number(quote.travelDistanceKm) || 0;
-        // Get subtotal for factor tier lookup
-        const components = await db.getComponentsByQuote(input.id);
-        const subtotal = (components || []).reduce((sum: number, comp: any) => {
-          const items = (comp.lineItems as any[]) || [];
-          return sum + items.reduce((s: number, i: any) => s + (i.qty || 0) * (i.sellRate || 0), 0);
-        }, 0);
-        // Find applicable factor tier
-        let factor = 1;
-        const tiers = deliveryTiersData
-          .map((t: any) => ({ threshold: parseFloat(t.key) || 0, factor: parseFloat(t.value) || 1 }))
-          .sort((a: any, b: any) => a.threshold - b.threshold);
-        for (const tier of tiers) {
-          if (subtotal >= tier.threshold) factor = tier.factor;
-        }
-        const autoDelivery = distanceKm * ratePerKm * factor;
+        // 3. Recalculate delivery from the Delivery admin table
+        const deliveryRows = await db.getMasterDataByCategory("delivery", ctx.tenant?.id ?? null);
+        const autoDelivery = selectDeliveryAmount(quote, deliveryRows);
         updates.deliveryAmount = autoDelivery.toFixed(2);
+        updates.includeDelivery = autoDelivery > 0;
+        updates.deliveryOverride = false;
 
-        // 4. Recalculate small job surcharge
-        const smallJobData = await db.getMasterDataByCategory("small_job_threshold", ctx.tenant?.id ?? null);
-        const threshold = smallJobData.length > 0 ? parseFloat(smallJobData[0].value) || 0 : 0;
-        const smallJobRate = smallJobData.length > 1 ? parseFloat(smallJobData[1].value) || 0 : 0;
-        if (threshold > 0 && subtotal < threshold) {
-          const surcharge = subtotal * (smallJobRate / 100);
-          updates.smallJobSurcharge = surcharge.toFixed(2);
-        } else {
-          updates.smallJobSurcharge = "0";
-        }
+        // 4. Small job surcharge is retired from this pricing flow.
+        updates.smallJobSurcharge = "0";
+        updates.includeSmallJobSurcharge = false;
+
+        // 5. Recalculate Home Warranty from the HOW tier table where applicable.
+        const travel = quote.includeTravelAllowance ? money(quote.travelAllowance) : 0;
+        const council = money(quote.councilFees);
+        const complexityMultiplier = 1 + complexityTotal / 100;
+        const discountMultiplier = 1 - money(quote.discountPercent) / 100;
+        const preWarrantyTotal = ((subtotal + autoDelivery + travel + mgmtTotal) * complexityMultiplier * discountMultiplier) + council;
+        const region = String(quote.region || "").trim().toUpperCase();
+        const howRows = await db.getMasterDataByCategory("home_warranty", ctx.tenant?.id ?? null);
+        const homeWarranty = region === "ACT" ? 0 : calculateHomeWarrantyAmount(preWarrantyTotal, howRows);
+        updates.homeWarranty = homeWarranty.toFixed(2);
 
         await db.updateQuote(input.id, updates, tenantId, quoteScopeOptionsForContext(ctx));
         await syncQuoteHbcfRequirement(input.id, tenantId);
@@ -635,15 +706,16 @@ export const appRouter = router({
         try {
           const changes: Array<{ field: string; oldValue: any; newValue: any }> = [];
           if (String(complexityTotal) !== (quote.complexityLoading || "0")) changes.push({ field: "complexityLoading", oldValue: quote.complexityLoading, newValue: String(complexityTotal) });
-          if (String(mgmtTotal) !== (quote.constructionMgmtPercent || "0")) changes.push({ field: "constructionMgmtPercent", oldValue: quote.constructionMgmtPercent, newValue: String(mgmtTotal) });
+          if (updates.constructionMgmtAmount !== (quote.constructionMgmtAmount || "0")) changes.push({ field: "constructionMgmtAmount", oldValue: quote.constructionMgmtAmount, newValue: updates.constructionMgmtAmount });
           if (updates.deliveryAmount !== (quote.deliveryAmount || "0")) changes.push({ field: "deliveryAmount", oldValue: quote.deliveryAmount, newValue: updates.deliveryAmount });
           if (updates.smallJobSurcharge !== (quote.smallJobSurcharge || "0")) changes.push({ field: "smallJobSurcharge", oldValue: quote.smallJobSurcharge, newValue: updates.smallJobSurcharge });
+          if (updates.homeWarranty !== (quote.homeWarranty || "0")) changes.push({ field: "homeWarranty", oldValue: quote.homeWarranty, newValue: updates.homeWarranty });
           if (changes.length > 0) {
-            await db.createQuoteRevision({ quoteId: input.id, userId: ctx.user.id, userName: ctx.user.name || "Unknown", action: "recalculate", changes, snapshot: { complexity: complexityTotal, constructionMgmt: mgmtTotal, delivery: autoDelivery, smallJob: parseFloat(updates.smallJobSurcharge) } });
+            await db.createQuoteRevision({ quoteId: input.id, userId: ctx.user.id, userName: ctx.user.name || "Unknown", action: "recalculate", changes, snapshot: { complexity: complexityTotal, constructionMgmt: mgmtTotal, delivery: autoDelivery, homeWarranty } });
           }
         } catch (e) { /* non-blocking */ }
 
-        return { success: true, complexity: complexityTotal, constructionMgmt: mgmtTotal, delivery: autoDelivery, smallJob: parseFloat(updates.smallJobSurcharge) };
+        return { success: true, complexity: complexityTotal, constructionMgmt: mgmtTotal, delivery: autoDelivery, homeWarranty };
       }),
 
     getFinancialBreakdown: protectedProcedure
@@ -671,46 +743,22 @@ export const appRouter = router({
         if ((quote as any).specSiteMixed === "1") complexityCriteria.push({ name: "Mixed materials", rate: getRate("mixed") });
         const complexityTotal = complexityCriteria.reduce((sum, c) => sum + c.rate, 0);
 
+        const components = await db.getComponentsByQuote(input.id);
+        const subtotal = quoteComponentSubtotal(components || []);
+
         // 2. Construction management breakdown
-        const mgmtRates = await db.getMasterDataByCategory("construction_mgmt_rates", ctx.tenant?.id ?? null);
-        let mgmtTotal = 0;
-        for (const rate of mgmtRates) {
-          if (roofShape.includes(rate.key.toLowerCase())) {
-            mgmtTotal += parseFloat(rate.value) || 0;
-          }
-        }
+        const mgmtRates = await getConstructionMgmtRows(ctx.tenant?.id ?? null);
+        const mgmtTotal = selectConstructionMgmtAmount(quote, mgmtRates);
 
         // 3. Delivery breakdown
-        const deliveryRateData = await db.getMasterDataByCategory("delivery_rate", ctx.tenant?.id ?? null);
-        const deliveryTiersData = await db.getMasterDataByCategory("delivery_factor_tiers", ctx.tenant?.id ?? null);
-        const ratePerKm = deliveryRateData.length > 0 ? parseFloat(deliveryRateData[0].value) || 0 : 0;
-        const distanceKm = Number(quote.travelDistanceKm) || 0;
-        const components = await db.getComponentsByQuote(input.id);
-        const subtotal = (components || []).reduce((sum: number, comp: any) => {
-          const items = (comp.lineItems as any[]) || [];
-          return sum + items.reduce((s: number, i: any) => s + (i.qty || 0) * (i.sellRate || 0), 0);
-        }, 0);
-        let factor = 1;
-        const tiers = deliveryTiersData
-          .map((t: any) => ({ threshold: parseFloat(t.key) || 0, factor: parseFloat(t.value) || 1 }))
-          .sort((a: any, b: any) => a.threshold - b.threshold);
-        for (const tier of tiers) {
-          if (subtotal >= tier.threshold) factor = tier.factor;
-        }
-        const deliveryTotal = distanceKm * ratePerKm * factor;
-
-        // 4. Small job surcharge breakdown
-        const smallJobData = await db.getMasterDataByCategory("small_job_threshold", ctx.tenant?.id ?? null);
-        const threshold = smallJobData.length > 0 ? parseFloat(smallJobData[0].value) || 0 : 0;
-        const smallJobRate = smallJobData.length > 1 ? parseFloat(smallJobData[1].value) || 0 : 0;
-        const smallJobApplied = threshold > 0 && subtotal < threshold;
-        const smallJobSurcharge = smallJobApplied ? subtotal * (smallJobRate / 100) : 0;
+        const deliveryRows = await db.getMasterDataByCategory("delivery", ctx.tenant?.id ?? null);
+        const deliveryTotal = selectDeliveryAmount(quote, deliveryRows);
 
         return {
           complexity: { total: complexityTotal, criteria: complexityCriteria },
-          constructionMgmt: { percent: mgmtTotal, roofShape: quote.specRoofShape || "N/A" },
-          delivery: { distanceKm, ratePerKm, factorTier: factor, total: deliveryTotal },
-          smallJob: { threshold, subtotal, applied: smallJobApplied, surcharge: smallJobSurcharge },
+          constructionMgmt: { percent: 0, amount: mgmtTotal, roofShape: quote.specRoofShape || "N/A" },
+          delivery: { distanceKm: Number(quote.travelDistanceKm) || 0, ratePerKm: 0, factorTier: 1, source: "delivery_table", total: deliveryTotal },
+          smallJob: { threshold: 0, subtotal, applied: false, surcharge: 0 },
         };
       }),
 

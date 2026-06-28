@@ -425,16 +425,42 @@ function StairSegmented<T extends string>({
 
 // HOW tiers (default fallback if not configured in master data)
 const HOW_TIERS = [
-  { threshold: 20000, amount: 600 },
-  { threshold: 25000, amount: 650 },
-  { threshold: 35000, amount: 700 },
-  { threshold: 50000, amount: 750 },
-  { threshold: 100000, amount: 1000 },
+  { label: "20000+", min: 20000, max: Infinity, amount: 600 },
+  { label: "25000+", min: 25000, max: Infinity, amount: 650 },
+  { label: "35000+", min: 35000, max: Infinity, amount: 700 },
+  { label: "50000+", min: 50000, max: Infinity, amount: 750 },
+  { label: "100000+", min: 100000, max: Infinity, amount: 1000 },
 ];
-function getHowAmount(grandTotalExGst: number): number {
+type HowTier = { label: string; min: number; max: number; amount: number };
+
+function parseHowTier(key: string, value: string): HowTier {
+  const label = key || "Configured tier";
+  const numericValue = parseFloat(value) || 0;
+  const rangeMatch = key.match(/^\s*(\d+(?:\.\d+)?)\s*<\s*(\d+(?:\.\d+)?)\s*$/);
+  if (rangeMatch) {
+    return {
+      label,
+      min: parseFloat(rangeMatch[1]) || 0,
+      max: parseFloat(rangeMatch[2]) || Infinity,
+      amount: numericValue,
+    };
+  }
+  const plusMatch = key.match(/^\s*(\d+(?:\.\d+)?)\s*(?:\+|>|and over)?\s*$/i);
+  if (plusMatch) {
+    return { label, min: parseFloat(plusMatch[1]) || 0, max: Infinity, amount: numericValue };
+  }
+  return { label, min: parseFloat(key) || 0, max: Infinity, amount: numericValue };
+}
+
+function getHowAmount(grandTotalExGst: number, tiers: HowTier[] = HOW_TIERS): number {
   let howAmount = 0;
-  for (const tier of HOW_TIERS) {
-    if (grandTotalExGst >= tier.threshold) howAmount = tier.amount;
+  const sortedTiers = [...tiers].sort((a, b) => a.min - b.min);
+  for (const tier of sortedTiers) {
+    if (grandTotalExGst >= tier.min && grandTotalExGst <= tier.max) {
+      howAmount = tier.amount;
+      break;
+    }
+    if (grandTotalExGst >= tier.min) howAmount = tier.amount;
   }
   return howAmount;
 }
@@ -473,9 +499,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
     onSuccess: (data) => {
       toast.success("Financials recalculated");
       if (data.complexity !== undefined) setComplexityLoading(String(data.complexity));
-      if (data.constructionMgmt !== undefined) setConstructionMgmtPercent(String(data.constructionMgmt));
+      if (data.constructionMgmt !== undefined) setConstructionMgmtAmount(String(data.constructionMgmt.toFixed ? data.constructionMgmt.toFixed(2) : data.constructionMgmt));
       if (data.delivery !== undefined) setDeliveryAmount(String(data.delivery.toFixed(2)));
-      if (data.smallJob !== undefined) setSmallJobSurcharge(String(data.smallJob));
+      if (data.homeWarranty !== undefined) setHomeWarranty(String(data.homeWarranty.toFixed ? data.homeWarranty.toFixed(2) : data.homeWarranty));
       setDeliveryOverride(false);
       setConstructionMgmtOverride(false);
       setComplexityOverride(false);
@@ -504,8 +530,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
         id: quoteId,
         deliveryAmount,
         travelAllowance,
-        smallJobSurcharge,
-        constructionMgmtPercent,
+        smallJobSurcharge: "0",
+        constructionMgmtAmount,
+        constructionMgmtPercent: "0",
         constructionMgmtOverride,
         complexityLoading,
         complexityOverride,
@@ -513,8 +540,8 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
         homeWarranty,
         includeDelivery: parseFloat(deliveryAmount) > 0,
         includeTravelAllowance: parseFloat(travelAllowance) > 0,
-        includeSmallJobSurcharge: parseFloat(smallJobSurcharge) > 0,
-        includeConstructionMgmt: parseFloat(constructionMgmtPercent) > 0,
+        includeSmallJobSurcharge: false,
+        includeConstructionMgmt: parseFloat(constructionMgmtAmount) > 0,
       });
       // Step 0b: Flush pending spec auto-save timer (actual spec save happens via invalidate after recalc)
       if (autoSaveTimerRef?.current) {
@@ -526,7 +553,11 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       }
       // Step 1: Recalculate travel (updates travelDistanceKm on the quote)
       if ((quote as any)?.siteAddress) {
-        await calculateTravelMutation.mutateAsync({ quoteId });
+        try {
+          await calculateTravelMutation.mutateAsync({ quoteId });
+        } catch {
+          toast.warning("Travel distance could not be recalculated. Continuing with the current travel allowance.");
+        }
       }
       // Step 2: Recalculate financials (uses updated travelDistanceKm for delivery)
       await recalcMutation.mutateAsync({ id: quoteId });
@@ -539,8 +570,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const [deliveryAmount, setDeliveryAmount] = useState("0");
   const [deliveryOverride, setDeliveryOverride] = useState(false);
   const [travelAllowance, setTravelAllowance] = useState("0");
-  const [smallJobSurcharge, setSmallJobSurcharge] = useState("0");
-  const [constructionMgmtPercent, setConstructionMgmtPercent] = useState("0");
+  const [constructionMgmtAmount, setConstructionMgmtAmount] = useState("0");
   const [constructionMgmtOverride, setConstructionMgmtOverride] = useState(false);
   const [complexityLoading, setComplexityLoading] = useState("0");
   const [complexityOverride, setComplexityOverride] = useState(false);
@@ -551,9 +581,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   useEffect(() => {
     if (quote) {
       setDeliveryAmount((quote as any).deliveryAmount || "0");
+      setDeliveryOverride(!!(quote as any).deliveryOverride);
       setTravelAllowance((quote as any).travelAllowance || "0");
-      setSmallJobSurcharge((quote as any).smallJobSurcharge || "0");
-      setConstructionMgmtPercent((quote as any).constructionMgmtPercent || "0");
+      setConstructionMgmtAmount((quote as any).constructionMgmtAmount || "0");
       setConstructionMgmtOverride(!!(quote as any).constructionMgmtOverride);
       setComplexityLoading((quote as any).complexityLoading || "0");
       setComplexityOverride(!!(quote as any).complexityOverride);
@@ -564,25 +594,20 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
 
   // Parse price settings from master data
   const priceSettings = useMemo(() => {
-    if (!allMasterData) return { delivery: "0", deliveryRatePerKm: "0", deliveryFactorTiers: [] as { threshold: number; factor: number }[], travelBands: [] as { key: string; value: string }[], smallJob: "0", smallJobThreshold: "0", constructionMgmtRates: [] as { key: string; value: string }[], complexity: [] as { key: string; value: string }[], councilFees: [] as { key: string; value: string }[], homeWarrantyTiers: HOW_TIERS, regionHowFlags: {} as Record<string, boolean> };
-    const delivery = allMasterData.find((d: any) => d.category === "delivery")?.value || "0";
-    const deliveryRatePerKm = allMasterData.find((d: any) => d.category === "delivery_rate" && d.key === "per_km")?.value || "0";
-    const deliveryFactorTiersRaw = allMasterData.filter((d: any) => d.category === "delivery_factor").sort((a: any, b: any) => (parseFloat(a.key) || 0) - (parseFloat(b.key) || 0));
-    const deliveryFactorTiers = deliveryFactorTiersRaw.map((d: any) => ({ threshold: parseFloat(d.key) || 0, factor: parseFloat(d.value) || 1 }));
+    if (!allMasterData) return { deliveryOptions: [] as { key: string; value: string }[], travelBands: [] as { key: string; value: string }[], constructionMgmtRates: [] as { key: string; value: string }[], complexity: [] as { key: string; value: string }[], councilFees: [] as { key: string; value: string }[], homeWarrantyTiers: HOW_TIERS as HowTier[], regionHowFlags: {} as Record<string, boolean> };
+    const deliveryOptions = allMasterData.filter((d: any) => d.category === "delivery").sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)).map((d: any) => ({ key: d.key, value: d.value }));
     const travelBands = allMasterData.filter((d: any) => d.category === "travel_band").map((d: any) => ({ key: d.key, value: d.value }));
-    const smallJob = allMasterData.find((d: any) => d.category === "small_job_surcharge" && d.key === "rate")?.value || allMasterData.find((d: any) => d.category === "small_job_surcharge")?.value || "0";
-    const smallJobThreshold = allMasterData.find((d: any) => d.category === "small_job_surcharge" && d.key === "threshold")?.value || "0";
-    const constructionMgmtRates = allMasterData.filter((d: any) => d.category === "construction_mgmt_rates").map((d: any) => ({ key: d.key, value: d.value }));
+    const constructionMgmtRates = allMasterData.filter((d: any) => d.category === "construction_mgmt" || d.category === "construction_mgmt_rates").sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)).map((d: any) => ({ key: d.key, value: d.value }));
     const complexity = allMasterData.filter((d: any) => d.category === "complexity").map((d: any) => ({ key: d.key, value: d.value }));
     const councilFeesData = allMasterData.filter((d: any) => d.category === "council_fee").map((d: any) => ({ key: d.key, value: d.value }));
     const hwTiers = allMasterData.filter((d: any) => d.category === "home_warranty").sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-    const homeWarrantyTiers = hwTiers.length > 0 ? hwTiers.map((d: any) => ({ threshold: parseFloat(d.key) || 0, amount: parseFloat(d.value) || 0 })) : HOW_TIERS;
+    const homeWarrantyTiers = hwTiers.length > 0 ? hwTiers.map((d: any) => parseHowTier(d.key, d.value)) : HOW_TIERS;
     const regionHowFlags: Record<string, boolean> = {};
     allMasterData.filter((d: any) => d.category === "region").forEach((d: any) => {
       const meta = d.metadata as any;
       if (meta && meta.howApplicable) regionHowFlags[d.key] = true;
     });
-    return { delivery, deliveryRatePerKm, deliveryFactorTiers, travelBands, smallJob, smallJobThreshold, constructionMgmtRates, complexity, councilFees: councilFeesData, homeWarrantyTiers, regionHowFlags };
+    return { deliveryOptions, travelBands, constructionMgmtRates, complexity, councilFees: councilFeesData, homeWarrantyTiers, regionHowFlags };
   }, [allMasterData]);
 
   // Auto-save adjustments with debounce (3s after last change)
@@ -600,8 +625,9 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       id: quoteId,
       deliveryAmount,
       travelAllowance,
-      smallJobSurcharge,
-      constructionMgmtPercent,
+      smallJobSurcharge: "0",
+      constructionMgmtAmount,
+      constructionMgmtPercent: "0",
       constructionMgmtOverride,
       complexityLoading,
       complexityOverride,
@@ -609,21 +635,21 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
       homeWarranty,
       includeDelivery: parseFloat(deliveryAmount) > 0,
       includeTravelAllowance: parseFloat(travelAllowance) > 0,
-      includeSmallJobSurcharge: parseFloat(smallJobSurcharge) > 0,
-      includeConstructionMgmt: parseFloat(constructionMgmtPercent) > 0,
+      includeSmallJobSurcharge: false,
+      includeConstructionMgmt: parseFloat(constructionMgmtAmount) > 0,
       ...(travelChanged ? { travelOverridden: true } : {}),
     }, {
       onSuccess: () => { setAdjSaveStatus("saved"); setTimeout(() => setAdjSaveStatus("idle"), 2000); },
       onError: () => { setAdjSaveStatus("idle"); },
     });
-  }, [quoteId, deliveryAmount, travelAllowance, smallJobSurcharge, constructionMgmtPercent, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty, adjUpdateMutation, quote]);
+  }, [quoteId, deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty, adjUpdateMutation, quote]);
 
   useEffect(() => {
     if (!adjHasLoadedRef.current) return;
     if (adjAutoSaveTimerRef.current) clearTimeout(adjAutoSaveTimerRef.current);
     adjAutoSaveTimerRef.current = setTimeout(() => { performAdjSave(); }, 9000);
     return () => { if (adjAutoSaveTimerRef.current) clearTimeout(adjAutoSaveTimerRef.current); };
-  }, [deliveryAmount, travelAllowance, smallJobSurcharge, constructionMgmtPercent, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty]);
+  }, [deliveryAmount, travelAllowance, constructionMgmtAmount, constructionMgmtOverride, complexityLoading, complexityOverride, councilFees, homeWarranty]);
 
   const skipFormResetRef = useRef(false);
   const pendingAiDescRef = useRef<string | null>(null);
@@ -4119,49 +4145,37 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   {/* Delivery */}
                   <div className="space-y-1.5">
                     <Label className="text-xs">Delivery $</Label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      value={deliveryAmount}
-                      onChange={(e) => { setDeliveryAmount(e.target.value); setDeliveryOverride(true); }}
-                      className={`h-8 text-sm ${!deliveryOverride ? 'bg-muted/50' : ''}`}
-                      placeholder="0.00"
-                    />
-                    {(() => {
-                      const distanceKm = parseFloat((quote as any)?.travelDistanceKm || "0");
-                      const ratePerKm = parseFloat(priceSettings.deliveryRatePerKm || "0");
-                      const tiers = priceSettings.deliveryFactorTiers;
-                      let factor = 1;
-                      let tierLabel = "";
-                      if (tiers.length > 0) {
-                        for (const tier of tiers) {
-                          if (distanceKm >= tier.threshold) { factor = tier.factor; tierLabel = `${tier.threshold}km+ → ×${tier.factor}`; }
-                        }
-                        if (distanceKm < tiers[0].threshold) { factor = tiers[0].factor; tierLabel = `< ${tiers[0].threshold}km → ×${tiers[0].factor}`; }
-                      }
-                      const autoDelivery = distanceKm * ratePerKm * factor;
-                      return (
-                        <div className="space-y-1">
-                          {distanceKm > 0 && ratePerKm > 0 && (
-                            <div className="text-[10px] text-muted-foreground space-y-0.5">
-                              <p className="font-medium">Auto: ${autoDelivery.toFixed(2)}</p>
-                              <p className="pl-2">{distanceKm}km × ${ratePerKm}/km × {factor} factor</p>
-                              {tierLabel && <p className="pl-2">Tier: {tierLabel}</p>}
-                            </div>
-                          )}
-                          {!deliveryOverride && autoDelivery > 0 && deliveryAmount !== autoDelivery.toFixed(2) && (
-                            <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => setDeliveryAmount(autoDelivery.toFixed(2))}>
-                              Apply ${autoDelivery.toFixed(2)}
-                            </Button>
-                          )}
-                          {deliveryOverride && (
-                            <Button variant="ghost" size="sm" className="h-6 text-[10px] text-muted-foreground" onClick={() => { setDeliveryOverride(false); }}>
-                              Reset to auto
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })()}
+                    {priceSettings.deliveryOptions.length > 0 ? (
+                      <select
+                        value={(parseFloat(deliveryAmount || "0") || 0).toFixed(2)}
+                        onChange={(e) => { setDeliveryAmount(e.target.value); setDeliveryOverride(true); }}
+                        className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        <option value="0.00">None</option>
+                        {priceSettings.deliveryOptions.map((delivery) => (
+                          <option key={`${delivery.key}-${delivery.value}`} value={(parseFloat(delivery.value || "0") || 0).toFixed(2)}>
+                            {delivery.key} - ${parseFloat(delivery.value || "0").toLocaleString()}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={deliveryAmount}
+                        onChange={(e) => { setDeliveryAmount(e.target.value); setDeliveryOverride(true); }}
+                        className="h-8 text-sm"
+                        placeholder="0.00"
+                      />
+                    )}
+                    {deliveryOverride && (
+                      <Button variant="ghost" size="sm" className="h-6 text-[10px] text-muted-foreground" onClick={() => { setDeliveryOverride(false); }}>
+                        Reset to table suggestion
+                      </Button>
+                    )}
+                    {priceSettings.deliveryOptions.length === 0 && (
+                      <p className="text-[10px] text-amber-600">No Delivery rows are configured in Pricing Settings.</p>
+                    )}
                   </div>
 
                   {/* Travel Allowance */}
@@ -4204,60 +4218,62 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     )}
                   </div>
 
-                  {/* Small Job Surcharge */}
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Small Job Surcharge %</Label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      value={smallJobSurcharge}
-                      onChange={(e) => setSmallJobSurcharge(e.target.value)}
-                      className="h-8 text-sm"
-                      placeholder="0"
-                    />
-                    {priceSettings.smallJob !== "0" && <p className="text-[10px] text-muted-foreground">Default rate: {priceSettings.smallJob}%</p>}
-                  </div>
-
                   {/* Construction Management */}
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Construction Mgmt %</Label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      value={constructionMgmtPercent}
-                      onChange={(e) => { setConstructionMgmtPercent(e.target.value); setConstructionMgmtOverride(true); }}
-                      className={`h-8 text-sm ${!constructionMgmtOverride ? 'bg-muted/50' : ''}`}
-                    />
+                    <Label className="text-xs">Construction Mgmt $</Label>
+                    {priceSettings.constructionMgmtRates.length > 0 ? (
+                      <select
+                        value={(parseFloat(constructionMgmtAmount || "0") || 0).toFixed(2)}
+                        onChange={(e) => { setConstructionMgmtAmount(e.target.value); setConstructionMgmtOverride(true); }}
+                        className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      >
+                        <option value="0.00">None</option>
+                        {priceSettings.constructionMgmtRates.map((fee) => (
+                          <option key={`${fee.key}-${fee.value}`} value={(parseFloat(fee.value || "0") || 0).toFixed(2)}>
+                            {fee.key} - ${parseFloat(fee.value || "0").toLocaleString()}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={constructionMgmtAmount}
+                        onChange={(e) => { setConstructionMgmtAmount(e.target.value); setConstructionMgmtOverride(true); }}
+                        className="h-8 text-sm"
+                      />
+                    )}
                     {(() => {
                       const mgmtRates = priceSettings.constructionMgmtRates;
                       const roofShape = ((quote as any)?.specRoofShape || "").toLowerCase();
-                      const mgmtBreakdown: { label: string; rate: number }[] = [];
+                      const mgmtBreakdown: { label: string; amount: number }[] = [];
                       for (const rate of mgmtRates) {
                         if (roofShape.includes(rate.key.toLowerCase())) {
                           const r = parseFloat(rate.value) || 0;
-                          if (r > 0) mgmtBreakdown.push({ label: rate.key, rate: r });
+                          if (r > 0) mgmtBreakdown.push({ label: rate.key, amount: r });
                         }
                       }
-                      const mgmtAutoTotal = mgmtBreakdown.reduce((s, b) => s + b.rate, 0);
+                      const mgmtAutoTotal = mgmtBreakdown.reduce((s, b) => s + b.amount, 0);
                       return (
                         <div className="space-y-1">
                           {mgmtBreakdown.length > 0 && (
                             <div className="text-[10px] text-muted-foreground space-y-0.5">
-                              <p className="font-medium">Auto-calculated: {mgmtAutoTotal.toFixed(1)}%</p>
-                              {mgmtBreakdown.map((b, i) => <p key={i} className="pl-2">{b.label}: +{b.rate}%</p>)}
+                              <p className="font-medium">Table suggestion: ${mgmtAutoTotal.toFixed(2)}</p>
+                              {mgmtBreakdown.map((b, i) => <p key={i} className="pl-2">{b.label}: ${b.amount.toFixed(2)}</p>)}
                             </div>
                           )}
-                          {!constructionMgmtOverride && mgmtAutoTotal > 0 && constructionMgmtPercent !== String(mgmtAutoTotal) && (
-                            <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => setConstructionMgmtPercent(String(mgmtAutoTotal))}>
-                              Apply {mgmtAutoTotal}%
+                          {!constructionMgmtOverride && mgmtAutoTotal > 0 && constructionMgmtAmount !== mgmtAutoTotal.toFixed(2) && (
+                            <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => setConstructionMgmtAmount(mgmtAutoTotal.toFixed(2))}>
+                              Apply ${mgmtAutoTotal.toFixed(2)}
                             </Button>
                           )}
                           {constructionMgmtOverride && (
-                            <Button variant="ghost" size="sm" className="h-6 text-[10px] text-muted-foreground" onClick={() => { setConstructionMgmtOverride(false); setConstructionMgmtPercent(String(mgmtAutoTotal)); }}>
-                              Reset to auto ({mgmtAutoTotal}%)
+                            <Button variant="ghost" size="sm" className="h-6 text-[10px] text-muted-foreground" onClick={() => { setConstructionMgmtOverride(false); setConstructionMgmtAmount(mgmtAutoTotal.toFixed(2)); }}>
+                              Reset to table suggestion
                             </Button>
                           )}
-                          {mgmtRates.length > 0 && <p className="text-[10px] text-muted-foreground">Rates: {mgmtRates.map(c => `${c.key}=${c.value}%`).join(", ")}</p>}
+                          {mgmtRates.length > 0 && <p className="text-[10px] text-muted-foreground">Options: {mgmtRates.map(c => `${c.key}=$${parseFloat(c.value || "0").toLocaleString()}`).join(", ")}</p>}
+                          {mgmtRates.length === 0 && <p className="text-[10px] text-amber-600">No Construction Mgmt rows are configured in Pricing Settings.</p>}
                         </div>
                       );
                     })()}
@@ -4315,13 +4331,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                     <Label className="text-xs">Council Fees $</Label>
                     {priceSettings.councilFees.length > 0 ? (
                       <select
-                        value={councilFees}
+                        value={(parseFloat(councilFees || "0") || 0).toFixed(2)}
                         onChange={(e) => setCouncilFees(e.target.value)}
                         className="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       >
-                        <option value="0">None</option>
+                        <option value="0.00">None</option>
                         {priceSettings.councilFees.map((cf) => (
-                          <option key={cf.key} value={cf.value}>{cf.key} - ${parseFloat(cf.value).toLocaleString()}</option>
+                          <option key={cf.key} value={(parseFloat(cf.value || "0") || 0).toFixed(2)}>{cf.key} - ${parseFloat(cf.value).toLocaleString()}</option>
                         ))}
                       </select>
                     ) : (
@@ -4345,7 +4361,17 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                       placeholder="0.00"
                     />
                     {(() => {
-                      const suggestedHow = getHowAmount(parseFloat(councilFees || "0") + parseFloat(deliveryAmount || "0"));
+                      const quoteBase = parseFloat((quote as any)?.totalSellPriceEx || "0")
+                        || (parseFloat((quote as any)?.totalRRPInc || "0") / 1.1)
+                        || 0;
+                      const suggestedHow = getHowAmount(
+                        quoteBase
+                          + parseFloat(deliveryAmount || "0")
+                          + parseFloat(travelAllowance || "0")
+                          + parseFloat(constructionMgmtAmount || "0")
+                          + parseFloat(councilFees || "0"),
+                        priceSettings.homeWarrantyTiers,
+                      );
                       return suggestedHow > 0 ? (
                         <button type="button" onClick={() => setHomeWarranty(String(suggestedHow))} className="text-[10px] text-blue-600 hover:underline cursor-pointer">
                           Suggested: ${suggestedHow} (click to apply)

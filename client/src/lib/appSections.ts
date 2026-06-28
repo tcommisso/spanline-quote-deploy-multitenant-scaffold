@@ -235,8 +235,8 @@ export function getSectionForPath(path: string): string | null {
   if (path.startsWith("/approvals")) return "approvals";
   if (path.startsWith("/da-tracker")) return "da_tracker";
   if (path.startsWith("/construction/analytics") || path === "/analytics" || path.startsWith("/manufacturing/kpi") || path === "/crm/reports") return "reporting";
-  if (path.startsWith("/construction/financials") || path.startsWith("/admin/da-commissions") || path.startsWith("/admin/da-invoices") || path.startsWith("/admin/subscriptions") || path.startsWith("/admin/render-costs") || path.startsWith("/admin/suppliers") || path.startsWith("/admin/supplier-feedback")) return "finance";
-  if (path.startsWith("/construction") || path.startsWith("/calendar-availability") || path.startsWith("/plan-converter")) return "construction";
+  if (path.startsWith("/construction/financials") || path.startsWith("/admin/da-commissions") || path.startsWith("/admin/da-invoices") || path.startsWith("/admin/subscriptions") || path.startsWith("/admin/render-costs") || path.startsWith("/admin/supplier-feedback")) return "finance";
+  if (path.startsWith("/construction") || path.startsWith("/calendar-availability") || path.startsWith("/plan-converter") || path.startsWith("/admin/suppliers")) return "construction";
   if (path.startsWith("/manufacturing")) return "manufacturing";
   if (path.startsWith("/inventory")) return "inventory";
   if (path.startsWith("/admin") || path.startsWith("/xero-settings")) return "admin";
