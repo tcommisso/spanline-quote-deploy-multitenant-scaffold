@@ -811,6 +811,7 @@ export const adminTradePortalRouter = router({
       .where(and(
         eq(constructionInstallers.active, true),
         sql`${constructionInstallers.xeroContactId} IS NOT NULL`,
+        ...installerTenantConditions(ctx),
       ));
 
     if (linkedTrades.length === 0) {
@@ -821,7 +822,11 @@ export const adminTradePortalRouter = router({
     const existingXeroRemittances = await db.select({
       xeroPaymentId: tradeRemittances.xeroPaymentId,
     }).from(tradeRemittances)
-      .where(eq(tradeRemittances.source, "xero"));
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "xero"),
+        ...installerTenantConditions(ctx),
+      ));
     const existingPaymentIds = new Set(
       existingXeroRemittances.map(r => r.xeroPaymentId).filter(Boolean)
     );
@@ -888,25 +893,44 @@ export const adminTradePortalRouter = router({
   }),
 
   /** Get reconciliation summary stats */
-  reconciliationStats: adminProcedure.query(async () => {
+  reconciliationStats: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
     const [manualCount] = await db.select({ count: sql<number>`COUNT(*)` })
-      .from(tradeRemittances).where(eq(tradeRemittances.source, "manual"));
+      .from(tradeRemittances)
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "manual"),
+        ...installerTenantConditions(ctx),
+      ));
     const [xeroCount] = await db.select({ count: sql<number>`COUNT(*)` })
-      .from(tradeRemittances).where(eq(tradeRemittances.source, "xero"));
+      .from(tradeRemittances)
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "xero"),
+        ...installerTenantConditions(ctx),
+      ));
     const [lastXeroSync] = await db.select({ latest: sql<string | null>`MAX(createdAt)` })
-      .from(tradeRemittances).where(eq(tradeRemittances.source, "xero"));
+      .from(tradeRemittances)
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "xero"),
+        ...installerTenantConditions(ctx),
+      ));
     const [linkedTrades] = await db.select({ count: sql<number>`COUNT(*)` })
       .from(constructionInstallers)
       .where(and(
         eq(constructionInstallers.active, true),
         sql`${constructionInstallers.xeroContactId} IS NOT NULL`,
+        ...installerTenantConditions(ctx),
       ));
     const [totalTrades] = await db.select({ count: sql<number>`COUNT(*)` })
       .from(constructionInstallers)
-      .where(eq(constructionInstallers.active, true));
+      .where(and(
+        eq(constructionInstallers.active, true),
+        ...installerTenantConditions(ctx),
+      ));
 
     return {
       manualRemittances: Number(manualCount?.count || 0),
@@ -1119,9 +1143,14 @@ export const adminTradePortalRouter = router({
       if (linkedTrades.length === 0) return { synced: 0, skipped: 0, errors: 0, total: 0 };
 
       // Get already-synced payment IDs to avoid duplicates
-      const existingLogs = await db.select({ xeroPaymentId: xeroPaymentSyncLog.xeroPaymentId })
-        .from(xeroPaymentSyncLog);
-      const syncedPaymentIds = new Set(existingLogs.map(l => l.xeroPaymentId));
+      const existingRemittances = await db.select({ xeroPaymentId: tradeRemittances.xeroPaymentId })
+        .from(tradeRemittances)
+        .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+        .where(and(
+          eq(tradeRemittances.source, "xero"),
+          ...installerTenantConditions(ctx),
+        ));
+      const syncedPaymentIds = new Set(existingRemittances.map(l => l.xeroPaymentId).filter(Boolean));
 
       let synced = 0, skipped = 0, errors = 0;
 
@@ -1194,30 +1223,42 @@ export const adminTradePortalRouter = router({
     }),
 
   /** Get reconciliation status and recent sync logs */
-  getReconciliationStatus: adminProcedure.query(async () => {
+  getReconciliationStatus: adminProcedure.query(async ({ ctx }) => {
     const db = await getDb();
     if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-    const logs = await db.select()
+    const logs = await db.select({ log: xeroPaymentSyncLog })
       .from(xeroPaymentSyncLog)
+      .innerJoin(tradeRemittances, eq(xeroPaymentSyncLog.remittanceId, tradeRemittances.id))
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(...installerTenantConditions(ctx)))
       .orderBy(desc(xeroPaymentSyncLog.syncedAt))
       .limit(50);
 
-    const totalSynced = logs.filter(l => l.status === "synced").length;
-    const totalErrors = logs.filter(l => l.status === "error").length;
-    const lastSync = logs.length > 0 ? logs[0].syncedAt : null;
+    const syncLogs = logs.map((row: any) => row.log);
+    const totalSynced = syncLogs.filter(l => l.status === "synced").length;
+    const totalErrors = syncLogs.filter(l => l.status === "error").length;
+    const lastSync = syncLogs.length > 0 ? syncLogs[0].syncedAt : null;
 
     // Count auto vs manual remittances
     const autoRemittances = await db.select({ count: sql<number>`COUNT(*)` })
       .from(tradeRemittances)
-      .where(eq(tradeRemittances.source, "xero"));
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "xero"),
+        ...installerTenantConditions(ctx),
+      ));
     const manualRemittances = await db.select({ count: sql<number>`COUNT(*)` })
       .from(tradeRemittances)
-      .where(eq(tradeRemittances.source, "manual"));
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.source, "manual"),
+        ...installerTenantConditions(ctx),
+      ));
 
     return {
       lastSyncAt: lastSync,
-      recentLogs: logs,
+      recentLogs: syncLogs,
       stats: {
         totalSynced,
         totalErrors,

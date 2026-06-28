@@ -38,7 +38,7 @@ export default function TradePortalRemittances() {
                   </div>
                   <div className="text-right shrink-0">
                     <p className="font-bold text-base sm:text-lg text-green-700">
-                      ${(Number(rem.amount) / 100).toLocaleString("en-AU", { minimumFractionDigits: 2 })}
+                      ${Number(rem.amount || 0).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                     {rem.fileUrl && (
                       <Button variant="ghost" size="sm" className="mt-1 h-7 text-xs" asChild>

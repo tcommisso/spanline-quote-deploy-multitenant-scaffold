@@ -1126,10 +1126,15 @@ export const tradePortalRouter = router({
 
   getRemittances: protectedTradePortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-    return db.select()
+    const rows = await db.select({ remittance: tradeRemittances })
       .from(tradeRemittances)
-      .where(eq(tradeRemittances.installerId, ctx.tradeAccess.installerId))
+      .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
+      .where(and(
+        eq(tradeRemittances.installerId, ctx.tradeAccess.installerId),
+        ...tradeInstallerConditions(ctx),
+      ))
       .orderBy(desc(tradeRemittances.date));
+    return rows.map((row) => row.remittance);
   }),
 
   // ─── Invoice Submission ─────────────────────────────────────────────────────
