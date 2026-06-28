@@ -84,6 +84,10 @@ function seedWorkChecklistFormulaContext(specValues: SpecValues, uom?: string | 
     workItemLabel: "Sample checklist item",
     workItemNotes: "",
     workItemUnit: uom || "ea",
+    gpoQty: 1,
+    gpoType: "Sample GPO",
+    gpoLocation: "Indoor",
+    gpoOnIwp: 0,
   });
 }
 
@@ -816,7 +820,7 @@ export const specItemsRouter = router({
         { name: "Electrical Lights", tabName: "electrical", specField: "specElecLights", condition: "> 0", productMatch: "specElecLightType", qtyFormula: "specElecLights", description: "Electrical Lights", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 90 },
         { name: "Electrical Fans", tabName: "electrical", specField: "specElecFan", condition: "> 0", productMatch: "specElecFanType", qtyFormula: "specElecFan", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 91 },
         { name: "Power Points", tabName: "electrical", specField: "specElecPowerPoints", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecPowerPoints", description: "Power Points", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 92 },
-        { name: "Electrical GPOs", tabName: "electrical", specField: "specElecGpos", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecGpos", description: "GPOs", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 93 },
+        { name: "Electrical GPOs", tabName: "electrical", specField: "specElecGpos", condition: "!= ''", productId: null, productMatch: "gpoType", qtyFormula: "gpoQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 93 },
         { name: "Electrical Switches", tabName: "electrical", specField: "specElecSwitches", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitches", description: "Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 94 },
         { name: "Electrical One-Way Switches", tabName: "electrical", specField: "specElecSwitchOneWay", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchOneWay", description: "One-Way Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 95 },
         { name: "Electrical Two-Way Switches", tabName: "electrical", specField: "specElecSwitchTwoWay", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specElecSwitchTwoWay", description: "Two-Way Switches", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 96 },
@@ -839,9 +843,14 @@ export const specItemsRouter = router({
         { name: "Stairs Steps", tabName: "stairs", specField: "specStairsSteps", condition: "> 0", productMatch: "specStairsType", qtyFormula: "specStairsSteps", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 120 },
         { name: "Stairs Gate", tabName: "stairs", specField: "specStairsGate", condition: "!= ''", productMatch: "specStairsGate", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 121 },
         { name: "Stairs Work Checklist", tabName: "stairs", specField: "specStairsChecks", condition: "!= ''", productMatch: "workItemProduct", qtyFormula: "workItemQty", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 122 },
-        { name: "Balustrade (LM)", tabName: "balustrade", specField: "specBalustradeType", condition: "!= ''", productMatch: "specBalustradeType", qtyFormula: "specBalustradeLM", description: null, colourField: null, bottomColourField: null, uom: "LM", sortOrder: 130 },
-        { name: "Balustrade Posts", tabName: "balustrade", specField: "specBalustradePosts", condition: "> 0", productMatch: "specBalPostType", qtyFormula: "specBalustradePosts", description: null, colourField: "specBalPostColour", bottomColourField: null, uom: "ea", sortOrder: 131 },
-        { name: "Balustrade Glass Spigots", tabName: "balustrade", specField: "specBalGlassSpigots", condition: "> 0", productId: null, productMatch: null, qtyFormula: "specBalGlassSpigots", description: "Glass Spigots", colourField: null, bottomColourField: null, uom: "ea", sortOrder: 132 },
+        { name: "Glass Balustrade", tabName: "balustrade", specField: "specBalGlassType", condition: "!= ''", productMatch: "specBalGlassType", qtyFormula: "specBalustradeLM", description: null, colourField: "specBalGlassTint", bottomColourField: null, uom: "LM", sortOrder: 130 },
+        { name: "Tubular Balustrade - Vertical", tabName: "balustrade", specField: "specBalTubularVertical", condition: "!= ''", productMatch: "specBalTubularVertical", qtyFormula: "specBalustradeLM", description: null, colourField: "specBalRailTopColour", bottomColourField: null, uom: "LM", sortOrder: 131 },
+        { name: "Tubular Balustrade - Horizontal Slat", tabName: "balustrade", specField: "specBalTubularHorizSlat", condition: "!= ''", productMatch: "specBalTubularHorizSlat", qtyFormula: "specBalustradeLM", description: null, colourField: "specBalRailTopColour", bottomColourField: null, uom: "LM", sortOrder: 132 },
+        { name: "Tubular Balustrade - Vertical Slat", tabName: "balustrade", specField: "specBalTubularVertSlat", condition: "!= ''", productMatch: "specBalTubularVertSlat", qtyFormula: "specBalustradeLM", description: null, colourField: "specBalRailTopColour", bottomColourField: null, uom: "LM", sortOrder: 133 },
+        { name: "Wire Balustrade", tabName: "balustrade", specField: "specBalWireType", condition: "!= ''", productMatch: "specBalWireType", qtyFormula: "specBalustradeLM", description: null, colourField: null, bottomColourField: null, uom: "LM", sortOrder: 134 },
+        { name: "Privacy Balustrade", tabName: "balustrade", specField: "specBalPrivacy", condition: "!= ''", productMatch: "specBalPrivacy", qtyFormula: "specBalustradeLM", description: null, colourField: null, bottomColourField: null, uom: "LM", sortOrder: 135 },
+        { name: "Balustrade Posts", tabName: "balustrade", specField: "specBalustradePosts", condition: "> 0", productMatch: "specBalPostType", qtyFormula: "specBalustradePosts", description: null, colourField: "specBalPostColour", bottomColourField: null, uom: "ea", sortOrder: 136 },
+        { name: "Balustrade Glass Spigots", tabName: "balustrade", specField: "specBalGlassSpigots", condition: "!= ''", productId: null, productMatch: "specBalGlassSpigots", qtyFormula: "specBalustradeLM", description: null, colourField: "specBalGlassTint", bottomColourField: null, uom: "LM", sortOrder: 137 },
 
         // ── Existing work & demolition ──
         { name: "Remove Gutter / Flashing", tabName: "existing", specField: "specRemoveGutterFlash", condition: "!= ''", productMatch: "specRemoveGutterFlash", qtyFormula: "1", description: null, colourField: null, bottomColourField: null, uom: "ea", sortOrder: 140 },
@@ -876,14 +885,42 @@ export const specItemsRouter = router({
         "Glass Options Allowance",
         "Concrete Pier Holes",
         "Demolition Allowance",
+        "Balustrade (LM)",
       ];
+      const isStaleStarterMapping = (mapping: any, template: any) => {
+        if (template.name === "Electrical GPOs") {
+          return mapping.specField === "specElecGpos"
+            && mapping.qtyFormula === "specElecGpos"
+            && !mapping.productMatch;
+        }
+        if (template.name === "Balustrade Glass Spigots") {
+          return mapping.specField === "specBalGlassSpigots"
+            && mapping.qtyFormula === "specBalGlassSpigots"
+            && !mapping.productMatch;
+        }
+        return false;
+      };
 
       let created = 0;
+      let updated = 0;
       let preserved = 0;
       let retired = 0;
       for (const tmpl of TEMPLATES) {
         const existingMapping = existingByName.get(tmpl.name);
         if (existingMapping) {
+          if (isStaleStarterMapping(existingMapping, tmpl)) {
+            const active = (existingMapping as any).active !== false;
+            await updateSpecMapping((existingMapping as any).id, { ...tmpl, active }, ctx.tenant!.id);
+            await logMappingChange({
+              mappingId: (existingMapping as any).id,
+              userId: ctx.user!.id,
+              userName: ctx.user!.name,
+              action: "updated",
+              snapshot: { ...tmpl, id: (existingMapping as any).id, active, source: "stale_seed_template_repair" },
+            }, ctx.tenant!.id);
+            updated++;
+            continue;
+          }
           preserved++;
           continue;
         }
@@ -913,7 +950,7 @@ export const specItemsRouter = router({
         }
       }
 
-      return { created, updated: 0, preserved, retired, skipped: preserved, total: TEMPLATES.length };
+      return { created, updated, preserved, retired, skipped: preserved, total: TEMPLATES.length };
     }),
 
   // Preview a formula against the most recent quote's spec values

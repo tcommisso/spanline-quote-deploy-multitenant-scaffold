@@ -76,7 +76,7 @@ export interface MarkupRates {
   [category: string]: number; // e.g. { "standard": 2.2, "premium": 2.5 }
 }
 
-const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor|workItemQty|workChecklistQty|checklistQty|workItemQuantity)\b/gi;
+const FORMULA_FIELD_PATTERN = /\b(spec\w+|width|length|area|roofArea|perimeter|roofRunWidth|roofSheetLength|roofSheetQty|roofSheetLM|wallSheetQty|wallSheetLM|productCover|wasteFactor|workItemQty|workChecklistQty|checklistQty|workItemQuantity|gpoQty|gpoOnIwp)\b/gi;
 const WALL_SHEET_COVER_WIDTH_MM = 1140;
 const WORK_CHECKLIST_SPEC_FIELDS = new Set([
   "specWallWorkItems",
@@ -87,6 +87,15 @@ const WORK_CHECKLIST_SPEC_FIELDS = new Set([
   "specElecExtraWork",
   "specFloorWorkItems",
   "specDemolitionWorkItems",
+]);
+const MULTI_SELECT_PRODUCT_MATCH_SPEC_FIELDS = new Set([
+  "specBalGlassType",
+  "specBalGlassSpigots",
+  "specBalPrivacy",
+  "specBalTubularHorizSlat",
+  "specBalTubularVertical",
+  "specBalTubularVertSlat",
+  "specBalWireType",
 ]);
 
 function formatTakeoffNumber(value: number): string {
@@ -216,7 +225,7 @@ function workChecklistLabel(row: Record<string, unknown>): string {
 }
 
 function workChecklistProductMatch(row: Record<string, unknown>, label: string): string {
-  return label || readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]);
+  return readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]) || label;
 }
 
 function workChecklistUnit(row: Record<string, unknown>, fallback: string | null | undefined): string {
@@ -231,7 +240,31 @@ function workChecklistQty(row: Record<string, unknown>): number {
 function shouldCostWorkChecklistRow(row: Record<string, unknown>): boolean {
   if (row.checked !== true) return false;
   const responsibility = readString(row, ["responsibility"]).toLowerCase();
-  return responsibility !== "by client" && responsibility !== "client";
+  if (responsibility === "by client" || responsibility === "client") return false;
+  if (row.client === true || row.byClient === true || row.clientSupplied === true || row.ownerSupplied === true) return false;
+  return true;
+}
+
+function electricalGpoRows(value: unknown): Record<string, unknown>[] {
+  return parseSpecArray(value)
+    .filter(entry => entry && typeof entry === "object" && !Array.isArray(entry)) as Record<string, unknown>[];
+}
+
+function electricalGpoType(row: Record<string, unknown>): string {
+  return readString(row, ["type", "gpoType", "product", "productName"]) || "GPO";
+}
+
+function electricalGpoLocation(row: Record<string, unknown>): string {
+  return readString(row, ["location", "gpoLocation", "installLocation"]);
+}
+
+function electricalGpoQty(row: Record<string, unknown>): number {
+  const qty = readPositiveNumber(row, ["qty", "quantity", "gpoQty", "count", "amount"]);
+  return qty > 0 ? qty : 1;
+}
+
+function electricalGpoOnIwp(row: Record<string, unknown>): boolean {
+  return row.onIwp === true || row.iwp === true || row.installOnIwp === true;
 }
 
 function numberTokens(value: unknown): number[] {
@@ -938,6 +971,152 @@ function buildWorkChecklistItems(
   return items;
 }
 
+function findProductForGpoRow(
+  products: ProductLookup[],
+  mapping: SpecMapping,
+  rowSpecValues: SpecValues,
+): ProductLookup | null {
+  if (mapping.productId) {
+    return products.find(p => p.id === mapping.productId) || null;
+  }
+
+  const type = String(rowSpecValues.gpoType || "");
+  const location = String(rowSpecValues.gpoLocation || "");
+  const configuredMatch = mapping.productMatch
+    ? rowSpecValues[mapping.productMatch]
+    : type;
+  const candidates = Array.from(new Set([
+    configuredMatch,
+    type,
+    location ? `${type} ${location}` : "",
+    location ? `${location} ${type}` : "",
+  ].filter(value => value !== undefined && value !== null && String(value).trim() !== "")));
+
+  for (const matchValue of candidates) {
+    const product = findProductBySpecMatch(products, mapping.tabName, matchValue);
+    if (product) return product;
+  }
+
+  return null;
+}
+
+function buildElectricalGpoItems(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown,
+  products: ProductLookup[],
+  markupRates: MarkupRates,
+  defaultMarkup: number
+): GeneratedItem[] | null {
+  if (mapping.specField !== "specElecGpos") return null;
+
+  const items: GeneratedItem[] = [];
+  for (const row of electricalGpoRows(fieldValue)) {
+    const rowQty = electricalGpoQty(row);
+    if (rowQty <= 0) continue;
+
+    const type = electricalGpoType(row);
+    const location = electricalGpoLocation(row);
+    const onIwp = electricalGpoOnIwp(row);
+    const rowSpecValues: SpecValues = {
+      ...specValues,
+      gpoQty: rowQty,
+      gpoType: type,
+      gpoLocation: location,
+      gpoOnIwp: onIwp ? 1 : 0,
+    };
+
+    const product = findProductForGpoRow(products, mapping, rowSpecValues);
+    const qty = evaluateFormula(mapping.qtyFormula || "gpoQty", rowSpecValues);
+    if (qty <= 0) continue;
+
+    const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+    const resolvedUom = mapping.uom || product?.uom || "ea";
+    const label = [type, location ? `(${location})` : ""].filter(Boolean).join(" ");
+    const description = mapping.description
+      ? `${mapping.description} - ${label}`.trim()
+      : (product?.name || label || mapping.name);
+    const notes = [
+      `GPO takeoff: ${label || mapping.name}`,
+      `qty ${formatTakeoffNumber(rowQty)} ${resolvedUom}`,
+      onIwp ? "install on IWP" : "",
+      product ? `matched product: ${product.name}` : `product match: ${type || "none"}`,
+    ].filter(Boolean).join("; ");
+
+    items.push({
+      specMappingId: mapping.id,
+      productId: product?.id || null,
+      tabName: mapping.tabName,
+      description,
+      colour: mapping.colourField ? String(specValues[mapping.colourField] || "") : "",
+      bottomColour: mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "",
+      uom: resolvedUom,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate,
+      sellRate,
+      notes,
+      source: "auto",
+    });
+  }
+
+  return items;
+}
+
+function buildMultiSelectProductMatchItems(
+  mapping: SpecMapping,
+  specValues: SpecValues,
+  fieldValue: unknown,
+  products: ProductLookup[],
+  markupRates: MarkupRates,
+  defaultMarkup: number
+): GeneratedItem[] | null {
+  if (!mapping.productMatch || !MULTI_SELECT_PRODUCT_MATCH_SPEC_FIELDS.has(mapping.specField)) return null;
+
+  const rawMatchValue = resolveProductMatchValue(mapping, specValues, fieldValue);
+  const matchValues = splitOptionValues(rawMatchValue);
+  if (matchValues.length <= 1) return null;
+
+  const items: GeneratedItem[] = [];
+  for (const matchValue of matchValues) {
+    const optionSpecValues = {
+      ...specValues,
+      [mapping.productMatch]: matchValue,
+      [mapping.specField]: matchValue,
+    };
+    const product = mapping.productId
+      ? products.find(p => p.id === mapping.productId) || null
+      : findProductBySpecMatch(products, mapping.tabName, matchValue);
+    const qty = evaluateFormula(mapping.qtyFormula, optionSpecValues);
+    if (qty <= 0) continue;
+
+    const { costRate, sellRate } = calculateRates(product, markupRates, defaultMarkup);
+    const resolvedUom = mapping.uom || product?.uom || "ea";
+    const description = mapping.description
+      ? `${mapping.description} - ${matchValue}`.trim()
+      : (product?.name || `${mapping.name} - ${matchValue}`);
+
+    items.push({
+      specMappingId: mapping.id,
+      productId: product?.id || null,
+      tabName: mapping.tabName,
+      description,
+      colour: mapping.colourField ? String(specValues[mapping.colourField] || "") : "",
+      bottomColour: mapping.bottomColourField ? String(specValues[mapping.bottomColourField] || "") : "",
+      uom: resolvedUom,
+      qty: Math.round(qty * 1000) / 1000,
+      costRate,
+      sellRate,
+      notes: [
+        `Multi-select takeoff: ${matchValue}`,
+        product ? `matched product: ${product.name}` : `product match: ${matchValue}`,
+      ].filter(Boolean).join("; "),
+      source: "auto",
+    });
+  }
+
+  return items;
+}
+
 /**
  * Main generation function: evaluates all active mappings against spec values
  * and produces quote line items.
@@ -989,6 +1168,32 @@ export function generateItemsFromSpec(
     );
     if (workChecklistItems) {
       items.push(...workChecklistItems);
+      continue;
+    }
+
+    const electricalGpoItems = buildElectricalGpoItems(
+      mapping,
+      specValues,
+      fieldValue,
+      products,
+      markupRates,
+      defaultMarkup,
+    );
+    if (electricalGpoItems) {
+      items.push(...electricalGpoItems);
+      continue;
+    }
+
+    const multiSelectItems = buildMultiSelectProductMatchItems(
+      mapping,
+      specValues,
+      fieldValue,
+      products,
+      markupRates,
+      defaultMarkup,
+    );
+    if (multiSelectItems) {
+      items.push(...multiSelectItems);
       continue;
     }
 
