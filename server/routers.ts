@@ -1076,7 +1076,8 @@ export const appRouter = router({
         if (!quote) throw new Error("Quote not found");
         if (!canAccessQuoteTenantRecord(ctx, quote)) throw new Error("Unauthorized");
         if (!canAccessQuote(quoteAccessUserForContext(ctx), quote)) throw new Error("Unauthorized");
-        if (!quote.siteAddress) throw new Error("Site address is required to calculate travel distance");
+        const siteAddress = normalizeApiAddress(quote.siteAddress);
+        if (!siteAddress) throw new Error("Site address is required to calculate travel distance");
 
         // Get all branch addresses from branches table
         const drizzleDb = (await (await import("./db")).getDb())!;
@@ -1086,44 +1087,53 @@ export const appRouter = router({
         const tenantCondition = tenantScoped(branchesTable.tenantId, tenantId);
         if (tenantCondition) branchConditions.push(tenantCondition);
         const branchRows = await drizzleDb.select().from(branchesTable).where(and(...branchConditions));
-        if (!branchRows.length) throw new Error("No branch addresses configured. Go to Company Settings to add branches.");
+        if (!branchRows.length) throw new Error("No branches configured. Go to Company Settings to add branches.");
+        const travelBranches = branchRows
+          .map((branch) => ({
+            id: branch.id,
+            name: branch.name,
+            address: normalizeApiAddress(branch.address),
+          }))
+          .filter((branch) => branch.address.length > 0);
+        if (!travelBranches.length) {
+          throw new Error("No active branch addresses configured. Go to Company Settings > Branch Offices and add an address for at least one active branch.");
+        }
 
         const { makeRequest } = await import("./_core/map");
 
         // Build origins string with all branches separated by |
-        const origins = branchRows.map(b => b.address).join("|");
+        const origins = travelBranches.map(b => b.address).join("|");
 
         // Call Google Maps Distance Matrix API with all branches as origins
         const distResult = await makeRequest<any>("/maps/api/distancematrix/json", {
           origins,
-          destinations: quote.siteAddress,
+          destinations: siteAddress,
           mode: "driving",
           units: "metric",
         });
 
         if (distResult.status !== "OK" || !distResult.rows?.length) {
-          throw new Error("Could not calculate distance. Check the site address.");
+          throw new Error(`Could not calculate distance. Check the site address: ${siteAddress}`);
         }
 
         // Find the closest branch
-        let closestIdx = 0;
         let closestDistance = Infinity;
-        let closestBranchName = branchRows[0].name;
-        for (let i = 0; i < distResult.rows.length; i++) {
-          const el = distResult.rows[i].elements[0];
-          if (el.status === "OK" && el.distance.value < closestDistance) {
+        let closestBranchName = travelBranches[0].name;
+        let closestElement: any | null = null;
+        for (let i = 0; i < distResult.rows.length && i < travelBranches.length; i++) {
+          const el = distResult.rows[i]?.elements?.[0];
+          if (el?.status === "OK" && el.distance?.value < closestDistance) {
             closestDistance = el.distance.value;
-            closestIdx = i;
-            closestBranchName = branchRows[i].name;
+            closestBranchName = travelBranches[i].name;
+            closestElement = el;
           }
         }
 
-        const element = distResult.rows[closestIdx].elements[0];
-        if (element.status !== "OK") {
-          throw new Error("Route not found between any branch and site address.");
+        if (!closestElement) {
+          throw new Error(`Route not found between any active branch and site address. Check the site address (${siteAddress}) and active branch addresses in Company Settings > Branch Offices.`);
         }
 
-        const distanceKm = Math.round(element.distance.value / 100) / 10; // metres to km, 1dp
+        const distanceKm = Math.round(closestElement.distance.value / 100) / 10; // metres to km, 1dp
 
         // Look up travel band
         const travelBands = await db.getMasterDataByCategory("travel_band", ctx.tenant?.id ?? null);
