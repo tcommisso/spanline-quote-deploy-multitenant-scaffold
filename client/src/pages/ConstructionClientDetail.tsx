@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useSwipeTabs } from "@/hooks/useSwipeTabs";
 import { useLocation, useParams } from "wouter";
 import ContactsSection from "@/components/construction/ContactsSection";
@@ -287,33 +287,40 @@ export default function ConstructionClientDetail() {
   const [, navigate] = useLocation();
   const jobId = Number(params.id);
 
-  const TAB_VALUES = ["overview", "check-measure", "site-plan", "building-authority", "instructions", "progress", "financials", "tasks", "project-plan", "schedule", "activity", "contacts", "email-sms", "subcontracts", "inductions", "variations", "procurement", "plans", "plan-history", "shared-files", "completion"] as const;
+  const TAB_VALUES = ["overview", "contacts", "email-sms", "activity", "shared-files", "financials", "progress", "variations", "procurement", "check-measure", "site-plan", "project-plan", "plans", "plan-history", "building-authority", "instructions", "subcontracts", "inductions", "schedule", "tasks", "completion"] as const;
   const [activeTab, setActiveTab] = useState<string>("overview");
   const isMobile = useIsMobile();
 
   const TAB_CONFIG: { value: string; label: string; icon: any }[] = [
     { value: "overview", label: "Overview", icon: ClipboardList },
-    { value: "check-measure", label: "Check Measure", icon: Clipboard },
-    { value: "site-plan", label: "Site Plan", icon: Ruler },
-    { value: "building-authority", label: "Approvals Activity", icon: Building },
-    { value: "instructions", label: "Instructions", icon: ClipboardCheck },
-    { value: "progress", label: "Progress Invoices", icon: HardHat },
-    { value: "financials", label: "Financials", icon: DollarSign },
-    { value: "tasks", label: "Tasks", icon: Wrench },
-    { value: "project-plan", label: "Project Plan", icon: KanbanSquare },
-    { value: "schedule", label: "Schedule", icon: CalendarDays },
-    { value: "activity", label: "Activity", icon: MessageSquare },
     { value: "contacts", label: "Contacts", icon: Users },
     { value: "email-sms", label: "Email & SMS", icon: Mail },
-    { value: "subcontracts", label: "Subcontracts", icon: FileText },
-    { value: "inductions", label: "Inductions", icon: ClipboardCheck },
+    { value: "activity", label: "Activity", icon: MessageSquare },
+    { value: "shared-files", label: "Shared Files", icon: FolderOpen },
+    { value: "financials", label: "Financials", icon: DollarSign },
+    { value: "progress", label: "Progress Invoices", icon: HardHat },
     { value: "variations", label: "Variations", icon: Shield },
     { value: "procurement", label: "Procurement", icon: Package },
-
+    { value: "check-measure", label: "Check Measure", icon: Clipboard },
+    { value: "site-plan", label: "Site Plan", icon: Ruler },
+    { value: "project-plan", label: "Project Plan", icon: KanbanSquare },
     { value: "plans", label: "Plans", icon: PenTool },
     { value: "plan-history", label: "Plan History", icon: Clock },
-    { value: "shared-files", label: "Shared Files", icon: FolderOpen },
+    { value: "building-authority", label: "Approvals Activity", icon: Building },
+    { value: "instructions", label: "Instructions", icon: ClipboardCheck },
+    { value: "subcontracts", label: "Subcontracts", icon: FileText },
+    { value: "inductions", label: "Inductions", icon: ClipboardCheck },
+    { value: "schedule", label: "Schedule", icon: CalendarDays },
+    { value: "tasks", label: "Tasks", icon: Wrench },
     { value: "completion", label: "Completion", icon: FileCheck },
+  ];
+  const TAB_GROUPS: { label: string; values: (typeof TAB_VALUES)[number][] }[] = [
+    { label: "Admin", values: ["overview", "contacts", "email-sms", "activity", "shared-files"] },
+    { label: "Finance", values: ["financials", "progress", "variations", "procurement"] },
+    { label: "Planning", values: ["check-measure", "site-plan", "project-plan", "plans", "plan-history"] },
+    { label: "Pre-Build", values: ["building-authority", "instructions", "subcontracts", "inductions"] },
+    { label: "Build", values: ["schedule", "tasks"] },
+    { label: "Post-Build", values: ["completion"] },
   ];
   const swipeRef = useSwipeTabs({
     tabs: TAB_VALUES as unknown as string[],
@@ -443,23 +450,46 @@ export default function ConstructionClientDetail() {
               <ChevronDown className="h-5 w-5 shrink-0 opacity-90" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)] p-2">
-            {TAB_CONFIG.map(tab => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.value;
+          <DropdownMenuContent className="max-h-[min(72vh,720px)] w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto p-3">
+            {TAB_GROUPS.map((group, groupIndex) => {
+              const groupIsActive = group.values.includes(activeTab as (typeof TAB_VALUES)[number]);
               return (
-                <DropdownMenuItem
-                  key={tab.value}
-                  onClick={() => setActiveTab(tab.value)}
-                  className={`mb-1 cursor-pointer rounded-md px-3 py-2.5 text-sm font-medium last:mb-0 ${
-                    isActive
-                      ? "bg-primary text-primary-foreground focus:bg-primary focus:text-primary-foreground"
-                      : "hover:bg-muted focus:bg-muted"
-                  }`}
-                >
-                  <Icon className="h-4 w-4 mr-2" />
-                  {tab.label}{tab.value === "tasks" ? ` (${kanbanTasks.length})` : ""}
-                </DropdownMenuItem>
+                <div key={group.label} className={groupIndex === 0 ? "" : "mt-3 border-t pt-3"}>
+                  <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                      {group.label}
+                    </p>
+                    {groupIsActive && (
+                      <Badge variant="secondary" className="h-5 px-2 text-[10px]">
+                        Current
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3">
+                    {group.values.map(value => {
+                      const tab = TAB_CONFIG.find((config) => config.value === value);
+                      if (!tab) return null;
+                      const Icon = tab.icon;
+                      const isActive = activeTab === tab.value;
+                      return (
+                        <DropdownMenuItem
+                          key={tab.value}
+                          onClick={() => setActiveTab(tab.value)}
+                          className={`h-auto min-h-12 cursor-pointer rounded-md px-3 py-2.5 text-sm font-medium ${
+                            isActive
+                              ? "bg-primary text-primary-foreground focus:bg-primary focus:text-primary-foreground"
+                              : "hover:bg-muted focus:bg-muted"
+                          }`}
+                        >
+                          <Icon className="mr-2 h-4 w-4 shrink-0" />
+                          <span className="min-w-0 truncate">
+                            {tab.label}{tab.value === "tasks" ? ` (${kanbanTasks.length})` : ""}
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
+                </div>
               );
             })}
           </DropdownMenuContent>
