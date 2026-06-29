@@ -318,7 +318,7 @@ export default function ConstructionSchedule() {
   const seedHolidays = trpc.constructionSchedule.seedAustralianHolidays.useMutation({
     onSuccess: (result) => {
       availabilityBlocksQuery.refetch();
-      toast.success(`Imported ${result.inserted} holiday calendar days`);
+      toast.success(`Imported ${result.total} holiday calendar days (${result.inserted} new, ${result.updated} refreshed)`);
     },
     onError: (err) => toast.error(err.message),
   });

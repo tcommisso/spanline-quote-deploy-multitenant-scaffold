@@ -41,6 +41,31 @@ function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function tenantIdentityCondition(column: any, tenantId: number | null | undefined) {
+  return tenantId == null ? isNull(column) : eq(column, tenantId);
+}
+
+function parseScheduleDateTime(value: string | null | undefined, fieldName: string, required = false) {
+  if (value == null || value === "") {
+    if (required) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `${fieldName} is required` });
+    }
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `${fieldName} must be a valid date/time` });
+  }
+  return parsed;
+}
+
+function assertScheduleRange(startTime: Date, endTime: Date | null) {
+  if (endTime && endTime < startTime) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "End date must be after the start date" });
+  }
+}
+
 function enumerateDateKeys(startKey: string, endKey: string) {
   const keys: string[] = [];
   const cursor = dateKeyToStorageDate(startKey);
@@ -113,26 +138,46 @@ export const constructionScheduleRouter = router({
       const db = await requireDb();
       const tenantId = tenantIdFromContext(ctx);
       const holidays = generateAustralianHolidays(input.year, (input.jurisdictions || ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[]);
-      if (holidays.length === 0) return { inserted: 0 };
+      if (holidays.length === 0) return { inserted: 0, updated: 0, total: 0 };
 
-      await db.insert(constructionHolidayCalendarDays)
-        .values(holidays.map((holiday) => ({
-          tenantId,
-          dateKey: holiday.dateKey,
-          name: holiday.name,
-          jurisdiction: holiday.jurisdiction,
-          year: holiday.year,
-          source: holiday.source,
-          active: true,
-          createdBy: ctx.user.id,
-        })))
-        .onDuplicateKeyUpdate({
-          set: {
+      let inserted = 0;
+      let updated = 0;
+      for (const holiday of holidays) {
+        const identity = and(
+          tenantIdentityCondition(constructionHolidayCalendarDays.tenantId, tenantId),
+          eq(constructionHolidayCalendarDays.dateKey, holiday.dateKey),
+          eq(constructionHolidayCalendarDays.jurisdiction, holiday.jurisdiction),
+          eq(constructionHolidayCalendarDays.name, holiday.name),
+        );
+        const [existing] = await db.select({ id: constructionHolidayCalendarDays.id })
+          .from(constructionHolidayCalendarDays)
+          .where(identity)
+          .limit(1);
+
+        if (existing?.id) {
+          await db.update(constructionHolidayCalendarDays)
+            .set({
+              year: holiday.year,
+              source: holiday.source,
+              active: true,
+            })
+            .where(eq(constructionHolidayCalendarDays.id, existing.id));
+          updated += 1;
+        } else {
+          await db.insert(constructionHolidayCalendarDays).values({
+            tenantId,
+            dateKey: holiday.dateKey,
+            name: holiday.name,
+            jurisdiction: holiday.jurisdiction,
+            year: holiday.year,
+            source: holiday.source,
             active: true,
-            source: "built_in",
-          },
-        });
-      return { inserted: holidays.length };
+            createdBy: ctx.user.id,
+          });
+          inserted += 1;
+        }
+      }
+      return { inserted, updated, total: holidays.length };
     }),
 
   setHolidayActive: protectedProcedure
@@ -296,13 +341,16 @@ export const constructionScheduleRouter = router({
       const db = await requireDb();
       await requireJobAccess(db, ctx, input.jobId);
       if (input.assignedInstallerId) await requireInstallerAccess(db, ctx, input.assignedInstallerId);
+      const startTime = parseScheduleDateTime(input.startTime, "Start date", true)!;
+      const endTime = parseScheduleDateTime(input.endTime, "End date");
+      assertScheduleRange(startTime, endTime);
       const [result] = await db.insert(constructionScheduleEvents).values({
         tenantId: tenantIdFromContext(ctx),
         jobId: input.jobId,
         title: input.title,
         description: input.description,
-        startTime: new Date(input.startTime),
-        endTime: input.endTime ? new Date(input.endTime) : undefined,
+        startTime,
+        endTime: endTime || undefined,
         allDay: input.allDay || false,
         eventType: input.eventType || "installation",
         assignedInstallerId: input.assignedInstallerId,
@@ -335,15 +383,27 @@ export const constructionScheduleRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       const { id, ...updates } = input;
-      await requireEventAccess(db, ctx, id);
+      const existingEvent = await requireEventAccess(db, ctx, id);
       if (updates.jobId !== undefined) await requireJobAccess(db, ctx, updates.jobId);
       if (updates.assignedInstallerId) await requireInstallerAccess(db, ctx, updates.assignedInstallerId);
       const vals: any = {};
       if (updates.jobId !== undefined) vals.jobId = updates.jobId;
       if (updates.title !== undefined) vals.title = updates.title;
       if (updates.description !== undefined) vals.description = updates.description;
-      if (updates.startTime !== undefined) vals.startTime = new Date(updates.startTime);
-      if (updates.endTime !== undefined) vals.endTime = updates.endTime ? new Date(updates.endTime) : null;
+      let parsedStartTime: Date | undefined;
+      let parsedEndTime: Date | null | undefined;
+      if (updates.startTime !== undefined) {
+        parsedStartTime = parseScheduleDateTime(updates.startTime, "Start date", true)!;
+        vals.startTime = parsedStartTime;
+      }
+      if (updates.endTime !== undefined) {
+        parsedEndTime = parseScheduleDateTime(updates.endTime, "End date");
+        vals.endTime = parsedEndTime;
+      }
+      assertScheduleRange(
+        parsedStartTime || existingEvent.startTime,
+        parsedEndTime !== undefined ? parsedEndTime : existingEvent.endTime,
+      );
       if (updates.allDay !== undefined) vals.allDay = updates.allDay;
       if (updates.eventType !== undefined) vals.eventType = updates.eventType;
       if (updates.assignedInstallerId !== undefined) vals.assignedInstallerId = updates.assignedInstallerId;
