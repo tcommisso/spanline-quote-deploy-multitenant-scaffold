@@ -198,7 +198,6 @@ export default function TradePortalPhotos() {
                 type="file"
                 accept="image/*"
                 multiple
-                capture="environment"
                 onChange={(e) => setFiles(Array.from(e.target.files || []))}
                 className="text-sm"
               />

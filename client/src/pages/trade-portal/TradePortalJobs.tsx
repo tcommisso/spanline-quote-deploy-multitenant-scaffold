@@ -635,7 +635,6 @@ function JobDetailView({ jobId }: { jobId: number }) {
               <Input
                 type="file"
                 accept="image/*,.pdf,.doc,.docx"
-                capture="environment"
                 onChange={(event) => setEvidenceFile(event.target.files?.[0] || null)}
               />
               <p className="text-[11px] text-muted-foreground">Photos, PDFs, and documents up to 15MB.</p>
