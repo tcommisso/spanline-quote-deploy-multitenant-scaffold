@@ -2691,11 +2691,15 @@ export const tradePortalRouter = router({
         .where(eq(cmWorkOrders.jobId, input.jobId))
         .orderBy(desc(cmWorkOrders.createdAt));
 
-      // Get shared files for this job
-      const sharedFiles = await db.select()
-        .from(jobSharedFiles)
-        .where(eq(jobSharedFiles.jobId, input.jobId))
-        .orderBy(desc(jobSharedFiles.createdAt));
+	      // Get shared files for this job
+	      const sharedFiles = await db.select()
+	        .from(jobSharedFiles)
+	        .where(and(
+	          eq(jobSharedFiles.jobId, input.jobId),
+	          sql`COALESCE(${jobSharedFiles.visibleToTradePortal}, ${jobSharedFiles.visible}, 1) != 0`,
+	          sql`COALESCE(${jobSharedFiles.visible}, 1) != 0`,
+	        ))
+	        .orderBy(desc(jobSharedFiles.createdAt));
 
       // Get subcontracts for this trade on this job
       const subcontracts = await db.select()
@@ -2856,10 +2860,14 @@ export const tradePortalRouter = router({
       // Count shared files per job
       const visibleJobIds = jobs.map(j => j.id);
       if (visibleJobIds.length === 0) return [];
-      const allSharedFiles = await db.select({
-        jobId: jobSharedFiles.jobId,
-      }).from(jobSharedFiles)
-        .where(inArray(jobSharedFiles.jobId, visibleJobIds));
+	      const allSharedFiles = await db.select({
+	        jobId: jobSharedFiles.jobId,
+	      }).from(jobSharedFiles)
+	        .where(and(
+	          inArray(jobSharedFiles.jobId, visibleJobIds),
+	          sql`COALESCE(${jobSharedFiles.visibleToTradePortal}, ${jobSharedFiles.visible}, 1) != 0`,
+	          sql`COALESCE(${jobSharedFiles.visible}, 1) != 0`,
+	        ));
 
       const fileCountMap: Record<number, number> = {};
       allSharedFiles.forEach(f => {

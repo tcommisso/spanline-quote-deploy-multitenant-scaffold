@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { tenantAdminProcedure as adminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { eq, desc, and, or } from "drizzle-orm";
+import { eq, desc, and, or, sql } from "drizzle-orm";
 import {
-  portalAccess, portalSessions, portalDocuments, portalDefects, portalMaintenanceRequests,
+  portalAccess, portalSessions, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, portalContacts, portalVariations,
   cpcPlans, cpcSubscriptions, cpcServiceHistory, constructionJobs,
-  portalPhotoComments, quotes, crmLeads, users, tenantMemberships, designAdvisors,
+  portalPhotoComments, jobSharedFiles, quotes, crmLeads, users, tenantMemberships, designAdvisors,
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
 import crypto from "crypto";
@@ -60,6 +60,42 @@ function portalProductConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, portalProducts.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+function clientVisibleSharedFileConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [
+    ...baseConditions,
+    sql`COALESCE(${jobSharedFiles.visibleToClientPortal}, 0) != 0`,
+  ];
+  appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function sharedFileDocumentSelect() {
+  return {
+    id: jobSharedFiles.id,
+    constructionJobId: jobSharedFiles.jobId,
+    title: sql<string>`COALESCE(NULLIF(${jobSharedFiles.clientPortalTitle}, ''), ${jobSharedFiles.fileName})`,
+    category: sql<string>`COALESCE(NULLIF(${jobSharedFiles.clientPortalCategory}, ''), ${jobSharedFiles.category}, 'other')`,
+    fileUrl: jobSharedFiles.fileUrl,
+    fileKey: jobSharedFiles.fileKey,
+    mimeType: jobSharedFiles.fileType,
+    uploadedBy: jobSharedFiles.uploadedBy,
+    createdAt: jobSharedFiles.createdAt,
+  };
+}
+
+async function assertSharedFileDocumentAccess(ctx: any, fileId: number) {
+  const db = await getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  const [row] = await db
+    .select({ file: jobSharedFiles })
+    .from(jobSharedFiles)
+    .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+    .where(and(...clientVisibleSharedFileConditions(ctx, eq(jobSharedFiles.id, fileId))))
+    .limit(1);
+  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
+  return { db, file: row.file };
 }
 
 export const adminPortalRouter = router({
@@ -264,25 +300,23 @@ export const adminPortalRouter = router({
 
   // ─── Portal Documents Management ──────────────────────────────────────────
 
-  listDocuments: adminProcedure
-    .input(z.object({ jobId: z.number().optional() }).optional())
-    .query(async ({ ctx, input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      if (input?.jobId) {
-        await assertPortalJobAccess(ctx, input.jobId);
-        return db.select().from(portalDocuments)
-          .where(eq(portalDocuments.constructionJobId, input.jobId))
-          .orderBy(desc(portalDocuments.createdAt));
-      }
-      const conditions: any[] = [];
-      appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
-      const rows = await db.select({ document: portalDocuments }).from(portalDocuments)
-        .innerJoin(constructionJobs, eq(portalDocuments.constructionJobId, constructionJobs.id))
-        .where(conditions.length ? and(...conditions) : undefined)
-        .orderBy(desc(portalDocuments.createdAt));
-      return rows.map(r => r.document);
-    }),
+	  listDocuments: adminProcedure
+	    .input(z.object({ jobId: z.number().optional() }).optional())
+	    .query(async ({ ctx, input }) => {
+	      const db = await getDb();
+	      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+	      if (input?.jobId) {
+	        await assertPortalJobAccess(ctx, input.jobId);
+	        return db.select(sharedFileDocumentSelect()).from(jobSharedFiles)
+	          .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+	          .where(and(...clientVisibleSharedFileConditions(ctx, eq(jobSharedFiles.jobId, input.jobId))))
+	          .orderBy(desc(jobSharedFiles.createdAt));
+	      }
+	      return db.select(sharedFileDocumentSelect()).from(jobSharedFiles)
+	        .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+	        .where(and(...clientVisibleSharedFileConditions(ctx)))
+	        .orderBy(desc(jobSharedFiles.createdAt));
+	    }),
 
   uploadDocument: adminProcedure
     .input(z.object({
@@ -293,19 +327,24 @@ export const adminPortalRouter = router({
       fileKey: z.string().optional(),
       mimeType: z.string().optional(),
     }))
-    .mutation(async ({ input, ctx }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      await assertPortalJobAccess(ctx, input.constructionJobId);
-      const [result] = await db.insert(portalDocuments).values({
-        constructionJobId: input.constructionJobId,
-        title: input.title,
-        category: input.category,
-        fileUrl: input.fileUrl,
-        fileKey: input.fileKey || null,
-        mimeType: input.mimeType || null,
-        uploadedBy: ctx.user!.id,
-      }).$returningId();
+	    .mutation(async ({ input, ctx }) => {
+	      const db = await getDb();
+	      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+	      await assertPortalJobAccess(ctx, input.constructionJobId);
+	      const [result] = await db.insert(jobSharedFiles).values({
+	        jobId: input.constructionJobId,
+	        fileName: input.title,
+	        fileUrl: input.fileUrl,
+	        fileKey: input.fileKey || null,
+	        fileType: input.mimeType || null,
+	        category: input.category,
+	        uploadedBy: ctx.user!.id,
+	        visible: 0,
+	        visibleToTradePortal: 0,
+	        visibleToClientPortal: 1,
+	        clientPortalTitle: input.title,
+	        clientPortalCategory: input.category,
+	      }).$returningId();
 
       // Push notification to client portal users
       triggerPushDocumentUploaded(input.constructionJobId, input.title);
@@ -313,84 +352,75 @@ export const adminPortalRouter = router({
       return { id: result.id };
     }),
 
-  deleteDocument: adminProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(async ({ ctx, input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const conditions = [eq(portalDocuments.id, input.id)];
-      appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
-      const [doc] = await db.select({ id: portalDocuments.id })
-        .from(portalDocuments)
-        .innerJoin(constructionJobs, eq(portalDocuments.constructionJobId, constructionJobs.id))
-        .where(and(...conditions));
-      if (!doc) throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
-      await db.delete(portalDocuments).where(eq(portalDocuments.id, input.id));
-      return { success: true };
-    }),
+	  deleteDocument: adminProcedure
+	    .input(z.object({ id: z.number() }))
+	    .mutation(async ({ ctx, input }) => {
+	      const { db } = await assertSharedFileDocumentAccess(ctx, input.id);
+	      await db.update(jobSharedFiles)
+	        .set({ visibleToClientPortal: 0 })
+	        .where(eq(jobSharedFiles.id, input.id));
+	      return { success: true };
+	    }),
 
   // ─── Photo Comments (Admin Side) ─────────────────────────────────────────
 
-  getPhotoComments: adminProcedure
-    .input(z.object({ documentId: z.number() }))
-    .query(async ({ input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      return db.select()
-        .from(portalPhotoComments)
-        .where(eq(portalPhotoComments.documentId, input.documentId))
-        .orderBy(desc(portalPhotoComments.createdAt));
-    }),
+	  getPhotoComments: adminProcedure
+	    .input(z.object({ documentId: z.number() }))
+	    .query(async ({ ctx, input }) => {
+	      const { db } = await assertSharedFileDocumentAccess(ctx, input.documentId);
+	      return db.select()
+	        .from(portalPhotoComments)
+	        .where(or(
+	          eq(portalPhotoComments.sharedFileId, input.documentId),
+	          eq(portalPhotoComments.documentId, input.documentId),
+	        ))
+	        .orderBy(desc(portalPhotoComments.createdAt));
+	    }),
 
   replyToPhotoComment: adminProcedure
     .input(z.object({
       documentId: z.number(),
       comment: z.string().min(1).max(500),
     }))
-    .mutation(async ({ ctx, input }) => {
-      const db = await getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const [result] = await db.insert(portalPhotoComments).values({
-        documentId: input.documentId,
-        authorName: ctx.user!.name || "Admin",
-        authorType: "admin",
-        comment: input.comment,
+	    .mutation(async ({ ctx, input }) => {
+	      const { db, file } = await assertSharedFileDocumentAccess(ctx, input.documentId);
+	      const [result] = await db.insert(portalPhotoComments).values({
+	        documentId: null,
+	        sharedFileId: input.documentId,
+	        authorName: ctx.user!.name || "Admin",
+	        authorType: "admin",
+	        comment: input.comment,
         reaction: null,
       });
 
       // Send email notification to client
-      try {
-        // Find the document to get the job context
-        const [doc] = await db.select().from(portalDocuments)
-          .where(eq(portalDocuments.id, input.documentId));
-        if (doc?.constructionJobId) {
-          // Find the portal access for this job to get client email
-          const [access] = await db.select().from(portalAccess)
-            .where(and(
-              eq(portalAccess.constructionJobId, doc.constructionJobId),
-              eq(portalAccess.isActive, true)
-            ));
-          if (access?.clientEmail) {
-            const adminName = ctx.user!.name || "Your project team";
-            await sendNotificationEmail({
-              to: access.clientEmail,
-              subject: `New reply on your photo - ${doc.title || "Project Photo"}`,
-              htmlBody: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                  <h2 style="color: #1e293b; margin-bottom: 16px;">Hi ${access.clientName},</h2>
-                  <p style="color: #334155; line-height: 1.6;">${adminName} has replied to your comment on a photo in your project portal:</p>
-                  <div style="background: #f1f5f9; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 16px 0; border-radius: 4px;">
-                    <p style="color: #1e293b; margin: 0; font-style: italic;">&ldquo;${input.comment}&rdquo;</p>
-                  </div>
-                  <p style="color: #334155; line-height: 1.6;">Log in to your Client Portal to view the full conversation and reply.</p>
-                  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-                  <p style="color: #64748b; font-size: 12px;">This notification was sent from Altaspan. If you no longer wish to receive these emails, you can update your preferences in the Client Portal.</p>
-                </div>
-              `,
-            });
-          }
-        }
-      } catch (emailErr) {
+	      try {
+	        const [access] = await db.select().from(portalAccess)
+	          .where(and(
+	            eq(portalAccess.constructionJobId, file.jobId),
+	            eq(portalAccess.isActive, true)
+	          ));
+	        if (access?.clientEmail) {
+	          const adminName = ctx.user!.name || "Your project team";
+	          const title = file.clientPortalTitle || file.fileName || "Project Photo";
+	          await sendNotificationEmail({
+	            to: access.clientEmail,
+	            subject: `New reply on your photo - ${title}`,
+	            htmlBody: `
+	              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+	                <h2 style="color: #1e293b; margin-bottom: 16px;">Hi ${access.clientName},</h2>
+	                <p style="color: #334155; line-height: 1.6;">${adminName} has replied to your comment on a photo in your project portal:</p>
+	                <div style="background: #f1f5f9; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 16px 0; border-radius: 4px;">
+	                  <p style="color: #1e293b; margin: 0; font-style: italic;">&ldquo;${input.comment}&rdquo;</p>
+	                </div>
+	                <p style="color: #334155; line-height: 1.6;">Log in to your Client Portal to view the full conversation and reply.</p>
+	                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+	                <p style="color: #64748b; font-size: 12px;">This notification was sent from Altaspan. If you no longer wish to receive these emails, you can update your preferences in the Client Portal.</p>
+	              </div>
+	            `,
+	          });
+	        }
+	      } catch (emailErr) {
         console.error("[PhotoComment] Failed to send email notification:", emailErr);
         // Don't fail the mutation if email fails
       }

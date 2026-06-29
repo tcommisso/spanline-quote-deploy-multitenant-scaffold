@@ -2,18 +2,19 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb, createSmsDeliveryLog, getSmsDeliveryLogsByJob } from "./db";
-import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, quotes, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, quotes, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, portalPhotoComments, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { eq, desc, and, sql, gte, lt, notInArray, or, isNull, like, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
 import { notifyJobStageChanged, notifyJobStatusChanged, fireJobCompletionReviewWebhook } from "./construction-notifications";
 import { sendNotificationEmail } from "./email";
 import { generateWorkOrderPdf } from "./construction-pdf";
-import { triggerPushSharedFileUploaded } from "./push-triggers";
+import { triggerPushDocumentUploaded, triggerPushSharedFileUploaded } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+const CLIENT_PORTAL_DOCUMENT_CATEGORIES = ["contract", "plans", "variation", "invoice", "photos", "other"] as const;
 
 function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
   conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
@@ -2254,20 +2255,24 @@ export const constructionRouter = router({
           .where(eq(jobSharedFiles.jobId, input.jobId))
           .orderBy(desc(jobSharedFiles.createdAt));
       }),
-    upload: protectedProcedure
-      .input(z.object({
-        jobId: z.number(),
-        fileName: z.string(),
-        fileBase64: z.string(),
-        fileType: z.string().optional(),
-        fileSize: z.number().optional(),
-        category: z.string().optional(),
-        description: z.string().optional(),
-      }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        await assertJobAccess(db, ctx, input.jobId);
+	    upload: protectedProcedure
+	      .input(z.object({
+	        jobId: z.number(),
+	        fileName: z.string(),
+	        fileBase64: z.string(),
+	        fileType: z.string().optional(),
+	        fileSize: z.number().optional(),
+	        category: z.string().optional(),
+	        description: z.string().optional(),
+	        visibleToTradePortal: z.boolean().default(true),
+	        visibleToClientPortal: z.boolean().default(false),
+	        clientPortalTitle: z.string().optional(),
+	        clientPortalCategory: z.enum(CLIENT_PORTAL_DOCUMENT_CATEGORIES).optional(),
+	      }))
+	      .mutation(async ({ ctx, input }) => {
+	        const db = await getDb();
+	        if (!db) throw new Error("Database unavailable");
+	        await assertJobAccess(db, ctx, input.jobId);
         const buffer = Buffer.from(input.fileBase64, "base64");
         const suffix = Math.random().toString(36).slice(2, 8);
         const fileKey = `shared-files/job-${input.jobId}/${suffix}-${input.fileName}`;
@@ -2278,64 +2283,112 @@ export const constructionRouter = router({
           fileUrl: url,
           fileKey,
           fileType: input.fileType || null,
-          fileSize: input.fileSize || null,
-          category: input.category || null,
-          description: input.description || null,
-          uploadedBy: ctx.user.id,
-        });
+	          fileSize: input.fileSize || null,
+	          category: input.category || null,
+	          description: input.description || null,
+	          uploadedBy: ctx.user.id,
+	          visible: input.visibleToTradePortal ? 1 : 0,
+	          visibleToTradePortal: input.visibleToTradePortal ? 1 : 0,
+	          visibleToClientPortal: input.visibleToClientPortal ? 1 : 0,
+	          clientPortalTitle: input.visibleToClientPortal ? (input.clientPortalTitle?.trim() || input.fileName) : null,
+	          clientPortalCategory: input.visibleToClientPortal ? (input.clientPortalCategory || "other") : null,
+	        });
 
-        // Push notification to trade portal users assigned to this job
-        triggerPushSharedFileUploaded(input.jobId, input.fileName);
+	        if (input.visibleToTradePortal) {
+	          triggerPushSharedFileUploaded(input.jobId, input.fileName);
+	        }
+	        if (input.visibleToClientPortal) {
+	          triggerPushDocumentUploaded(input.jobId, input.clientPortalTitle?.trim() || input.fileName);
+	        }
 
-        return { id: result.insertId, url };
-      }),
+	        return { id: result.insertId, url };
+	      }),
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        await assertSharedFileAccess(db, ctx, input.id);
-        await db.delete(jobSharedFiles).where(eq(jobSharedFiles.id, input.id));
-        return { success: true };
-      }),
-    toggleVisibility: protectedProcedure
-      .input(z.object({ id: z.number(), visible: z.boolean() }))
+	        const db = await getDb();
+	        if (!db) throw new Error("Database unavailable");
+	        await assertSharedFileAccess(db, ctx, input.id);
+	        await db.delete(portalPhotoComments).where(eq(portalPhotoComments.sharedFileId, input.id));
+	        await db.delete(jobSharedFiles).where(eq(jobSharedFiles.id, input.id));
+	        return { success: true };
+	      }),
+	    toggleVisibility: protectedProcedure
+	      .input(z.object({ id: z.number(), visible: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        await assertSharedFileAccess(db, ctx, input.id);
-        await db.update(jobSharedFiles)
-          .set({ visible: input.visible ? 1 : 0 })
-          .where(eq(jobSharedFiles.id, input.id));
-        return { success: true };
-      }),
-    // Share a file (typically a photo) to the Client Portal Documents section
-    shareToClientPortal: protectedProcedure
-      .input(z.object({
-        fileId: z.number(),
-        title: z.string().min(1),
+	        if (!db) throw new Error("Database unavailable");
+	        await assertSharedFileAccess(db, ctx, input.id);
+	        await db.update(jobSharedFiles)
+	          .set({ visible: input.visible ? 1 : 0, visibleToTradePortal: input.visible ? 1 : 0 })
+	          .where(eq(jobSharedFiles.id, input.id));
+	        return { success: true };
+	      }),
+	    updatePortalVisibility: protectedProcedure
+	      .input(z.object({
+	        id: z.number(),
+	        visibleToTradePortal: z.boolean().optional(),
+	        visibleToClientPortal: z.boolean().optional(),
+	        clientPortalTitle: z.string().optional(),
+	        clientPortalCategory: z.enum(CLIENT_PORTAL_DOCUMENT_CATEGORIES).optional(),
+	      }))
+	      .mutation(async ({ ctx, input }) => {
+	        const db = await getDb();
+	        if (!db) throw new Error("Database unavailable");
+	        const file = await assertSharedFileAccess(db, ctx, input.id);
+	        const updates: Record<string, any> = {};
+
+	        if (input.visibleToTradePortal !== undefined) {
+	          updates.visible = input.visibleToTradePortal ? 1 : 0;
+	          updates.visibleToTradePortal = input.visibleToTradePortal ? 1 : 0;
+	        }
+	        if (input.visibleToClientPortal !== undefined) {
+	          updates.visibleToClientPortal = input.visibleToClientPortal ? 1 : 0;
+	        }
+	        if (input.clientPortalTitle !== undefined) {
+	          updates.clientPortalTitle = input.clientPortalTitle.trim() || file.fileName;
+	        } else if (input.visibleToClientPortal === true && !file.clientPortalTitle) {
+	          updates.clientPortalTitle = file.fileName;
+	        }
+	        if (input.clientPortalCategory !== undefined) {
+	          updates.clientPortalCategory = input.clientPortalCategory;
+	        } else if (input.visibleToClientPortal === true && !file.clientPortalCategory) {
+	          updates.clientPortalCategory = file.category || "other";
+	        }
+
+	        if (Object.keys(updates).length > 0) {
+	          await db.update(jobSharedFiles)
+	            .set(updates)
+	            .where(eq(jobSharedFiles.id, input.id));
+	        }
+	        if (input.visibleToClientPortal === true && !file.visibleToClientPortal) {
+	          triggerPushDocumentUploaded(file.jobId, updates.clientPortalTitle || file.clientPortalTitle || file.fileName);
+	        }
+	        return { success: true };
+	      }),
+	    // Share a file (typically a photo) to the Client Portal Documents section
+	    shareToClientPortal: protectedProcedure
+	      .input(z.object({
+	        fileId: z.number(),
+	        title: z.string().min(1),
         category: z.enum(["contract", "plans", "variation", "invoice", "photos", "other"]).default("photos"),
       }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        // Get the shared file
-        const file = await assertSharedFileAccess(db, ctx, input.fileId);
-
-        // Insert into portal_documents for the client portal
-        const { portalDocuments } = await import("../drizzle/schema");
-        const [result] = await db.insert(portalDocuments).values({
-          constructionJobId: file.jobId,
-          title: input.title,
-          category: input.category,
-          fileUrl: file.fileUrl,
-          fileKey: file.fileKey || null,
-          mimeType: file.fileType || null,
-          uploadedBy: ctx.user.id,
-        }).$returningId();
-
-        return { id: result.id };
-      }),
+	      .mutation(async ({ ctx, input }) => {
+	        const db = await getDb();
+	        if (!db) throw new Error("Database unavailable");
+	        const file = await assertSharedFileAccess(db, ctx, input.fileId);
+	        await db.update(jobSharedFiles)
+	          .set({
+	            visibleToClientPortal: 1,
+	            clientPortalTitle: input.title,
+	            clientPortalCategory: input.category,
+	          })
+	          .where(eq(jobSharedFiles.id, input.fileId));
+	        if (!file.visibleToClientPortal) {
+	          triggerPushDocumentUploaded(file.jobId, input.title);
+	        }
+	        return { id: input.fileId };
+	      }),
     // Bulk share photos to client portal
     bulkShareToClientPortal: protectedProcedure
       .input(z.object({
@@ -2343,11 +2396,10 @@ export const constructionRouter = router({
         fileIds: z.array(z.number()).min(1),
         category: z.enum(["contract", "plans", "variation", "invoice", "photos", "other"]).default("photos"),
       }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        const { portalDocuments } = await import("../drizzle/schema");
-        await assertJobAccess(db, ctx, input.jobId);
+	      .mutation(async ({ ctx, input }) => {
+	        const db = await getDb();
+	        if (!db) throw new Error("Database unavailable");
+	        await assertJobAccess(db, ctx, input.jobId);
 
         // Get all selected files
         const fileConditions = [
@@ -2360,22 +2412,21 @@ export const constructionRouter = router({
           .where(and(...fileConditions));
         const files = rows.map(r => r.file);
 
-        if (files.length === 0) throw new Error("No files found");
+	        if (files.length === 0) throw new Error("No files found");
+	        const ids = files.map(f => f.id);
+	        await db.update(jobSharedFiles)
+	          .set({
+	            visibleToClientPortal: 1,
+	            clientPortalTitle: sql`COALESCE(${jobSharedFiles.clientPortalTitle}, ${jobSharedFiles.fileName})`,
+	            clientPortalCategory: input.category,
+	          } as any)
+	          .where(inArray(jobSharedFiles.id, ids));
 
-        // Insert each as a portal document
-        const values = files.map(f => ({
-          constructionJobId: input.jobId,
-          title: f.fileName,
-          category: input.category,
-          fileUrl: f.fileUrl,
-          fileKey: f.fileKey || null,
-          mimeType: f.fileType || null,
-          uploadedBy: ctx.user.id,
-        }));
+	        files
+	          .filter(f => !f.visibleToClientPortal)
+	          .forEach(f => triggerPushDocumentUploaded(input.jobId, f.clientPortalTitle || f.fileName));
 
-        await db.insert(portalDocuments).values(values);
-
-        return { shared: files.length };
-      }),
+	        return { shared: files.length };
+	      }),
   }),
 });

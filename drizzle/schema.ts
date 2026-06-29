@@ -2044,13 +2044,17 @@ export type InsertPortalDocument = typeof portalDocuments.$inferInsert;
 // Portal Photo Comments (client reactions/comments on shared photos)
 export const portalPhotoComments = mysqlTable("portal_photo_comments", {
   id: int("id").autoincrement().primaryKey(),
-  documentId: int("documentId").notNull().references(() => portalDocuments.id, { onDelete: "cascade" }),
+  documentId: int("documentId"),
+  sharedFileId: int("sharedFileId"),
   authorName: varchar("authorName", { length: 255 }).notNull(),
   authorType: mysqlEnum("authorType", ["client", "admin"]).notNull().default("client"),
   comment: text("comment").notNull(),
   reaction: mysqlEnum("reaction", ["love", "thumbsup", "question"]),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_portal_photo_comments_document").on(table.documentId),
+  index("idx_portal_photo_comments_shared_file").on(table.sharedFileId),
+]);
 export type PortalPhotoComment = typeof portalPhotoComments.$inferSelect;
 export type InsertPortalPhotoComment = typeof portalPhotoComments.$inferInsert;
 
@@ -3606,8 +3610,15 @@ export const jobSharedFiles = mysqlTable("job_shared_files", {
   description: text("description"),
   uploadedBy: int("uploadedBy").references(() => users.id),
   visible: tinyint("visible").default(1),
+  visibleToTradePortal: tinyint("visibleToTradePortal").default(1),
+  visibleToClientPortal: tinyint("visibleToClientPortal").default(0),
+  clientPortalTitle: varchar("clientPortalTitle", { length: 255 }),
+  clientPortalCategory: varchar("clientPortalCategory", { length: 64 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("idx_job_shared_files_job_trade").on(table.jobId, table.visibleToTradePortal),
+  index("idx_job_shared_files_job_client").on(table.jobId, table.visibleToClientPortal),
+]);
 export type JobSharedFile = typeof jobSharedFiles.$inferSelect;
 export type InsertJobSharedFile = typeof jobSharedFiles.$inferInsert;
 

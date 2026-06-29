@@ -1,12 +1,12 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb, getTenantBrandingSettings } from "./db";
-import { eq, and, desc, or, gt } from "drizzle-orm";
+import { eq, and, desc, or, gt, sql } from "drizzle-orm";
 import {
   portalAccess, portalSessions, portalContacts, portalDocuments,
   portalVariations, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, cpcPlans, cpcSubscriptions, cpcServiceHistory,
-  constructionJobs, constructionProgress, clientActivities, xeroProjectMappings,
+  constructionJobs, constructionProgress, clientActivities, xeroProjectMappings, jobSharedFiles,
   portalPhotoComments,
   approvalProjects, approvalLodgements, approvalInspections, approvalTasks, approvalRfis,
   patioPlanner,
@@ -21,6 +21,7 @@ import { assertRateLimit } from "./_core/rateLimit";
 import { buildTrustedAppUrl, buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from "./_core/tenant-scope";
 import { sendNotificationEmail } from "./email";
+import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 
 // ─── Portal Context ─────────────────────────────────────────────────────────
 // Portal now uses the main tRPC instance and reads portalAccess from the shared context
@@ -60,6 +61,27 @@ function portalAccessConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+function clientPortalSharedFileConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [
+    ...baseConditions,
+    eq(jobSharedFiles.jobId, ctx.portalAccess.constructionJobId),
+    sql`COALESCE(${jobSharedFiles.visibleToClientPortal}, 0) != 0`,
+  ];
+  appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+async function assertClientPortalSharedFile(db: any, ctx: any, fileId: number) {
+  const [row] = await db
+    .select({ file: jobSharedFiles })
+    .from(jobSharedFiles)
+    .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+    .where(and(...clientPortalSharedFileConditions(ctx, eq(jobSharedFiles.id, fileId))))
+    .limit(1);
+  if (!row) throw new TRPCError({ code: "NOT_FOUND" });
+  return row.file;
+}
+
 function portalTenantId(ctx: any) {
   return ctx.portalAccess?.tenantId ?? tenantIdFromContext(ctx);
 }
@@ -96,7 +118,7 @@ export const portalRouter = router({
   }),
 
   // ─── Auth ───────────────────────────────────────────────────────────────────
-  
+
   requestMagicLink: publicPortalProcedure
     .input(z.object({ email: z.string().email(), origin: z.string().optional() }))
     .mutation(async ({ ctx, input }) => {
@@ -139,7 +161,7 @@ export const portalRouter = router({
         `/portal/login?magic=${encodeURIComponent(magicLinkToken)}`,
         input.origin
       );
-      
+
       try {
         const result = await sendNotificationEmail({
           tenantId: access.tenantId,
@@ -293,60 +315,64 @@ export const portalRouter = router({
 
   // ─── Documents ──────────────────────────────────────────────────────────────
 
-  getDocuments: protectedPortalProcedure.query(async ({ ctx }) => {
-    const db = await requireDb();
-    return db
-      .select()
-      .from(portalDocuments)
-      .where(eq(portalDocuments.constructionJobId, ctx.portalAccess.constructionJobId))
-      .orderBy(desc(portalDocuments.createdAt));
-  }),
+	  getDocuments: protectedPortalProcedure.query(async ({ ctx }) => {
+	    const db = await requireDb();
+	    const documents = await db
+	      .select({
+	        id: jobSharedFiles.id,
+	        constructionJobId: jobSharedFiles.jobId,
+	        title: sql<string>`COALESCE(NULLIF(${jobSharedFiles.clientPortalTitle}, ''), ${jobSharedFiles.fileName})`,
+	        category: sql<string>`COALESCE(NULLIF(${jobSharedFiles.clientPortalCategory}, ''), ${jobSharedFiles.category}, 'other')`,
+	        fileUrl: jobSharedFiles.fileUrl,
+	        fileKey: jobSharedFiles.fileKey,
+	        mimeType: jobSharedFiles.fileType,
+	        uploadedBy: jobSharedFiles.uploadedBy,
+	        createdAt: jobSharedFiles.createdAt,
+	      })
+	      .from(jobSharedFiles)
+	      .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+	      .where(and(...clientPortalSharedFileConditions(ctx)))
+	      .orderBy(desc(jobSharedFiles.createdAt));
+
+	    return Promise.all(documents.map(async (document) => ({
+	      ...document,
+	      fileUrl: (await resolveStorageUrlForPortal(document.fileUrl)) || document.fileUrl,
+	    })));
+	  }),
 
   // ─── Photo Comments ─────────────────────────────────────────────────────────
 
-  getPhotoComments: protectedPortalProcedure
-    .input(z.object({ documentId: z.number() }))
-    .query(async ({ ctx, input }) => {
-      const db = await requireDb();
-      // Verify the document belongs to this portal's job
-      const [doc] = await db.select({ id: portalDocuments.id })
-        .from(portalDocuments)
-        .where(and(
-          eq(portalDocuments.id, input.documentId),
-          eq(portalDocuments.constructionJobId, ctx.portalAccess.constructionJobId),
-        ))
-        .limit(1);
-      if (!doc) throw new TRPCError({ code: "NOT_FOUND" });
+	  getPhotoComments: protectedPortalProcedure
+	    .input(z.object({ documentId: z.number() }))
+	    .query(async ({ ctx, input }) => {
+	      const db = await requireDb();
+	      await assertClientPortalSharedFile(db, ctx, input.documentId);
 
-      return db.select()
-        .from(portalPhotoComments)
-        .where(eq(portalPhotoComments.documentId, input.documentId))
-        .orderBy(desc(portalPhotoComments.createdAt));
-    }),
+	      return db.select()
+	        .from(portalPhotoComments)
+	        .where(or(
+	          eq(portalPhotoComments.sharedFileId, input.documentId),
+	          eq(portalPhotoComments.documentId, input.documentId),
+	        ))
+	        .orderBy(desc(portalPhotoComments.createdAt));
+	    }),
 
   addPhotoComment: protectedPortalProcedure
     .input(z.object({
       documentId: z.number(),
       comment: z.string().min(1).max(500),
       reaction: z.enum(["love", "thumbsup", "question"]).optional(),
-    }))
-    .mutation(async ({ ctx, input }) => {
-      const db = await requireDb();
-      // Verify the document belongs to this portal's job
-      const [doc] = await db.select({ id: portalDocuments.id })
-        .from(portalDocuments)
-        .where(and(
-          eq(portalDocuments.id, input.documentId),
-          eq(portalDocuments.constructionJobId, ctx.portalAccess.constructionJobId),
-        ))
-        .limit(1);
-      if (!doc) throw new TRPCError({ code: "NOT_FOUND" });
+	    }))
+	    .mutation(async ({ ctx, input }) => {
+	      const db = await requireDb();
+	      await assertClientPortalSharedFile(db, ctx, input.documentId);
 
-      const [result] = await db.insert(portalPhotoComments).values({
-        documentId: input.documentId,
-        authorName: ctx.portalAccess.clientName || "Client",
-        authorType: "client",
-        comment: input.comment,
+	      const [result] = await db.insert(portalPhotoComments).values({
+	        documentId: null,
+	        sharedFileId: input.documentId,
+	        authorName: ctx.portalAccess.clientName || "Client",
+	        authorType: "client",
+	        comment: input.comment,
         reaction: input.reaction || null,
       });
 
@@ -370,17 +396,23 @@ export const portalRouter = router({
         .from(portalPhotoComments)
         .where(eq(portalPhotoComments.id, input.commentId))
         .limit(1);
-      if (!comment) throw new TRPCError({ code: "NOT_FOUND" });
+	      if (!comment) throw new TRPCError({ code: "NOT_FOUND" });
 
-      // Verify the document belongs to this portal
-      const [doc] = await db.select({ id: portalDocuments.id })
-        .from(portalDocuments)
-        .where(and(
-          eq(portalDocuments.id, comment.documentId),
-          eq(portalDocuments.constructionJobId, ctx.portalAccess.constructionJobId),
-        ))
-        .limit(1);
-      if (!doc) throw new TRPCError({ code: "FORBIDDEN" });
+	      // Verify the document belongs to this portal
+	      if (comment.sharedFileId) {
+	        await assertClientPortalSharedFile(db, ctx, comment.sharedFileId);
+	      } else if (comment.documentId) {
+	        const [doc] = await db.select({ id: portalDocuments.id })
+	          .from(portalDocuments)
+	          .where(and(
+	            eq(portalDocuments.id, comment.documentId),
+	            eq(portalDocuments.constructionJobId, ctx.portalAccess.constructionJobId),
+	          ))
+	          .limit(1);
+	        if (!doc) throw new TRPCError({ code: "FORBIDDEN" });
+	      } else {
+	        throw new TRPCError({ code: "FORBIDDEN" });
+	      }
 
       await db.delete(portalPhotoComments)
         .where(eq(portalPhotoComments.id, input.commentId));
@@ -900,18 +932,15 @@ export const portalRouter = router({
     const access = ctx.portalAccess;
     const jobId = access.constructionJobId;
 
-    // Count documents newer than last viewed
-    const docsResult = await db
-      .select()
-      .from(portalDocuments)
-      .where(
-        access.lastViewedDocumentsAt
-          ? and(
-              eq(portalDocuments.constructionJobId, jobId),
-              gt(portalDocuments.createdAt, access.lastViewedDocumentsAt)
-            )
-          : eq(portalDocuments.constructionJobId, jobId)
-      );
+	    // Count documents newer than last viewed
+	    const docsResult = await db
+	      .select()
+	      .from(jobSharedFiles)
+	      .innerJoin(constructionJobs, eq(jobSharedFiles.jobId, constructionJobs.id))
+	      .where(and(...clientPortalSharedFileConditions(
+	        ctx,
+	        access.lastViewedDocumentsAt ? gt(jobSharedFiles.createdAt, access.lastViewedDocumentsAt) : sql`1 = 1`,
+	      )));
     const newDocsCount = docsResult.length;
 
     // Count variations newer than last viewed invoices (invoices tab shows payment schedule + variations)
