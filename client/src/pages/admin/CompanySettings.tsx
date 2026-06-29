@@ -59,14 +59,12 @@ const emptyBranchForm = {
   defaultFinanceStaffId: NO_DEFAULT_CONTACT,
 };
 
-function staffSelectValue(staffId?: number | null) {
-  return staffId ? String(staffId) : NO_DEFAULT_CONTACT;
+function contactSelectValue(staffId?: number | null) {
+  return staffId ? `staff:${staffId}` : NO_DEFAULT_CONTACT;
 }
 
-function staffIdFromSelect(value: string) {
-  if (!value || value === NO_DEFAULT_CONTACT) return null;
-  const staffId = Number(value);
-  return Number.isFinite(staffId) ? staffId : null;
+function contactSelectionFromSelect(value: string) {
+  return value && value !== NO_DEFAULT_CONTACT ? value : null;
 }
 
 const SECTIONS = [
@@ -119,7 +117,7 @@ function blobToBase64(blob: Blob): Promise<string> {
 
 export default function CompanySettings() {
   const { data: branchList, isLoading } = trpc.branches.listAll.useQuery();
-  const { data: branchDefaultStaff = [] } = trpc.designAdvisors.list.useQuery({ includeArchived: false });
+  const { data: branchDefaultContacts = [] } = trpc.branches.defaultContactOptions.useQuery();
   const createBranch = trpc.branches.create.useMutation();
   const updateBranch = trpc.branches.update.useMutation();
   const deleteBranch = trpc.branches.delete.useMutation();
@@ -331,18 +329,20 @@ export default function CompanySettings() {
     toast.success("Favicon removed");
   };
 
-  const staffOptions = (branchDefaultStaff || []).filter((staff: any) => staff.id > 0 && !staff.archived);
-  const staffById = new Map(staffOptions.map((staff: any) => [staff.id, staff]));
+  const contactOptions = branchDefaultContacts || [];
+  const contactByStaffId = new Map(contactOptions
+    .filter((contact: any) => contact.staffId)
+    .map((contact: any) => [contact.staffId, contact]));
   const staffDisplayName = (staffId?: number | null) => {
     if (!staffId) return "Not set";
-    const staff = staffById.get(staffId);
-    return staff ? `${staff.name}${staff.role ? ` (${staff.role.replace(/_/g, " ")})` : ""}` : "Missing staff record";
+    const contact = contactByStaffId.get(staffId);
+    return contact ? `${contact.name}${contact.role ? ` (${contact.role.replace(/_/g, " ")})` : ""}` : "Missing staff record";
   };
   const missingDefaultCount = (branch: Branch) => [
     branch.defaultBranchAdminStaffId,
     branch.defaultConstructionManagerStaffId,
     branch.defaultFinanceStaffId,
-  ].filter((staffId) => !staffId || !staffById.has(staffId)).length;
+  ].filter((staffId) => !staffId || !contactByStaffId.has(staffId)).length;
 
   function BranchDefaultContactSelect({
     label,
@@ -362,13 +362,14 @@ export default function CompanySettings() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={NO_DEFAULT_CONTACT}>Not set</SelectItem>
-            {staffOptions.map((staff: any) => (
-              <SelectItem key={staff.id} value={String(staff.id)}>
-                {staff.name}{staff.role ? ` (${staff.role.replace(/_/g, " ")})` : ""}
+            {contactOptions.map((contact: any) => (
+              <SelectItem key={contact.value} value={contact.value}>
+                {contact.name}{contact.role ? ` (${contact.role.replace(/_/g, " ")})` : ""}
+                {contact.source === "user" ? " - user" : ""}
               </SelectItem>
             ))}
-            {staffOptions.length === 0 && (
-              <SelectItem value="__empty" disabled>No active staff found</SelectItem>
+            {contactOptions.length === 0 && (
+              <SelectItem value="__empty" disabled>No users found</SelectItem>
             )}
           </SelectContent>
         </Select>
@@ -390,9 +391,9 @@ export default function CompanySettings() {
         smsNumber: newBranch.smsNumber.trim() || undefined,
         managerName: newBranch.managerName.trim() || null,
         managerEmail: newBranch.managerEmail.trim() || null,
-        defaultBranchAdminStaffId: staffIdFromSelect(newBranch.defaultBranchAdminStaffId),
-        defaultConstructionManagerStaffId: staffIdFromSelect(newBranch.defaultConstructionManagerStaffId),
-        defaultFinanceStaffId: staffIdFromSelect(newBranch.defaultFinanceStaffId),
+        defaultBranchAdminStaffId: contactSelectionFromSelect(newBranch.defaultBranchAdminStaffId),
+        defaultConstructionManagerStaffId: contactSelectionFromSelect(newBranch.defaultConstructionManagerStaffId),
+        defaultFinanceStaffId: contactSelectionFromSelect(newBranch.defaultFinanceStaffId),
       });
       toast.success(`Branch "${newBranch.name}" added`);
       setNewBranch({ ...emptyBranchForm });
@@ -418,9 +419,9 @@ export default function CompanySettings() {
         smsNumber: editBranch.smsNumber.trim() || undefined,
         managerName: editBranch.managerName.trim() || null,
         managerEmail: editBranch.managerEmail.trim() || null,
-        defaultBranchAdminStaffId: staffIdFromSelect(editBranch.defaultBranchAdminStaffId),
-        defaultConstructionManagerStaffId: staffIdFromSelect(editBranch.defaultConstructionManagerStaffId),
-        defaultFinanceStaffId: staffIdFromSelect(editBranch.defaultFinanceStaffId),
+        defaultBranchAdminStaffId: contactSelectionFromSelect(editBranch.defaultBranchAdminStaffId),
+        defaultConstructionManagerStaffId: contactSelectionFromSelect(editBranch.defaultConstructionManagerStaffId),
+        defaultFinanceStaffId: contactSelectionFromSelect(editBranch.defaultFinanceStaffId),
       });
       toast.success(`Branch "${editBranch.name}" updated`);
       setEditingId(null);
@@ -467,9 +468,9 @@ export default function CompanySettings() {
       smsNumber: branch.smsNumber || "",
       managerName: branch.managerName || "",
       managerEmail: branch.managerEmail || "",
-      defaultBranchAdminStaffId: staffSelectValue(branch.defaultBranchAdminStaffId),
-      defaultConstructionManagerStaffId: staffSelectValue(branch.defaultConstructionManagerStaffId),
-      defaultFinanceStaffId: staffSelectValue(branch.defaultFinanceStaffId),
+      defaultBranchAdminStaffId: contactSelectValue(branch.defaultBranchAdminStaffId),
+      defaultConstructionManagerStaffId: contactSelectValue(branch.defaultConstructionManagerStaffId),
+      defaultFinanceStaffId: contactSelectValue(branch.defaultFinanceStaffId),
     });
   };
 
@@ -921,7 +922,7 @@ export default function CompanySettings() {
                                       ["Construction manager", branch.defaultConstructionManagerStaffId],
                                       ["Finance", branch.defaultFinanceStaffId],
                                     ].map(([label, staffId]) => {
-                                      const hasStaff = typeof staffId === "number" && staffById.has(staffId);
+                                      const hasStaff = typeof staffId === "number" && contactByStaffId.has(staffId);
                                       return (
                                         <span
                                           key={label as string}
