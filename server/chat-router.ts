@@ -70,6 +70,71 @@ function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
+const chatMemberRefSchema = z.object({
+  memberType: z.enum(["user", "trade"]),
+  memberId: z.number(),
+});
+type ChatMemberRef = z.infer<typeof chatMemberRefSchema>;
+
+function memberKey(memberType: "user" | "trade", memberId: number) {
+  return `${memberType}:${memberId}`;
+}
+
+function uniqueMemberRefs(refs: ChatMemberRef[]) {
+  const seen = new Set<string>();
+  const result: ChatMemberRef[] = [];
+  for (const ref of refs) {
+    const key = memberKey(ref.memberType, ref.memberId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(ref);
+  }
+  return result;
+}
+
+function normalizeMemberInput(input: {
+  userId?: number | null;
+  memberType?: "user" | "trade";
+  memberId?: number | null;
+}): ChatMemberRef {
+  const memberType = input.memberType || "user";
+  const memberId = input.memberId ?? input.userId;
+  if (!memberId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Member is required" });
+  }
+  return { memberType, memberId };
+}
+
+async function validateMemberRefs(db: any, ctx: any, refs: ChatMemberRef[]) {
+  const tenantId = ctx.tenant!.id;
+  const userIds = refs.filter((ref) => ref.memberType === "user").map((ref) => ref.memberId);
+  const tradeIds = refs.filter((ref) => ref.memberType === "trade").map((ref) => ref.memberId);
+
+  if (userIds.length > 0) {
+    const tenantMembers = await db.select({ userId: tenantMemberships.userId })
+      .from(tenantMemberships)
+      .where(and(eq(tenantMemberships.tenantId, tenantId), inArray(tenantMemberships.userId, userIds)));
+    const validUserIds = new Set(tenantMembers.map((member: { userId: number }) => member.userId));
+    const invalidUserIds = userIds.filter((userId) => !validUserIds.has(userId));
+    if (invalidUserIds.length > 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "One or more selected users are not members of this tenant" });
+    }
+  }
+
+  if (tradeIds.length > 0) {
+    const conditions = [eq(constructionInstallers.active, true), inArray(constructionInstallers.id, tradeIds)];
+    appendTenantScope(conditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
+    const trades = await db.select({ id: constructionInstallers.id })
+      .from(constructionInstallers)
+      .where(and(...conditions));
+    const validTradeIds = new Set(trades.map((trade: { id: number }) => trade.id));
+    const invalidTradeIds = tradeIds.filter((tradeId) => !validTradeIds.has(tradeId));
+    if (invalidTradeIds.length > 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "One or more selected trades are not active for this tenant" });
+    }
+  }
+}
+
 /** Ensure user is a member of the channel (or auto-join system channels) */
 async function ensureMembership(db: any, ctx: any, channelId: number, userId: number) {
   const [existing] = await db
@@ -370,16 +435,37 @@ export const chatRouter = router({
 
       const members = await db
         .select({
+          id: chatChannelMembers.id,
+          memberType: chatChannelMembers.memberType,
+          memberId: chatChannelMembers.memberId,
           userId: chatChannelMembers.userId,
           role: chatChannelMembers.role,
           userName: users.name,
           userEmail: users.email,
+          tradeName: constructionInstallers.name,
+          tradeEmail: constructionInstallers.email,
+          tradeType: constructionInstallers.tradeType,
         })
         .from(chatChannelMembers)
         .leftJoin(users, eq(chatChannelMembers.userId, users.id))
+        .leftJoin(constructionInstallers, and(
+          eq(chatChannelMembers.memberType, "trade"),
+          eq(chatChannelMembers.memberId, constructionInstallers.id),
+          eq(constructionInstallers.tenantId, ctx.tenant!.id),
+        ))
         .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId))));
 
-      return members;
+      return members.map((member: any) => ({
+        id: member.id,
+        key: memberKey(member.memberType, member.memberId),
+        memberType: member.memberType,
+        memberId: member.memberId,
+        userId: member.userId,
+        role: member.role,
+        userName: member.memberType === "trade" ? member.tradeName : member.userName,
+        userEmail: member.memberType === "trade" ? member.tradeEmail : member.userEmail,
+        tradeType: member.memberType === "trade" ? member.tradeType : null,
+      }));
     }),
 
   // ─── Create a team channel ─────────────────────────────────────────────────
@@ -388,13 +474,16 @@ export const chatRouter = router({
       name: z.string().trim().min(1).max(255),
       description: z.string().trim().max(500).optional(),
       memberUserIds: z.array(z.number()).optional(),
+      members: z.array(chatMemberRefSchema).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const name = input.name.trim();
       const tenantId = ctx.tenant!.id;
-      const requestedMemberIds = Array.from(new Set(input.memberUserIds || []))
-        .filter((userId) => userId !== ctx.user.id);
+      const requestedMembers = uniqueMemberRefs([
+        ...(input.memberUserIds || []).map((userId) => ({ memberType: "user" as const, memberId: userId })),
+        ...(input.members || []),
+      ]).filter((member) => !(member.memberType === "user" && member.memberId === ctx.user.id));
 
       const [existing] = await db.select({ id: chatChannels.id })
         .from(chatChannels)
@@ -411,18 +500,8 @@ export const chatRouter = router({
         throw new TRPCError({ code: "CONFLICT", message: "A team channel with this name already exists" });
       }
 
-      if (requestedMemberIds.length > 0) {
-        const tenantMembers = await db.select({ userId: tenantMemberships.userId })
-          .from(tenantMemberships)
-          .where(and(
-            eq(tenantMemberships.tenantId, tenantId),
-            inArray(tenantMemberships.userId, requestedMemberIds),
-          ));
-        const validUserIds = new Set(tenantMembers.map((member) => member.userId));
-        const invalidUserIds = requestedMemberIds.filter((userId) => !validUserIds.has(userId));
-        if (invalidUserIds.length > 0) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "One or more selected users are not members of this tenant" });
-        }
+      if (requestedMembers.length > 0) {
+        await validateMemberRefs(db, ctx, requestedMembers);
       }
 
       const [channel] = await db.insert(chatChannels).values({
@@ -442,14 +521,14 @@ export const chatRouter = router({
         lastReadAt: new Date(),
       });
 
-      if (requestedMemberIds.length > 0) {
+      if (requestedMembers.length > 0) {
         await db.insert(chatChannelMembers).values(
-          requestedMemberIds.map((userId) => ({
+          requestedMembers.map((member) => ({
             tenantId,
             channelId: channel.id,
-            userId,
-            memberType: "user" as const,
-            memberId: userId,
+            userId: member.memberType === "user" ? member.memberId : null,
+            memberType: member.memberType,
+            memberId: member.memberId,
             role: "member" as const,
           })),
         );
@@ -463,9 +542,14 @@ export const chatRouter = router({
     .input(z.object({
       jobId: z.number(),
       memberUserIds: z.array(z.number()).optional(),
+      members: z.array(chatMemberRefSchema).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
+      const requestedMembers = uniqueMemberRefs([
+        ...(input.memberUserIds || []).map((userId) => ({ memberType: "user" as const, memberId: userId })),
+        ...(input.members || []),
+      ]).filter((member) => !(member.memberType === "user" && member.memberId === ctx.user.id));
 
       // Get job info for channel name
       const [job] = await db.select().from(constructionJobs)
@@ -503,10 +587,17 @@ export const chatRouter = router({
       });
 
       // Add specified members
-      if (input.memberUserIds?.length) {
-        const memberValues = input.memberUserIds
-          .filter((uid) => uid !== ctx.user.id)
-          .map((uid) => ({ tenantId: ctx.tenant!.id, channelId: channel.id, userId: uid, memberType: "user" as const, memberId: uid, role: "member" as const }));
+      if (requestedMembers.length) {
+        await validateMemberRefs(db, ctx, requestedMembers);
+        const memberValues = requestedMembers
+          .map((member) => ({
+            tenantId: ctx.tenant!.id,
+            channelId: channel.id,
+            userId: member.memberType === "user" ? member.memberId : null,
+            memberType: member.memberType,
+            memberId: member.memberId,
+            role: "member" as const,
+          }));
         if (memberValues.length > 0) {
           await db.insert(chatChannelMembers).values(memberValues);
         }
@@ -517,22 +608,30 @@ export const chatRouter = router({
 
   // ─── Add member to channel ──────────────────────────────────────────────────
   addMember: protectedProcedure
-    .input(z.object({ channelId: z.number(), userId: z.number() }))
+    .input(z.object({
+      channelId: z.number(),
+      userId: z.number().optional(),
+      memberType: z.enum(["user", "trade"]).optional(),
+      memberId: z.number().optional(),
+    }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       await ensureMembership(db, ctx, input.channelId, ctx.user.id);
-
-      const [tenantMember] = await db.select({ userId: tenantMemberships.userId })
-        .from(tenantMemberships)
-        .where(and(eq(tenantMemberships.tenantId, ctx.tenant!.id), eq(tenantMemberships.userId, input.userId)))
-        .limit(1);
-      if (!tenantMember) throw new TRPCError({ code: "NOT_FOUND", message: "User is not a member of this tenant" });
+      const member = normalizeMemberInput(input);
+      await validateMemberRefs(db, ctx, [member]);
 
       // Check existing
       const [existing] = await db
         .select()
         .from(chatChannelMembers)
-        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))))
+        .where(and(
+          ...memberTenantConditions(
+            ctx,
+            eq(chatChannelMembers.channelId, input.channelId),
+            eq(chatChannelMembers.memberType, member.memberType),
+            eq(chatChannelMembers.memberId, member.memberId),
+          )
+        ))
         .limit(1);
 
       if (existing) return { success: true, alreadyMember: true };
@@ -540,9 +639,9 @@ export const chatRouter = router({
       await db.insert(chatChannelMembers).values({
         tenantId: ctx.tenant!.id,
         channelId: input.channelId,
-        userId: input.userId,
-        memberType: "user",
-        memberId: input.userId,
+        userId: member.memberType === "user" ? member.memberId : null,
+        memberType: member.memberType,
+        memberId: member.memberId,
         role: "member",
       });
 
@@ -551,27 +650,54 @@ export const chatRouter = router({
 
   // ─── Remove member from channel ────────────────────────────────────────────
   removeMember: protectedProcedure
-    .input(z.object({ channelId: z.number(), userId: z.number() }))
+    .input(z.object({
+      channelId: z.number(),
+      userId: z.number().optional(),
+      memberType: z.enum(["user", "trade"]).optional(),
+      memberId: z.number().optional(),
+    }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       await ensureMembership(db, ctx, input.channelId, ctx.user.id);
+      const member = normalizeMemberInput(input);
 
       await db.delete(chatChannelMembers)
-        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))));
+        .where(and(
+          ...memberTenantConditions(
+            ctx,
+            eq(chatChannelMembers.channelId, input.channelId),
+            eq(chatChannelMembers.memberType, member.memberType),
+            eq(chatChannelMembers.memberId, member.memberId),
+          )
+        ));
 
       return { success: true };
     }),
 
   // ─── Update member role (promote/demote) ─────────────────────────────────
   updateMemberRole: protectedProcedure
-    .input(z.object({ channelId: z.number(), userId: z.number(), role: z.enum(["admin", "member"]) }))
+    .input(z.object({
+      channelId: z.number(),
+      userId: z.number().optional(),
+      memberType: z.enum(["user", "trade"]).optional(),
+      memberId: z.number().optional(),
+      role: z.enum(["admin", "member"]),
+    }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       await ensureMembership(db, ctx, input.channelId, ctx.user.id);
+      const member = normalizeMemberInput(input);
 
       await db.update(chatChannelMembers)
         .set({ role: input.role })
-        .where(and(...memberTenantConditions(ctx, eq(chatChannelMembers.channelId, input.channelId), eq(chatChannelMembers.userId, input.userId))));
+        .where(and(
+          ...memberTenantConditions(
+            ctx,
+            eq(chatChannelMembers.channelId, input.channelId),
+            eq(chatChannelMembers.memberType, member.memberType),
+            eq(chatChannelMembers.memberId, member.memberId),
+          )
+        ));
 
       return { success: true };
     }),
@@ -685,5 +811,50 @@ export const chatRouter = router({
       .innerJoin(tenantMemberships, eq(users.id, tenantMemberships.userId))
       .where(eq(tenantMemberships.tenantId, ctx.tenant!.id))
       .orderBy(users.name);
+  }),
+
+  // ─── List app users and trades for channel member pickers ─────────────────
+  allMemberCandidates: protectedProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    const tenantUsers = await db.select({ id: users.id, name: users.name, email: users.email, role: users.role })
+      .from(users)
+      .innerJoin(tenantMemberships, eq(users.id, tenantMemberships.userId))
+      .where(eq(tenantMemberships.tenantId, ctx.tenant!.id))
+      .orderBy(users.name);
+
+    const tradeConditions = [eq(constructionInstallers.active, true)];
+    appendTenantScope(tradeConditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
+    const trades = await db.select({
+      id: constructionInstallers.id,
+      name: constructionInstallers.name,
+      email: constructionInstallers.email,
+      tradeType: constructionInstallers.tradeType,
+    })
+      .from(constructionInstallers)
+      .where(and(...tradeConditions))
+      .orderBy(constructionInstallers.name);
+
+    return [
+      ...tenantUsers.map((userRow: any) => ({
+        key: memberKey("user", userRow.id),
+        memberType: "user" as const,
+        memberId: userRow.id,
+        userId: userRow.id,
+        name: userRow.name,
+        email: userRow.email,
+        role: userRow.role,
+        tradeType: null,
+      })),
+      ...trades.map((trade: any) => ({
+        key: memberKey("trade", trade.id),
+        memberType: "trade" as const,
+        memberId: trade.id,
+        userId: null,
+        name: trade.name,
+        email: trade.email,
+        role: "trade",
+        tradeType: trade.tradeType,
+      })),
+    ].sort((a, b) => String(a.name || a.email || "").localeCompare(String(b.name || b.email || "")));
   }),
 });

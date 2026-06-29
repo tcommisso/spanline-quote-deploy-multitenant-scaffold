@@ -27,6 +27,7 @@ import { logNotification } from "./notification-gateway";
 import { assertRateLimit } from "./_core/rateLimit";
 import { buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from "./_core/tenant-scope";
+import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { sendNotificationEmail } from "./email";
 import {
   addTradeRemittanceDedupeKeys,
@@ -1687,8 +1688,12 @@ export const tradePortalRouter = router({
       }
     }
 
-    return dedupeTradeRemittances([...persistedRemittances, ...liveXeroRemittances])
+    const remittances = dedupeTradeRemittances([...persistedRemittances, ...liveXeroRemittances])
       .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return Promise.all(remittances.map(async (remittance: any) => ({
+      ...remittance,
+      fileUrl: await resolveStorageUrlForPortal(remittance.fileUrl),
+    })));
   }),
 
   // ─── Invoice Submission ─────────────────────────────────────────────────────
@@ -1701,10 +1706,14 @@ export const tradePortalRouter = router({
       if (jobIds.length === 0) return [];
       conditions.push(inArray(tradeInvoices.jobId, jobIds));
     }
-    return db.select()
+    const invoices = await db.select()
       .from(tradeInvoices)
       .where(and(...conditions))
       .orderBy(desc(tradeInvoices.submittedAt));
+    return Promise.all(invoices.map(async (invoice) => ({
+      ...invoice,
+      fileUrl: await resolveStorageUrlForPortal(invoice.fileUrl),
+    })));
   }),
 
   submitInvoice: protectedTradePortalProcedure
@@ -1762,13 +1771,17 @@ export const tradePortalRouter = router({
     .input(z.object({ invoiceId: z.number() }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      return db.select()
+      const photos = await db.select()
         .from(tradeInvoicePhotos)
         .where(and(
           eq(tradeInvoicePhotos.invoiceId, input.invoiceId),
           eq(tradeInvoicePhotos.installerId, ctx.tradeAccess.installerId),
         ))
         .orderBy(desc(tradeInvoicePhotos.uploadedAt));
+      return Promise.all(photos.map(async (photo) => ({
+        ...photo,
+        fileUrl: await resolveStorageUrlForPortal(photo.fileUrl),
+      })));
     }),
 
   uploadInvoicePhoto: protectedTradePortalProcedure
@@ -1873,10 +1886,14 @@ export const tradePortalRouter = router({
         if (jobIds.length === 0) return [];
         conditions.push(inArray(tradePhotos.jobId, jobIds));
       }
-      return db.select()
+      const photos = await db.select()
         .from(tradePhotos)
         .where(and(...conditions))
         .orderBy(desc(tradePhotos.uploadedAt));
+      return Promise.all(photos.map(async (photo) => ({
+        ...photo,
+        fileUrl: await resolveStorageUrlForPortal(photo.fileUrl),
+      })));
     }),
 
   uploadPhoto: protectedTradePortalProcedure
@@ -1955,7 +1972,10 @@ export const tradePortalRouter = router({
         }
       }
 
-      return messages;
+      return Promise.all(messages.map(async (message) => ({
+        ...message,
+        attachmentUrl: await resolveStorageUrlForPortal(message.attachmentUrl),
+      })));
     }),
 
   sendMessage: protectedTradePortalProcedure
@@ -2518,11 +2538,12 @@ export const tradePortalRouter = router({
         jobMap = Object.fromEntries(jobs.map(j => [j.id, { clientName: j.clientName || "", quoteNumber: j.quoteNumber || "" }]));
       }
 
-      return contracts.filter(c => visibleJobIds.has(c.jobId)).map(c => ({
+      return Promise.all(contracts.filter(c => visibleJobIds.has(c.jobId)).map(async (c) => ({
         ...c,
+        pdfUrl: await resolveStorageUrlForPortal(c.pdfUrl),
         clientName: c.jobId ? jobMap[c.jobId]?.clientName || "" : "",
         quoteNumber: c.jobId ? jobMap[c.jobId]?.quoteNumber || "" : "",
-      }));
+      })));
     }),
 
   // Get milestone claim status for a subcontract (used in SubcontractEditor)
@@ -2599,6 +2620,15 @@ export const tradePortalRouter = router({
 
       const jobInstructions = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
 
+      const signedSharedFiles = await Promise.all(sharedFiles.map(async (file) => ({
+        ...file,
+        fileUrl: await resolveStorageUrlForPortal(file.fileUrl),
+      })));
+      const signedSubcontracts = await Promise.all(subcontracts.map(async (subcontract) => ({
+        ...subcontract,
+        pdfUrl: await resolveStorageUrlForPortal(subcontract.pdfUrl),
+      })));
+
       return {
         job: {
           id: job.id,
@@ -2618,8 +2648,8 @@ export const tradePortalRouter = router({
         assignedTrades: allAssignments,
         jobInstructions,
         workOrders,
-        sharedFiles,
-        subcontracts,
+        sharedFiles: signedSharedFiles,
+        subcontracts: signedSubcontracts,
       };
     }),
 

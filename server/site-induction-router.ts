@@ -23,6 +23,7 @@ import { eq, and } from "drizzle-orm";
 import { constructionJobs, constructionInstallers, siteInductions, users } from "../drizzle/schema";
 import { sendNotificationEmail } from "./email";
 import { storagePut } from "./storage";
+import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // ─── Default Checklist Items ────────────────────────────────────────────────
@@ -32,17 +33,17 @@ const DEFAULT_CERTIFICATES = [
 ];
 
 const DEFAULT_SITE_CHECKLIST = [
-  { item: "WHS Management Plan (given by office staff)", status: "" },
-  { item: "Site Safety Rules / Procedures", status: "" },
-  { item: "Emergency Management Plan (required if works over $250K)", status: "" },
-  { item: "Site Specific Hazards / Risk Control Measures", status: "" },
-  { item: "Incident / Hazard / Injury Reporting", status: "" },
-  { item: "Agree to use local Amenities", status: "" },
-  { item: "High Risk Construction Work / Safe Work Method Statements", status: "" },
-  { item: "Housekeeping", status: "" },
-  { item: "Testing / Tagging", status: "" },
-  { item: "Safety Data Sheets (given by office staff)", status: "" },
-  { item: "PPE Requirements", status: "" },
+  { item: "WHS Management Plan (given by office staff)", status: "Y" },
+  { item: "Site Safety Rules / Procedures", status: "Y" },
+  { item: "Emergency Management Plan (required if works over $250K)", status: "Y" },
+  { item: "Site Specific Hazards / Risk Control Measures", status: "Y" },
+  { item: "Incident / Hazard / Injury Reporting", status: "Y" },
+  { item: "Agree to use local Amenities", status: "Y" },
+  { item: "High Risk Construction Work / Safe Work Method Statements", status: "Y" },
+  { item: "Housekeeping", status: "Y" },
+  { item: "Testing / Tagging", status: "Y" },
+  { item: "Safety Data Sheets (given by office staff)", status: "Y" },
+  { item: "PPE Requirements", status: "Y" },
 ];
 
 const SITE_RULES = [
@@ -517,7 +518,11 @@ export const siteInductionRouter = router({
             ? and(eq(constructionJobs.id, ind.jobId), eq(constructionJobs.tenantId, tenantId))
             : eq(constructionJobs.id, ind.jobId))
           .limit(1);
-        enriched.push({ ...ind, job: job || null });
+        enriched.push({
+          ...ind,
+          pdfUrl: await resolveStorageUrlForPortal(ind.pdfUrl),
+          job: job || null,
+        });
       }
       return enriched;
     }),
@@ -587,7 +592,7 @@ export const siteInductionRouter = router({
 
   // Get site rules and emergency procedures (dynamic from config or fallback to defaults)
   getSiteRules: publicProcedure.query(async ({ ctx }) => {
-    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? undefined);
+    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? ctx.tenant?.id ?? undefined);
     return {
       siteRules: config?.siteRules
         ? config.siteRules.split("\n").filter((l: string) => l.trim())
@@ -600,13 +605,13 @@ export const siteInductionRouter = router({
 
   // Get default checklist items (dynamic from config or fallback to defaults)
   getDefaults: publicProcedure.query(async ({ ctx }) => {
-    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? undefined);
+    const config = await getInductionFormConfig(ctx.tradePortalAccess?.tenantId ?? ctx.tenant?.id ?? undefined);
     return {
       certificates: config?.certificates
         ? (config.certificates as string[]).map(name => ({ name, expiryDate: "", status: "" }))
         : DEFAULT_CERTIFICATES,
       siteChecklist: config?.checklistItems
-        ? (config.checklistItems as string[]).map(item => ({ item, status: "" }))
+        ? (config.checklistItems as string[]).map(item => ({ item, status: "Y" }))
         : DEFAULT_SITE_CHECKLIST,
     };
   }),

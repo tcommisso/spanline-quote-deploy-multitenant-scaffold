@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,37 +10,6 @@ import {
   AlertTriangle, FileText,
 } from "lucide-react";
 import { toast } from "sonner";
-
-const DEFAULT_CERTIFICATES = [
-  { name: "White Card (General Construction Induction)", status: "", expiryDate: "" },
-  { name: "Working at Heights", status: "", expiryDate: "" },
-  { name: "Confined Space", status: "", expiryDate: "" },
-  { name: "First Aid Certificate", status: "", expiryDate: "" },
-  { name: "Electrical Licence", status: "", expiryDate: "" },
-  { name: "Plumbing Licence", status: "", expiryDate: "" },
-  { name: "Asbestos Awareness", status: "", expiryDate: "" },
-  { name: "Forklift Licence", status: "", expiryDate: "" },
-  { name: "EWP Licence", status: "", expiryDate: "" },
-];
-
-const DEFAULT_SITE_CHECKLIST = [
-  { item: "Site access and parking arrangements", status: "" },
-  { item: "Location of amenities (toilets, lunch area)", status: "" },
-  { item: "First aid kit location", status: "" },
-  { item: "Fire extinguisher locations", status: "" },
-  { item: "Emergency assembly point", status: "" },
-  { item: "Hazardous materials on site", status: "" },
-  { item: "Underground services identified", status: "" },
-  { item: "Overhead power lines identified", status: "" },
-  { item: "Excavation/trenching hazards", status: "" },
-  { item: "Traffic management requirements", status: "" },
-  { item: "PPE requirements for this site", status: "" },
-  { item: "Working at heights requirements", status: "" },
-  { item: "Hot works permit requirements", status: "" },
-  { item: "Noise restrictions / working hours", status: "" },
-  { item: "Neighbours notified of works", status: "" },
-  { item: "Environmental controls (dust, runoff)", status: "" },
-];
 
 export default function TradePortalInductions() {
   const utils = trpc.useUtils();
@@ -181,13 +150,34 @@ function InductionForm({ induction, onClose, onComplete }: {
   const [step, setStep] = useState(0);
   const [medicalConditions, setMedicalConditions] = useState(induction.medicalConditions || "");
   const [certificates, setCertificates] = useState<any[]>(
-    (induction.certificates?.length > 0 ? induction.certificates : DEFAULT_CERTIFICATES)
+    induction.certificates?.length > 0 ? induction.certificates : []
   );
   const [siteChecklist, setSiteChecklist] = useState<any[]>(
-    (induction.siteChecklist?.length > 0 ? induction.siteChecklist : DEFAULT_SITE_CHECKLIST)
+    induction.siteChecklist?.length > 0 ? induction.siteChecklist : []
   );
 
+  const { data: defaults } = trpc.siteInductions.getDefaults.useQuery();
   const { data: rulesData } = trpc.siteInductions.getSiteRules.useQuery();
+
+  useEffect(() => {
+    if (induction.certificates?.length > 0) {
+      setCertificates(induction.certificates);
+      return;
+    }
+    if (defaults?.certificates?.length) {
+      setCertificates(defaults.certificates);
+    }
+  }, [defaults?.certificates, induction.certificates, induction.id]);
+
+  useEffect(() => {
+    if (induction.siteChecklist?.length > 0) {
+      setSiteChecklist(induction.siteChecklist);
+      return;
+    }
+    if (defaults?.siteChecklist?.length) {
+      setSiteChecklist(defaults.siteChecklist);
+    }
+  }, [defaults?.siteChecklist, induction.id, induction.siteChecklist]);
 
   const submitMutation = trpc.siteInductions.tradePortalSubmit.useMutation({
     onSuccess: () => {

@@ -71,6 +71,17 @@ interface ChatMessage {
   createdAt: string | Date;
 }
 
+interface ChatMemberCandidate {
+  key: string;
+  memberType: "user" | "trade";
+  memberId: number;
+  userId: number | null;
+  name: string | null;
+  email: string | null;
+  role: string | null;
+  tradeType: string | null;
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function formatMessageTime(dateStr: string | Date) {
@@ -101,6 +112,10 @@ function getInitials(name: string) {
     .join("")
     .toUpperCase()
     .slice(0, 2);
+}
+
+function memberDisplayName(member: any) {
+  return member.name || member.userName || member.email || member.userEmail || "Unknown";
 }
 
 function renderMessageContent(content: string, isOwn: boolean) {
@@ -150,7 +165,7 @@ export default function TeamChat() {
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelDescription, setNewChannelDescription] = useState("");
   const [newChannelMemberSearch, setNewChannelMemberSearch] = useState("");
-  const [newChannelMemberIds, setNewChannelMemberIds] = useState<number[]>([]);
+  const [newChannelMemberKeys, setNewChannelMemberKeys] = useState<string[]>([]);
   const [isDesktop, setIsDesktop] = useState(() => window.matchMedia("(min-width: 768px)").matches);
 
   useEffect(() => {
@@ -192,7 +207,7 @@ export default function TeamChat() {
 
   const uploadAttachment = trpc.chat.uploadAttachment.useMutation();
 
-  const { data: allUsers } = trpc.chat.allUsers.useQuery(undefined, {
+  const { data: allMemberCandidates } = trpc.chat.allMemberCandidates.useQuery(undefined, {
     enabled: showMembersPanel || showCreateChannel,
   });
 
@@ -228,7 +243,7 @@ export default function TeamChat() {
     setNewChannelName("");
     setNewChannelDescription("");
     setNewChannelMemberSearch("");
-    setNewChannelMemberIds([]);
+    setNewChannelMemberKeys([]);
   };
 
   const createTeamChannel = trpc.chat.createTeamChannel.useMutation({
@@ -339,7 +354,7 @@ export default function TeamChat() {
 
   const filteredMembers = useMemo(() => {
     if (!channelMembers) return [];
-    const filtered = channelMembers.filter((m: any) => m.userId !== user?.id);
+    const filtered = channelMembers.filter((m: any) => m.memberType === "user" && m.userId !== user?.id);
     if (!mentionFilter) return filtered;
     return filtered.filter((m: any) =>
       (m.userName || "").toLowerCase().includes(mentionFilter.toLowerCase())
@@ -465,21 +480,22 @@ export default function TeamChat() {
   const teamChannels = channels?.filter((c: ChatChannel) => c.type === "team") || [];
   const jobChannels = channels?.filter((c: ChatChannel) => c.type === "job") || [];
   const selectedNewChannelMembers = useMemo(
-    () => (allUsers || []).filter((u: any) => newChannelMemberIds.includes(u.id)),
-    [allUsers, newChannelMemberIds]
+    () => (allMemberCandidates || []).filter((member: ChatMemberCandidate) => newChannelMemberKeys.includes(member.key)),
+    [allMemberCandidates, newChannelMemberKeys]
   );
   const availableNewChannelUsers = useMemo(() => {
     const query = newChannelMemberSearch.trim().toLowerCase();
     if (!query) return [];
-    return (allUsers || [])
-      .filter((u: any) => u.id !== user?.id)
-      .filter((u: any) => !newChannelMemberIds.includes(u.id))
-      .filter((u: any) =>
-        (u.name || "").toLowerCase().includes(query) ||
-        (u.email || "").toLowerCase().includes(query)
+    return (allMemberCandidates || [])
+      .filter((member: ChatMemberCandidate) => !(member.memberType === "user" && member.userId === user?.id))
+      .filter((member: ChatMemberCandidate) => !newChannelMemberKeys.includes(member.key))
+      .filter((member: ChatMemberCandidate) =>
+        (member.name || "").toLowerCase().includes(query) ||
+        (member.email || "").toLowerCase().includes(query) ||
+        (member.tradeType || "").toLowerCase().includes(query)
       )
       .slice(0, 8);
-  }, [allUsers, newChannelMemberIds, newChannelMemberSearch, user?.id]);
+  }, [allMemberCandidates, newChannelMemberKeys, newChannelMemberSearch, user?.id]);
 
   const handleCreateTeamChannel = () => {
     const name = newChannelName.trim();
@@ -490,7 +506,10 @@ export default function TeamChat() {
     createTeamChannel.mutate({
       name,
       description: newChannelDescription.trim() || undefined,
-      memberUserIds: newChannelMemberIds,
+      members: selectedNewChannelMembers.map((member: ChatMemberCandidate) => ({
+        memberType: member.memberType,
+        memberId: member.memberId,
+      })),
     });
   };
 
@@ -931,40 +950,47 @@ export default function TeamChat() {
               </div>
               {newChannelMemberSearch && (
                 <div className="max-h-40 overflow-y-auto border border-border rounded-md">
-                  {availableNewChannelUsers.map((member: any) => (
+                  {availableNewChannelUsers.map((member: ChatMemberCandidate) => (
                     <button
-                      key={member.id}
+                      key={member.key}
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
                       onClick={() => {
-                        setNewChannelMemberIds((ids) => [...ids, member.id]);
+                        setNewChannelMemberKeys((keys) => [...keys, member.key]);
                         setNewChannelMemberSearch("");
                       }}
                     >
                       <UserPlus className="w-3.5 h-3.5 text-muted-foreground" />
                       <span className="truncate">{member.name || member.email}</span>
-                      {member.email && <span className="ml-auto truncate text-xs text-muted-foreground">{member.email}</span>}
+                      <Badge variant={member.memberType === "trade" ? "secondary" : "outline"} className="ml-auto shrink-0 text-[10px] capitalize">
+                        {member.memberType === "trade" ? member.tradeType || "trade" : "user"}
+                      </Badge>
                     </button>
                   ))}
                   {availableNewChannelUsers.length === 0 && (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">No users found</p>
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No members found</p>
                   )}
                 </div>
               )}
               <div className="space-y-1">
-                {selectedNewChannelMembers.map((member: any) => (
-                  <div key={member.id} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                {selectedNewChannelMembers.map((member: ChatMemberCandidate) => (
+                  <div key={member.key} className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
                     <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-xs font-medium shrink-0">
                       {getInitials(member.name || member.email || "User")}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">{member.name || member.email}</p>
-                      {member.email && <p className="truncate text-xs text-muted-foreground">{member.email}</p>}
+                      <p className="truncate text-xs text-muted-foreground">
+                        {member.memberType === "trade" ? member.tradeType || "trade" : member.email}
+                      </p>
                     </div>
+                    <Badge variant={member.memberType === "trade" ? "secondary" : "outline"} className="shrink-0 text-[10px] capitalize">
+                      {member.memberType === "trade" ? "trade" : "user"}
+                    </Badge>
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 shrink-0"
-                      onClick={() => setNewChannelMemberIds((ids) => ids.filter((id) => id !== member.id))}
+                      onClick={() => setNewChannelMemberKeys((keys) => keys.filter((key) => key !== member.key))}
                       title="Remove member"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -1104,32 +1130,43 @@ export default function TeamChat() {
           </div>
           {memberSearchQuery && (
             <div className="mt-2 max-h-32 overflow-y-auto border border-border rounded-md">
-              {allUsers
-                ?.filter((u: any) =>
-                  ((u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
-                    (u.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
-                  !channelMembers?.some((m: any) => m.userId === u.id)
+              {allMemberCandidates
+                ?.filter((member: ChatMemberCandidate) =>
+                  ((member.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                    (member.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                    (member.tradeType || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
+                  !(member.memberType === "user" && member.userId === user?.id) &&
+                  !channelMembers?.some((m: any) => (m.key || `${m.memberType}:${m.memberId}`) === member.key)
                 )
                 .slice(0, 5)
-                .map((u: any) => (
+                .map((member: ChatMemberCandidate) => (
                   <button
-                    key={u.id}
+                    key={member.key}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors"
                     onClick={() => {
-                      addMember.mutate({ channelId: selectedChannelId!, userId: u.id });
+                      addMember.mutate({
+                        channelId: selectedChannelId!,
+                        memberType: member.memberType,
+                        memberId: member.memberId,
+                      });
                       setMemberSearchQuery("");
                     }}
                   >
                     <UserPlus className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="truncate">{u.name || u.email}</span>
+                    <span className="truncate">{member.name || member.email}</span>
+                    <Badge variant={member.memberType === "trade" ? "secondary" : "outline"} className="ml-auto shrink-0 text-[10px] capitalize">
+                      {member.memberType === "trade" ? member.tradeType || "trade" : "user"}
+                    </Badge>
                   </button>
                 ))}
-              {allUsers?.filter((u: any) =>
-                ((u.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
-                  (u.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
-                !channelMembers?.some((m: any) => m.userId === u.id)
+              {allMemberCandidates?.filter((member: ChatMemberCandidate) =>
+                ((member.name || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                  (member.email || "").toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                  (member.tradeType || "").toLowerCase().includes(memberSearchQuery.toLowerCase())) &&
+                !(member.memberType === "user" && member.userId === user?.id) &&
+                !channelMembers?.some((m: any) => (m.key || `${m.memberType}:${m.memberId}`) === member.key)
               ).length === 0 && (
-                <p className="px-3 py-2 text-xs text-muted-foreground">No users found</p>
+                <p className="px-3 py-2 text-xs text-muted-foreground">No members found</p>
               )}
             </div>
           )}
@@ -1140,24 +1177,27 @@ export default function TeamChat() {
           <div className="p-2">
             {channelMembers?.map((m: any) => (
               <div
-                key={m.userId}
+                key={m.key || `${m.memberType}:${m.memberId}`}
                 className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-muted/50 group"
               >
                 <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-xs font-medium shrink-0">
-                  {(m.userName || "U").charAt(0).toUpperCase()}
+                  {memberDisplayName(m).charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">
-                    {m.userName || "Unknown"}
+                    {memberDisplayName(m)}
                     {m.userId === user?.id && (
                       <span className="text-xs text-muted-foreground ml-1">(you)</span>
                     )}
                   </p>
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     {m.role === "admin" && <Shield className="w-3 h-3" />}
-                    {m.role}
+                    {m.memberType === "trade" ? m.tradeType || "trade" : m.role}
                   </p>
                 </div>
+                {m.memberType === "trade" && (
+                  <Badge variant="secondary" className="text-[10px]">trade</Badge>
+                )}
                 {m.userId !== user?.id && (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -1166,25 +1206,27 @@ export default function TeamChat() {
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-44">
-                      {m.role === "member" ? (
-                        <DropdownMenuItem
-                          onClick={() => updateRole.mutate({ channelId: selectedChannelId!, userId: m.userId, role: "admin" })}
-                        >
-                          <ShieldPlus className="w-3.5 h-3.5 mr-2" />
-                          Promote to Admin
-                        </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuItem
-                          onClick={() => updateRole.mutate({ channelId: selectedChannelId!, userId: m.userId, role: "member" })}
-                        >
-                          <ShieldMinus className="w-3.5 h-3.5 mr-2" />
-                          Demote to Member
-                        </DropdownMenuItem>
+                      {m.memberType === "user" && (
+                        m.role === "member" ? (
+                          <DropdownMenuItem
+                            onClick={() => updateRole.mutate({ channelId: selectedChannelId!, memberType: "user", memberId: m.memberId, role: "admin" })}
+                          >
+                            <ShieldPlus className="w-3.5 h-3.5 mr-2" />
+                            Promote to Admin
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem
+                            onClick={() => updateRole.mutate({ channelId: selectedChannelId!, memberType: "user", memberId: m.memberId, role: "member" })}
+                          >
+                            <ShieldMinus className="w-3.5 h-3.5 mr-2" />
+                            Demote to Member
+                          </DropdownMenuItem>
+                        )
                       )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"
-                        onClick={() => removeMember.mutate({ channelId: selectedChannelId!, userId: m.userId })}
+                        onClick={() => removeMember.mutate({ channelId: selectedChannelId!, memberType: m.memberType, memberId: m.memberId })}
                       >
                         <UserMinus className="w-3.5 h-3.5 mr-2" />
                         Remove from Channel

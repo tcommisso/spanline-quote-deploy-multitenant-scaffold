@@ -122,11 +122,11 @@ export default function TradePortalPhotos() {
             <Card
               key={photo.id}
               className="overflow-hidden cursor-pointer hover:shadow-lg transition-shadow active:scale-[0.98]"
-              onClick={() => setViewPhoto(photo.fileUrl)}
+              onClick={() => photo.fileUrl && setViewPhoto(photo.fileUrl)}
             >
               <div className="aspect-square bg-slate-100">
                 <img
-                  src={photo.fileUrl}
+                  src={photo.fileUrl || undefined}
                   alt={photo.caption || "Site photo"}
                   className="w-full h-full object-cover"
                   loading="lazy"

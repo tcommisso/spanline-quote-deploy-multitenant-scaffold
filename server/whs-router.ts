@@ -11,6 +11,7 @@ import {
 } from "./db";
 import { storagePut } from "./storage";
 import { tenantIdFromContext } from "./_core/tenant-scope";
+import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 
 export const whsRouter = router({
   // Admin: list all SWMS documents
@@ -116,7 +117,11 @@ export const whsRouter = router({
 
   // Portal: get active SWMS documents for trade portal
   tradePortalDocs: publicProcedure.query(async ({ ctx }) => {
-    return getActiveSwmsDocuments("trade", tenantIdFromContext(ctx));
+    const docs = await getActiveSwmsDocuments("trade", tenantIdFromContext(ctx));
+    return Promise.all(docs.map(async (doc) => ({
+      ...doc,
+      fileUrl: await resolveStorageUrlForPortal(doc.fileUrl),
+    })));
   }),
 
   // Portal: get active SWMS documents for client portal
