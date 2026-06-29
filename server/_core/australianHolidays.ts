@@ -22,8 +22,17 @@ export type GeneratedAustralianHoliday = {
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+export function isValidDateKey(value: unknown): value is string {
+  if (typeof value !== "string" || !DATE_KEY_PATTERN.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
 export function toDateKey(value: Date | string | number) {
-  if (typeof value === "string" && DATE_KEY_PATTERN.test(value)) return value;
+  if (isValidDateKey(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return [
@@ -34,7 +43,7 @@ export function toDateKey(value: Date | string | number) {
 }
 
 export function localDateKeyFromDate(value: Date | string | number) {
-  if (typeof value === "string" && DATE_KEY_PATTERN.test(value)) return value;
+  if (isValidDateKey(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return [
@@ -45,41 +54,52 @@ export function localDateKeyFromDate(value: Date | string | number) {
 }
 
 export function dateKeyToStorageDate(dateKey: string) {
+  if (!isValidDateKey(dateKey)) return new Date(Number.NaN);
   return new Date(`${dateKey}T12:00:00.000Z`);
 }
 
 export function dateKeyRange(startDate?: string, endDate?: string) {
   const startKey = startDate ? localDateKeyFromDate(startDate) : undefined;
   const endKey = endDate ? localDateKeyFromDate(endDate) : undefined;
-  return { startKey, endKey };
+  return {
+    startKey: startKey && isValidDateKey(startKey) ? startKey : undefined,
+    endKey: endKey && isValidDateKey(endKey) ? endKey : undefined,
+  };
 }
 
 export function isWeekendDateKey(dateKey: string) {
-  const day = dateKeyToStorageDate(dateKey).getUTCDay();
+  const date = dateKeyToStorageDate(dateKey);
+  if (Number.isNaN(date.getTime())) return false;
+  const day = date.getUTCDay();
   return day === 0 || day === 6;
 }
 
 function dateKey(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  if (Number.isNaN(date.getTime())) return "";
   return [
-    year,
-    String(month).padStart(2, "0"),
-    String(day).padStart(2, "0"),
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
   ].join("-");
 }
 
 function weekday(year: number, month: number, day: number) {
-  return dateKeyToStorageDate(dateKey(year, month, day)).getUTCDay();
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  return Number.isNaN(date.getTime()) ? Number.NaN : date.getUTCDay();
 }
 
 function nthWeekdayOfMonth(year: number, month: number, targetWeekday: number, nth: number) {
   let day = 1;
-  while (weekday(year, month, day) !== targetWeekday) day += 1;
+  while (weekday(year, month, day) !== targetWeekday && day <= 31) day += 1;
+  if (day > 31) return 1;
   return day + (nth - 1) * 7;
 }
 
 function firstWeekdayOnOrAfter(year: number, month: number, day: number, targetWeekday: number) {
   let cursor = day;
-  while (weekday(year, month, cursor) !== targetWeekday) cursor += 1;
+  while (weekday(year, month, cursor) !== targetWeekday && cursor <= day + 7) cursor += 1;
+  if (cursor > day + 7) return day;
   return cursor;
 }
 

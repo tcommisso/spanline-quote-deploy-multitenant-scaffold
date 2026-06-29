@@ -26,6 +26,7 @@ import {
   dateKeyRange,
   dateKeyToStorageDate,
   generateAustralianHolidays,
+  isValidDateKey,
   isWeekendDateKey,
   toDateKey,
 } from "./_core/australianHolidays";
@@ -80,9 +81,18 @@ function assertScheduleRange(startTime: Date, endTime: Date | null) {
 }
 
 function enumerateDateKeys(startKey: string, endKey: string) {
+  if (!isValidDateKey(startKey) || !isValidDateKey(endKey)) return [];
   const keys: string[] = [];
   const cursor = dateKeyToStorageDate(startKey);
-  for (let guard = 0; guard < 370 && toDateKey(cursor) <= endKey; guard += 1) {
+  const end = dateKeyToStorageDate(endKey);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(end.getTime()) || cursor > end) return [];
+
+  const rangeDays = Math.floor((end.getTime() - cursor.getTime()) / 86400000) + 1;
+  if (rangeDays > 370) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Schedule date range is too large" });
+  }
+
+  for (let guard = 0; guard < rangeDays; guard += 1) {
     keys.push(toDateKey(cursor));
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
@@ -350,45 +360,54 @@ export const constructionScheduleRouter = router({
       }
       const db = await requireDb();
       const tenantId = tenantIdFromContext(ctx);
-      const holidays = generateAustralianHolidays(input.year, (input.jurisdictions || ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[]);
+      const holidays = generateAustralianHolidays(input.year, (input.jurisdictions || ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[])
+        .filter((holiday) => isValidDateKey(holiday.dateKey));
       if (holidays.length === 0) return { inserted: 0, updated: 0, total: 0 };
 
       let inserted = 0;
       let updated = 0;
-      for (const holiday of holidays) {
-        const identity = and(
-          tenantIdentityCondition(constructionHolidayCalendarDays.tenantId, tenantId),
-          eq(constructionHolidayCalendarDays.dateKey, holiday.dateKey),
-          eq(constructionHolidayCalendarDays.jurisdiction, holiday.jurisdiction),
-          eq(constructionHolidayCalendarDays.name, holiday.name),
-        );
-        const [existing] = await db.select({ id: constructionHolidayCalendarDays.id })
-          .from(constructionHolidayCalendarDays)
-          .where(identity)
-          .limit(1);
+      try {
+        for (const holiday of holidays) {
+          const identity = and(
+            tenantIdentityCondition(constructionHolidayCalendarDays.tenantId, tenantId),
+            eq(constructionHolidayCalendarDays.dateKey, holiday.dateKey),
+            eq(constructionHolidayCalendarDays.jurisdiction, holiday.jurisdiction),
+            eq(constructionHolidayCalendarDays.name, holiday.name),
+          );
+          const [existing] = await db.select({ id: constructionHolidayCalendarDays.id })
+            .from(constructionHolidayCalendarDays)
+            .where(identity)
+            .limit(1);
 
-        if (existing?.id) {
-          await db.update(constructionHolidayCalendarDays)
-            .set({
+          if (existing?.id) {
+            await db.update(constructionHolidayCalendarDays)
+              .set({
+                year: holiday.year,
+                source: holiday.source,
+                active: true,
+              })
+              .where(eq(constructionHolidayCalendarDays.id, existing.id));
+            updated += 1;
+          } else {
+            await db.insert(constructionHolidayCalendarDays).values({
+              tenantId,
+              dateKey: holiday.dateKey,
+              name: holiday.name,
+              jurisdiction: holiday.jurisdiction,
               year: holiday.year,
               source: holiday.source,
               active: true,
-            })
-            .where(eq(constructionHolidayCalendarDays.id, existing.id));
-          updated += 1;
-        } else {
-          await db.insert(constructionHolidayCalendarDays).values({
-            tenantId,
-            dateKey: holiday.dateKey,
-            name: holiday.name,
-            jurisdiction: holiday.jurisdiction,
-            year: holiday.year,
-            source: holiday.source,
-            active: true,
-            createdBy: ctx.user.id,
-          });
-          inserted += 1;
+              createdBy: ctx.user.id,
+            });
+            inserted += 1;
+          }
         }
+      } catch (err) {
+        console.error("[ConstructionSchedule] Failed to import Australian holidays:", err);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not import Australian holidays. Refresh the page and try again.",
+        });
       }
       return { inserted, updated, total: holidays.length };
     }),

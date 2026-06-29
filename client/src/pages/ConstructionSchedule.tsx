@@ -59,6 +59,27 @@ function toLocalDateKey(value: Date | string | number) {
   return `${year}-${month}-${day}`;
 }
 
+function startOfLocalDay(value: Date) {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function addLocalDays(value: Date, days: number) {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function makeLocalDateRange(startDate: Date, exclusiveEndDate: Date) {
+  const startKey = toLocalDateKey(startDate);
+  const endKey = toLocalDateKey(addLocalDays(exclusiveEndDate, -1));
+  return {
+    start: localDateStartToIso(startKey),
+    end: localDateStartToIso(toLocalDateKey(exclusiveEndDate)),
+    startKey,
+    endKey,
+  };
+}
+
 function toDateInputValue(value: Date | string | number | null | undefined) {
   if (!value) return "";
   return toLocalDateKey(value);
@@ -276,24 +297,18 @@ export default function ConstructionSchedule() {
   const dateRange = useMemo(() => {
     const d = new Date(currentDate);
     if (viewMode === "day") {
-      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      const end = new Date(start);
-      end.setDate(end.getDate() + 1);
-      return { start: start.toISOString(), end: end.toISOString() };
+      const start = startOfLocalDay(d);
+      return makeLocalDateRange(start, addLocalDays(start, 1));
     } else if (viewMode === "month") {
       const start = new Date(d.getFullYear(), d.getMonth(), 1);
       start.setDate(start.getDate() - start.getDay());
-      const end = new Date(start);
-      end.setDate(end.getDate() + 42);
-      return { start: start.toISOString(), end: end.toISOString() };
+      return makeLocalDateRange(start, addLocalDays(start, 42));
     } else {
       const dayOfWeek = d.getDay();
       const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
       const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       monday.setDate(d.getDate() + mondayOffset);
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 7);
-      return { start: monday.toISOString(), end: sunday.toISOString() };
+      return makeLocalDateRange(monday, addLocalDays(monday, 7));
     }
   }, [currentDate, viewMode]);
 
@@ -312,16 +327,14 @@ export default function ConstructionSchedule() {
 
   // Rain days for schedule indicator
   const rainDaysQuery = trpc.rainDay.listForSchedule.useQuery({
-    startDate: toLocalDateKey(dateRange.start),
-    endDate: toLocalDateKey(dateRange.end),
+    startDate: dateRange.startKey,
+    endDate: dateRange.endKey,
   });
-  const availabilityStartKey = toDateInputValue(dateRange.start);
-  const availabilityEndKey = toInclusiveEndDateKey(dateRange.end);
   const availabilityBlocksQuery = trpc.constructionSchedule.availabilityBlocks.useQuery({
-    startDate: availabilityStartKey,
-    endDate: availabilityEndKey,
+    startDate: dateRange.startKey,
+    endDate: dateRange.endKey,
     ...(filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
-  }, { enabled: Boolean(availabilityStartKey && availabilityEndKey) });
+  }, { enabled: Boolean(dateRange.startKey && dateRange.endKey) });
 
   const createEvent = trpc.constructionSchedule.create.useMutation({
     onSuccess: () => {
