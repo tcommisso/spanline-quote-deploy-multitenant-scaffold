@@ -14,7 +14,11 @@ import { eq, and, isNull, or, sql } from "drizzle-orm";
 import { getValidAccessToken } from "./xero-client";
 import { notifyOwner } from "./_core/notification";
 import { resolveScheduledXeroConnectionScopes } from "./xero-entity-routing";
-import { getXeroPaymentRemittancesForTrade } from "./trade-remittance-xero";
+import {
+  addTradeRemittanceDedupeKeys,
+  getXeroPaymentRemittancesForTrade,
+  hasTradeRemittanceDedupeKey,
+} from "./trade-remittance-xero";
 
 type XeroAuth = {
   accessToken: string;
@@ -54,13 +58,18 @@ async function syncTradePaymentsForScope(
     remittanceConditions.push(or(eq(constructionInstallers.tenantId, appTenantId), isNull(constructionInstallers.tenantId)));
   }
   const existingXeroRemittances = await db.select({
+    installerId: tradeRemittances.installerId,
+    amount: tradeRemittances.amount,
+    date: tradeRemittances.date,
+    reference: tradeRemittances.reference,
     xeroPaymentId: tradeRemittances.xeroPaymentId,
+    xeroInvoiceId: tradeRemittances.xeroInvoiceId,
+    xeroInvoiceNumber: tradeRemittances.xeroInvoiceNumber,
   }).from(tradeRemittances)
     .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
     .where(and(...remittanceConditions));
-  const existingPaymentIds = new Set(
-    existingXeroRemittances.map((r: any) => r.xeroPaymentId).filter(Boolean)
-  );
+  const existingPaymentKeys = new Set<string>();
+  existingXeroRemittances.forEach((remittance: any) => addTradeRemittanceDedupeKeys(existingPaymentKeys, remittance));
 
   let created = 0;
   let skipped = 0;
@@ -84,7 +93,7 @@ async function syncTradePaymentsForScope(
 
       for (const payment of paymentResult.remittances) {
         if (!payment.xeroPaymentId) continue;
-        if (existingPaymentIds.has(payment.xeroPaymentId)) {
+        if (hasTradeRemittanceDedupeKey(existingPaymentKeys, payment)) {
           skipped++;
           continue;
         }
@@ -99,7 +108,7 @@ async function syncTradePaymentsForScope(
           xeroInvoiceId: payment.xeroInvoiceId,
           xeroInvoiceNumber: payment.xeroInvoiceNumber,
         });
-        existingPaymentIds.add(payment.xeroPaymentId);
+        addTradeRemittanceDedupeKeys(existingPaymentKeys, payment);
         created++;
       }
     } catch (err: any) {

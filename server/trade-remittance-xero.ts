@@ -36,6 +36,76 @@ function sortByDateDesc<T extends { date: Date }>(rows: T[]) {
   return rows.sort((a, b) => b.date.getTime() - a.date.getTime());
 }
 
+type RemittanceDedupeInput = {
+  installerId?: number | null;
+  amount?: string | number | null;
+  date?: Date | string | null;
+  reference?: string | null;
+  xeroPaymentId?: string | null;
+  xeroInvoiceId?: string | null;
+  xeroInvoiceNumber?: string | null;
+};
+
+function normaliseText(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalisePaymentId(value: unknown) {
+  return normaliseText(value).replace(/^xero:/, "");
+}
+
+function remittanceDateKey(value: Date | string | null | undefined) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function remittanceAmountKey(value: string | number | null | undefined) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "";
+  return String(Math.round(amount * 100));
+}
+
+export function tradeRemittanceDedupeKeys(remittance: RemittanceDedupeInput): string[] {
+  const keys: string[] = [];
+  const paymentId = normalisePaymentId(remittance.xeroPaymentId);
+  if (paymentId) keys.push(`payment:${paymentId}`);
+
+  const installerKey = remittance.installerId == null ? "unknown" : String(remittance.installerId);
+  const invoiceKey = normaliseText(remittance.xeroInvoiceId) || normaliseText(remittance.xeroInvoiceNumber);
+  const referenceKey = normaliseText(remittance.reference);
+  const dateKey = remittanceDateKey(remittance.date);
+  const amountKey = remittanceAmountKey(remittance.amount);
+
+  if (invoiceKey && dateKey && amountKey) {
+    keys.push(`trade:${installerKey}:invoice:${invoiceKey}:date:${dateKey}:amount:${amountKey}`);
+  }
+  if (referenceKey && dateKey && amountKey) {
+    keys.push(`trade:${installerKey}:ref:${referenceKey}:date:${dateKey}:amount:${amountKey}`);
+  }
+
+  return keys;
+}
+
+export function addTradeRemittanceDedupeKeys(seen: Set<string>, remittance: RemittanceDedupeInput) {
+  for (const key of tradeRemittanceDedupeKeys(remittance)) seen.add(key);
+}
+
+export function hasTradeRemittanceDedupeKey(seen: Set<string>, remittance: RemittanceDedupeInput) {
+  return tradeRemittanceDedupeKeys(remittance).some((key) => seen.has(key));
+}
+
+export function dedupeTradeRemittances<T extends RemittanceDedupeInput>(remittances: T[]) {
+  const seen = new Set<string>();
+  return remittances.filter((remittance) => {
+    const keys = tradeRemittanceDedupeKeys(remittance);
+    if (keys.length > 0 && keys.some((key) => seen.has(key))) return false;
+    keys.forEach((key) => seen.add(key));
+    return true;
+  });
+}
+
 export async function getXeroBillsForTrade(options: {
   appTenantId: number | null | undefined;
   connectionId?: number;
@@ -93,7 +163,7 @@ export async function getXeroPaymentRemittancesForTrade(options: {
     where: `Invoice.Contact.ContactID=guid("${options.installer.xeroContactId}")`,
   }, { connectionId, timeoutMs: options.timeoutMs });
 
-  const remittances = sortByDateDesc((result.Payments || [])
+  const remittances = sortByDateDesc(dedupeTradeRemittances((result.Payments || [])
     .filter(isAccountsPayablePayment)
     .filter((payment) => Boolean(payment.PaymentID))
     .map((payment) => ({
@@ -111,7 +181,7 @@ export async function getXeroPaymentRemittancesForTrade(options: {
       xeroInvoiceNumber: payment.Invoice?.InvoiceNumber || null,
       createdAt: xeroDate(payment.Date),
       isLiveXero: true,
-    })));
+    }))));
 
   return { connected: true, remittances, error: null };
 }

@@ -26,7 +26,12 @@ import { triggerPushRemittanceCreated, triggerPushTradeNewsPublished } from "./p
 import { logNotification } from "./notification-gateway";
 import { buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
-import { getXeroBillsForTrade, getXeroPaymentRemittancesForTrade } from "./trade-remittance-xero";
+import {
+  addTradeRemittanceDedupeKeys,
+  getXeroBillsForTrade,
+  getXeroPaymentRemittancesForTrade,
+  hasTradeRemittanceDedupeKey,
+} from "./trade-remittance-xero";
 
 function generateToken(length = 64): string {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
@@ -784,16 +789,21 @@ export const adminTradePortalRouter = router({
 
     // Get existing Xero-sourced remittances to avoid duplicates
     const existingXeroRemittances = await db.select({
+      installerId: tradeRemittances.installerId,
+      amount: tradeRemittances.amount,
+      date: tradeRemittances.date,
+      reference: tradeRemittances.reference,
       xeroPaymentId: tradeRemittances.xeroPaymentId,
+      xeroInvoiceId: tradeRemittances.xeroInvoiceId,
+      xeroInvoiceNumber: tradeRemittances.xeroInvoiceNumber,
     }).from(tradeRemittances)
       .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
       .where(and(
         eq(tradeRemittances.source, "xero"),
         ...installerTenantConditions(ctx),
       ));
-    const existingPaymentIds = new Set(
-      existingXeroRemittances.map(r => r.xeroPaymentId).filter(Boolean)
-    );
+    const existingPaymentKeys = new Set<string>();
+    existingXeroRemittances.forEach((remittance) => addTradeRemittanceDedupeKeys(existingPaymentKeys, remittance));
 
     let created = 0;
     let skipped = 0;
@@ -818,7 +828,7 @@ export const adminTradePortalRouter = router({
 
         for (const payment of paymentResult.remittances) {
           if (!payment.xeroPaymentId) continue;
-          if (existingPaymentIds.has(payment.xeroPaymentId)) {
+          if (hasTradeRemittanceDedupeKey(existingPaymentKeys, payment)) {
             skipped++;
             continue;
           }
@@ -833,7 +843,7 @@ export const adminTradePortalRouter = router({
             xeroInvoiceId: payment.xeroInvoiceId,
             xeroInvoiceNumber: payment.xeroInvoiceNumber,
           });
-          existingPaymentIds.add(payment.xeroPaymentId);
+          addTradeRemittanceDedupeKeys(existingPaymentKeys, payment);
           created++;
           details.push({
             trade: trade.name,
@@ -1103,15 +1113,24 @@ export const adminTradePortalRouter = router({
 
       if (linkedTrades.length === 0) return { synced: 0, skipped: 0, errors: 0, total: 0 };
 
-      // Get already-synced payment IDs to avoid duplicates
-      const existingRemittances = await db.select({ xeroPaymentId: tradeRemittances.xeroPaymentId })
+      // Get already-synced payments to avoid duplicates across Xero representations.
+      const existingRemittances = await db.select({
+        installerId: tradeRemittances.installerId,
+        amount: tradeRemittances.amount,
+        date: tradeRemittances.date,
+        reference: tradeRemittances.reference,
+        xeroPaymentId: tradeRemittances.xeroPaymentId,
+        xeroInvoiceId: tradeRemittances.xeroInvoiceId,
+        xeroInvoiceNumber: tradeRemittances.xeroInvoiceNumber,
+      })
         .from(tradeRemittances)
         .innerJoin(constructionInstallers, eq(tradeRemittances.installerId, constructionInstallers.id))
         .where(and(
           eq(tradeRemittances.source, "xero"),
           ...installerTenantConditions(ctx),
         ));
-      const syncedPaymentIds = new Set(existingRemittances.map(l => l.xeroPaymentId).filter(Boolean));
+      const syncedPaymentKeys = new Set<string>();
+      existingRemittances.forEach((remittance) => addTradeRemittanceDedupeKeys(syncedPaymentKeys, remittance));
 
       let synced = 0, skipped = 0, errors = 0;
 
@@ -1132,7 +1151,7 @@ export const adminTradePortalRouter = router({
 
           for (const payment of paymentsResult.remittances) {
             const paymentId = payment.xeroPaymentId;
-            if (!paymentId || syncedPaymentIds.has(paymentId)) {
+            if (!paymentId || hasTradeRemittanceDedupeKey(syncedPaymentKeys, payment)) {
               skipped++;
               continue;
             }
@@ -1163,7 +1182,7 @@ export const adminTradePortalRouter = router({
                 status: "synced",
               });
 
-              syncedPaymentIds.add(paymentId);
+              addTradeRemittanceDedupeKeys(syncedPaymentKeys, payment);
               synced++;
             } catch (err: any) {
               // Log the error but continue
