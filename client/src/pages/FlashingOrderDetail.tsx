@@ -61,7 +61,7 @@ type FlashingLineDraft = {
   colourSide: string;
   finish: string;
   quantity: number;
-  lengthMm: number;
+  lengthMm: number | "";
   unitPrice: number;
   geometry: Geometry;
   foldDetails: FoldDetails;
@@ -117,7 +117,7 @@ const END_TREATMENT_OPTIONS = [
   { value: "hook", label: "Hook" },
   { value: "beak_turn_down", label: "Beak / turn down" },
   { value: "turn_up", label: "Turn up" },
-  { value: "return", label: "Return" },
+  { value: "return", label: "Return / Crush Fold" },
 ] as const;
 
 const END_TREATMENT_KEYS = ["start", "end"] as const;
@@ -172,7 +172,7 @@ const DEFAULT_LINE: FlashingLineDraft = {
   colourSide: "outside",
   finish: "",
   quantity: 1,
-  lengthMm: 6500,
+  lengthMm: "",
   unitPrice: 0,
   geometry: DEFAULT_GEOMETRY,
   foldDetails: DEFAULT_FOLD_DETAILS,
@@ -188,7 +188,7 @@ const DEFAULT_TEMPLATE_FORM: TemplateEditForm = {
   defaultColour: "",
   defaultColourSide: "outside",
   defaultQuantity: "1",
-  defaultLengthMm: "6500",
+  defaultLengthMm: "",
   notes: "",
   tags: "",
 };
@@ -553,6 +553,11 @@ function getLineTotalPrice(existing: any) {
   const storedTotal = Number(existing.lineTotal);
   if (Number.isFinite(storedTotal)) return storedTotal;
   return round(getLineTotalLm(existing) * Number(existing.unitPrice || 0));
+}
+
+function draftLengthNumber(value: FlashingLineDraft["lengthMm"]) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
 function addWrappedPdfText(doc: any, text: string, x: number, y: number, maxWidth: number, lineHeight = 4) {
@@ -1596,7 +1601,9 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
   const lineGirth = useMemo(() => calculateGirth(line.geometry.points), [line.geometry.points]);
   const lineFoldCount = getFoldCount(line.geometry.points);
   const lineCrushFoldCount = countCrushFolds(line.foldDetails, line.geometry.points);
-  const lineTotalLm = round((Number(line.lengthMm || 0) * Number(line.quantity || 1)) / 1000);
+  const lineLengthMm = draftLengthNumber(line.lengthMm);
+  const lineNeedsLength = lineLengthMm <= 0;
+  const lineTotalLm = round((lineLengthMm * Number(line.quantity || 1)) / 1000);
   const orderFoldCount = useMemo(() => (
     lines.reduce((total: number, existing: any) => {
       const geometry = cloneGeometry(existing.geometry);
@@ -1943,11 +1950,18 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       toast.error("Add at least two profile points before saving a flashing line.");
       return;
     }
+    const lengthMm = draftLengthNumber(line.lengthMm);
+    if (lengthMm <= 0) {
+      toast.error("Enter the flashing length in mm before saving this line.");
+      setActiveSection("design");
+      return;
+    }
     const payload = {
       ...line,
       orderId: order.id,
       category: line.category || "custom",
       materialType: line.materialType || "Colorbond",
+      lengthMm,
       colourSide: line.colourSide as any,
       status: line.status as any,
     };
@@ -1973,7 +1987,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       colourSide: existing.colourSide || "unspecified",
       finish: existing.finish || "",
       quantity: Number(existing.quantity || 1),
-      lengthMm: Number(existing.lengthMm || 0),
+      lengthMm: Number(existing.lengthMm || 0) > 0 ? Number(existing.lengthMm) : "",
       unitPrice: Number(existing.unitPrice || 0),
       geometry: cloneGeometry(existing.geometry),
       foldDetails: normaliseFoldDetails(existing.foldDetails),
@@ -1994,7 +2008,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       colour: template.defaultColour || "",
       colourSide: template.defaultColourSide || "unspecified",
       quantity: Number(template.defaultQuantity || 1),
-      lengthMm: Number(template.defaultLengthMm || 0),
+      lengthMm: "",
       geometry: cloneGeometry(template.geometry),
       foldDetails: normaliseFoldDetails((template.geometry as any)?.foldDetails),
     });
@@ -2011,7 +2025,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       defaultColour: template.defaultColour || "",
       defaultColourSide: template.defaultColourSide || "outside",
       defaultQuantity: String(template.defaultQuantity || 1),
-      defaultLengthMm: String(Number(template.defaultLengthMm || 0)),
+      defaultLengthMm: Number(template.defaultLengthMm || 0) > 0 ? String(Number(template.defaultLengthMm)) : "",
       notes: template.notes || "",
       tags: template.tags || "",
     });
@@ -2020,7 +2034,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
   const submitTemplateEdit = () => {
     if (!editingTemplate?.id) return;
     const quantity = Math.max(1, Math.floor(Number(templateForm.defaultQuantity) || 1));
-    const lengthMm = Math.max(0, Number(templateForm.defaultLengthMm) || 0);
+    const lengthMm = templateForm.defaultLengthMm.trim() ? Math.max(0, Number(templateForm.defaultLengthMm) || 0) : 0;
     const geometry = {
       ...cloneGeometry(editingTemplate.geometry),
       foldDetails: (editingTemplate.geometry as any)?.foldDetails || {},
@@ -2185,7 +2199,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
                 <FlashingProfile3DPreview
                   geometry={line.geometry}
                   colour={line.colour}
-                  lengthMm={line.lengthMm}
+                  lengthMm={lineLengthMm}
                   profileName={line.profileName}
                 />
               </div>
@@ -2256,7 +2270,20 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
                 </div>
                 <div className="space-y-1">
                   <label className="text-sm font-medium">Length (mm)</label>
-                  <Input type="number" min={0} value={line.lengthMm} onChange={(event) => setLine({ ...line, lengthMm: Number(event.target.value) })} />
+                  <Input
+                    type="number"
+                    min={1}
+                    value={line.lengthMm}
+                    placeholder="Complete length before saving"
+                    aria-invalid={lineNeedsLength}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setLine({ ...line, lengthMm: value === "" ? "" : Number(value) });
+                    }}
+                  />
+                  <p className={cn("text-xs", lineNeedsLength ? "text-amber-700" : "text-muted-foreground")}>
+                    Required: enter the finished length for this flashing line.
+                  </p>
                 </div>
                 <div className="space-y-1">
                   <label className="text-sm font-medium">Finish</label>
@@ -2312,7 +2339,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
                         defaultColour: line.colour,
                         defaultColourSide: line.colourSide as any,
                         defaultQuantity: line.quantity,
-                        defaultLengthMm: line.lengthMm,
+                        defaultLengthMm: draftLengthNumber(line.lengthMm),
                         notes: line.manufacturingNotes,
                       });
                     }}
@@ -2577,7 +2604,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
                       <Badge variant="outline">{template.category || "custom"}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {template.defaultMaterialType || "Material not set"} - {Number(template.defaultLengthMm || 0).toFixed(0)} mm
+                      {template.defaultMaterialType || "Material not set"} - length completed per order
                     </p>
                     {template.notes && (
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{template.notes}</p>

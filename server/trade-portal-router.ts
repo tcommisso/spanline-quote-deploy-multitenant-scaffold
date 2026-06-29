@@ -597,7 +597,7 @@ const tradeFlashingLineInputSchema = z.object({
   colourSide: z.enum(tradeFlashingColourSides).default("unspecified"),
   finish: z.string().trim().max(128).nullish(),
   quantity: z.number().int().min(1).max(999).default(1),
-  lengthMm: z.number().min(0).max(999999).default(0),
+  lengthMm: z.number().min(1, "Length (mm) is required.").max(999999),
   unitPrice: z.number().min(0).max(999999).default(0),
   geometry: tradeFlashingGeometrySchema,
   foldDetails: z.record(z.string(), z.any()).optional().default({}),
