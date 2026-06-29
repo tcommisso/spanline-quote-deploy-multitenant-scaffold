@@ -15,6 +15,7 @@ import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 import { ENV } from "./_core/env";
+import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const jobInstructionCategorySchema = z.enum([
@@ -959,6 +960,12 @@ export const constructionClientsRouter = router({
             .where(and(...installerTenantConditions(ctx, inArray(constructionInstallers.id, installerIds))))
         : [];
       const installerMap = Object.fromEntries(installers.map(i => [i.id, i]));
+      const readinessMap = await getTradeReadinessMap(
+        db,
+        ctx,
+        assignments.map((assignment) => ({ jobId: input.jobId, installerId: assignment.installerId })),
+        new Map(installers.map((installer) => [installer.id, installer])),
+      );
 
       // Get linked quote data
       let quoteData = null;
@@ -998,6 +1005,8 @@ export const constructionClientsRouter = router({
       const enrichedAssignments = assignments.map(a => ({
         ...a,
         installer: installerMap[a.installerId] || null,
+        tradeReadiness: readinessMap.get(tradeReadinessKey(input.jobId, a.installerId)) || null,
+        readinessWarnings: readinessMap.get(tradeReadinessKey(input.jobId, a.installerId))?.warnings || [],
       }));
 
       const completedStages = progress.filter(p => p.status === "completed").length;

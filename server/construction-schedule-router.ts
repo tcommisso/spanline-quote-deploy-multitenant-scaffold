@@ -1,12 +1,25 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { constructionScheduleEvents, constructionJobs, constructionInstallers, constructionHolidayCalendarDays, tradeAvailabilities } from "../drizzle/schema";
+import {
+  chatChannelMembers,
+  chatChannels,
+  chatMessages,
+  constructionAssignments,
+  constructionScheduleEvents,
+  constructionJobs,
+  constructionInstallers,
+  constructionHolidayCalendarDays,
+  notificationLog,
+  tradeAvailabilities,
+} from "../drizzle/schema";
 import { eq, and, gte, lte, inArray, isNull, or, asc } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { isAdminRole } from "@shared/const";
+import { sendPushToUser } from "./push";
+import { getTradeReadinessMap, tradeReadinessKey, type TradeReadiness } from "./construction-trade-readiness";
 import {
   AU_HOLIDAY_JURISDICTIONS,
   type AuHolidayJurisdiction,
@@ -102,6 +115,206 @@ async function requireEventAccess(db: any, ctx: any, eventId: number) {
     .limit(1);
   if (!row?.event) throw new TRPCError({ code: "NOT_FOUND", message: "Schedule event not found" });
   return row.event;
+}
+
+async function ensureJobChatMembership(db: any, ctx: any, job: any, installerId?: number | null) {
+  const tenantId = tenantIdFromContext(ctx);
+  const [existingChannel] = await db.select({ id: chatChannels.id })
+    .from(chatChannels)
+    .where(and(eq(chatChannels.type, "job"), eq(chatChannels.jobId, job.id)))
+    .limit(1);
+
+  let channelId = existingChannel?.id;
+  if (!channelId) {
+    const [result] = await db.insert(chatChannels).values({
+      tenantId,
+      name: `${job.quoteNumber || `JOB-${job.id}`} - ${job.clientName || "Unknown Client"}`,
+      type: "job",
+      jobId: job.id,
+    });
+    channelId = Number(result.insertId);
+  }
+
+  const schedulerId = ctx.user?.id;
+  if (schedulerId) {
+    const [existingSchedulerMember] = await db.select({ id: chatChannelMembers.id })
+      .from(chatChannelMembers)
+      .where(and(
+        eq(chatChannelMembers.channelId, channelId),
+        eq(chatChannelMembers.memberType, "user"),
+        eq(chatChannelMembers.memberId, schedulerId),
+      ))
+      .limit(1);
+    if (!existingSchedulerMember) {
+      await db.insert(chatChannelMembers).values({
+        tenantId,
+        channelId,
+        userId: schedulerId,
+        memberType: "user",
+        memberId: schedulerId,
+        role: "member",
+      });
+    }
+  }
+
+  if (installerId) {
+    const [existingTradeMember] = await db.select({ id: chatChannelMembers.id })
+      .from(chatChannelMembers)
+      .where(and(
+        eq(chatChannelMembers.channelId, channelId),
+        eq(chatChannelMembers.memberType, "trade"),
+        eq(chatChannelMembers.memberId, installerId),
+      ))
+      .limit(1);
+    if (!existingTradeMember) {
+      await db.insert(chatChannelMembers).values({
+        tenantId,
+        channelId,
+        userId: null,
+        memberType: "trade",
+        memberId: installerId,
+        role: "member",
+      });
+    }
+  }
+
+  return channelId;
+}
+
+async function ensureScheduledTradeAssignment(db: any, ctx: any, job: any, installer: any) {
+  const [existingAssignment] = await db.select({ id: constructionAssignments.id })
+    .from(constructionAssignments)
+    .where(and(
+      eq(constructionAssignments.jobId, job.id),
+      eq(constructionAssignments.installerId, installer.id),
+    ))
+    .limit(1);
+
+  if (!existingAssignment) {
+    await db.insert(constructionAssignments).values({
+      jobId: job.id,
+      installerId: installer.id,
+      role: installer.tradeType || "installer",
+    });
+  }
+
+  try {
+    await ensureJobChatMembership(db, ctx, job, installer.id);
+  } catch (err) {
+    console.error("[ConstructionSchedule] Failed to sync job chat membership for scheduled trade:", err);
+  }
+  return { assignmentCreated: !existingAssignment };
+}
+
+function schedulerWarningContent(params: {
+  eventId: number;
+  eventTitle: string;
+  job: any;
+  installer: any;
+  readiness: TradeReadiness;
+}) {
+  const warningLines = params.readiness.warnings.map((item) => `- ${item.label}: ${item.message}`).join("\n");
+  return [
+    `Schedule booking warning for event #${params.eventId}: ${params.eventTitle}`,
+    "",
+    `Client: ${params.job.clientName || "Unknown client"}`,
+    `Site: ${params.job.siteAddress || "N/A"}`,
+    `Trade: ${params.installer.name || `Trade #${params.installer.id}`}`,
+    "",
+    warningLines,
+  ].join("\n");
+}
+
+async function notifySchedulerOfTradeReadiness(db: any, ctx: any, params: {
+  eventId: number;
+  eventTitle: string;
+  job: any;
+  installer: any;
+  readiness: TradeReadiness | undefined;
+}) {
+  if (!params.readiness?.warnings.length || !ctx.user?.id) return;
+
+  try {
+    const tenantId = tenantIdFromContext(ctx);
+    const channelId = await ensureJobChatMembership(db, ctx, params.job, params.installer.id);
+    const content = schedulerWarningContent({
+      eventId: params.eventId,
+      eventTitle: params.eventTitle,
+      job: params.job,
+      installer: params.installer,
+      readiness: params.readiness,
+    });
+
+    await db.insert(chatMessages).values({
+      tenantId,
+      channelId,
+      senderId: ctx.user.id,
+      senderName: "Schedule readiness",
+      content,
+      attachments: null,
+      mentions: [ctx.user.id],
+    });
+
+    await db.update(chatChannels)
+      .set({ updatedAt: new Date() })
+      .where(eq(chatChannels.id, channelId));
+
+    await db.insert(notificationLog).values({
+      tenantId,
+      type: "in_app",
+      settingKey: "construction_schedule_readiness",
+      recipientType: "user",
+      recipientId: String(ctx.user.id),
+      channel: "in_app",
+      title: "Schedule booking needs review",
+      status: "sent",
+      metadata: JSON.stringify({
+        eventId: params.eventId,
+        jobId: params.job.id,
+        installerId: params.installer.id,
+        warningKeys: params.readiness.warnings.map((item) => item.key),
+      }),
+    });
+
+    sendPushToUser(ctx.user.id, {
+      title: "Schedule booking needs review",
+      body: `${params.installer.name || "Trade"}: ${params.readiness.warningTags.join(", ")}`,
+      url: "/construction/schedule",
+      tag: `schedule-readiness-${params.eventId}`,
+    }).catch(() => {});
+  } catch (err) {
+    console.error("[ConstructionSchedule] Failed to send scheduler readiness warning:", err);
+  }
+}
+
+async function applyScheduledTradeSideEffects(db: any, ctx: any, params: {
+  eventId: number;
+  eventTitle: string;
+  job: any;
+  installer: any;
+  notifyScheduler: boolean;
+}) {
+  await ensureScheduledTradeAssignment(db, ctx, params.job, params.installer);
+  if (params.notifyScheduler) {
+    try {
+      const readinessMap = await getTradeReadinessMap(
+        db,
+        ctx,
+        [{ jobId: params.job.id, installerId: params.installer.id }],
+        new Map([[params.installer.id, params.installer]]),
+      );
+      const readiness = readinessMap.get(tradeReadinessKey(params.job.id, params.installer.id));
+      await notifySchedulerOfTradeReadiness(db, ctx, {
+        eventId: params.eventId,
+        eventTitle: params.eventTitle,
+        job: params.job,
+        installer: params.installer,
+        readiness,
+      });
+    } catch (err) {
+      console.error("[ConstructionSchedule] Failed to evaluate scheduled trade readiness:", err);
+    }
+  }
 }
 
 export const constructionScheduleRouter = router({
@@ -308,19 +521,33 @@ export const constructionScheduleRouter = router({
             .where(and(...jobTenantConditions(ctx, inArray(constructionJobs.id, jobIds))))
         : [];
       const installers = installerIds.length > 0
-        ? await db.select({ id: constructionInstallers.id, name: constructionInstallers.name })
+        ? await db.select({
+            id: constructionInstallers.id,
+            name: constructionInstallers.name,
+            phone: constructionInstallers.phone,
+            email: constructionInstallers.email,
+            tradeType: constructionInstallers.tradeType,
+          })
             .from(constructionInstallers)
             .where(and(...installerTenantConditions(ctx, inArray(constructionInstallers.id, installerIds))))
         : [];
 
       const jobMap = Object.fromEntries(jobs.map(j => [j.id, j]));
       const installerMap = Object.fromEntries(installers.map(i => [i.id, i]));
+      const readinessMap = await getTradeReadinessMap(
+        db,
+        ctx,
+        events.map((event) => ({ jobId: event.jobId, installerId: event.assignedInstallerId })),
+        new Map(installers.map((installer) => [installer.id, installer])),
+      );
 
       return events.map(e => ({
         ...e,
         jobClientName: jobMap[e.jobId]?.clientName || "Unknown",
         jobSiteAddress: jobMap[e.jobId]?.siteAddress || "",
         installerName: e.assignedInstallerId ? (installerMap[e.assignedInstallerId]?.name || "Unassigned") : null,
+        tradeReadiness: e.assignedInstallerId ? (readinessMap.get(tradeReadinessKey(e.jobId, e.assignedInstallerId)) || null) : null,
+        readinessWarnings: e.assignedInstallerId ? (readinessMap.get(tradeReadinessKey(e.jobId, e.assignedInstallerId))?.warnings || []) : [],
       }));
     }),
 
@@ -339,8 +566,8 @@ export const constructionScheduleRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await requireDb();
-      await requireJobAccess(db, ctx, input.jobId);
-      if (input.assignedInstallerId) await requireInstallerAccess(db, ctx, input.assignedInstallerId);
+      const job = await requireJobAccess(db, ctx, input.jobId);
+      const installer = input.assignedInstallerId ? await requireInstallerAccess(db, ctx, input.assignedInstallerId) : null;
       const startTime = parseScheduleDateTime(input.startTime, "Start date", true)!;
       const endTime = parseScheduleDateTime(input.endTime, "End date");
       assertScheduleRange(startTime, endTime);
@@ -361,6 +588,15 @@ export const constructionScheduleRouter = router({
       // Fire-and-forget notification
       const insertedId = result.insertId;
       notifyScheduleEventCreated(insertedId).catch(() => {});
+      if (installer) {
+        await applyScheduledTradeSideEffects(db, ctx, {
+          eventId: insertedId,
+          eventTitle: input.title,
+          job,
+          installer,
+          notifyScheduler: true,
+        });
+      }
 
       return { id: insertedId };
     }),
@@ -416,6 +652,21 @@ export const constructionScheduleRouter = router({
       const changes = Object.keys(updates).filter(k => (updates as any)[k] !== undefined && k !== 'id');
       if (changes.length > 0) {
         notifyScheduleEventUpdated(id, changes).catch(() => {});
+      }
+      const nextJobId = updates.jobId !== undefined ? updates.jobId : existingEvent.jobId;
+      const nextInstallerId = updates.assignedInstallerId !== undefined ? updates.assignedInstallerId : existingEvent.assignedInstallerId;
+      if (nextInstallerId) {
+        const [nextJob, nextInstaller] = await Promise.all([
+          requireJobAccess(db, ctx, nextJobId),
+          requireInstallerAccess(db, ctx, nextInstallerId),
+        ]);
+        await applyScheduledTradeSideEffects(db, ctx, {
+          eventId: id,
+          eventTitle: updates.title || existingEvent.title,
+          job: nextJob,
+          installer: nextInstaller,
+          notifyScheduler: updates.jobId !== undefined || updates.assignedInstallerId !== undefined,
+        });
       }
 
       return { success: true };

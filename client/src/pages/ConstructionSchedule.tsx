@@ -100,6 +100,40 @@ function eventSpansMultipleDays(event: any) {
   return toLocalDateKey(event.startTime) !== toLocalDateKey(event.endTime);
 }
 
+function scheduleReadinessWarnings(event: any) {
+  return event?.readinessWarnings || event?.tradeReadiness?.warnings || [];
+}
+
+function hasScheduleReadinessWarnings(event: any) {
+  return scheduleReadinessWarnings(event).length > 0;
+}
+
+function ScheduleReadinessTags({ warnings, compact = false }: { warnings: any[]; compact?: boolean }) {
+  if (!warnings?.length) return null;
+  if (compact) {
+    return (
+      <Badge variant="secondary" className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] gap-1">
+        <AlertTriangle className="h-3 w-3" />
+        Needs review
+      </Badge>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {warnings.map((warning: any) => (
+        <Badge
+          key={warning.key || warning.label}
+          variant="secondary"
+          className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] gap-1"
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {warning.label || "Needs review"}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function normaliseSearchText(value: unknown) {
   return String(value || "")
     .toLowerCase()
@@ -702,13 +736,14 @@ export default function ConstructionSchedule() {
                   const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
                   const Icon = config.icon;
                   const isUnallocated = !event.assignedInstallerId;
+                  const readinessWarnings = scheduleReadinessWarnings(event);
                   const startTime = event.allDay ? "All day" : new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
                   const endTime = event.endTime && !event.allDay ? new Date(event.endTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" }) : null;
 
                   return (
                     <Card
                       key={`ev-${event.id}`}
-                      className="cursor-pointer hover:shadow-md transition-shadow"
+                      className={`cursor-pointer hover:shadow-md transition-shadow ${readinessWarnings.length ? "border-amber-300 dark:border-amber-700" : ""}`}
                       onClick={() => setSelectedEvent(event)}
                     >
                       <CardContent className="py-3 px-4">
@@ -734,6 +769,11 @@ export default function ConstructionSchedule() {
                                 </span>
                               )}
                             </div>
+                            {readinessWarnings.length > 0 && (
+                              <div className="mt-2">
+                                <ScheduleReadinessTags warnings={readinessWarnings} />
+                              </div>
+                            )}
                           </div>
                           <Badge className={`${STATUS_COLORS[event.status] || ""} text-[10px] shrink-0`} variant="secondary">
                             {event.status}
@@ -841,6 +881,7 @@ export default function ConstructionSchedule() {
                       const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
                       const Icon = config.icon;
                       const isUnallocated = !event.assignedInstallerId;
+                      const needsReview = hasScheduleReadinessWarnings(event);
                       return (
                         <button
                           key={`ev-${event.id}`}
@@ -848,13 +889,13 @@ export default function ConstructionSchedule() {
                             e.stopPropagation();
                             setSelectedEvent(event);
                           }}
-                          className={`w-full text-left text-[10px] leading-tight px-1.5 py-0.5 rounded truncate flex items-center gap-1 ${config.color} ${isUnallocated ? "border border-dashed border-current" : ""}`}
+                          className={`w-full text-left text-[10px] leading-tight px-1.5 py-0.5 rounded truncate flex items-center gap-1 ${config.color} ${isUnallocated ? "border border-dashed border-current" : ""} ${needsReview ? "border border-amber-500" : ""}`}
                         >
                           <Icon className="h-2.5 w-2.5 flex-shrink-0" />
                           <span className="truncate">
                             {event.title}
-                            {isUnallocated && " ⚠"}
                           </span>
+                          {(isUnallocated || needsReview) && <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />}
                         </button>
                       );
                     })}
@@ -906,6 +947,12 @@ export default function ConstructionSchedule() {
                 <AlertTriangle className="h-2.5 w-2.5 text-muted-foreground" />
               </span>
               <span>Unallocated</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                <AlertTriangle className="h-2.5 w-2.5" />
+              </span>
+              <span>Needs review</span>
             </div>
           </div>
         </>
@@ -1270,6 +1317,7 @@ function EventDetailView({
 }) {
   const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
   const Icon = config.icon;
+  const readinessWarnings = scheduleReadinessWarnings(event);
 
   return (
     <div className="space-y-4">
@@ -1292,6 +1340,21 @@ function EventDetailView({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-sm">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>This event is <strong>unallocated</strong> — no staff assigned yet</span>
+        </div>
+      )}
+
+      {readinessWarnings.length > 0 && (
+        <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4" />
+            <span>Trade booking needs review</span>
+          </div>
+          <ScheduleReadinessTags warnings={readinessWarnings} />
+          <ul className="space-y-1 text-xs">
+            {readinessWarnings.map((warning: any) => (
+              <li key={warning.key || warning.label}>{warning.message}</li>
+            ))}
+          </ul>
         </div>
       )}
 

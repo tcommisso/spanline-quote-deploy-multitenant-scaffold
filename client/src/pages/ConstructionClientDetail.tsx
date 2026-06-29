@@ -104,6 +104,28 @@ function formatDetailStatus(value?: string | null) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function tradeReadinessWarnings(value: any) {
+  return value?.readinessWarnings || value?.tradeReadiness?.warnings || [];
+}
+
+function TradeReadinessTags({ warnings }: { warnings: any[] }) {
+  if (!warnings?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {warnings.map((warning: any) => (
+        <Badge
+          key={warning.key || warning.label}
+          variant="secondary"
+          className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] gap-1"
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {warning.label || "Needs review"}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function getApprovalDetailClass(value?: string | null) {
   const normalized = String(value || "").toLowerCase();
   if (["approved", "approved_with_conditions", "issued", "completed", "passed", "satisfied"].includes(normalized)) {
@@ -557,18 +579,26 @@ export default function ConstructionClientDetail() {
                   <p className="text-sm text-muted-foreground text-center py-4">No assignments yet</p>
                 ) : (
                   <div className="space-y-2">
-                    {assignments.map((a: any) => (
-                      <div key={a.id} className="flex items-center gap-3 p-2 rounded-lg bg-muted/30 border">
-                        <User className="h-4 w-4 text-muted-foreground" />
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">{a.installer?.name || `Installer #${a.installerId}`}</p>
-                          <p className="text-xs text-muted-foreground">{a.role}</p>
+                    {assignments.map((a: any) => {
+                      const warnings = tradeReadinessWarnings(a);
+                      return (
+                        <div key={a.id} className={`flex items-start gap-3 p-2 rounded-lg bg-muted/30 border ${warnings.length ? "border-amber-300 dark:border-amber-700" : ""}`}>
+                          <User className="h-4 w-4 text-muted-foreground mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium">{a.installer?.name || `Installer #${a.installerId}`}</p>
+                            <p className="text-xs text-muted-foreground">{a.role}</p>
+                            {warnings.length > 0 && (
+                              <div className="mt-1.5">
+                                <TradeReadinessTags warnings={warnings} />
+                              </div>
+                            )}
+                          </div>
+                          {a.installer?.phone && (
+                            <span className="text-xs text-muted-foreground">{a.installer.phone}</span>
+                          )}
                         </div>
-                        {a.installer?.phone && (
-                          <span className="text-xs text-muted-foreground">{a.installer.phone}</span>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>
@@ -4654,17 +4684,26 @@ function ScheduleTab({ jobId }: { jobId: number }) {
                 {dayEvents.map((ev: any) => {
                   const typeConf = EVENT_TYPE_CONFIG[ev.eventType] || EVENT_TYPE_CONFIG.other;
                   const TypeIcon = typeConf.icon;
+                  const warnings = tradeReadinessWarnings(ev);
                   return (
-                    <Card key={ev.id} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedEvent(ev)}>
+                    <Card key={ev.id} className={`cursor-pointer hover:shadow-md transition-shadow ${warnings.length ? "border-amber-300 dark:border-amber-700" : ""}`} onClick={() => setSelectedEvent(ev)}>
                       <CardContent className="p-3 flex items-center gap-3">
                         <div className={`rounded-md p-2 ${typeConf.color}`}><TypeIcon className="h-4 w-4" /></div>
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm truncate">{ev.title}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-sm truncate">{ev.title}</p>
+                            {warnings.length > 0 && <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
+                          </div>
                           <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
                             <span>{new Date(ev.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}</span>
                             {ev.endTime && <span>– {new Date(ev.endTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}</span>}
                             {ev.installerName && <span className="flex items-center gap-0.5"><User className="h-3 w-3" /> {ev.installerName}</span>}
                           </div>
+                          {warnings.length > 0 && (
+                            <div className="mt-2">
+                              <TradeReadinessTags warnings={warnings} />
+                            </div>
+                          )}
                         </div>
                         <Badge variant="outline" className={`text-[10px] ${SCHEDULE_STATUS_COLORS[ev.status] || ""}`}>{ev.status}</Badge>
                       </CardContent>
@@ -4818,6 +4857,7 @@ function DraggableCalendarEvent({ event, onEventClick }: { event: any; onEventCl
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id: event.id });
   const typeConf = EVENT_TYPE_CONFIG[event.eventType as keyof typeof EVENT_TYPE_CONFIG] || EVENT_TYPE_CONFIG.other;
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)`, opacity: isDragging ? 0.5 : 1 } : undefined;
+  const warnings = tradeReadinessWarnings(event);
 
   return (
     <div
@@ -4825,10 +4865,11 @@ function DraggableCalendarEvent({ event, onEventClick }: { event: any; onEventCl
       style={style}
       {...attributes}
       {...listeners}
-      className={`text-[9px] px-1 py-0.5 rounded truncate cursor-grab active:cursor-grabbing ${typeConf.color} ${isDragging ? "shadow-md ring-1 ring-primary" : ""}`}
+      className={`text-[9px] px-1 py-0.5 rounded truncate cursor-grab active:cursor-grabbing flex items-center gap-1 ${typeConf.color} ${warnings.length ? "border border-amber-500" : ""} ${isDragging ? "shadow-md ring-1 ring-primary" : ""}`}
       onClick={(e) => { e.stopPropagation(); onEventClick(event); }}
     >
-      {event.title}
+      <span className="truncate">{event.title}</span>
+      {warnings.length > 0 && <AlertTriangle className="h-2.5 w-2.5 shrink-0" />}
     </div>
   );
 }
@@ -4852,6 +4893,7 @@ function ScheduleEventDialog({ mode, jobId, event, installers, onClose, onSave, 
   const [assignedInstallerId, setAssignedInstallerId] = useState(event?.assignedInstallerId?.toString() || "");
   const [status, setStatus] = useState(event?.status || "scheduled");
   const [notes, setNotes] = useState(event?.notes || "");
+  const warnings = tradeReadinessWarnings(event);
 
   const handleSubmit = () => {
     if (!title.trim()) return;
@@ -4875,6 +4917,20 @@ function ScheduleEventDialog({ mode, jobId, event, installers, onClose, onSave, 
       <div className="bg-background rounded-lg shadow-xl p-6 w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-semibold mb-4">{mode === "create" ? "New Schedule Event" : "Edit Event"}</h3>
         <div className="space-y-3">
+          {warnings.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertTriangle className="h-4 w-4" />
+                <span>Trade booking needs review</span>
+              </div>
+              <TradeReadinessTags warnings={warnings} />
+              <ul className="space-y-1 text-xs">
+                {warnings.map((warning: any) => (
+                  <li key={warning.key || warning.label}>{warning.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div>
             <Label className="text-sm">Title</Label>
             <Input value={title} onChange={e => setTitle(e.target.value)} placeholder="Event title..." autoFocus />

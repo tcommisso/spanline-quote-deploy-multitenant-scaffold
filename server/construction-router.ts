@@ -11,6 +11,7 @@ import { sendNotificationEmail } from "./email";
 import { generateWorkOrderPdf } from "./construction-pdf";
 import { triggerPushSharedFileUploaded } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 
@@ -257,12 +258,27 @@ export const constructionRouter = router({
         }).from(constructionAssignments)
           .innerJoin(constructionInstallers, eq(constructionAssignments.installerId, constructionInstallers.id))
           .where(eq(constructionAssignments.jobId, input.id));
+        const readinessMap = await getTradeReadinessMap(
+          db,
+          ctx,
+          assignments.map((assignment) => ({ jobId: input.id, installerId: assignment.installerId })),
+          new Map(assignments.map((assignment) => [assignment.installerId, {
+            id: assignment.installerId,
+            phone: assignment.installerPhone,
+            email: assignment.installerEmail,
+          }])),
+        );
+        const enrichedAssignments = assignments.map((assignment) => ({
+          ...assignment,
+          tradeReadiness: readinessMap.get(tradeReadinessKey(input.id, assignment.installerId)) || null,
+          readinessWarnings: readinessMap.get(tradeReadinessKey(input.id, assignment.installerId))?.warnings || [],
+        }));
 
         const progress = await db.select().from(constructionProgress)
           .where(eq(constructionProgress.jobId, input.id))
           .orderBy(constructionProgress.id);
 
-        return { ...job, assignments, progress };
+        return { ...job, assignments: enrichedAssignments, progress };
       }),
 
     create: protectedProcedure

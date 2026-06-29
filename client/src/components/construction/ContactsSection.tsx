@@ -8,8 +8,30 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Phone, Mail, User, Plus, Trash2, CheckCircle2, Clock, Loader2, Pencil, Users, UserCircle } from "lucide-react";
+import { Phone, Mail, User, Plus, Trash2, CheckCircle2, Clock, Loader2, Pencil, Users, UserCircle, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+
+function tradeReadinessWarnings(value: any) {
+  return value?.readinessWarnings || value?.tradeReadiness?.warnings || [];
+}
+
+function TradeReadinessTags({ warnings }: { warnings: any[] }) {
+  if (!warnings?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {warnings.map((warning: any) => (
+        <Badge
+          key={warning.key || warning.label}
+          variant="secondary"
+          className="bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 text-[10px] gap-1"
+        >
+          <AlertTriangle className="h-3 w-3" />
+          {warning.label || "Needs review"}
+        </Badge>
+      ))}
+    </div>
+  );
+}
 
 interface ContactsSectionProps {
   jobId: number;
@@ -28,6 +50,8 @@ interface ContactsSectionProps {
       emergencyContact: string | null;
       emergencyPhone: string | null;
     } | null;
+    tradeReadiness?: any;
+    readinessWarnings?: any[];
   }>;
   clientName: string;
   clientPhone?: string | null;
@@ -345,9 +369,10 @@ export default function ContactsSection({
           )}
           {assignments.map(a => {
             const inst = a.installer;
+            const warnings = tradeReadinessWarnings(a);
             if (!inst) return null;
             return (
-              <div key={a.id} className="border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div key={a.id} className={`border rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3 ${warnings.length ? "border-amber-300 dark:border-amber-700" : ""}`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">{inst.name}</span>
@@ -381,6 +406,14 @@ export default function ContactsSection({
                   {inst.emergencyContact && (
                     <div className="text-xs text-muted-foreground mt-1">
                       Emergency: {inst.emergencyContact} {inst.emergencyPhone && `(${inst.emergencyPhone})`}
+                    </div>
+                  )}
+                  {warnings.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      <TradeReadinessTags warnings={warnings} />
+                      <p className="text-xs text-amber-700 dark:text-amber-300">
+                        Check trade contact details, portal access, and site induction before site attendance.
+                      </p>
                     </div>
                   )}
                 </div>
