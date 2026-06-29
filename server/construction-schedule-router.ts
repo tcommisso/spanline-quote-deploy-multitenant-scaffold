@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
 import { constructionScheduleEvents, constructionJobs, constructionInstallers } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, isNull, or } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
@@ -65,8 +65,20 @@ export const constructionScheduleRouter = router({
       const db = await requireDb();
       const conditions: any[] = [];
       if (input?.jobId) conditions.push(eq(constructionScheduleEvents.jobId, input.jobId));
-      if (input?.startDate) conditions.push(gte(constructionScheduleEvents.startTime, new Date(input.startDate)));
-      if (input?.endDate) conditions.push(lte(constructionScheduleEvents.startTime, new Date(input.endDate)));
+      if (input?.startDate && input?.endDate) {
+        const rangeStart = new Date(input.startDate);
+        const rangeEnd = new Date(input.endDate);
+        conditions.push(and(
+          lte(constructionScheduleEvents.startTime, rangeEnd),
+          or(
+            gte(constructionScheduleEvents.endTime, rangeStart),
+            and(isNull(constructionScheduleEvents.endTime), gte(constructionScheduleEvents.startTime, rangeStart)),
+          )!,
+        ));
+      } else {
+        if (input?.startDate) conditions.push(gte(constructionScheduleEvents.startTime, new Date(input.startDate)));
+        if (input?.endDate) conditions.push(lte(constructionScheduleEvents.startTime, new Date(input.endDate)));
+      }
       if (input?.installerId) {
         await requireInstallerAccess(db, ctx, input.installerId);
         conditions.push(eq(constructionScheduleEvents.assignedInstallerId, input.installerId));
@@ -145,6 +157,7 @@ export const constructionScheduleRouter = router({
   update: protectedProcedure
     .input(z.object({
       id: z.number(),
+      jobId: z.number().optional(),
       title: z.string().optional(),
       description: z.string().optional(),
       startTime: z.string().optional(),
@@ -160,8 +173,10 @@ export const constructionScheduleRouter = router({
       const db = await requireDb();
       const { id, ...updates } = input;
       await requireEventAccess(db, ctx, id);
+      if (updates.jobId !== undefined) await requireJobAccess(db, ctx, updates.jobId);
       if (updates.assignedInstallerId) await requireInstallerAccess(db, ctx, updates.assignedInstallerId);
       const vals: any = {};
+      if (updates.jobId !== undefined) vals.jobId = updates.jobId;
       if (updates.title !== undefined) vals.title = updates.title;
       if (updates.description !== undefined) vals.description = updates.description;
       if (updates.startTime !== undefined) vals.startTime = new Date(updates.startTime);

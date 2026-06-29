@@ -62,12 +62,26 @@ function localDateTimeToIso(value: string) {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
+function toLocalDateTimeInput(value: Date | string | number | null | undefined) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${toLocalDateKey(date)}T${hours}:${minutes}`;
+}
+
 function localDateStartToIso(dateKey: string) {
   return localDateTimeToIso(`${dateKey}T00:00`);
 }
 
 function localDateEndToIso(dateKey: string) {
   return localDateTimeToIso(`${dateKey}T23:59:59`);
+}
+
+function eventSpansMultipleDays(event: any) {
+  if (!event?.endTime) return false;
+  return toLocalDateKey(event.startTime) !== toLocalDateKey(event.endTime);
 }
 
 function normaliseSearchText(value: unknown) {
@@ -383,9 +397,18 @@ export default function ConstructionSchedule() {
   const eventsByDate = useMemo(() => {
     const map: Record<string, any[]> = {};
     for (const event of filteredEvents) {
-      const dateKey = toLocalDateKey(event.startTime);
-      if (!map[dateKey]) map[dateKey] = [];
-      map[dateKey].push(event);
+      const start = new Date(event.startTime);
+      const end = event.endTime ? new Date(event.endTime) : start;
+      if (Number.isNaN(start.getTime())) continue;
+      const last = Number.isNaN(end.getTime()) || end < start ? start : end;
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      const lastDay = new Date(last.getFullYear(), last.getMonth(), last.getDate());
+      for (let guard = 0; d <= lastDay && guard < 90; guard += 1) {
+        const dateKey = toLocalDateKey(d);
+        if (!map[dateKey]) map[dateKey] = [];
+        map[dateKey].push(event);
+        d.setDate(d.getDate() + 1);
+      }
     }
     return map;
   }, [filteredEvents]);
@@ -824,7 +847,7 @@ export default function ConstructionSchedule() {
       <Dialog open={!!selectedEvent} onOpenChange={(open) => !open && setSelectedEvent(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Event Details</DialogTitle>
+            <DialogTitle>Edit Schedule Event</DialogTitle>
           </DialogHeader>
           {selectedEvent && (
             <EventDetailView
@@ -905,28 +928,77 @@ export default function ConstructionSchedule() {
 
 // ─── Event Form ──────────────────────────────────────────────────────────────
 function EventForm({
-  jobs, installers, equipment, defaultDate, onSubmit, onBookEquipment, loading,
+  jobs, installers, defaultDate, initialEvent, mode = "create", onSubmit, loading,
 }: {
   jobs: any[];
   installers: any[];
-  equipment: any[];
+  equipment?: any[];
   defaultDate?: string | null;
+  initialEvent?: any;
+  mode?: "create" | "edit";
   onSubmit: (data: any) => void;
-  onBookEquipment: (data: any) => void;
+  onBookEquipment?: (data: any) => void;
   loading: boolean;
 }) {
+  const initialAllDay = Boolean(initialEvent?.allDay);
+  const initialStartDate = initialEvent?.startTime ? toLocalDateKey(initialEvent.startTime) : (defaultDate || "");
+  const initialEndDate = initialEvent?.endTime ? toLocalDateKey(initialEvent.endTime) : initialStartDate;
   const [form, setForm] = useState({
-    jobId: "",
-    title: "",
-    description: "",
-    startTime: defaultDate ? `${defaultDate}T09:00` : "",
-    endTime: defaultDate ? `${defaultDate}T17:00` : "",
-    allDay: false,
-    eventType: "installation",
-    assignedInstallerId: "",
-    notifyClient: false,
-    notifyInstaller: false,
+    jobId: initialEvent?.jobId ? String(initialEvent.jobId) : "",
+    title: initialEvent?.title || "",
+    description: initialEvent?.description || "",
+    startTime: initialAllDay
+      ? initialStartDate
+      : initialEvent?.startTime
+      ? toLocalDateTimeInput(initialEvent.startTime)
+      : defaultDate ? `${defaultDate}T09:00` : "",
+    endTime: initialAllDay
+      ? initialEndDate
+      : initialEvent?.endTime
+      ? toLocalDateTimeInput(initialEvent.endTime)
+      : defaultDate ? `${defaultDate}T17:00` : "",
+    allDay: initialAllDay,
+    eventType: initialEvent?.eventType || "installation",
+    assignedInstallerId: initialEvent?.assignedInstallerId ? String(initialEvent.assignedInstallerId) : "none",
+    notifyClient: Boolean(initialEvent?.notifyClient),
+    notifyInstaller: Boolean(initialEvent?.notifyInstaller),
+    status: initialEvent?.status || "scheduled",
   });
+
+  const handleSubmit = () => {
+    const startDateValue = form.allDay ? form.startTime.slice(0, 10) : form.startTime;
+    const endDateValue = form.allDay ? (form.endTime || form.startTime).slice(0, 10) : form.endTime;
+    const startTime = form.allDay ? localDateStartToIso(startDateValue) : localDateTimeToIso(startDateValue);
+    const endTime = form.allDay
+      ? localDateEndToIso(endDateValue)
+      : endDateValue ? localDateTimeToIso(endDateValue) : (mode === "edit" ? "" : undefined);
+
+    if (!startTime) {
+      toast.error("Start date is required");
+      return;
+    }
+    if (endTime && new Date(endTime) < new Date(startTime)) {
+      toast.error("End date must be after the start date");
+      return;
+    }
+
+    const payload: any = {
+      jobId: Number(form.jobId),
+      title: form.title.trim(),
+      description: form.description.trim() || undefined,
+      startTime,
+      endTime,
+      allDay: form.allDay,
+      eventType: form.eventType as any,
+      assignedInstallerId: form.assignedInstallerId && form.assignedInstallerId !== "none"
+        ? Number(form.assignedInstallerId)
+        : (mode === "edit" ? null : undefined),
+      notifyClient: form.notifyClient,
+      notifyInstaller: form.notifyInstaller,
+    };
+    if (mode === "edit") payload.status = form.status as any;
+    onSubmit(payload);
+  };
 
   return (
     <div className="space-y-4">
@@ -968,12 +1040,14 @@ function EventForm({
             onChange={(e) => setForm({ ...form, startTime: e.target.value })}
           />
         </div>
-        {!form.allDay && (
-          <div>
-            <Label>End Date/Time</Label>
-            <Input type="datetime-local" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
-          </div>
-        )}
+        <div>
+          <Label>End {form.allDay ? "Date" : "Date/Time"}</Label>
+          <Input
+            type={form.allDay ? "date" : "datetime-local"}
+            value={form.allDay ? form.endTime.slice(0, 10) : form.endTime}
+            onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+          />
+        </div>
       </div>
       <div>
         <Label>Assigned Staff / Trade</Label>
@@ -992,6 +1066,20 @@ function EventForm({
         <Label>Description</Label>
         <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} />
       </div>
+      {mode === "edit" && (
+        <div>
+          <Label>Status</Label>
+          <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="scheduled">Scheduled</SelectItem>
+              <SelectItem value="confirmed">Confirmed</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex gap-6">
         <div className="flex items-center gap-2">
           <Switch checked={form.notifyClient} onCheckedChange={(v) => setForm({ ...form, notifyClient: v })} />
@@ -1010,21 +1098,10 @@ function EventForm({
       </div>
       <Button
         className="w-full"
-        onClick={() => onSubmit({
-          jobId: Number(form.jobId),
-          title: form.title,
-          description: form.description || undefined,
-          startTime: form.allDay ? localDateStartToIso(form.startTime.slice(0, 10)) : localDateTimeToIso(form.startTime),
-          endTime: form.allDay ? undefined : (form.endTime ? localDateTimeToIso(form.endTime) : undefined),
-          allDay: form.allDay,
-          eventType: form.eventType as any,
-          assignedInstallerId: form.assignedInstallerId && form.assignedInstallerId !== "none" ? Number(form.assignedInstallerId) : undefined,
-          notifyClient: form.notifyClient,
-          notifyInstaller: form.notifyInstaller,
-        })}
+        onClick={handleSubmit}
         disabled={loading || !form.jobId || !form.title || !form.startTime}
       >
-        {loading ? "Creating..." : "Create Event"}
+        {loading ? (mode === "edit" ? "Saving..." : "Creating...") : (mode === "edit" ? "Save Changes" : "Create Event")}
       </Button>
     </div>
   );
@@ -1132,7 +1209,9 @@ function EventDetailView({
         </div>
         <div className="flex-1">
           <h3 className="font-semibold text-lg">{event.title}</h3>
-          <p className="text-sm text-muted-foreground">{event.jobClientName}</p>
+          <p className="text-sm text-muted-foreground">
+            {event.jobClientName}{eventSpansMultipleDays(event) ? " · Multi-day" : ""}
+          </p>
         </div>
         <Badge className={STATUS_COLORS[event.status] || ""} variant="secondary">
           {event.status}
@@ -1146,83 +1225,18 @@ function EventDetailView({
         </div>
       )}
 
-      {event.description && (
-        <p className="text-sm text-muted-foreground">{event.description}</p>
-      )}
-
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <span className="text-muted-foreground">Start:</span>
-          <p className="font-medium">
-            {event.allDay
-              ? new Date(event.startTime).toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })
-              : new Date(event.startTime).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-          </p>
-        </div>
-        {event.endTime && !event.allDay && (
-          <div>
-            <span className="text-muted-foreground">End:</span>
-            <p className="font-medium">
-              {new Date(event.endTime).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-            </p>
-          </div>
-        )}
-        <div>
-          <span className="text-muted-foreground">Assigned To:</span>
-          <p className="font-medium">{event.installerName || "Unallocated"}</p>
-        </div>
-        {event.jobSiteAddress && (
-          <div>
-            <span className="text-muted-foreground">Site:</span>
-            <p className="font-medium">{event.jobSiteAddress}</p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1">
-          {event.notifyClient ? <Bell className="h-3 w-3 text-green-500" /> : <BellOff className="h-3 w-3" />}
-          Client {event.notifyClient ? "notified" : "not notified"}
-        </span>
-        <span className="flex items-center gap-1">
-          {event.notifyInstaller ? <Bell className="h-3 w-3 text-green-500" /> : <BellOff className="h-3 w-3" />}
-          Trade {event.notifyInstaller ? "notified" : "not notified"}
-        </span>
-      </div>
-
-      {/* Assign / Reassign Staff */}
-      <div>
-        <Label className="text-xs">Assign Staff / Trade</Label>
-        <Select
-          value={event.assignedInstallerId ? String(event.assignedInstallerId) : "none"}
-          onValueChange={(v) => onUpdate({ assignedInstallerId: v === "none" ? null : Number(v) })}
-        >
-          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">Unallocated</SelectItem>
-            {installers.map((i: any) => (
-              <SelectItem key={i.id} value={String(i.id)}>{i.name}{i.tradeType ? ` (${i.tradeType})` : ""}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Status Update */}
-      <div>
-        <Label className="text-xs">Update Status</Label>
-        <Select value={event.status} onValueChange={(v) => onUpdate({ status: v as any })}>
-          <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="scheduled">Scheduled</SelectItem>
-            <SelectItem value="confirmed">Confirmed</SelectItem>
-            <SelectItem value="completed">Completed</SelectItem>
-            <SelectItem value="cancelled">Cancelled</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <EventForm
+        key={event.id}
+        jobs={jobs}
+        installers={installers}
+        initialEvent={event}
+        mode="edit"
+        onSubmit={onUpdate}
+        loading={loading}
+      />
 
       <div className="flex gap-2 pt-2">
-        <Button variant="destructive" size="sm" onClick={onDelete} className="flex-1">
+        <Button variant="destructive" size="sm" onClick={onDelete} className="w-full">
           <Trash2 className="h-4 w-4 mr-1" /> Delete
         </Button>
       </div>
