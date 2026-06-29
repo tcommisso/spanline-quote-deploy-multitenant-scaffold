@@ -231,7 +231,7 @@ function workChecklistLabel(row: Record<string, unknown>): string {
 }
 
 function workChecklistProductMatch(row: Record<string, unknown>, label: string): string {
-  return label || readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]);
+  return readString(row, ["productMatch", "product", "productName", "catalogueProduct", "match"]) || label;
 }
 
 function workChecklistUnit(row: Record<string, unknown>, fallback: string | null | undefined): string {
@@ -326,7 +326,7 @@ function additionalCostSection(row: Record<string, unknown>): string {
 
 function additionalCostSectionIsAllowed(row: Record<string, unknown>): boolean {
   const section = additionalCostSection(row);
-  if (!section) return true;
+  if (!section) return false;
   return ADDITIONAL_COST_ALLOWED_SECTIONS.has(normalizeMatchValue(section).replace(/\s+/g, "_"));
 }
 

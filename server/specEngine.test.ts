@@ -441,7 +441,7 @@ describe("generateItemsFromSpec work checklist matching", () => {
             responsibility: "By Builder",
             qty: 24,
             unit: "m2",
-            productMatch: "Stale free text should not override the fixed description",
+            productMatch: "Demolish existing concrete slab m2",
             notes: "include disposal",
           },
           {
@@ -807,7 +807,8 @@ describe("generateItemsFromSpec additional cost selections", () => {
       [],
       {
         specChecklistSelections: [
-          { label: "Bobcat per day", qty: 2, total: 400, unit: "each" },
+          { label: "Demolish existing concrete slab", qty: 20, total: 4140, unit: "m2" },
+          { label: "Bobcat per day", qty: 2, total: 400, unit: "each", section: "site_works" },
         ],
       },
       [],
