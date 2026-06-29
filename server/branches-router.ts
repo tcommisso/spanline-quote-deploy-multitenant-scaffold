@@ -1,12 +1,34 @@
 import { z } from "zod";
 import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { branches } from "../drizzle/schema";
-import { and, asc, eq } from "drizzle-orm";
+import { branches, designAdvisors } from "../drizzle/schema";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { privateTenantConditions } from "./private-tenant-scope";
 
 async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
   return privateTenantConditions(ctx, branches.tenantId, ...baseConditions);
+}
+
+const defaultContactFields = {
+  defaultBranchAdminStaffId: z.number().nullable().optional(),
+  defaultConstructionManagerStaffId: z.number().nullable().optional(),
+  defaultFinanceStaffId: z.number().nullable().optional(),
+};
+
+async function assertDefaultStaffAccess(ctx: any, db: any, staffIds: Array<number | null | undefined>) {
+  const ids = Array.from(new Set(staffIds.filter((id): id is number => typeof id === "number")));
+  if (ids.length === 0) return;
+
+  const rows = await db.select({ id: designAdvisors.id })
+    .from(designAdvisors)
+    .where(and(
+      ...await privateTenantConditions(ctx, designAdvisors.tenantId, inArray(designAdvisors.id, ids)),
+      eq(designAdvisors.archived, false),
+    ));
+
+  if (rows.length !== ids.length) {
+    throw new Error("One or more default client contacts are not active staff for this tenant");
+  }
 }
 
 export const branchesRouter = router({
@@ -38,10 +60,16 @@ export const branchesRouter = router({
       managerUserId: z.number().nullable().optional(),
       managerName: z.string().nullable().optional(),
       managerEmail: z.string().nullable().optional(),
+      ...defaultContactFields,
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      await assertDefaultStaffAccess(ctx, db, [
+        input.defaultBranchAdminStaffId,
+        input.defaultConstructionManagerStaffId,
+        input.defaultFinanceStaffId,
+      ]);
       const [result] = await db.insert(branches).values({
         ...input,
         tenantId: ctx.tenant!.id,
@@ -60,11 +88,17 @@ export const branchesRouter = router({
       managerUserId: z.number().nullable().optional(),
       managerName: z.string().nullable().optional(),
       managerEmail: z.string().nullable().optional(),
+      ...defaultContactFields,
       isActive: z.boolean().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      await assertDefaultStaffAccess(ctx, db, [
+        input.defaultBranchAdminStaffId,
+        input.defaultConstructionManagerStaffId,
+        input.defaultFinanceStaffId,
+      ]);
       const { id, ...data } = input;
       await db
         .update(branches)

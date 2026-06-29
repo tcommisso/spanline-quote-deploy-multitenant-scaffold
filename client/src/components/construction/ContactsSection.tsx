@@ -118,6 +118,10 @@ export default function ContactsSection({
   }
 
   function openEditStaffContact(contact: any) {
+    if (typeof contact.id !== "number") {
+      openOverrideStaffContact(contact);
+      return;
+    }
     setEditingContact(contact);
     setSelectedTeamMemberKey("custom");
     setStaffForm({
@@ -127,6 +131,21 @@ export default function ContactsSection({
       phone: contact.phone || "",
       email: contact.email || "",
       profileDescription: contact.profileDescription || "",
+      photoUrl: contact.photoUrl || "",
+    });
+    setStaffDialogOpen(true);
+  }
+
+  function openOverrideStaffContact(contact: any) {
+    setEditingContact(null);
+    setSelectedTeamMemberKey("custom");
+    setStaffForm({
+      staffId: contact.staffId || null,
+      name: contact.isMissing ? "" : contact.name,
+      role: contact.role || "",
+      phone: contact.phone || "",
+      email: contact.email || "",
+      profileDescription: contact.isMissing ? "" : contact.profileDescription || "",
       photoUrl: contact.photoUrl || "",
     });
     setStaffDialogOpen(true);
@@ -150,7 +169,7 @@ export default function ContactsSection({
       setStaffForm({
         staffId: teamMember.staffId,
         name: teamMember.name,
-        role: teamMember.roleLabel || teamMember.role || "",
+        role: staffForm.role.trim() || teamMember.roleLabel || teamMember.role || "",
         phone: teamMember.phone || "",
         email: teamMember.email || "",
         profileDescription: teamMember.profileDescription || "",
@@ -163,7 +182,7 @@ export default function ContactsSection({
     if (!staffForm.name.trim()) { toast.error("Name is required"); return; }
     if (!staffForm.role.trim()) { toast.error("Role title is required"); return; }
     upsertContactMut.mutate({
-      id: editingContact?.id,
+      id: typeof editingContact?.id === "number" ? editingContact.id : undefined,
       constructionJobId: jobId,
       staffId: staffForm.staffId,
       name: staffForm.name,
@@ -177,6 +196,13 @@ export default function ContactsSection({
   }
 
   const portalContacts = portalContactsQuery.data || [];
+  const editableContact = (contact: any) => contact.canEdit !== false && typeof contact.id === "number";
+  const sourceBadgeClass = (contact: any) => {
+    if (contact.isMissing) return "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300";
+    if (contact.source === "manual_override") return "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300";
+    if (contact.source === "extra") return "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300";
+    return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300";
+  };
 
   return (
     <div className="space-y-6">
@@ -230,7 +256,7 @@ export default function ContactsSection({
                 Portal Staff Contacts ({portalContacts.length})
               </CardTitle>
               <p className="text-xs text-muted-foreground mt-1">
-                These contacts are visible to the client in their Client Portal.
+                Default branch and CRM contacts are visible to the client. Add staff here only for job-specific overrides or extra contacts.
               </p>
             </div>
             <Button size="sm" onClick={openAddStaffContact}>
@@ -241,11 +267,16 @@ export default function ContactsSection({
         <CardContent className="space-y-3">
           {portalContacts.length === 0 && (
             <p className="text-sm text-muted-foreground py-4 text-center">
-              No staff contacts assigned to this job's Client Portal yet.
+              No client portal contacts could be resolved for this job yet.
             </p>
           )}
           {portalContacts.map((contact: any) => (
-            <div key={contact.id} className="border rounded-lg p-4 flex flex-col sm:flex-row gap-3">
+            <div
+              key={contact.id}
+              className={`border rounded-lg p-4 flex flex-col sm:flex-row gap-3 ${
+                contact.isMissing ? "border-amber-300 bg-amber-50/40 dark:border-amber-800 dark:bg-amber-950/20" : ""
+              }`}
+            >
               {/* Photo */}
               <div className="shrink-0">
                 {contact.photoUrl ? (
@@ -261,6 +292,15 @@ export default function ContactsSection({
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium">{contact.name}</span>
                   <Badge variant="outline" className="text-xs">{contact.role}</Badge>
+                  {contact.sourceLabel && (
+                    <Badge className={`text-xs ${sourceBadgeClass(contact)}`}>
+                      {contact.isMissing && <AlertTriangle className="h-3 w-3 mr-0.5" />}
+                      {contact.sourceLabel}
+                    </Badge>
+                  )}
+                  {contact.branchName && (
+                    <Badge variant="secondary" className="text-xs">{contact.branchName}</Badge>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-sm text-muted-foreground">
                   {contact.phone && (
@@ -279,24 +319,38 @@ export default function ContactsSection({
                     {contact.profileDescription}
                   </p>
                 )}
+                {contact.warning && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300 mt-1.5 flex items-start gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    <span>{contact.warning}</span>
+                  </p>
+                )}
               </div>
               {/* Actions */}
               <div className="flex gap-1 shrink-0">
-                <Button variant="ghost" size="icon" onClick={() => openEditStaffContact(contact)}>
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => {
-                    if (confirm(`Remove ${contact.name} from portal contacts?`)) {
-                      deleteContactMut.mutate({ id: contact.id });
-                    }
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                {editableContact(contact) ? (
+                  <>
+                    <Button variant="ghost" size="icon" onClick={() => openEditStaffContact(contact)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => {
+                        if (confirm(`Remove ${contact.name} from portal contacts?`)) {
+                          deleteContactMut.mutate({ id: contact.id });
+                        }
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={() => openOverrideStaffContact(contact)}>
+                    Override
+                  </Button>
+                )}
               </div>
             </div>
           ))}

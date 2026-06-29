@@ -28,7 +28,7 @@ export default function PortalContacts() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {contactsQuery.data.map((contact: any) => (
-            <Card key={contact.id} className="overflow-hidden">
+            <Card key={contact.id} className={`overflow-hidden ${contact.isMissing ? "bg-muted/30" : ""}`}>
               <CardContent className="pt-6">
                 <div className="flex items-start gap-4">
                   {/* Photo or avatar */}
@@ -65,6 +65,9 @@ export default function PortalContacts() {
                         <a href={`mailto:${contact.email}`} className="flex items-center gap-1.5 text-sm text-primary hover:underline truncate">
                           <Mail className="w-3.5 h-3.5 shrink-0" /> {contact.email}
                         </a>
+                      )}
+                      {!contact.phone && !contact.email && (
+                        <p className="text-sm text-muted-foreground">Contact details to be confirmed.</p>
                       )}
                     </div>
 

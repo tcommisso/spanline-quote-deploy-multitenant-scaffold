@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getDb, getTenantBrandingSettings } from "./db";
 import { eq, and, desc, or, gt, sql } from "drizzle-orm";
 import {
-  portalAccess, portalSessions, portalContacts, portalDocuments,
+  portalAccess, portalSessions, portalDocuments,
   portalVariations, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, cpcPlans, cpcSubscriptions, cpcServiceHistory,
   constructionJobs, constructionProgress, clientActivities, xeroProjectMappings, jobSharedFiles,
@@ -22,6 +22,7 @@ import { buildTrustedAppUrl, buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from "./_core/tenant-scope";
 import { sendNotificationEmail } from "./email";
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
+import { resolveClientPortalContacts } from "./client-contact-defaults";
 
 // ─── Portal Context ─────────────────────────────────────────────────────────
 // Portal now uses the main tRPC instance and reads portalAccess from the shared context
@@ -423,11 +424,7 @@ export const portalRouter = router({
 
   getContacts: protectedPortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-    return db
-      .select()
-      .from(portalContacts)
-      .where(eq(portalContacts.constructionJobId, ctx.portalAccess.constructionJobId))
-      .orderBy(portalContacts.sortOrder);
+    return resolveClientPortalContacts(db, ctx.portalAccess.constructionJobId, portalTenantId(ctx));
   }),
 
   // ─── Variations ─────────────────────────────────────────────────────────────

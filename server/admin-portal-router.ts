@@ -14,6 +14,7 @@ import { triggerPushDocumentUploaded, triggerPushVariationCreated, triggerPushCl
 import { sendNotificationEmail } from "./email";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { buildTrustedAppUrlForTenant } from "./_core/url";
+import { resolveClientPortalContacts } from "./client-contact-defaults";
 
 function generateToken(length = 64): string {
   return crypto.randomBytes(length).toString("hex").slice(0, length);
@@ -847,9 +848,7 @@ export const adminPortalRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       await assertPortalJobAccess(ctx, input.jobId);
-      return db.select().from(portalContacts)
-        .where(eq(portalContacts.constructionJobId, input.jobId))
-        .orderBy(portalContacts.sortOrder);
+      return resolveClientPortalContacts(db, input.jobId, tenantIdFromContext(ctx));
     }),
 
   upsertContact: adminProcedure
