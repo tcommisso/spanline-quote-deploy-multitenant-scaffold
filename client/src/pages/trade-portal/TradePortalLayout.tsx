@@ -7,29 +7,48 @@ import {
   LayoutDashboard, CalendarDays, CalendarCheck, User, Receipt,
   FileUp, Newspaper, Camera, MessageSquare, MessagesSquare, LogOut, Menu, X, ChevronRight, FileSignature, FileText,
   ClipboardCheck, ShieldCheck, Briefcase,
+  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import PWAInstallPrompt from "@/components/PWAInstallPrompt";
 import { PushNotificationOptIn } from "@/components/PushNotificationOptIn";
 
-const baseNavItems = [
+type TradeNavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+};
+
+type TradeNavGroup = {
+  label: string | null;
+  items: TradeNavItem[];
+};
+
+const primaryNavItems: TradeNavItem[] = [
   { href: "/trade-portal/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/trade-portal/schedule", label: "Schedule", icon: CalendarDays },
-  { href: "/trade-portal/availability", label: "Availability", icon: CalendarCheck },
-  { href: "/trade-portal/contact", label: "Contact", icon: User },
-  { href: "/trade-portal/remittances", label: "Remittances", icon: Receipt },
-  { href: "/trade-portal/invoices", label: "Invoices", icon: FileUp },
   { href: "/trade-portal/jobs", label: "Job Details", icon: Briefcase },
-  { href: "/trade-portal/contracts", label: "My Contracts", icon: FileSignature },
-  { href: "/trade-portal/inductions", label: "Inductions", icon: ClipboardCheck },
+  { href: "/trade-portal/invoices", label: "Invoices", icon: FileUp },
   { href: "/trade-portal/news", label: "News", icon: Newspaper },
   { href: "/trade-portal/photos", label: "Photos", icon: Camera },
   { href: "/trade-portal/messages", label: "Messages", icon: MessageSquare },
   { href: "/trade-portal/chat", label: "Team Chat", icon: MessagesSquare },
 ];
 
-const flashingOrdersNavItem = { href: "/trade-portal/flashing-orders", label: "Flashing Orders", icon: FileText };
+const profileNavItems: TradeNavItem[] = [
+  { href: "/trade-portal/availability", label: "Availability", icon: CalendarCheck },
+  { href: "/trade-portal/contact", label: "Contact", icon: User },
+];
+
+const resourceNavItems: TradeNavItem[] = [
+  { href: "/trade-portal/remittances", label: "Remittances", icon: Receipt },
+  { href: "/trade-portal/contracts", label: "My Contracts", icon: FileSignature },
+  { href: "/trade-portal/inductions", label: "Inductions", icon: ClipboardCheck },
+];
+
+const flashingOrdersNavItem: TradeNavItem = { href: "/trade-portal/flashing-orders", label: "Flashing Orders", icon: FileText };
+const whsNavItem: TradeNavItem = { href: "/trade-portal/whs", label: "WH&S", icon: ShieldCheck };
 
 // Bottom nav shows the 5 most important items on mobile
 const bottomNavItems = [
@@ -59,19 +78,24 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
     retry: false,
   });
 
-  const navItems = useMemo(() => {
-    const items = [...baseNavItems];
+  const navGroups = useMemo<TradeNavGroup[]>(() => {
+    const primaryItems = [...primaryNavItems];
     if (flashingAccessQuery.data?.enabled) {
-      const insertAfterJobs = items.findIndex(i => i.href === "/trade-portal/jobs");
-      items.splice(insertAfterJobs >= 0 ? insertAfterJobs + 1 : items.length, 0, flashingOrdersNavItem);
+      const insertAfterJobs = primaryItems.findIndex(i => i.href === "/trade-portal/jobs");
+      primaryItems.splice(insertAfterJobs >= 0 ? insertAfterJobs + 1 : primaryItems.length, 0, flashingOrdersNavItem);
     }
+    const resources = [...resourceNavItems];
     if (whsDocs && whsDocs.length > 0) {
-      // Insert WH&S before Messages
-      const msgIdx = items.findIndex(i => i.href === "/trade-portal/messages");
-      items.splice(msgIdx >= 0 ? msgIdx : items.length, 0, { href: "/trade-portal/whs", label: "WH&S", icon: ShieldCheck });
+      resources.push(whsNavItem);
     }
-    return items;
+    return [
+      { label: null, items: primaryItems },
+      { label: "Profile", items: profileNavItems },
+      { label: "Resources", items: resources },
+    ];
   }, [flashingAccessQuery.data?.enabled, whsDocs]);
+
+  const navItems = useMemo(() => navGroups.flatMap(group => group.items), [navGroups]);
 
   // Set dynamic page title
   useEffect(() => {
@@ -124,6 +148,13 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
 
   const displayName = branding?.companyName || "Trade Portal";
   const logoUrl = branding?.logoUrl || null;
+  const isNavItemActive = (href: string) => location === href || (href !== "/trade-portal/dashboard" && location.startsWith(`${href}/`));
+  const getNavBadgeCount = (label: string) => {
+    if (label === "Messages") return unreadCount;
+    if (label === "News") return unreadNewsCount;
+    if (label === "Team Chat") return chatUnreadCount;
+    return 0;
+  };
 
   return (
     <div className="min-h-screen bg-background pb-16 md:pb-0">
@@ -185,37 +216,42 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
               <p className="text-xs text-muted-foreground mt-0.5">{user.tradeType}</p>
             )}
           </div>
-          <div className="p-3 space-y-0.5 overflow-y-auto flex-1">
-            {navItems.map((item) => (
-              <Link key={item.href} href={item.href}>
-                <div
-                  className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm cursor-pointer transition-colors ${
-                    location === item.href
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-muted active:bg-accent"
-                  }`}
-                  onClick={() => { setMobileMenuOpen(false); if (navigator.vibrate) navigator.vibrate(10); }}
-                >
-                  <item.icon className="w-5 h-5 shrink-0" />
-                  <span className="flex-1">{item.label}</span>
-                  {item.label === "Messages" && unreadCount > 0 && (
-                    <Badge className="bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {unreadCount}
-                    </Badge>
-                  )}
-                  {item.label === "News" && unreadNewsCount > 0 && (
-                    <Badge className="bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {unreadNewsCount}
-                    </Badge>
-                  )}
-                  {item.label === "Team Chat" && chatUnreadCount > 0 && (
-                    <Badge className="bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {chatUnreadCount}
-                    </Badge>
-                  )}
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          <div className="p-3 overflow-y-auto flex-1">
+            {navGroups.map((group) => (
+              <div key={group.label || "primary"} className={group.label ? "mt-4" : ""}>
+                {group.label && (
+                  <div className="px-3 pb-1 text-xs font-semibold uppercase text-muted-foreground">
+                    {group.label}
+                  </div>
+                )}
+                <div className="space-y-0.5">
+                  {group.items.map((item) => {
+                    const badgeCount = getNavBadgeCount(item.label);
+                    const isActive = isNavItemActive(item.href);
+                    return (
+                      <Link key={item.href} href={item.href}>
+                        <div
+                          className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm cursor-pointer transition-colors ${
+                            isActive
+                              ? "bg-primary/10 text-primary font-medium"
+                              : "text-muted-foreground hover:bg-muted active:bg-accent"
+                          }`}
+                          onClick={() => { setMobileMenuOpen(false); if (navigator.vibrate) navigator.vibrate(10); }}
+                        >
+                          <item.icon className="w-5 h-5 shrink-0" />
+                          <span className="flex-1">{item.label}</span>
+                          {badgeCount > 0 && (
+                            <Badge className="bg-primary text-primary-foreground text-xs px-1.5 py-0">
+                              {badgeCount}
+                            </Badge>
+                          )}
+                          <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                        </div>
+                      </Link>
+                    );
+                  })}
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         </SheetContent>
@@ -225,35 +261,40 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
       <div className="max-w-7xl mx-auto px-4 py-4 md:py-6 flex gap-6">
         {/* Desktop Sidebar */}
         <nav className="hidden md:block w-56 shrink-0" data-tour="trade-nav">
-          <div className="sticky top-20 space-y-1">
-            {navItems.map((item) => (
-              <Link key={item.href} href={item.href}>
-                <div
-                  className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors ${
-                    location === item.href
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  <item.icon className="w-4 h-4" />
-                  {item.label}
-                  {item.label === "Messages" && unreadCount > 0 && (
-                    <Badge className="ml-auto bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {unreadCount}
-                    </Badge>
-                  )}
-                  {item.label === "News" && unreadNewsCount > 0 && (
-                    <Badge className="ml-auto bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {unreadNewsCount}
-                    </Badge>
-                  )}
-                  {item.label === "Team Chat" && chatUnreadCount > 0 && (
-                    <Badge className="ml-auto bg-primary text-primary-foreground text-xs px-1.5 py-0">
-                      {chatUnreadCount}
-                    </Badge>
-                  )}
+          <div className="sticky top-20">
+            {navGroups.map((group) => (
+              <div key={group.label || "primary"} className={group.label ? "mt-5" : ""}>
+                {group.label && (
+                  <div className="px-3 pb-1.5 text-xs font-semibold uppercase text-muted-foreground">
+                    {group.label}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  {group.items.map((item) => {
+                    const badgeCount = getNavBadgeCount(item.label);
+                    const isActive = isNavItemActive(item.href);
+                    return (
+                      <Link key={item.href} href={item.href}>
+                        <div
+                          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors ${
+                            isActive
+                              ? "bg-primary/10 text-primary font-medium"
+                              : "text-muted-foreground hover:bg-muted"
+                          }`}
+                        >
+                          <item.icon className="w-4 h-4 shrink-0" />
+                          <span className="flex-1">{item.label}</span>
+                          {badgeCount > 0 && (
+                            <Badge className="ml-auto bg-primary text-primary-foreground text-xs px-1.5 py-0">
+                              {badgeCount}
+                            </Badge>
+                          )}
+                        </div>
+                      </Link>
+                    );
+                  })}
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         </nav>
