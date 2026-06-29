@@ -820,3 +820,51 @@ describe("generateItemsFromSpec additional cost selections", () => {
     expect(items[0]).toMatchObject({ description: "Bobcat per day", qty: 2, sellRate: 200 });
   });
 });
+
+describe("generateItemsFromSpec source identity", () => {
+  it("keeps the same source key but changes the source hash when generated line content changes", () => {
+    const baseItems = generateItemsFromSpec(
+      [roofMapping()],
+      roofSpecValues,
+      [product({ id: 2, name: "Ultra 48", coverageWidth: 762, fixedSell: "42.00" })],
+      {},
+      2.2,
+    );
+    const changedItems = generateItemsFromSpec(
+      [roofMapping()],
+      {
+        ...roofSpecValues,
+        specRoofTopColour: "Monument",
+      },
+      [product({ id: 2, name: "Ultra 48", coverageWidth: 762, fixedSell: "42.00" })],
+      {},
+      2.2,
+    );
+
+    expect(baseItems).toHaveLength(1);
+    expect(changedItems).toHaveLength(1);
+    expect(baseItems[0].sourceKey).toMatch(/^spec:mapping_100:roof:/);
+    expect(changedItems[0].sourceKey).toBe(baseItems[0].sourceKey);
+    expect(changedItems[0].sourceHash).not.toBe(baseItems[0].sourceHash);
+  });
+
+  it("suffixes duplicate generated source keys so identical rows can coexist", () => {
+    const items = generateItemsFromSpec(
+      [],
+      {
+        specChecklistSelections: [
+          { label: "Mobile Scaffold per day", qty: 1, total: 200, unit: "each", section: "site_works" },
+          { label: "Mobile Scaffold per day", qty: 2, total: 400, unit: "each", section: "site_works" },
+        ],
+      },
+      [],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items[0].sourceKey).toMatch(/^spec:additional_costs:additional_costs:/);
+    expect(items[1].sourceKey).toBe(`${items[0].sourceKey}:dup_2`);
+    expect(items[0].sourceHash).not.toBe(items[1].sourceHash);
+  });
+});

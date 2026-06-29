@@ -871,6 +871,8 @@ export const quoteItems = mysqlTable("quote_items", {
   tenantId: int("tenantId").references(() => tenants.id),
   quoteId: int("quoteId").notNull(),
   source: mysqlEnum("source", ["auto", "manual"]).notNull().default("manual"),
+  sourceKey: varchar("sourceKey", { length: 191 }),
+  sourceHash: varchar("sourceHash", { length: 64 }),
   specMappingId: int("specMappingId"), // Which mapping rule generated this (null for manual)
   productId: int("productId"), // Linked product for rate lookup
   tabName: varchar("tabName", { length: 64 }).notNull(),
@@ -889,6 +891,8 @@ export const quoteItems = mysqlTable("quote_items", {
 }, (table) => [
   index("idx_quote_items_tenant").on(table.tenantId),
   index("idx_quote_items_tenant_quote").on(table.tenantId, table.quoteId),
+  index("idx_quote_items_source_key").on(table.tenantId, table.quoteId, table.source, table.sourceKey),
+  uniqueIndex("uq_quote_items_generated_source").on(table.tenantId, table.quoteId, table.sourceKey),
 ]);
 export type QuoteItem = typeof quoteItems.$inferSelect;
 export type InsertQuoteItem = typeof quoteItems.$inferInsert;

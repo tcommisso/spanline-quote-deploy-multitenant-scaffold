@@ -200,9 +200,11 @@ export async function getManualItems(quoteId: number, tenantId?: number | null) 
   );
 }
 
-export async function createQuoteItem(data: {
+type QuoteItemWriteData = {
   quoteId: number;
   source: "auto" | "manual";
+  sourceKey?: string | null;
+  sourceHash?: string | null;
   specMappingId?: number | null;
   productId?: number | null;
   tabName: string;
@@ -216,49 +218,95 @@ export async function createQuoteItem(data: {
   needsConfirmation?: boolean;
   notes?: string | null;
   sortOrder?: number;
-}, tenantId?: number | null) {
-  const [result] = await db.insert(quoteItems).values({
+};
+
+function normalizeQuoteItemSourceKey(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text ? text.slice(0, 191) : null;
+}
+
+function normalizeQuoteItemSourceHash(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text ? text.slice(0, 64) : null;
+}
+
+function quoteItemWriteValues(data: QuoteItemWriteData, tenantId?: number | null, sortOrder?: number) {
+  return {
     ...data,
     tenantId,
+    sourceKey: normalizeQuoteItemSourceKey(data.sourceKey),
+    sourceHash: normalizeQuoteItemSourceHash(data.sourceHash),
     qty: String(data.qty),
     costRate: String(data.costRate),
     sellRate: String(data.sellRate),
+    sortOrder: data.sortOrder ?? sortOrder ?? 0,
+  };
+}
+
+function normalizeDecimalForCompare(value: unknown, decimals: number): string {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(decimals) : String(value ?? "");
+}
+
+function nullableTextForCompare(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
+function needsGeneratedQuoteItemUpdate(existing: typeof quoteItems.$inferSelect, next: ReturnType<typeof quoteItemWriteValues>): boolean {
+  if (normalizeQuoteItemSourceKey(existing.sourceKey) !== normalizeQuoteItemSourceKey(next.sourceKey)) return true;
+  if (normalizeQuoteItemSourceHash(existing.sourceHash) !== normalizeQuoteItemSourceHash(next.sourceHash)) return true;
+  if (Number(existing.sortOrder ?? 0) !== Number(next.sortOrder ?? 0)) return true;
+  if (existing.needsConfirmation !== false) return true;
+  if (next.sourceHash) return false;
+
+  if (Number(existing.specMappingId ?? 0) !== Number(next.specMappingId ?? 0)) return true;
+  if (Number(existing.productId ?? 0) !== Number(next.productId ?? 0)) return true;
+  if (nullableTextForCompare(existing.tabName) !== nullableTextForCompare(next.tabName)) return true;
+  if (nullableTextForCompare(existing.description) !== nullableTextForCompare(next.description)) return true;
+  if (nullableTextForCompare(existing.colour) !== nullableTextForCompare(next.colour)) return true;
+  if (nullableTextForCompare(existing.bottomColour) !== nullableTextForCompare(next.bottomColour)) return true;
+  if (nullableTextForCompare(existing.uom) !== nullableTextForCompare(next.uom)) return true;
+  if (nullableTextForCompare(existing.notes) !== nullableTextForCompare(next.notes)) return true;
+  if (normalizeDecimalForCompare(existing.qty, 3) !== normalizeDecimalForCompare(next.qty, 3)) return true;
+  if (normalizeDecimalForCompare(existing.costRate, 2) !== normalizeDecimalForCompare(next.costRate, 2)) return true;
+  if (normalizeDecimalForCompare(existing.sellRate, 2) !== normalizeDecimalForCompare(next.sellRate, 2)) return true;
+  return false;
+}
+
+function ensureUniqueGeneratedSourceKeys(items: QuoteItemWriteData[]): QuoteItemWriteData[] {
+  const seen = new Map<string, number>();
+  return items.map((item, index) => {
+    const baseKey = normalizeQuoteItemSourceKey(item.sourceKey) || `spec:fallback:${index}`;
+    const count = seen.get(baseKey) || 0;
+    seen.set(baseKey, count + 1);
+    const sourceKey = count === 0 ? baseKey : `${baseKey}:db_dup_${count + 1}`;
+    return {
+      ...item,
+      sourceKey: sourceKey.slice(0, 191),
+    };
+  });
+}
+
+export async function createQuoteItem(data: QuoteItemWriteData, tenantId?: number | null) {
+  const [result] = await db.insert(quoteItems).values({
+    ...quoteItemWriteValues(data, tenantId),
   } as any);
   return result.insertId;
 }
 
-export async function createQuoteItemsBatch(items: Array<{
-  quoteId: number;
-  source: "auto" | "manual";
-  specMappingId?: number | null;
-  productId?: number | null;
-  tabName: string;
-  description: string;
-  colour?: string | null;
-  bottomColour?: string | null;
-  uom?: string | null;
-  qty: number | string;
-  costRate: number | string;
-  sellRate: number | string;
-  needsConfirmation?: boolean;
-  notes?: string | null;
-  sortOrder?: number;
-}>, tenantId?: number | null) {
+export async function createQuoteItemsBatch(items: QuoteItemWriteData[], tenantId?: number | null) {
   if (items.length === 0) return;
-  const values = items.map((item, idx) => ({
-    ...item,
-    tenantId,
-    qty: String(item.qty),
-    costRate: String(item.costRate),
-    sellRate: String(item.sellRate),
-    sortOrder: item.sortOrder ?? idx,
-  }));
+  const values = items.map((item, idx) => quoteItemWriteValues(item, tenantId, idx));
   await db.insert(quoteItems).values(values as any);
 }
 
 export async function updateQuoteItem(id: number, data: Partial<{
+  specMappingId: number | null;
+  productId: number | null;
+  tabName: string;
   description: string;
   colour: string | null;
+  bottomColour: string | null;
   uom: string | null;
   qty: number | string;
   costRate: number | string;
@@ -267,13 +315,102 @@ export async function updateQuoteItem(id: number, data: Partial<{
   notes: string | null;
   sortOrder: number;
   source: "auto" | "manual";
+  sourceKey: string | null;
+  sourceHash: string | null;
 }>, tenantId?: number | null) {
   const updateData: any = { ...data };
   if (data.qty !== undefined) updateData.qty = String(data.qty);
   if (data.costRate !== undefined) updateData.costRate = String(data.costRate);
   if (data.sellRate !== undefined) updateData.sellRate = String(data.sellRate);
+  if (data.sourceKey !== undefined) updateData.sourceKey = normalizeQuoteItemSourceKey(data.sourceKey);
+  if (data.sourceHash !== undefined) updateData.sourceHash = normalizeQuoteItemSourceHash(data.sourceHash);
   await db.update(quoteItems).set(updateData)
     .where(await withTenant([eq(quoteItems.id, id)], quoteItems.tenantId, tenantId));
+}
+
+export async function reconcileAutoQuoteItems(
+  quoteId: number,
+  generatedItems: QuoteItemWriteData[],
+  tenantId?: number | null
+) {
+  const existingAutoItems = await getAutoItems(quoteId, tenantId);
+  const existingBySourceKey = new Map<string, typeof quoteItems.$inferSelect>();
+  const deleteIds = new Set<number>();
+
+  for (const existing of existingAutoItems) {
+    const sourceKey = normalizeQuoteItemSourceKey(existing.sourceKey);
+    if (!sourceKey || existingBySourceKey.has(sourceKey)) {
+      deleteIds.add(existing.id);
+      continue;
+    }
+    existingBySourceKey.set(sourceKey, existing);
+  }
+
+  const nextKeys = new Set<string>();
+  let inserted = 0;
+  let updated = 0;
+  const generatedWithKeys = ensureUniqueGeneratedSourceKeys(generatedItems);
+
+  for (let index = 0; index < generatedWithKeys.length; index += 1) {
+    const item = generatedWithKeys[index];
+    const sourceKey = normalizeQuoteItemSourceKey(item.sourceKey);
+    if (!sourceKey) continue;
+    nextKeys.add(sourceKey);
+    const nextValues = quoteItemWriteValues(
+      {
+        ...item,
+        quoteId,
+        source: "auto",
+        sourceKey,
+        needsConfirmation: false,
+      },
+      tenantId,
+      index
+    );
+    const existing = existingBySourceKey.get(sourceKey);
+    if (!existing) {
+      await db.insert(quoteItems).values(nextValues as any);
+      inserted += 1;
+      continue;
+    }
+    if (needsGeneratedQuoteItemUpdate(existing, nextValues)) {
+      await updateQuoteItem(existing.id, {
+        specMappingId: item.specMappingId ?? null,
+        productId: item.productId ?? null,
+        tabName: item.tabName,
+        description: item.description,
+        colour: item.colour ?? null,
+        bottomColour: item.bottomColour ?? null,
+        uom: item.uom ?? null,
+        qty: item.qty,
+        costRate: item.costRate,
+        sellRate: item.sellRate,
+        notes: item.notes ?? null,
+        sortOrder: nextValues.sortOrder,
+        needsConfirmation: false,
+        sourceKey,
+        sourceHash: item.sourceHash ?? null,
+      }, tenantId);
+      updated += 1;
+    }
+  }
+
+  for (const existing of existingAutoItems) {
+    const sourceKey = normalizeQuoteItemSourceKey(existing.sourceKey);
+    if (sourceKey && !nextKeys.has(sourceKey)) {
+      deleteIds.add(existing.id);
+    }
+  }
+
+  for (const id of Array.from(deleteIds)) {
+    await deleteQuoteItem(id, tenantId);
+  }
+
+  return {
+    inserted,
+    updated,
+    deleted: deleteIds.size,
+  };
 }
 
 export async function deleteQuoteItem(id: number, tenantId?: number | null) {

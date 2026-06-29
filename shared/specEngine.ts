@@ -70,6 +70,8 @@ export interface GeneratedItem {
   sellRate: number;
   notes: string | null;
   source: "auto";
+  sourceKey?: string;
+  sourceHash?: string;
 }
 
 export interface MarkupRates {
@@ -117,6 +119,92 @@ function normalizeMatchValue(value: unknown): string {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map(key => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function fnv1aHex(input: string, seed: number): string {
+  let hash = seed >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function stableSourceHash(value: unknown): string {
+  const input = stableStringify(value);
+  return [
+    fnv1aHex(input, 0x811c9dc5),
+    fnv1aHex(input, 0x9e3779b9),
+    fnv1aHex(input, 0x85ebca6b),
+    fnv1aHex(input, 0xc2b2ae35),
+    fnv1aHex(input, 0x27d4eb2f),
+    fnv1aHex(input, 0x165667b1),
+    fnv1aHex(input, 0xd3a2646c),
+    fnv1aHex(input, 0xfd7046c5),
+  ].join("");
+}
+
+function normalizeSourceSegment(value: unknown): string {
+  const text = normalizeMatchValue(value).replace(/\s+/g, "_");
+  return text || "none";
+}
+
+function buildGeneratedItemSourceKey(item: GeneratedItem, occurrence: number): string {
+  const sourceBasis = {
+    specMappingId: item.specMappingId,
+    productId: item.productId,
+    tabName: item.tabName,
+    description: item.description,
+    uom: item.uom,
+  };
+  const mappingSegment = item.specMappingId == null ? "additional_costs" : `mapping_${item.specMappingId}`;
+  const tabSegment = normalizeSourceSegment(item.tabName).slice(0, 28);
+  const digest = stableSourceHash(sourceBasis).slice(0, 24);
+  const duplicateSuffix = occurrence > 0 ? `:dup_${occurrence + 1}` : "";
+  return `spec:${mappingSegment}:${tabSegment}:${digest}${duplicateSuffix}`;
+}
+
+function buildGeneratedItemSourceHash(item: GeneratedItem, sourceKey: string): string {
+  return stableSourceHash({
+    sourceKey,
+    specMappingId: item.specMappingId,
+    productId: item.productId,
+    tabName: item.tabName,
+    description: item.description,
+    colour: item.colour,
+    bottomColour: item.bottomColour,
+    uom: item.uom,
+    qty: item.qty,
+    costRate: item.costRate,
+    sellRate: item.sellRate,
+    notes: item.notes,
+  });
+}
+
+function withGeneratedItemSourceIdentity(items: GeneratedItem[]): GeneratedItem[] {
+  const seen = new Map<string, number>();
+  return items.map(item => {
+    const baseKey = buildGeneratedItemSourceKey(item, 0);
+    const occurrence = seen.get(baseKey) || 0;
+    seen.set(baseKey, occurrence + 1);
+    const sourceKey = occurrence === 0 ? baseKey : buildGeneratedItemSourceKey(item, occurrence);
+    return {
+      ...item,
+      sourceKey,
+      sourceHash: buildGeneratedItemSourceHash(item, sourceKey),
+    };
+  });
 }
 
 function getProductTabName(value: string) {
@@ -1573,5 +1661,5 @@ export function generateItemsFromSpec(
 
   items.push(...buildAdditionalCostItems(specValues));
 
-  return items;
+  return withGeneratedItemSourceIdentity(items);
 }

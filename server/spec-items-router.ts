@@ -11,10 +11,9 @@ import {
   deleteSpecMapping,
   getQuoteItems,
   createQuoteItem,
-  createQuoteItemsBatch,
   updateQuoteItem,
   deleteQuoteItem,
-  deleteAutoItems,
+  reconcileAutoQuoteItems,
   flagManualItemsForConfirmation,
   confirmQuoteItem,
   confirmAllItems,
@@ -448,34 +447,31 @@ export const specItemsRouter = router({
         optionModifiers as any
       );
 
-      // Delete existing auto items for this quote
-      await deleteAutoItems(quoteId, ctx.tenant!.id);
-
       // Flag existing manual items for confirmation
       await flagManualItemsForConfirmation(quoteId, ctx.tenant!.id);
 
-      // Insert new auto-generated items
-      if (generatedItems.length > 0) {
-        await createQuoteItemsBatch(
-          generatedItems.map((item, idx) => ({
-            quoteId,
-            source: "auto" as const,
-            specMappingId: item.specMappingId,
-            productId: item.productId,
-            tabName: item.tabName,
-            description: item.description,
-            colour: item.colour,
-            bottomColour: item.bottomColour,
-            uom: item.uom,
-            qty: item.qty,
-            costRate: item.costRate,
-            sellRate: item.sellRate,
-            notes: item.notes,
-            sortOrder: idx,
-          })),
-          ctx.tenant!.id
-        );
-      }
+      const reconcileResult = await reconcileAutoQuoteItems(
+        quoteId,
+        generatedItems.map((item, idx) => ({
+          quoteId,
+          source: "auto" as const,
+          sourceKey: item.sourceKey,
+          sourceHash: item.sourceHash,
+          specMappingId: item.specMappingId,
+          productId: item.productId,
+          tabName: item.tabName,
+          description: item.description,
+          colour: item.colour,
+          bottomColour: item.bottomColour,
+          uom: item.uom,
+          qty: item.qty,
+          costRate: item.costRate,
+          sellRate: item.sellRate,
+          notes: item.notes,
+          sortOrder: idx,
+        })),
+        ctx.tenant!.id
+      );
 
       // Count flagged manual items
       const { getQuoteItems: getItems } = await import("./spec-items-db");
@@ -485,7 +481,7 @@ export const specItemsRouter = router({
       return {
         generated: generatedItems.length,
         flagged: flaggedCount,
-        message: `Generated ${generatedItems.length} items from spec sheet.${flaggedCount > 0 ? ` ${flaggedCount} manual items flagged for confirmation.` : ""}`,
+        message: `Generated ${generatedItems.length} items from spec sheet (${reconcileResult.inserted} inserted, ${reconcileResult.updated} updated, ${reconcileResult.deleted} removed).${flaggedCount > 0 ? ` ${flaggedCount} manual items flagged for confirmation.` : ""}`,
       };
     }),
 
