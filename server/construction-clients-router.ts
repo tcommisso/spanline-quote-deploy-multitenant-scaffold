@@ -8,7 +8,7 @@ import {
   constructionJobInstructions,
   siteInductions, quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
   approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
-  approvalLodgements, hbcfCertificates, suppliers,
+  approvalLodgements, hbcfCertificates, suppliers, portalDefects, portalMaintenanceRequests,
 } from "../drizzle/schema";
 import { eq, desc, asc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -29,6 +29,8 @@ const jobInstructionCategorySchema = z.enum([
 ]);
 const jobInstructionStatusSchema = z.enum(["open", "acknowledged", "done", "blocked", "not_applicable"]);
 const jobInstructionPrioritySchema = z.enum(["normal", "important", "urgent"]);
+const postBuildClassificationSchema = z.enum(["unclassified", "warranty", "workmanship", "chargeable"]);
+const maintenanceRequestSourceSchema = z.enum(["portal", "phone", "email", "internal"]);
 
 async function requireDb() {
   const db = await getDb();
@@ -75,6 +77,30 @@ async function requireInstructionAccess(db: any, ctx: any, instructionId: number
   if (!instruction) throw new TRPCError({ code: "NOT_FOUND", message: "Instruction not found" });
   await requireJobAccess(db, ctx, instruction.jobId);
   return instruction;
+}
+
+async function requireMaintenanceRequestAccess(db: any, ctx: any, requestId: number) {
+  const [row] = await db.select({ request: portalMaintenanceRequests })
+    .from(portalMaintenanceRequests)
+    .innerJoin(constructionJobs, eq(portalMaintenanceRequests.constructionJobId, constructionJobs.id))
+    .where(and(...jobTenantConditions(ctx, eq(portalMaintenanceRequests.id, requestId))))
+    .limit(1);
+  if (!row?.request) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Maintenance request not found" });
+  }
+  return row.request;
+}
+
+async function requirePortalDefectAccess(db: any, ctx: any, defectId: number) {
+  const [row] = await db.select({ defect: portalDefects })
+    .from(portalDefects)
+    .innerJoin(constructionJobs, eq(portalDefects.constructionJobId, constructionJobs.id))
+    .where(and(...jobTenantConditions(ctx, eq(portalDefects.id, defectId))))
+    .limit(1);
+  if (!row?.defect) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Defect not found" });
+  }
+  return row.defect;
 }
 
 function trimNullable(value?: string | null) {
@@ -1358,6 +1384,157 @@ export const constructionClientsRouter = router({
       await requireInstructionAccess(db, ctx, input.id);
       await db.delete(constructionJobInstructions)
         .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, input.id))));
+      return { success: true };
+    }),
+
+  postBuildMaintenance: protectedProcedure
+    .input(z.object({ jobId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireJobAccess(db, ctx, input.jobId);
+
+      const [requests, defects] = await Promise.all([
+        db.select({
+          id: portalMaintenanceRequests.id,
+          constructionJobId: portalMaintenanceRequests.constructionJobId,
+          requestSource: portalMaintenanceRequests.requestSource,
+          classification: portalMaintenanceRequests.classification,
+          reportedByName: portalMaintenanceRequests.reportedByName,
+          reportedByContact: portalMaintenanceRequests.reportedByContact,
+          description: portalMaintenanceRequests.description,
+          photoUrls: portalMaintenanceRequests.photoUrls,
+          urgency: portalMaintenanceRequests.urgency,
+          status: portalMaintenanceRequests.status,
+          responseNotes: portalMaintenanceRequests.responseNotes,
+          scheduledDate: portalMaintenanceRequests.scheduledDate,
+          completedAt: portalMaintenanceRequests.completedAt,
+          createdAt: portalMaintenanceRequests.createdAt,
+          updatedAt: portalMaintenanceRequests.updatedAt,
+        })
+          .from(portalMaintenanceRequests)
+          .innerJoin(constructionJobs, eq(portalMaintenanceRequests.constructionJobId, constructionJobs.id))
+          .where(and(...jobTenantConditions(ctx, eq(portalMaintenanceRequests.constructionJobId, input.jobId))))
+          .orderBy(desc(portalMaintenanceRequests.createdAt)),
+        db.select({
+          id: portalDefects.id,
+          constructionJobId: portalDefects.constructionJobId,
+          title: portalDefects.title,
+          description: portalDefects.description,
+          photoUrls: portalDefects.photoUrls,
+          status: portalDefects.status,
+          classification: portalDefects.classification,
+          resolutionNotes: portalDefects.resolutionNotes,
+          resolutionPhotoUrls: portalDefects.resolutionPhotoUrls,
+          resolvedAt: portalDefects.resolvedAt,
+          createdAt: portalDefects.createdAt,
+          updatedAt: portalDefects.updatedAt,
+        })
+          .from(portalDefects)
+          .innerJoin(constructionJobs, eq(portalDefects.constructionJobId, constructionJobs.id))
+          .where(and(...jobTenantConditions(ctx, eq(portalDefects.constructionJobId, input.jobId))))
+          .orderBy(desc(portalDefects.createdAt)),
+      ]);
+
+      return { requests, defects };
+    }),
+
+  createMaintenanceRequest: protectedProcedure
+    .input(z.object({
+      jobId: z.number(),
+      description: z.string().trim().min(1).max(5000),
+      urgency: z.enum(["low", "medium", "high"]).default("medium"),
+      requestSource: maintenanceRequestSourceSchema.default("phone"),
+      classification: postBuildClassificationSchema.default("unclassified"),
+      reportedByName: z.string().max(255).nullable().optional(),
+      reportedByContact: z.string().max(255).nullable().optional(),
+      responseNotes: z.string().max(5000).nullable().optional(),
+      scheduledDate: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireJobAccess(db, ctx, input.jobId);
+
+      const [result] = await db.insert(portalMaintenanceRequests).values({
+        constructionJobId: input.jobId,
+        portalAccessId: null,
+        requestSource: input.requestSource,
+        classification: input.classification,
+        reportedByName: trimNullable(input.reportedByName),
+        reportedByContact: trimNullable(input.reportedByContact),
+        description: input.description,
+        photoUrls: null,
+        urgency: input.urgency,
+        status: "submitted",
+        responseNotes: trimNullable(input.responseNotes),
+        scheduledDate: parseInstructionDate(input.scheduledDate),
+      }).$returningId();
+
+      return { id: result.id };
+    }),
+
+  updateMaintenanceRequest: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      status: z.enum(["submitted", "reviewed", "scheduled", "completed"]).optional(),
+      urgency: z.enum(["low", "medium", "high"]).optional(),
+      requestSource: maintenanceRequestSourceSchema.optional(),
+      classification: postBuildClassificationSchema.optional(),
+      reportedByName: z.string().max(255).nullable().optional(),
+      reportedByContact: z.string().max(255).nullable().optional(),
+      responseNotes: z.string().max(5000).nullable().optional(),
+      scheduledDate: z.string().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requireMaintenanceRequestAccess(db, ctx, input.id);
+
+      const updates: Record<string, any> = {};
+      if (input.status !== undefined) {
+        updates.status = input.status;
+        if (input.status === "completed") updates.completedAt = new Date();
+      }
+      if (input.urgency !== undefined) updates.urgency = input.urgency;
+      if (input.requestSource !== undefined) updates.requestSource = input.requestSource;
+      if (input.classification !== undefined) updates.classification = input.classification;
+      if (input.reportedByName !== undefined) updates.reportedByName = trimNullable(input.reportedByName);
+      if (input.reportedByContact !== undefined) updates.reportedByContact = trimNullable(input.reportedByContact);
+      if (input.responseNotes !== undefined) updates.responseNotes = trimNullable(input.responseNotes);
+      if (input.scheduledDate !== undefined) updates.scheduledDate = parseInstructionDate(input.scheduledDate);
+
+      if (Object.keys(updates).length === 0) return { success: true };
+
+      await db.update(portalMaintenanceRequests)
+        .set(updates)
+        .where(eq(portalMaintenanceRequests.id, input.id));
+
+      return { success: true };
+    }),
+
+  updatePortalDefect: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      status: z.enum(["reported", "acknowledged", "scheduled", "resolved"]).optional(),
+      classification: postBuildClassificationSchema.optional(),
+      resolutionNotes: z.string().max(5000).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      await requirePortalDefectAccess(db, ctx, input.id);
+
+      const updates: Record<string, any> = {};
+      if (input.status !== undefined) {
+        updates.status = input.status;
+        if (input.status === "resolved") updates.resolvedAt = new Date();
+      }
+      if (input.classification !== undefined) updates.classification = input.classification;
+      if (input.resolutionNotes !== undefined) updates.resolutionNotes = trimNullable(input.resolutionNotes);
+
+      if (Object.keys(updates).length === 0) return { success: true };
+
+      await db.update(portalDefects)
+        .set(updates)
+        .where(eq(portalDefects.id, input.id));
+
       return { success: true };
     }),
 

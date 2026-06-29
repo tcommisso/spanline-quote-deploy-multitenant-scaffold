@@ -287,7 +287,7 @@ export default function ConstructionClientDetail() {
   const [, navigate] = useLocation();
   const jobId = Number(params.id);
 
-  const TAB_VALUES = ["overview", "contacts", "email-sms", "activity", "shared-files", "financials", "progress", "variations", "procurement", "check-measure", "site-plan", "project-plan", "plans", "plan-history", "building-authority", "instructions", "subcontracts", "inductions", "schedule", "tasks", "completion"] as const;
+  const TAB_VALUES = ["overview", "contacts", "email-sms", "activity", "shared-files", "financials", "progress", "variations", "procurement", "check-measure", "site-plan", "project-plan", "plans", "plan-history", "building-authority", "instructions", "subcontracts", "inductions", "schedule", "tasks", "completion", "final-inspection", "maintenance-warranty"] as const;
   const [activeTab, setActiveTab] = useState<string>("overview");
   const isMobile = useIsMobile();
 
@@ -313,6 +313,8 @@ export default function ConstructionClientDetail() {
     { value: "schedule", label: "Schedule", icon: CalendarDays },
     { value: "tasks", label: "Tasks", icon: Wrench },
     { value: "completion", label: "Completion", icon: FileCheck },
+    { value: "final-inspection", label: "Final Inspection", icon: ClipboardCheck },
+    { value: "maintenance-warranty", label: "Maintenance & Warranty", icon: Wrench },
   ];
   const TAB_GROUPS: { label: string; values: (typeof TAB_VALUES)[number][] }[] = [
     { label: "Admin", values: ["overview", "contacts", "email-sms", "activity", "shared-files"] },
@@ -320,7 +322,7 @@ export default function ConstructionClientDetail() {
     { label: "Planning", values: ["check-measure", "site-plan", "project-plan", "plans", "plan-history"] },
     { label: "Pre-Build", values: ["building-authority", "instructions", "subcontracts", "inductions"] },
     { label: "Build", values: ["schedule", "tasks"] },
-    { label: "Post-Build", values: ["completion"] },
+    { label: "Post-Build", values: ["completion", "final-inspection", "maintenance-warranty"] },
   ];
   const swipeRef = useSwipeTabs({
     tabs: TAB_VALUES as unknown as string[],
@@ -799,6 +801,16 @@ export default function ConstructionClientDetail() {
         <TabsContent value="completion" className="space-y-4">
           <CompletionSection jobId={jobId} clientName={job.clientName} clientEmail={quoteData?.clientEmail} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
         </TabsContent>
+
+        {/* Final Inspection Tab */}
+        <TabsContent value="final-inspection" className="space-y-4">
+          <FinalInspectionSection jobId={jobId} />
+        </TabsContent>
+
+        {/* Maintenance & Warranty Tab */}
+        <TabsContent value="maintenance-warranty" className="space-y-4">
+          <MaintenanceWarrantySection jobId={jobId} />
+        </TabsContent>
       </Tabs>
       </div>
     </div>
@@ -1117,6 +1129,502 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
             </Button>
             {editingId && <Button variant="outline" onClick={resetForm}>Cancel</Button>}
           </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+const FINAL_INSPECTION_DEFAULTS = [
+  "Final inspection booked",
+  "Structure checked against approved specification",
+  "Fixings and finishes inspected",
+  "Drainage and downpipes checked",
+  "Site cleaned and made safe",
+  "Client walkthrough completed",
+  "Final photos uploaded",
+  "Final inspection report uploaded",
+];
+
+const POST_BUILD_CLASSIFICATIONS = [
+  { value: "unclassified", label: "Unclassified" },
+  { value: "warranty", label: "Warranty" },
+  { value: "workmanship", label: "Workmanship" },
+  { value: "chargeable", label: "Chargeable" },
+];
+
+const MAINTENANCE_SOURCES = [
+  { value: "phone", label: "Phone" },
+  { value: "email", label: "Email" },
+  { value: "internal", label: "Internal" },
+  { value: "portal", label: "Client Portal" },
+];
+
+const MAINTENANCE_STATUSES = [
+  { value: "submitted", label: "Submitted" },
+  { value: "reviewed", label: "Reviewed" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "completed", label: "Completed" },
+];
+
+const DEFECT_STATUSES = [
+  { value: "reported", label: "Reported" },
+  { value: "acknowledged", label: "Acknowledged" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "resolved", label: "Resolved" },
+];
+
+const URGENCY_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
+function isFinalInspectionInstruction(instruction: any) {
+  const trigger = String(instruction.triggerLabel || "").toLowerCase();
+  const title = String(instruction.title || "").toLowerCase();
+  return instruction.category === "inspection" && (trigger.includes("final inspection") || title.includes("final"));
+}
+
+function FinalInspectionSection({ jobId }: { jobId: number }) {
+  const utils = trpc.useUtils();
+  const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
+  const createInstruction = trpc.constructionClients.createJobInstruction.useMutation();
+  const updateInstruction = trpc.constructionClients.updateJobInstruction.useMutation({
+    onSuccess: () => utils.constructionClients.jobInstructions.invalidate({ jobId }),
+    onError: (err) => toast.error(err.message || "Failed to update inspection item"),
+  });
+  const [customTitle, setCustomTitle] = useState("");
+
+  const instructions = instructionsQuery.data || [];
+  const finalItems = instructions.filter(isFinalInspectionInstruction);
+  const completedCount = finalItems.filter((item: any) => item.status === "done" || item.status === "not_applicable").length;
+  const progress = finalItems.length > 0 ? Math.round((completedCount / finalItems.length) * 100) : 0;
+
+  const seedDefaults = async () => {
+    const existingTitles = new Set(finalItems.map((item: any) => String(item.title || "").toLowerCase()));
+    const missing = FINAL_INSPECTION_DEFAULTS.filter((title) => !existingTitles.has(title.toLowerCase()));
+    if (missing.length === 0) {
+      toast.info("Final inspection checklist is already loaded");
+      return;
+    }
+    try {
+      await Promise.all(missing.map((title, index) => createInstruction.mutateAsync({
+        jobId,
+        title,
+        description: null,
+        category: "inspection",
+        status: "open",
+        priority: title.includes("uploaded") ? "important" : "normal",
+        visibleToTrade: false,
+        assignedInstallerId: null,
+        isBlocking: title.includes("report"),
+        dueAt: null,
+        triggerLabel: "Final Inspection",
+        sortOrder: 500 + index,
+      })));
+      await utils.constructionClients.jobInstructions.invalidate({ jobId });
+      toast.success("Final inspection checklist loaded");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load final inspection checklist");
+    }
+  };
+
+  const addCustomItem = async () => {
+    const title = customTitle.trim();
+    if (!title) {
+      toast.error("Inspection item is required");
+      return;
+    }
+    try {
+      await createInstruction.mutateAsync({
+        jobId,
+        title,
+        description: null,
+        category: "inspection",
+        status: "open",
+        priority: "normal",
+        visibleToTrade: false,
+        assignedInstallerId: null,
+        isBlocking: false,
+        dueAt: null,
+        triggerLabel: "Final Inspection",
+        sortOrder: 600 + finalItems.length,
+      });
+      setCustomTitle("");
+      await utils.constructionClients.jobInstructions.invalidate({ jobId });
+      toast.success("Inspection item added");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add inspection item");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ClipboardCheck className="h-4 w-4" />
+                Final Inspection
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">Checklist, report, and final photo evidence before close-out.</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={seedDefaults} disabled={createInstruction.isPending}>
+              {createInstruction.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
+              Load Default Checklist
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-md border p-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium">Inspection Progress</span>
+              <span className="text-sm text-muted-foreground">{completedCount}/{finalItems.length} complete</span>
+            </div>
+            <Progress value={progress} className="h-2" />
+          </div>
+
+          {instructionsQuery.isLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => <div key={i} className="h-14 rounded-md bg-muted animate-pulse" />)}
+            </div>
+          ) : finalItems.length === 0 ? (
+            <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+              No final inspection checklist items yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {finalItems.map((item: any) => (
+                <div key={item.id} className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="font-medium">{item.title}</p>
+                    {item.description && <p className="text-sm text-muted-foreground">{item.description}</p>}
+                  </div>
+                  <Select
+                    value={item.status || "open"}
+                    onValueChange={(status) => updateInstruction.mutate({ id: item.id, status: status as any })}
+                    disabled={updateInstruction.isPending}
+                  >
+                    <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {JOB_INSTRUCTION_STATUSES.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={customTitle}
+              onChange={(event) => setCustomTitle(event.target.value)}
+              placeholder="Add inspection checklist item..."
+              onKeyDown={(event) => {
+                if (event.key === "Enter") addCustomItem();
+              }}
+            />
+            <Button variant="outline" onClick={addCustomItem} disabled={createInstruction.isPending || !customTitle.trim()}>
+              Add Item
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <FolderOpen className="h-4 w-4" />
+            Photos & Inspection Report
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">Upload final inspection photos and the inspection report to the job file store.</p>
+        </CardHeader>
+        <CardContent>
+          <SharedFilesSection jobId={jobId} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function photoLinks(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
+  const utils = trpc.useUtils();
+  const dataQuery = trpc.constructionClients.postBuildMaintenance.useQuery({ jobId }, { enabled: !!jobId });
+  const [form, setForm] = useState({
+    description: "",
+    urgency: "medium",
+    requestSource: "phone",
+    classification: "unclassified",
+    reportedByName: "",
+    reportedByContact: "",
+    responseNotes: "",
+    scheduledDate: "",
+  });
+
+  const invalidate = () => utils.constructionClients.postBuildMaintenance.invalidate({ jobId });
+  const createRequest = trpc.constructionClients.createMaintenanceRequest.useMutation({
+    onSuccess: () => {
+      invalidate();
+      setForm({
+        description: "",
+        urgency: "medium",
+        requestSource: "phone",
+        classification: "unclassified",
+        reportedByName: "",
+        reportedByContact: "",
+        responseNotes: "",
+        scheduledDate: "",
+      });
+      toast.success("Maintenance request added");
+    },
+    onError: (err) => toast.error(err.message || "Failed to add maintenance request"),
+  });
+  const updateRequest = trpc.constructionClients.updateMaintenanceRequest.useMutation({
+    onSuccess: () => invalidate(),
+    onError: (err) => toast.error(err.message || "Failed to update maintenance request"),
+  });
+  const updateDefect = trpc.constructionClients.updatePortalDefect.useMutation({
+    onSuccess: () => invalidate(),
+    onError: (err) => toast.error(err.message || "Failed to update defect"),
+  });
+
+  const requests = dataQuery.data?.requests || [];
+  const defects = dataQuery.data?.defects || [];
+
+  const submitRequest = () => {
+    if (!form.description.trim()) {
+      toast.error("Maintenance request details are required");
+      return;
+    }
+    createRequest.mutate({
+      jobId,
+      description: form.description,
+      urgency: form.urgency as any,
+      requestSource: form.requestSource as any,
+      classification: form.classification as any,
+      reportedByName: form.reportedByName || null,
+      reportedByContact: form.reportedByContact || null,
+      responseNotes: form.responseNotes || null,
+      scheduledDate: form.scheduledDate || null,
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Wrench className="h-4 w-4" />
+            Maintenance & Warranty Intake
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">Log phone or email maintenance requests and classify them as warranty, workmanship, or chargeable.</p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+            <div className="space-y-1.5">
+              <Label>Source</Label>
+              <Select value={form.requestSource} onValueChange={(requestSource) => setForm({ ...form, requestSource })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MAINTENANCE_SOURCES.filter((option) => option.value !== "portal").map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Determination</Label>
+              <Select value={form.classification} onValueChange={(classification) => setForm({ ...form, classification })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {POST_BUILD_CLASSIFICATIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Urgency</Label>
+              <Select value={form.urgency} onValueChange={(urgency) => setForm({ ...form, urgency })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {URGENCY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Scheduled Date</Label>
+              <Input type="date" value={form.scheduledDate} onChange={(event) => setForm({ ...form, scheduledDate: event.target.value })} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Reported By</Label>
+              <Input value={form.reportedByName} onChange={(event) => setForm({ ...form, reportedByName: event.target.value })} placeholder="Name" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Contact</Label>
+              <Input value={form.reportedByContact} onChange={(event) => setForm({ ...form, reportedByContact: event.target.value })} placeholder="Phone or email" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Request Details</Label>
+            <Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} rows={3} placeholder="Describe the maintenance request..." />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Response Notes</Label>
+            <Textarea value={form.responseNotes} onChange={(event) => setForm({ ...form, responseNotes: event.target.value })} rows={2} placeholder="Initial response or action taken..." />
+          </div>
+          <Button onClick={submitRequest} disabled={createRequest.isPending || !form.description.trim()}>
+            {createRequest.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
+            Add Request
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Shield className="h-4 w-4" />
+              Defects & Maintenance
+            </CardTitle>
+            <div className="flex gap-2">
+              <Badge variant="secondary">{defects.length} defects</Badge>
+              <Badge variant="secondary">{requests.length} requests</Badge>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {dataQuery.isLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => <div key={i} className="h-24 rounded-md bg-muted animate-pulse" />)}
+            </div>
+          ) : (
+            <>
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Client Portal Defects</h4>
+                {defects.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No client portal defects reported.</div>
+                ) : defects.map((defect: any) => {
+                  const photos = photoLinks(defect.photoUrls);
+                  return (
+                    <div key={defect.id} className="rounded-md border p-3">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium">{defect.title}</p>
+                            <Badge variant="outline" className={jobInstructionBadgeClass(defect.status)}>{formatDetailStatus(defect.status)}</Badge>
+                            <Badge variant="secondary">{formatDetailStatus(defect.classification)}</Badge>
+                          </div>
+                          {defect.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{defect.description}</p>}
+                          <p className="text-xs text-muted-foreground">Reported {defect.createdAt ? new Date(defect.createdAt).toLocaleDateString("en-AU") : "—"}</p>
+                          {photos.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {photos.map((url, index) => (
+                                <Button key={url} variant="outline" size="sm" onClick={() => window.open(url, "_blank")}>
+                                  <Eye className="h-3.5 w-3.5 mr-1" /> Photo {index + 1}
+                                </Button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid w-full gap-2 sm:grid-cols-2 lg:w-[420px]">
+                          <Select value={defect.status || "reported"} onValueChange={(status) => updateDefect.mutate({ id: defect.id, status: status as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {DEFECT_STATUSES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <Select value={defect.classification || "unclassified"} onValueChange={(classification) => updateDefect.mutate({ id: defect.id, classification: classification as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {POST_BUILD_CLASSIFICATIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Maintenance Requests</h4>
+                {requests.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No maintenance requests recorded.</div>
+                ) : requests.map((request: any) => {
+                  const photos = photoLinks(request.photoUrls);
+                  return (
+                    <div key={request.id} className="rounded-md border p-3">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium">{formatDetailStatus(request.requestSource)} Request</p>
+                            <Badge variant="outline" className={jobInstructionBadgeClass(request.status)}>{formatDetailStatus(request.status)}</Badge>
+                            <Badge variant="secondary">{formatDetailStatus(request.classification)}</Badge>
+                            <Badge variant="outline">{formatDetailStatus(request.urgency)}</Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">{request.description}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {request.reportedByName || request.reportedByContact
+                              ? `Reported by ${[request.reportedByName, request.reportedByContact].filter(Boolean).join(" - ")}`
+                              : "Reporter not recorded"}
+                            {request.scheduledDate ? ` - Scheduled ${new Date(request.scheduledDate).toLocaleDateString("en-AU")}` : ""}
+                          </p>
+                          {request.responseNotes && <p className="text-xs text-muted-foreground whitespace-pre-wrap">Response: {request.responseNotes}</p>}
+                          {photos.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {photos.map((url, index) => (
+                                <Button key={url} variant="outline" size="sm" onClick={() => window.open(url, "_blank")}>
+                                  <ExternalLink className="h-3.5 w-3.5 mr-1" /> Photo {index + 1}
+                                </Button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid w-full gap-2 sm:grid-cols-2 lg:w-[520px]">
+                          <Select value={request.status || "submitted"} onValueChange={(status) => updateRequest.mutate({ id: request.id, status: status as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {MAINTENANCE_STATUSES.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <Select value={request.classification || "unclassified"} onValueChange={(classification) => updateRequest.mutate({ id: request.id, classification: classification as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {POST_BUILD_CLASSIFICATIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <Select value={request.urgency || "medium"} onValueChange={(urgency) => updateRequest.mutate({ id: request.id, urgency: urgency as any })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {URGENCY_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                          <Input
+                            type="date"
+                            value={toDateInputValue(request.scheduledDate)}
+                            onChange={(event) => updateRequest.mutate({ id: request.id, scheduledDate: event.target.value || null })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>
