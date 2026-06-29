@@ -395,6 +395,9 @@ export default function ConstructionClientDetail() {
   const StatusIcon = statusCfg.icon;
   const activeTabConfig = TAB_CONFIG.find(tab => tab.value === activeTab) || TAB_CONFIG[0];
   const ActiveTabIcon = activeTabConfig.icon;
+  const displayPhone = job.clientPhone || leadData?.phone || quoteData?.clientPhone;
+  const displayEmail = job.clientEmail || leadData?.email || quoteData?.clientEmail;
+  const leadDisplayName = leadData?.displayName || [leadData?.firstName, leadData?.lastName].filter(Boolean).join(" ");
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -417,11 +420,11 @@ export default function ConstructionClientDetail() {
             {job.siteAddress && (
               <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" /> {job.siteAddress}</span>
             )}
-            {quoteData?.clientPhone && (
-              <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" /> {quoteData.clientPhone}</span>
+            {displayPhone && (
+              <span className="flex items-center gap-1"><Phone className="h-3.5 w-3.5" /> {displayPhone}</span>
             )}
-            {quoteData?.clientEmail && (
-              <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /> {quoteData.clientEmail}</span>
+            {displayEmail && (
+              <span className="flex items-center gap-1"><Mail className="h-3.5 w-3.5" /> {displayEmail}</span>
             )}
           </div>
         </div>
@@ -633,8 +636,8 @@ export default function ConstructionClientDetail() {
                     <div className="flex items-center gap-2">
                       <User className="h-4 w-4 text-muted-foreground" />
                       <div>
-                        <p className="font-medium">{leadData.firstName} {leadData.lastName}</p>
-                        <p className="text-xs text-muted-foreground">{leadData.email} — {leadData.phone}</p>
+                        <p className="font-medium">{leadDisplayName || "CRM Client"}</p>
+                        <p className="text-xs text-muted-foreground">{[leadData.clientNumber, leadData.email, leadData.phone].filter(Boolean).join(" — ")}</p>
                       </div>
                     </div>
                     <Badge variant="outline">{leadData.status}</Badge>
@@ -767,7 +770,7 @@ export default function ConstructionClientDetail() {
         <TabsContent value="activity">
           <Card>
             <CardContent className="p-4">
-              <ClientActivityTab jobId={jobId} leadId={leadData?.id} clientName={job.clientName} clientPhone={quoteData?.clientPhone || undefined} clientEmail={quoteData?.clientEmail || undefined} />
+              <ClientActivityTab jobId={jobId} leadId={leadData?.id} clientName={job.clientName} clientPhone={displayPhone || undefined} clientEmail={displayEmail || undefined} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -778,8 +781,8 @@ export default function ConstructionClientDetail() {
             jobId={jobId}
             assignments={assignments}
             clientName={job.clientName}
-            clientPhone={leadData?.phone || quoteData?.clientPhone}
-            clientEmail={leadData?.email || quoteData?.clientEmail}
+            clientPhone={displayPhone}
+            clientEmail={displayEmail}
             siteAddress={job.siteAddress}
             onRefetch={() => detailQuery.refetch()}
           />
@@ -787,7 +790,7 @@ export default function ConstructionClientDetail() {
 
         {/* Email & SMS Tab */}
         <TabsContent value="email-sms" className="space-y-4">
-          <EmailSmsSection jobId={jobId} assignments={assignments} clientName={job.clientName} clientEmail={leadData?.email || quoteData?.clientEmail} clientPhone={leadData?.phone || quoteData?.clientPhone} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
+          <EmailSmsSection jobId={jobId} assignments={assignments} clientName={job.clientName} clientEmail={displayEmail} clientPhone={displayPhone} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
         </TabsContent>
 
         {/* Subcontracts Tab */}
@@ -802,7 +805,7 @@ export default function ConstructionClientDetail() {
 
         {/* Variations Tab */}
         <TabsContent value="variations" className="space-y-4">
-          <VariationsSection jobId={jobId} clientName={job.clientName} clientEmail={quoteData?.clientEmail} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
+          <VariationsSection jobId={jobId} clientName={job.clientName} clientEmail={displayEmail} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
         </TabsContent>
 
         {/* Procurement Tab */}
@@ -829,7 +832,7 @@ export default function ConstructionClientDetail() {
 
         {/* Completion Tab */}
         <TabsContent value="completion" className="space-y-4">
-          <CompletionSection jobId={jobId} clientName={job.clientName} clientEmail={quoteData?.clientEmail} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
+          <CompletionSection jobId={jobId} clientName={job.clientName} clientEmail={displayEmail} siteAddress={job.siteAddress} quoteNumber={job.quoteNumber} />
         </TabsContent>
 
         {/* Final Inspection Tab */}

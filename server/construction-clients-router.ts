@@ -160,6 +160,49 @@ function nullableName(value?: string | null) {
   return trimmed || null;
 }
 
+function crmLeadDisplayName(lead?: {
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  company?: string | null;
+} | null) {
+  if (!lead) return null;
+  const firstName = nullableName(lead.contactFirstName ?? lead.firstName);
+  const lastName = nullableName(lead.contactLastName ?? lead.lastName);
+  return [firstName, lastName].filter(Boolean).join(" ") || nullableName(lead.company);
+}
+
+function canonicalClientFromLead(lead?: {
+  id?: number | null;
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  company?: string | null;
+  contactPhone?: string | null;
+  phone?: string | null;
+  contactEmail?: string | null;
+  email?: string | null;
+  contactAddress?: string | null;
+  address?: string | null;
+  clientNumber?: string | null;
+  status?: string | null;
+  displayName?: string | null;
+} | null) {
+  const name = crmLeadDisplayName(lead);
+  if (!lead || !name) return null;
+  return {
+    id: lead.id ?? null,
+    name,
+    phone: nullableName(lead.contactPhone ?? lead.phone),
+    email: nullableName(lead.contactEmail ?? lead.email),
+    address: nullableName(lead.contactAddress ?? lead.address),
+    clientNumber: nullableName(lead.clientNumber),
+    status: lead.status ?? null,
+  };
+}
+
 function addYears(date: Date, years: number) {
   const copy = new Date(date);
   copy.setFullYear(copy.getFullYear() + years);
@@ -437,6 +480,11 @@ export const constructionClientsRouter = router({
             like(constructionJobs.siteAddress, `%${input.search}%`),
             like(constructionJobs.quoteNumber, `%${input.search}%`),
             like(crmLeads.clientNumber, `%${input.search}%`),
+            like(crmLeads.contactFirstName, `%${input.search}%`),
+            like(crmLeads.contactLastName, `%${input.search}%`),
+            like(crmLeads.company, `%${input.search}%`),
+            like(crmLeads.contactEmail, `%${input.search}%`),
+            like(crmLeads.contactPhone, `%${input.search}%`),
           )
         );
       }
@@ -517,6 +565,14 @@ export const constructionClientsRouter = router({
         db.select({
           job: constructionJobs,
           clientNumber: crmLeads.clientNumber,
+          leadId: crmLeads.id,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+          leadCompany: crmLeads.company,
+          leadPhone: crmLeads.contactPhone,
+          leadEmail: crmLeads.contactEmail,
+          leadAddress: crmLeads.contactAddress,
+          leadStatus: crmLeads.status,
           leadSuburb: crmLeads.suburb,
           quoteSuburb: quotes.suburb,
           branch: constructionJobFinancials.branch,
@@ -540,17 +596,36 @@ export const constructionClientsRouter = router({
           .where(where),
       ]);
 
-      const jobRows = jobs.map((row: any) => ({
-        ...row.job,
-        clientNumber: row.clientNumber,
-        leadSuburb: row.leadSuburb,
-        quoteSuburb: row.quoteSuburb,
-        branch: row.branch,
-        constructionManagerId: row.constructionManagerId,
-        constructionManagerName: row.constructionManagerName,
-        technicalDesignerId: row.technicalDesignerId,
-        technicalDesignerName: row.technicalDesignerName,
-      }));
+      const jobRows = jobs.map((row: any) => {
+        const canonicalClient = canonicalClientFromLead({
+          id: row.leadId,
+          contactFirstName: row.leadFirstName,
+          contactLastName: row.leadLastName,
+          company: row.leadCompany,
+          contactPhone: row.leadPhone,
+          contactEmail: row.leadEmail,
+          contactAddress: row.leadAddress,
+          clientNumber: row.clientNumber,
+          status: row.leadStatus,
+        });
+
+        return {
+          ...row.job,
+          storedClientName: row.job.clientName,
+          clientName: canonicalClient?.name || row.job.clientName,
+          canonicalClient,
+          clientNumber: row.clientNumber,
+          clientPhone: nullableName(row.leadPhone),
+          clientEmail: nullableName(row.leadEmail),
+          leadSuburb: row.leadSuburb,
+          quoteSuburb: row.quoteSuburb,
+          branch: row.branch,
+          constructionManagerId: row.constructionManagerId,
+          constructionManagerName: row.constructionManagerName,
+          technicalDesignerId: row.technicalDesignerId,
+          technicalDesignerName: row.technicalDesignerName,
+        };
+      });
 
       // Get progress for each job to show stage indicators
       const jobIds = jobRows.map(j => j.id);
@@ -994,13 +1069,29 @@ export const constructionClientsRouter = router({
           id: crmLeads.id,
           firstName: crmLeads.contactFirstName,
           lastName: crmLeads.contactLastName,
+          company: crmLeads.company,
           phone: crmLeads.contactPhone,
           email: crmLeads.contactEmail,
+          address: crmLeads.contactAddress,
+          clientNumber: crmLeads.clientNumber,
           status: crmLeads.status,
           productType: crmLeads.productType,
         }).from(crmLeads).where(and(...leadConditions));
-        leadData = l || null;
+        leadData = l ? { ...l, displayName: crmLeadDisplayName(l) || null } : null;
       }
+
+      const canonicalClient = canonicalClientFromLead(leadData);
+      const displayJob = canonicalClient
+        ? {
+            ...job,
+            storedClientName: job.clientName,
+            clientName: canonicalClient.name,
+            clientPhone: canonicalClient.phone,
+            clientEmail: canonicalClient.email,
+            clientNumber: canonicalClient.clientNumber,
+            canonicalClient,
+          }
+        : job;
 
       const enrichedAssignments = assignments.map(a => ({
         ...a,
@@ -1021,7 +1112,7 @@ export const constructionClientsRouter = router({
       if (contractValue > 0) progressSource = "xero";
 
       return {
-        job,
+        job: displayJob,
         progress,
         assignments: enrichedAssignments,
         financials: financials[0] || null,
