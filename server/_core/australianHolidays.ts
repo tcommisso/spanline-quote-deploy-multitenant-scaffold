@@ -20,7 +20,10 @@ export type GeneratedAustralianHoliday = {
   source: "built_in";
 };
 
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 export function toDateKey(value: Date | string | number) {
+  if (typeof value === "string" && DATE_KEY_PATTERN.test(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return [
@@ -31,6 +34,7 @@ export function toDateKey(value: Date | string | number) {
 }
 
 export function localDateKeyFromDate(value: Date | string | number) {
+  if (typeof value === "string" && DATE_KEY_PATTERN.test(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return [

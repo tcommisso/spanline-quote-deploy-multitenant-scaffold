@@ -6,6 +6,33 @@ import { storagePut } from "./storage";
 import { hbcfRequirementFieldsForAmount } from "./hbcf-service";
 import { isAdminRole } from "@shared/const";
 
+type DeckAddonSelection = {
+  addonItemId: number;
+  priceOverride?: number | null;
+  name?: string;
+};
+
+function parseDeckAddonSelections(value: unknown): DeckAddonSelection[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as DeckAddonSelection[];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed as DeckAddonSelection[] : [];
+    } catch {
+      return [];
+    }
+  }
+  if (typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    if (Array.isArray(candidate.items)) return candidate.items as DeckAddonSelection[];
+    if (Array.isArray(candidate.selectedAddons)) return candidate.selectedAddons as DeckAddonSelection[];
+  }
+  return [];
+}
+
 export const deckRouter = router({
   // ─── Deck Products ──────────────────────────────────────────────────────
   products: router({
@@ -299,12 +326,8 @@ export const deckRouter = router({
         // Track override history when selectedAddons changes
         if (input.data.selectedAddons) {
           try {
-            const prevAddons: Array<{ addonItemId: number; priceOverride?: number | null }> =
-              (quote as any).selectedAddons ? JSON.parse((quote as any).selectedAddons) : [];
-            const newAddons: Array<{ addonItemId: number; priceOverride?: number | null; name?: string }> =
-              typeof input.data.selectedAddons === "string"
-                ? JSON.parse(input.data.selectedAddons)
-                : input.data.selectedAddons;
+            const prevAddons = parseDeckAddonSelections((quote as any).selectedAddons);
+            const newAddons = parseDeckAddonSelections(input.data.selectedAddons);
             const historyEntries: Array<any> = [];
             for (const newAddon of newAddons) {
               if (newAddon.priceOverride == null) continue;

@@ -50,12 +50,26 @@ const RESOURCE_TABS: { value: ResourceView; label: string; icon: any }[] = [
 ];
 
 function toLocalDateKey(value: Date | string | number) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function toDateInputValue(value: Date | string | number | null | undefined) {
+  if (!value) return "";
+  return toLocalDateKey(value);
+}
+
+function toInclusiveEndDateKey(value: Date | string | number | null | undefined) {
+  if (!value) return "";
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return toDateInputValue(value);
+  date.setMilliseconds(date.getMilliseconds() - 1);
+  return toLocalDateKey(date);
 }
 
 function localDateTimeToIso(value: string) {
@@ -267,11 +281,13 @@ export default function ConstructionSchedule() {
     startDate: toLocalDateKey(dateRange.start),
     endDate: toLocalDateKey(dateRange.end),
   });
+  const availabilityStartKey = toDateInputValue(dateRange.start);
+  const availabilityEndKey = toInclusiveEndDateKey(dateRange.end);
   const availabilityBlocksQuery = trpc.constructionSchedule.availabilityBlocks.useQuery({
-    startDate: dateRange.start,
-    endDate: dateRange.end,
+    startDate: availabilityStartKey,
+    endDate: availabilityEndKey,
     ...(filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
-  });
+  }, { enabled: Boolean(availabilityStartKey && availabilityEndKey) });
 
   const createEvent = trpc.constructionSchedule.create.useMutation({
     onSuccess: () => {
@@ -993,7 +1009,8 @@ function EventForm({
   loading: boolean;
 }) {
   const initialAllDay = Boolean(initialEvent?.allDay);
-  const initialStartDate = initialEvent?.startTime ? toLocalDateKey(initialEvent.startTime) : (defaultDate || "");
+  const normalisedDefaultDate = toDateInputValue(defaultDate);
+  const initialStartDate = initialEvent?.startTime ? toLocalDateKey(initialEvent.startTime) : normalisedDefaultDate;
   const initialEndDate = initialEvent?.endTime ? toLocalDateKey(initialEvent.endTime) : initialStartDate;
   const [form, setForm] = useState({
     jobId: initialEvent?.jobId ? String(initialEvent.jobId) : "",
@@ -1003,12 +1020,12 @@ function EventForm({
       ? initialStartDate
       : initialEvent?.startTime
       ? toLocalDateTimeInput(initialEvent.startTime)
-      : defaultDate ? `${defaultDate}T09:00` : "",
+      : normalisedDefaultDate ? `${normalisedDefaultDate}T09:00` : "",
     endTime: initialAllDay
       ? initialEndDate
       : initialEvent?.endTime
       ? toLocalDateTimeInput(initialEvent.endTime)
-      : defaultDate ? `${defaultDate}T17:00` : "",
+      : normalisedDefaultDate ? `${normalisedDefaultDate}T17:00` : "",
     allDay: initialAllDay,
     eventType: initialEvent?.eventType || "installation",
     assignedInstallerId: initialEvent?.assignedInstallerId ? String(initialEvent.assignedInstallerId) : "none",
@@ -1169,11 +1186,12 @@ function EquipmentBookingForm({
   onSubmit: (data: any) => void;
   loading: boolean;
 }) {
+  const normalisedDefaultDate = toDateInputValue(defaultDate);
   const [form, setForm] = useState({
     equipmentId: "",
     jobId: "",
-    startDate: defaultDate || "",
-    endDate: defaultDate || "",
+    startDate: normalisedDefaultDate,
+    endDate: normalisedDefaultDate,
     notes: "",
   });
 
