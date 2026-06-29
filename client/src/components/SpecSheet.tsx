@@ -106,6 +106,7 @@ const ELECTRICAL_FAN_FALLBACK_OPTIONS = ["Ceiling Fan", "Fan Point", "Exhaust Fa
 const BRACKET_ATTACHMENT_METHOD_OPTIONS = ["Fascia brackets", "Extenda brackets", "Gable brackets", "popup brackets", "wall brackets"];
 const BRACKET_INFILL_FALLBACK_OPTIONS = ["Glass", "Twinwall"];
 const POST_FIXING_OPTIONS = ["Footing", "Internal Bracket", "Welded Base Plate"];
+const ADDITIONAL_COST_ALLOWED_SECTION_KEYS = new Set(["finishing", "other", "roofing", "site_works"]);
 const STAIR_TYPE_OPTIONS: { value: StairType; label: string }[] = [
   { value: "straight", label: "Straight" },
   { value: "l-shape", label: "L-Shape" },
@@ -222,6 +223,18 @@ function applyBracketMethod(form: Record<string, string>, method: string) {
 
 function normaliseLookupKey(value?: string | null) {
   return (value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function additionalCostSectionKey(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isPricedAdditionalCostSection(value: unknown) {
+  const key = additionalCostSectionKey(value);
+  return key === "" || ADDITIONAL_COST_ALLOWED_SECTION_KEYS.has(key);
 }
 
 function extractDimensionLookupKey(value?: string | null) {
@@ -1100,6 +1113,10 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   type ChecklistSelection = { itemId: number; label: string; unitPrice: number; qty: number; total: number; section: string; unit: string };
   const [checklistSelections, setChecklistSelections] = useState<ChecklistSelection[]>([]);
   const { data: activeChecklistItems } = trpc.checklistItems.listActive.useQuery();
+  const activeAdditionalCostItems = useMemo(
+    () => (activeChecklistItems || []).filter((item) => isPricedAdditionalCostSection(item.section)),
+    [activeChecklistItems],
+  );
   const { data: tenantChecklistDefaults = [] } = trpc.checklistDefaults.listActive.useQuery(undefined, { staleTime: 60_000 });
   const checklistDefaultsBySection = useMemo<Record<string, CheckItem[]>>(() => {
     return tenantChecklistDefaults.reduce<Record<string, CheckItem[]>>((acc, row) => {
@@ -4013,13 +4030,13 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
             <AccordionContent>
               <div className="space-y-4">
                 <p className="text-xs text-muted-foreground">Select items and enter quantities. Line totals flow into the quote's Additional Costs.</p>
-                {(!activeChecklistItems || activeChecklistItems.length === 0) ? (
+                {activeAdditionalCostItems.length === 0 ? (
                   <p className="text-xs text-muted-foreground italic">No priced additional cost items configured. Admin can add items in Settings → Additional Costs Pricing.</p>
                 ) : (
                   <>
                     {/* Group by section */}
                     {Object.entries(
-                      (activeChecklistItems || []).reduce<Record<string, typeof activeChecklistItems>>((acc, item) => {
+                      activeAdditionalCostItems.reduce<Record<string, typeof activeAdditionalCostItems>>((acc, item) => {
                         const section = item.section || "other";
                         if (!acc[section]) acc[section] = [];
                         acc[section]!.push(item);

@@ -97,6 +97,12 @@ const MULTI_SELECT_PRODUCT_MATCH_SPEC_FIELDS = new Set([
   "specBalTubularVertSlat",
   "specBalWireType",
 ]);
+const ADDITIONAL_COST_ALLOWED_SECTIONS = new Set([
+  "finishing",
+  "other",
+  "roofing",
+  "site_works",
+]);
 
 function formatTakeoffNumber(value: number): string {
   return value.toFixed(3).replace(/\.?0+$/, "");
@@ -316,6 +322,12 @@ function additionalCostUnitPrice(row: Record<string, unknown>, qty: number): num
 
 function additionalCostSection(row: Record<string, unknown>): string {
   return readString(row, ["section", "category", "group"]);
+}
+
+function additionalCostSectionIsAllowed(row: Record<string, unknown>): boolean {
+  const section = additionalCostSection(row);
+  if (!section) return true;
+  return ADDITIONAL_COST_ALLOWED_SECTIONS.has(normalizeMatchValue(section).replace(/\s+/g, "_"));
 }
 
 function numberTokens(value: unknown): number[] {
@@ -1120,6 +1132,8 @@ function buildAdditionalCostItems(specValues: SpecValues): GeneratedItem[] {
   const items: GeneratedItem[] = [];
 
   for (const row of additionalCostRows(specValues)) {
+    if (!additionalCostSectionIsAllowed(row)) continue;
+
     const label = additionalCostLabel(row);
     if (!label) continue;
 

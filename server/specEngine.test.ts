@@ -763,6 +763,45 @@ describe("generateItemsFromSpec additional cost selections", () => {
     expect(items[1].notes).toContain("Additional cost section: Site Works");
   });
 
+  it("does not emit section work checklist rows as additional costs", () => {
+    const items = generateItemsFromSpec(
+      [],
+      {
+        specChecklistSelections: [
+          {
+            itemId: 10,
+            label: "Demolish existing concrete slab",
+            unitPrice: 207,
+            qty: 20,
+            total: 4140,
+            section: "demolition",
+            unit: "m2",
+          },
+          {
+            itemId: 11,
+            label: "Mobile Scaffold per day",
+            unitPrice: 200,
+            qty: 5,
+            total: 1000,
+            section: "site_works",
+            unit: "each",
+          },
+        ],
+      },
+      [],
+      {},
+      2.2,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      tabName: "additional_costs",
+      description: "Mobile Scaffold per day",
+      qty: 5,
+      sellRate: 200,
+    });
+  });
+
   it("derives unit price from saved line total when only a total is available", () => {
     const items = generateItemsFromSpec(
       [],

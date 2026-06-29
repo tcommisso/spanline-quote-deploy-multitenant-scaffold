@@ -1128,11 +1128,7 @@ const UNIT_OPTIONS = [
 
 const SECTION_OPTIONS = [
   "site_works",
-  "demolition",
-  "electrical",
-  "plumbing",
   "roofing",
-  "structural",
   "finishing",
   "other",
 ];
