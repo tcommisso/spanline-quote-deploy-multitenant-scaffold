@@ -1,4 +1,4 @@
-const databaseUrl = process.env.DATABASE_URL ?? process.env.MYSQL_URL ?? "";
+const databaseUrl = process.env.DATABASE_URL ?? process.env.MYSQL_PUBLIC_URL ?? process.env.MYSQL_URL ?? "";
 
 function csv(value: string | undefined) {
   return (value ?? "")
@@ -7,8 +7,11 @@ function csv(value: string | undefined) {
     .filter(Boolean);
 }
 
-if (!process.env.DATABASE_URL && process.env.MYSQL_URL) {
-  process.env.DATABASE_URL = process.env.MYSQL_URL;
+if (!process.env.DATABASE_URL) {
+  const fallbackDatabaseUrl = process.env.MYSQL_PUBLIC_URL ?? process.env.MYSQL_URL;
+  if (fallbackDatabaseUrl) {
+    process.env.DATABASE_URL = fallbackDatabaseUrl;
+  }
 }
 
 export const ENV = {
@@ -89,7 +92,7 @@ export function validateRequiredEnv() {
     if (ENV.isProduction && !value) missing.push(key);
   };
 
-  requireInProduction("DATABASE_URL or MYSQL_URL", ENV.databaseUrl);
+  requireInProduction("DATABASE_URL, MYSQL_PUBLIC_URL, or MYSQL_URL", ENV.databaseUrl);
   requireInProduction("JWT_SECRET", ENV.cookieSecret);
   requireInProduction("PUBLIC_APP_URL", ENV.publicAppUrl);
 

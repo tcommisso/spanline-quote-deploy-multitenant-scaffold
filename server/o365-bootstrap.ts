@@ -36,6 +36,16 @@ function publicHost() {
   }
 }
 
+function rootCause(error: unknown): { code?: string } | null {
+  let current = error;
+  while (current && typeof current === "object" && "cause" in current) {
+    const cause = (current as { cause?: unknown }).cause;
+    if (!cause || cause === current) break;
+    current = cause;
+  }
+  return current && typeof current === "object" ? current as { code?: string } : null;
+}
+
 export async function bootstrapO365MailboxesFromEnv() {
   const mailboxes = ENV.msGraphMailboxes
     .map(address => address.toLowerCase())
@@ -134,6 +144,14 @@ export async function bootstrapO365MailboxesFromEnv() {
 
     console.info(`[O365 Bootstrap] Seeded ${mailboxes.length} Microsoft 365 mailbox(es) for tenant ${tenantSlug}`);
   } catch (error) {
+    const cause = rootCause(error);
+    if (!ENV.isProduction && (cause?.code === "ECONNREFUSED" || cause?.code === "ENOTFOUND")) {
+      console.warn(
+        `[O365 Bootstrap] Shared mailbox bootstrap skipped: database is not reachable (${cause.code}). ` +
+        "Set DATABASE_URL/MYSQL_PUBLIC_URL or start local MySQL for DB-backed features."
+      );
+      return;
+    }
     console.warn("[O365 Bootstrap] Shared mailbox bootstrap failed", error);
   }
 }

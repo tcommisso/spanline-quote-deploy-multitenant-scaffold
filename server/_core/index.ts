@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { validateRequiredEnv } from "./env";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
@@ -37,7 +38,6 @@ import { registerScheduledMissedCallsDigest } from "../scheduled-missed-calls-di
 import { registerStorageProxy } from "./storageProxy";
 import { registerNylasCallbackRoutes } from "../nylas-callback-routes";
 import { registerVocphoneRecordingRoutes } from "../vocphone-recordings";
-import { validateRequiredEnv } from "./env";
 import { registerHealthRoutes } from "./health";
 import { bootstrapO365MailboxesFromEnv } from "../o365-bootstrap";
 
