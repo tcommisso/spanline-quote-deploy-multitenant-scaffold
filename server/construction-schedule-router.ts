@@ -1,11 +1,21 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { constructionScheduleEvents, constructionJobs, constructionInstallers } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray, isNull, or } from "drizzle-orm";
+import { constructionScheduleEvents, constructionJobs, constructionInstallers, constructionHolidayCalendarDays, tradeAvailabilities } from "../drizzle/schema";
+import { eq, and, gte, lte, inArray, isNull, or, asc } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
+import { isAdminRole } from "@shared/const";
+import {
+  AU_HOLIDAY_JURISDICTIONS,
+  type AuHolidayJurisdiction,
+  dateKeyRange,
+  dateKeyToStorageDate,
+  generateAustralianHolidays,
+  isWeekendDateKey,
+  toDateKey,
+} from "./_core/australianHolidays";
 
 async function requireDb() {
   const db = await getDb();
@@ -23,6 +33,22 @@ function installerTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionHolidayCalendarDays.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function enumerateDateKeys(startKey: string, endKey: string) {
+  const keys: string[] = [];
+  const cursor = dateKeyToStorageDate(startKey);
+  for (let guard = 0; guard < 370 && toDateKey(cursor) <= endKey; guard += 1) {
+    keys.push(toDateKey(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return keys;
 }
 
 async function requireJobAccess(db: any, ctx: any, jobId: number) {
@@ -54,6 +80,143 @@ async function requireEventAccess(db: any, ctx: any, eventId: number) {
 }
 
 export const constructionScheduleRouter = router({
+  holidayCalendar: protectedProcedure
+    .input(z.object({
+      year: z.number().min(2020).max(2050).optional(),
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
+      activeOnly: z.boolean().optional(),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const conditions: any[] = [];
+      if (input?.year) conditions.push(eq(constructionHolidayCalendarDays.year, input.year));
+      const { startKey, endKey } = dateKeyRange(input?.startDate, input?.endDate);
+      if (startKey) conditions.push(gte(constructionHolidayCalendarDays.dateKey, startKey));
+      if (endKey) conditions.push(lte(constructionHolidayCalendarDays.dateKey, endKey));
+      if (input?.activeOnly !== false) conditions.push(eq(constructionHolidayCalendarDays.active, true));
+      return db.select()
+        .from(constructionHolidayCalendarDays)
+        .where(and(...holidayTenantConditions(ctx, ...conditions)))
+        .orderBy(asc(constructionHolidayCalendarDays.dateKey), asc(constructionHolidayCalendarDays.jurisdiction), asc(constructionHolidayCalendarDays.name));
+    }),
+
+  seedAustralianHolidays: protectedProcedure
+    .input(z.object({
+      year: z.number().min(2020).max(2050),
+      jurisdictions: z.array(z.enum(AU_HOLIDAY_JURISDICTIONS)).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isAdminRole(ctx.user?.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access is required to import holiday calendar days" });
+      }
+      const db = await requireDb();
+      const tenantId = tenantIdFromContext(ctx);
+      const holidays = generateAustralianHolidays(input.year, (input.jurisdictions || ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[]);
+      if (holidays.length === 0) return { inserted: 0 };
+
+      await db.insert(constructionHolidayCalendarDays)
+        .values(holidays.map((holiday) => ({
+          tenantId,
+          dateKey: holiday.dateKey,
+          name: holiday.name,
+          jurisdiction: holiday.jurisdiction,
+          year: holiday.year,
+          source: holiday.source,
+          active: true,
+          createdBy: ctx.user.id,
+        })))
+        .onDuplicateKeyUpdate({
+          set: {
+            active: true,
+            source: "built_in",
+          },
+        });
+      return { inserted: holidays.length };
+    }),
+
+  setHolidayActive: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      active: z.boolean(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isAdminRole(ctx.user?.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access is required to update holiday calendar days" });
+      }
+      const db = await requireDb();
+      await db.update(constructionHolidayCalendarDays)
+        .set({ active: input.active })
+        .where(and(...holidayTenantConditions(ctx, eq(constructionHolidayCalendarDays.id, input.id))));
+      return { success: true };
+    }),
+
+  availabilityBlocks: protectedProcedure
+    .input(z.object({
+      startDate: z.string(),
+      endDate: z.string(),
+      installerId: z.number().optional(),
+    }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const { startKey, endKey } = dateKeyRange(input.startDate, input.endDate);
+      if (!startKey || !endKey) return [];
+      if (input.installerId) await requireInstallerAccess(db, ctx, input.installerId);
+
+      const holidays = await db.select()
+        .from(constructionHolidayCalendarDays)
+        .where(and(...holidayTenantConditions(
+          ctx,
+          eq(constructionHolidayCalendarDays.active, true),
+          gte(constructionHolidayCalendarDays.dateKey, startKey),
+          lte(constructionHolidayCalendarDays.dateKey, endKey),
+        )))
+        .orderBy(asc(constructionHolidayCalendarDays.dateKey), asc(constructionHolidayCalendarDays.name));
+      const holidaysByDate = new Map<string, typeof holidays>();
+      for (const holiday of holidays) {
+        const list = holidaysByDate.get(holiday.dateKey) || [];
+        list.push(holiday);
+        holidaysByDate.set(holiday.dateKey, list);
+      }
+
+      const availabilityByDate = new Map<string, typeof tradeAvailabilities.$inferSelect>();
+      if (input.installerId) {
+        const start = new Date(`${startKey}T00:00:00.000Z`);
+        const end = new Date(`${endKey}T23:59:59.999Z`);
+        const rows = await db.select()
+          .from(tradeAvailabilities)
+          .where(and(
+            eq(tradeAvailabilities.installerId, input.installerId),
+            gte(tradeAvailabilities.date, start),
+            lte(tradeAvailabilities.date, end),
+          ));
+        for (const row of rows) {
+          availabilityByDate.set(toDateKey(row.date), row);
+        }
+      }
+
+      return enumerateDateKeys(startKey, endKey).map((dateKey) => {
+        const holidayRows = holidaysByDate.get(dateKey) || [];
+        const override = availabilityByDate.get(dateKey);
+        const isWeekend = isWeekendDateKey(dateKey);
+        const defaultUnavailable = isWeekend || holidayRows.length > 0;
+        const unavailable = override?.status === "available" ? false : override?.status === "unavailable" ? true : defaultUnavailable;
+        return {
+          dateKey,
+          isWeekend,
+          holidays: holidayRows.map((holiday) => ({
+            id: holiday.id,
+            name: holiday.name,
+            jurisdiction: holiday.jurisdiction,
+          })),
+          defaultUnavailable,
+          unavailable,
+          overrideStatus: override?.status || null,
+          overrideNotes: override?.notes || null,
+        };
+      });
+    }),
+
   list: protectedProcedure
     .input(z.object({
       jobId: z.number().optional(),

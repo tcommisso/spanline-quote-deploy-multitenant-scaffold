@@ -22,6 +22,8 @@ import {
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/useMobile";
 import { useSwipeGesture } from "@/hooks/useSwipeGesture";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { isAdminRole } from "@shared/const";
 
 type ResourceView = "all" | "staff" | "unallocated" | "equipment";
 
@@ -195,6 +197,7 @@ function JobCombobox({
 }
 
 export default function ConstructionSchedule() {
+  const { user } = useAuth();
   const isMobile = useIsMobile();
   const [viewMode, setViewMode] = useState<"day" | "week" | "month">("week");
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -264,6 +267,11 @@ export default function ConstructionSchedule() {
     startDate: toLocalDateKey(dateRange.start),
     endDate: toLocalDateKey(dateRange.end),
   });
+  const availabilityBlocksQuery = trpc.constructionSchedule.availabilityBlocks.useQuery({
+    startDate: dateRange.start,
+    endDate: dateRange.end,
+    ...(filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
+  });
 
   const createEvent = trpc.constructionSchedule.create.useMutation({
     onSuccess: () => {
@@ -306,6 +314,13 @@ export default function ConstructionSchedule() {
       setSelectedBooking(null);
       toast.success("Booking removed");
     },
+  });
+  const seedHolidays = trpc.constructionSchedule.seedAustralianHolidays.useMutation({
+    onSuccess: (result) => {
+      availabilityBlocksQuery.refetch();
+      toast.success(`Imported ${result.inserted} holiday calendar days`);
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const navigatePrev = () => {
@@ -438,6 +453,13 @@ export default function ConstructionSchedule() {
     }
     return map;
   }, [rainDaysQuery.data]);
+  const availabilityByDate = useMemo(() => {
+    const map: Record<string, any> = {};
+    for (const block of (availabilityBlocksQuery.data || [])) {
+      map[block.dateKey] = block;
+    }
+    return map;
+  }, [availabilityBlocksQuery.data]);
 
   const headerLabel = viewMode === "month"
     ? currentDate.toLocaleDateString("en-AU", { month: "long", year: "numeric" })
@@ -503,6 +525,18 @@ export default function ConstructionSchedule() {
               />
             </DialogContent>
           </Dialog>
+          {isAdminRole(user?.role) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8"
+              onClick={() => seedHolidays.mutate({ year: currentDate.getFullYear(), jurisdictions: ["NATIONAL", "ACT", "NSW"] })}
+              disabled={seedHolidays.isPending}
+            >
+              <CalendarDays className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">{seedHolidays.isPending ? "Importing..." : "Import Holidays"}</span>
+            </Button>
+          )}
           <Dialog open={showCreateEvent} onOpenChange={setShowCreateEvent}>
             <DialogTrigger asChild>
               <Button size="sm" className="h-8">
@@ -727,7 +761,7 @@ export default function ConstructionSchedule() {
         <>
           {/* Day Headers */}
           <div className="grid grid-cols-7 gap-px bg-border rounded-t-lg overflow-hidden">
-            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+            {(viewMode === "week" ? ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]).map((day) => (
               <div key={day} className="bg-muted px-2 py-1.5 text-center text-xs font-medium text-muted-foreground">
                 {day}
               </div>
@@ -747,11 +781,20 @@ export default function ConstructionSchedule() {
               const showEquipment = resourceView === "all" || resourceView === "equipment";
 
               const isRainDay = !!rainDaysByDate[dateKey];
+              const availabilityBlock = availabilityByDate[dateKey];
+              const unavailable = availabilityBlock?.unavailable;
+              const holidayName = availabilityBlock?.holidays?.[0]?.name;
+              const availabilityLabel = holidayName || (availabilityBlock?.isWeekend ? "Weekend" : null);
+              const blockClass = unavailable
+                ? "bg-amber-50 dark:bg-amber-950/20"
+                : isRainDay
+                ? "bg-sky-50 dark:bg-sky-950/30"
+                : "bg-background";
 
               return (
                 <div
                   key={idx}
-                  className={`${minHeight} p-1 cursor-pointer hover:bg-muted/30 transition-colors ${!isCurrentMonth && viewMode === "month" ? "opacity-40" : ""} ${isRainDay ? "bg-sky-50 dark:bg-sky-950/30" : "bg-background"}`}
+                  className={`${minHeight} p-1 cursor-pointer hover:bg-muted/30 transition-colors ${!isCurrentMonth && viewMode === "month" ? "opacity-40" : ""} ${blockClass}`}
                   onClick={() => {
                     setSelectedDate(dateKey);
                     if (resourceView === "equipment") {
@@ -771,6 +814,11 @@ export default function ConstructionSchedule() {
                       </span>
                     )}
                   </div>
+                  {availabilityLabel && (
+                    <div className={`mb-1 truncate rounded px-1 py-0.5 text-[9px] leading-tight ${unavailable ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                      {unavailable ? availabilityLabel : `Available: ${availabilityLabel}`}
+                    </div>
+                  )}
                   <div className="space-y-0.5 overflow-y-auto max-h-[80px]">
                     {/* Schedule events */}
                     {showEvents && cellEvents.map((event: any) => {
@@ -832,6 +880,10 @@ export default function ConstructionSchedule() {
                 <Package className="h-2.5 w-2.5" />
               </span>
               <span>Equipment</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex w-4 h-4 rounded bg-amber-100 border border-amber-200" />
+              <span>Unavailable by default</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="inline-flex items-center justify-center w-4 h-4 rounded border border-dashed border-muted-foreground">

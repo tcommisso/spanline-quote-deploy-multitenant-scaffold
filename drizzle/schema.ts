@@ -1549,6 +1549,27 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
 export type ConstructionScheduleEvent = typeof constructionScheduleEvents.$inferSelect;
 export type InsertConstructionScheduleEvent = typeof constructionScheduleEvents.$inferInsert;
 
+// ─── Construction Holiday Calendar Days ─────────────────────────────────────
+export const constructionHolidayCalendarDays = mysqlTable("construction_holiday_calendar_days", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  dateKey: varchar("dateKey", { length: 10 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  jurisdiction: mysqlEnum("jurisdiction", ["NATIONAL", "ACT", "NSW", "VIC", "QLD", "SA", "WA", "TAS", "NT"]).default("NATIONAL").notNull(),
+  year: int("year").notNull(),
+  source: varchar("source", { length: 64 }).default("manual").notNull(),
+  active: boolean("active").default(true).notNull(),
+  createdBy: int("createdBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uniq_construction_holiday_tenant_day_jurisdiction_name").on(table.tenantId, table.dateKey, table.jurisdiction, table.name),
+  index("idx_construction_holiday_tenant_date").on(table.tenantId, table.dateKey),
+  index("idx_construction_holiday_tenant_year").on(table.tenantId, table.year),
+]);
+export type ConstructionHolidayCalendarDay = typeof constructionHolidayCalendarDays.$inferSelect;
+export type InsertConstructionHolidayCalendarDay = typeof constructionHolidayCalendarDays.$inferInsert;
+
 // ─── Construction Kanban Tasks ─────────────────────────────────────────────
 export const constructionKanbanTasks = mysqlTable("construction_kanban_tasks", {
   id: int("id").autoincrement().primaryKey(),

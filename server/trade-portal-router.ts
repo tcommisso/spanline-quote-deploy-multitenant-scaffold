@@ -7,6 +7,7 @@ import {
   tradeAvailabilities, tradeInvoices, tradeRemittances,
   tradePhotos, tradeMessages, tradeInvoicePhotos,
   constructionInstallers, constructionJobs, constructionScheduleEvents,
+  constructionHolidayCalendarDays,
   constructionAssignments, jobSharedFiles, quotes,
   portalNews, poMilestones, cmWorkOrders,
   projectSubcontracts, tradeInvoiceLines,
@@ -35,6 +36,12 @@ import {
   getXeroPaymentRemittancesForTrade,
   hasTradeRemittanceDedupeKey,
 } from "./trade-remittance-xero";
+import {
+  dateKeyToStorageDate,
+  isWeekendDateKey,
+  localDateKeyFromDate,
+  toDateKey,
+} from "./_core/australianHolidays";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -81,6 +88,12 @@ function requireTradeAccessVisible(
 function tradeInstallerConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionInstallers.tenantId, tradePortalTenantId(ctx));
+  return conditions;
+}
+
+function tradeHolidayConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionHolidayCalendarDays.tenantId, tradePortalTenantId(ctx));
   return conditions;
 }
 
@@ -1549,6 +1562,74 @@ export const tradePortalRouter = router({
         .orderBy(asc(tradeAvailabilities.date));
     }),
 
+  getAvailabilityCalendar: protectedTradePortalProcedure
+    .input(z.object({
+      month: z.number().min(1).max(12),
+      year: z.number().min(2020).max(2050),
+    }))
+    .query(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const startKey = `${input.year}-${String(input.month).padStart(2, "0")}-01`;
+      const daysInMonth = new Date(input.year, input.month, 0).getUTCDate();
+      const endKey = `${input.year}-${String(input.month).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+      const start = new Date(`${startKey}T00:00:00.000Z`);
+      const end = new Date(`${endKey}T23:59:59.999Z`);
+
+      const holidays = await db.select()
+        .from(constructionHolidayCalendarDays)
+        .where(and(...tradeHolidayConditions(
+          ctx,
+          eq(constructionHolidayCalendarDays.active, true),
+          gte(constructionHolidayCalendarDays.dateKey, startKey),
+          lte(constructionHolidayCalendarDays.dateKey, endKey),
+        )))
+        .orderBy(asc(constructionHolidayCalendarDays.dateKey), asc(constructionHolidayCalendarDays.name));
+
+      const holidayMap = new Map<string, typeof holidays>();
+      for (const holiday of holidays) {
+        const list = holidayMap.get(holiday.dateKey) || [];
+        list.push(holiday);
+        holidayMap.set(holiday.dateKey, list);
+      }
+
+      const overrides = await db.select()
+        .from(tradeAvailabilities)
+        .where(and(
+          eq(tradeAvailabilities.installerId, ctx.tradeAccess.installerId),
+          gte(tradeAvailabilities.date, start),
+          lte(tradeAvailabilities.date, end),
+        ));
+      const overrideMap = new Map<string, typeof tradeAvailabilities.$inferSelect>();
+      for (const override of overrides) {
+        overrideMap.set(toDateKey(override.date), override);
+      }
+
+      return Array.from({ length: daysInMonth }, (_, index) => {
+        const dateKey = `${input.year}-${String(input.month).padStart(2, "0")}-${String(index + 1).padStart(2, "0")}`;
+        const holidayRows = holidayMap.get(dateKey) || [];
+        const override = overrideMap.get(dateKey);
+        const defaultUnavailable = isWeekendDateKey(dateKey) || holidayRows.length > 0;
+        const unavailable = override?.status === "available" ? false : override?.status === "unavailable" ? true : defaultUnavailable;
+        return {
+          dateKey,
+          isWeekend: isWeekendDateKey(dateKey),
+          holidays: holidayRows.map((holiday) => ({
+            id: holiday.id,
+            name: holiday.name,
+            jurisdiction: holiday.jurisdiction,
+          })),
+          defaultUnavailable,
+          unavailable,
+          override: override
+            ? {
+                ...override,
+                dateKey: toDateKey(override.date),
+              }
+            : null,
+        };
+      });
+    }),
+
   setAvailability: protectedTradePortalProcedure
     .input(z.object({
       date: z.string(),
@@ -1558,14 +1639,20 @@ export const tradePortalRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
-      const dateObj = new Date(input.date);
+      const key = /^\d{4}-\d{2}-\d{2}$/.test(input.date)
+        ? input.date
+        : localDateKeyFromDate(input.date);
+      const dateObj = dateKeyToStorageDate(key);
+      const dayStart = new Date(`${key}T00:00:00.000Z`);
+      const dayEnd = new Date(`${key}T23:59:59.999Z`);
 
       // Check if entry exists for this date
       const [existing] = await db.select()
         .from(tradeAvailabilities)
         .where(and(
           eq(tradeAvailabilities.installerId, installerId),
-          eq(tradeAvailabilities.date, dateObj),
+          gte(tradeAvailabilities.date, dayStart),
+          lte(tradeAvailabilities.date, dayEnd),
         ))
         .limit(1);
 

@@ -22,6 +22,10 @@ const statusLabels: Record<string, string> = {
   partial: "Partial",
 };
 
+function dateKeyFor(year: number, monthIndex: number, day: number) {
+  return `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 export default function TradePortalAvailability() {
   const isMobile = useIsMobile();
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -33,7 +37,7 @@ export default function TradePortalAvailability() {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
 
-  const { data: availabilities, isLoading, refetch } = trpc.tradePortal.getAvailabilities.useQuery({
+  const { data: availabilityCalendar, isLoading, refetch } = trpc.tradePortal.getAvailabilityCalendar.useQuery({
     month: month + 1,
     year,
   });
@@ -60,27 +64,25 @@ export default function TradePortalAvailability() {
   const firstDayOfWeek = new Date(year, month, 1).getDay();
   const startOffset = firstDayOfWeek === 0 ? 6 : firstDayOfWeek - 1;
 
-  type AvailabilityItem = NonNullable<typeof availabilities>[number];
+  type AvailabilityItem = NonNullable<typeof availabilityCalendar>[number];
   const availabilityMap = useMemo(() => {
     const map = new Map<string, AvailabilityItem>();
-    availabilities?.forEach(a => {
-      const d = new Date(a.date);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      map.set(key, a);
+    availabilityCalendar?.forEach(a => {
+      map.set(a.dateKey, a);
     });
     return map;
-  }, [availabilities]);
+  }, [availabilityCalendar]);
 
   function handleDayClick(date: Date) {
     if (date < new Date(new Date().setHours(0, 0, 0, 0))) return;
     setSelectedDate(date);
-    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const key = dateKeyFor(date.getFullYear(), date.getMonth(), date.getDate());
     const existing = availabilityMap.get(key);
-    if (existing) {
-      setStatus(existing.status as "available" | "unavailable" | "partial");
-      setNotes(existing.notes || "");
+    if (existing?.override) {
+      setStatus(existing.override.status as "available" | "unavailable" | "partial");
+      setNotes(existing.override.notes || "");
     } else {
-      setStatus("unavailable");
+      setStatus(existing?.defaultUnavailable ? "available" : "unavailable");
       setNotes("");
     }
     setDialogOpen(true);
@@ -88,8 +90,9 @@ export default function TradePortalAvailability() {
 
   function handleSave() {
     if (!selectedDate) return;
+    const key = dateKeyFor(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     setAvailability.mutate({
-      date: selectedDate.toISOString(),
+      date: key,
       status,
       notes: notes || undefined,
     });
@@ -97,10 +100,10 @@ export default function TradePortalAvailability() {
 
   function handleRemove() {
     if (!selectedDate) return;
-    const key = `${selectedDate.getFullYear()}-${selectedDate.getMonth()}-${selectedDate.getDate()}`;
+    const key = dateKeyFor(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     const existing = availabilityMap.get(key);
-    if (existing) {
-      removeAvailability.mutate({ id: existing.id });
+    if (existing?.override) {
+      removeAvailability.mutate({ id: existing.override.id });
     }
   }
 
@@ -152,9 +155,14 @@ export default function TradePortalAvailability() {
             ))}
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const date = new Date(year, month, i + 1);
-              const key = `${year}-${month}-${i + 1}`;
+              const key = dateKeyFor(year, month, i + 1);
               const avail = availabilityMap.get(key);
               const past = isPast(date);
+              const effectiveStatus = avail?.override?.status || (avail?.unavailable ? "unavailable" : "");
+              const statusClass = effectiveStatus ? statusColors[effectiveStatus] : "";
+              const label = avail?.override?.status
+                ? statusLabels[avail.override.status]
+                : avail?.holidays?.[0]?.name || (avail?.isWeekend ? "Weekend" : "");
 
               return (
                 <div
@@ -163,19 +171,19 @@ export default function TradePortalAvailability() {
                   className={`bg-white p-1 sm:p-2 min-h-[44px] sm:min-h-[70px] transition-colors ${
                     past ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-slate-50 active:bg-slate-100"
                   } ${isToday(date) ? "ring-2 ring-primary ring-inset" : ""} ${
-                    avail ? statusColors[avail.status] : ""
+                    statusClass
                   }`}
                 >
                   <p className={`text-[10px] sm:text-xs font-medium ${isToday(date) ? "text-primary" : "text-slate-600"}`}>
                     {i + 1}
                   </p>
-                  {avail && (
+                  {label && (
                     <p className="text-[8px] sm:text-[10px] mt-0.5 sm:mt-1 font-medium leading-tight">
-                      {isMobile ? statusLabels[avail.status]?.charAt(0) : statusLabels[avail.status]}
+                      {isMobile ? label.charAt(0) : label}
                     </p>
                   )}
-                  {!isMobile && avail?.notes && (
-                    <p className="text-[9px] text-muted-foreground truncate mt-0.5">{avail.notes}</p>
+                  {!isMobile && avail?.override?.notes && (
+                    <p className="text-[9px] text-muted-foreground truncate mt-0.5">{avail.override.notes}</p>
                   )}
                 </div>
               );
@@ -217,7 +225,7 @@ export default function TradePortalAvailability() {
             </div>
           </div>
           <DialogFooter className="gap-2">
-            {selectedDate && availabilityMap.has(`${selectedDate.getFullYear()}-${selectedDate.getMonth()}-${selectedDate.getDate()}`) && (
+            {selectedDate && availabilityMap.get(dateKeyFor(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate()))?.override && (
               <Button variant="outline" onClick={handleRemove} disabled={removeAvailability.isPending}>
                 Clear
               </Button>
