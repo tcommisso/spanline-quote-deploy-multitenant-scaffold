@@ -19,7 +19,7 @@ import {
 } from "../drizzle/schema";
 import { TRPCError } from "@trpc/server";
 import { triggerPushTradeInvoiceAdjusted, triggerPushTradeInvoiceApproved, triggerPushTradeInvoiceRejected } from "./push-triggers";
-import { getValidAccessToken } from "./xero-client";
+import { getValidAccessToken, xeroApiRequest } from "./xero-client";
 import { notifyOwner } from "./_core/notification";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 
@@ -65,6 +65,30 @@ function invoiceWhere(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendInvoiceTenantScope(ctx, conditions);
   return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+function xeroWhereString(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function findExistingXeroBillByInvoiceNumber(options: {
+  invoiceNumber: string;
+  appTenantId?: number | null;
+  moduleKey: "trade_portal";
+}) {
+  const where = `Type=="ACCPAY"&&InvoiceNumber=="${xeroWhereString(options.invoiceNumber)}"`;
+  const params = new URLSearchParams({
+    where,
+    Statuses: "DRAFT,SUBMITTED,AUTHORISED,PAID",
+  });
+  const result = await xeroApiRequest<{ Invoices?: any[] }>(
+    `/Invoices?${params.toString()}`,
+    {
+      appTenantId: options.appTenantId ?? undefined,
+      moduleKey: options.moduleKey,
+    },
+  );
+  return result.Invoices?.[0] || null;
 }
 
 async function requireJobVisible(db: any, ctx: any, jobId: number) {
@@ -722,6 +746,38 @@ export const tradeInvoiceRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Trade is not linked to a Xero contact. Please sync contacts first." });
       }
 
+      const existingBill = await findExistingXeroBillByInvoiceNumber({
+        invoiceNumber: invoice.invoiceNumber,
+        appTenantId: ctx.tenant?.id,
+        moduleKey: "trade_portal",
+      });
+      if (existingBill?.InvoiceID) {
+        const existingContactId = existingBill.Contact?.ContactID;
+        if (existingContactId && existingContactId !== trade.xeroContactId) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Xero already has bill ${invoice.invoiceNumber} for a different contact. Change the invoice number or link the trade to the matching Xero contact before creating the bill.`,
+          });
+        }
+
+        const updates: Record<string, any> = {
+          xeroBillId: existingBill.InvoiceID,
+          xeroBillNumber: existingBill.InvoiceNumber || invoice.invoiceNumber,
+        };
+        if (String(existingBill.Status || "").toUpperCase() === "PAID") {
+          updates.status = "paid";
+        }
+
+        await db.update(tradeInvoices).set(updates).where(eq(tradeInvoices.id, input.invoiceId));
+
+        return {
+          success: true,
+          linkedExisting: true,
+          xeroBillId: existingBill.InvoiceID,
+          xeroBillNumber: existingBill.InvoiceNumber || invoice.invoiceNumber,
+        };
+      }
+
       // Get invoice lines
       const lines = await db.select()
         .from(tradeInvoiceLines)
@@ -787,6 +843,7 @@ export const tradeInvoiceRouter = router({
 
       return {
         success: true,
+        linkedExisting: false,
         xeroBillId: createdBill?.InvoiceID,
         xeroBillNumber: createdBill?.InvoiceNumber,
       };

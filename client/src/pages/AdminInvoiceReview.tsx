@@ -513,7 +513,9 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
 
   const createBillMutation = trpc.tradeInvoice.createXeroBill.useMutation({
     onSuccess: (res) => {
-      toast.success(`Xero bill ${res.xeroBillNumber} created`);
+      toast.success(res.linkedExisting
+        ? `Existing Xero bill ${res.xeroBillNumber} linked`
+        : `Xero bill ${res.xeroBillNumber} created`);
       utils.tradeInvoice.getInvoiceDetail.invalidate({ invoiceId });
       utils.tradeInvoice.listInvoices.invalidate();
     },
