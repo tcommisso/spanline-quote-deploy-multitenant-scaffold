@@ -5,11 +5,13 @@ import {
   chatChannelMembers,
   chatChannels,
   chatMessages,
+  branches,
   constructionAssignments,
   constructionScheduleEvents,
   constructionJobs,
   constructionInstallers,
   constructionHolidayCalendarDays,
+  designAdvisors,
   notificationLog,
   tenantMemberships,
   tradeAvailabilities,
@@ -50,6 +52,10 @@ function installerTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionInstallers.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+function normalizeEmail(email?: string | null) {
+  return String(email || "").trim().toLowerCase();
 }
 
 function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -219,6 +225,7 @@ async function requireInstallerAccess(db: any, ctx: any, installerId: number) {
 async function selectTenantStaffUsers(db: any, ctx: any, userIds?: number[]) {
   const tenantId = tenantIdFromContext(ctx);
   const userIdFilter = userIds?.length ? inArray(users.id, userIds) : undefined;
+  let userRows: any[] = [];
 
   if (ENV.tenancyMode === "single") {
     const conditions = userIdFilter ? [userIdFilter] : [];
@@ -230,24 +237,64 @@ async function selectTenantStaffUsers(db: any, ctx: any, userIds?: number[]) {
     })
       .from(users);
     if (conditions.length) {
-      return query.where(and(...conditions)).orderBy(asc(users.name));
+      userRows = await query.where(and(...conditions)).orderBy(asc(users.name));
+    } else {
+      userRows = await query.orderBy(asc(users.name));
     }
-    return query.orderBy(asc(users.name));
+  } else {
+    if (!tenantId) return [];
+    const conditions = [eq(tenantMemberships.tenantId, tenantId)];
+    if (userIdFilter) conditions.push(userIdFilter);
+    userRows = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    })
+      .from(tenantMemberships)
+      .innerJoin(users, eq(users.id, tenantMemberships.userId))
+      .where(and(...conditions))
+      .orderBy(asc(users.name));
   }
 
-  if (!tenantId) return [];
-  const conditions = [eq(tenantMemberships.tenantId, tenantId)];
-  if (userIdFilter) conditions.push(userIdFilter);
-  return db.select({
-    id: users.id,
-    name: users.name,
-    email: users.email,
-    role: users.role,
+  if (userRows.length === 0) return [];
+
+  const staffConditions: any[] = [eq(designAdvisors.archived, false)];
+  appendTenantScope(staffConditions, designAdvisors.tenantId, tenantId);
+  const branchJoinConditions: any[] = [eq(branches.id, designAdvisors.branchId)];
+  appendTenantScope(branchJoinConditions, branches.tenantId, tenantId);
+
+  const staffRows = await db.select({
+    userId: designAdvisors.userId,
+    email: designAdvisors.email,
+    staffRole: designAdvisors.role,
+    branchId: designAdvisors.branchId,
+    branchName: branches.name,
   })
-    .from(tenantMemberships)
-    .innerJoin(users, eq(users.id, tenantMemberships.userId))
-    .where(and(...conditions))
-    .orderBy(asc(users.name));
+    .from(designAdvisors)
+    .leftJoin(branches, and(...branchJoinConditions))
+    .where(and(...staffConditions));
+
+  const staffByUserId = new Map<number, any>();
+  const staffByEmail = new Map<string, any>();
+  for (const staff of staffRows as any[]) {
+    if (staff.userId != null && !staffByUserId.has(Number(staff.userId))) {
+      staffByUserId.set(Number(staff.userId), staff);
+    }
+    const email = normalizeEmail(staff.email);
+    if (email && !staffByEmail.has(email)) staffByEmail.set(email, staff);
+  }
+
+  return userRows.map((user: any) => {
+    const staffProfile = staffByUserId.get(Number(user.id)) ?? staffByEmail.get(normalizeEmail(user.email));
+    return {
+      ...user,
+      staffRole: staffProfile?.staffRole || null,
+      category: staffProfile?.staffRole || user.role || "user",
+      branchId: staffProfile?.branchId ?? null,
+      branchName: staffProfile?.branchName || null,
+    };
+  });
 }
 
 async function requireStaffUserAccess(db: any, ctx: any, userId: number) {

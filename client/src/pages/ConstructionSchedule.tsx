@@ -23,7 +23,7 @@ import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/useMobile";
 import { useSwipeGesture } from "@/hooks/useSwipeGesture";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { isAdminRole } from "@shared/const";
+import { isAdminRole, ROLE_LABELS } from "@shared/const";
 
 type ResourceView = "all" | "staff" | "trades" | "unallocated" | "equipment";
 
@@ -178,6 +178,14 @@ function matchesAllSearchWords(value: string, search: string) {
   return terms.every(term => haystack.includes(term));
 }
 
+function staffCategoryValue(staff: any) {
+  return staff?.category || staff?.staffRole || staff?.role || "user";
+}
+
+function staffCategoryLabel(category: string) {
+  return (ROLE_LABELS as Record<string, string>)[category] || category.replace(/_/g, " ");
+}
+
 function jobSearchText(job: any) {
   return [
     job.id,
@@ -286,6 +294,8 @@ export default function ConstructionSchedule() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [filterInstallerId, setFilterInstallerId] = useState<string>("all");
   const [filterStaffUserId, setFilterStaffUserId] = useState<string>("all");
+  const [filterStaffBranchId, setFilterStaffBranchId] = useState<string>("all");
+  const [filterStaffCategory, setFilterStaffCategory] = useState<string>("all");
   const [resourceView, setResourceView] = useState<ResourceView>("all");
 
   const mobileContainerRef = useRef<HTMLDivElement>(null);
@@ -331,6 +341,38 @@ export default function ConstructionSchedule() {
   const jobsQuery = trpc.construction.jobs.list.useQuery();
   const installersQuery = trpc.construction.installers.list.useQuery();
   const staffResourcesQuery = trpc.constructionSchedule.staffResources.useQuery();
+  const staffResources = staffResourcesQuery.data || [];
+  const staffBranchOptions = useMemo(() => {
+    const byId = new Map<number, string>();
+    for (const staff of staffResources as any[]) {
+      if (staff.branchId == null || !staff.branchName) continue;
+      byId.set(Number(staff.branchId), staff.branchName);
+    }
+    return Array.from(byId.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [staffResources]);
+  const staffCategoryOptions = useMemo(() => {
+    const categories = new Set<string>();
+    for (const staff of staffResources as any[]) {
+      const category = staffCategoryValue(staff);
+      if (category) categories.add(category);
+    }
+    return Array.from(categories)
+      .map((value) => ({ value, label: staffCategoryLabel(value) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [staffResources]);
+  const filteredStaffResources = useMemo(() => {
+    return (staffResources as any[]).filter((staff) => {
+      if (filterStaffBranchId !== "all" && String(staff.branchId || "") !== filterStaffBranchId) return false;
+      if (filterStaffCategory !== "all" && staffCategoryValue(staff) !== filterStaffCategory) return false;
+      return true;
+    });
+  }, [staffResources, filterStaffBranchId, filterStaffCategory]);
+  const filteredStaffUserIds = useMemo(() => {
+    if (filterStaffBranchId === "all" && filterStaffCategory === "all") return null;
+    return new Set(filteredStaffResources.map((staff: any) => Number(staff.id)));
+  }, [filteredStaffResources, filterStaffBranchId, filterStaffCategory]);
   const equipmentQuery = trpc.equipment.list.useQuery({ activeOnly: true });
   const equipmentBookingsQuery = trpc.equipment.bookings.list.useQuery({
     startDate: dateRange.start,
@@ -473,7 +515,10 @@ export default function ConstructionSchedule() {
     const events = eventsQuery.data || [];
     switch (resourceView) {
       case "staff":
-        return events.filter((e: any) => e.assignedUserId != null);
+        return events.filter((e: any) => (
+          e.assignedUserId != null
+          && (!filteredStaffUserIds || filteredStaffUserIds.has(Number(e.assignedUserId)))
+        ));
       case "trades":
         return events.filter((e: any) => e.assignedInstallerId != null);
       case "unallocated":
@@ -483,7 +528,7 @@ export default function ConstructionSchedule() {
       default:
         return events;
     }
-  }, [eventsQuery.data, resourceView]);
+  }, [eventsQuery.data, resourceView, filteredStaffUserIds]);
 
   // Map events to days
   const eventsByDate = useMemo(() => {
@@ -551,7 +596,10 @@ export default function ConstructionSchedule() {
 
   // Counts for resource tabs
   const allEvents = eventsQuery.data || [];
-  const staffCount = allEvents.filter((e: any) => e.assignedUserId != null).length;
+  const staffCount = allEvents.filter((e: any) => (
+    e.assignedUserId != null
+    && (!filteredStaffUserIds || filteredStaffUserIds.has(Number(e.assignedUserId)))
+  )).length;
   const tradeCount = allEvents.filter((e: any) => e.assignedInstallerId != null).length;
   const unallocatedCount = allEvents.filter((e: any) => eventIsUnallocated(e)).length;
   const eqBookingCount = (equipmentBookingsQuery.data || []).length;
@@ -675,50 +723,94 @@ export default function ConstructionSchedule() {
       </div>
 
       {/* Calendar Navigation */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-1 md:gap-2">
-          <Button variant="outline" size="sm" onClick={navigatePrev} className="h-8 w-8 p-0">
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="sm" onClick={navigateToday} className="h-8 text-xs px-2">Today</Button>
-          <Button variant="outline" size="sm" onClick={navigateNext} className="h-8 w-8 p-0">
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-          <h3 className="text-sm md:text-lg font-semibold ml-1 md:ml-2 truncate max-w-[180px] md:max-w-none">{headerLabel}</h3>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex min-w-0 items-center gap-1 md:gap-2">
+            <Button variant="outline" size="sm" onClick={navigatePrev} className="h-8 w-8 p-0">
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="sm" onClick={navigateToday} className="h-8 text-xs px-2">Today</Button>
+            <Button variant="outline" size="sm" onClick={navigateNext} className="h-8 w-8 p-0">
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <h3 className="min-w-0 text-sm md:text-lg font-semibold ml-1 md:ml-2 truncate max-w-[200px] sm:max-w-none">{headerLabel}</h3>
+          </div>
+          <div className="flex items-center gap-1 md:gap-2">
+            <Button variant={viewMode === "day" ? "default" : "outline"} size="sm" onClick={() => setViewMode("day")} className="h-8 text-xs px-2">Day</Button>
+            <Button variant={viewMode === "week" ? "default" : "outline"} size="sm" onClick={() => setViewMode("week")} className="h-8 text-xs px-2">Week</Button>
+            {!isMobile && (
+              <Button variant={viewMode === "month" ? "default" : "outline"} size="sm" onClick={() => setViewMode("month")} className="h-8 text-xs px-2">Month</Button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1 md:gap-2">
-          {!isMobile && resourceView === "staff" && (
-            <Select value={filterStaffUserId} onValueChange={setFilterStaffUserId}>
-              <SelectTrigger className="w-[190px] h-8 text-xs">
-                <SelectValue placeholder="Filter by staff..." />
+
+        {resourceView === "staff" && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center">
+            <Select
+              value={filterStaffBranchId}
+              onValueChange={(value) => {
+                setFilterStaffBranchId(value);
+                setFilterStaffUserId("all");
+              }}
+            >
+              <SelectTrigger className="h-9 w-full text-xs lg:w-[180px]">
+                <SelectValue placeholder="All branches" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Staff</SelectItem>
-                {(staffResourcesQuery.data || []).map((staff: any) => (
-                  <SelectItem key={staff.id} value={String(staff.id)}>{staff.name}</SelectItem>
+                <SelectItem value="all">All branches</SelectItem>
+                {staffBranchOptions.map((branch) => (
+                  <SelectItem key={branch.id} value={String(branch.id)}>{branch.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          )}
-          {!isMobile && resourceView === "trades" && (
-            <Select value={filterInstallerId} onValueChange={setFilterInstallerId}>
-              <SelectTrigger className="w-[180px] h-8 text-xs">
-                <SelectValue placeholder="Filter by trade..." />
+            <Select
+              value={filterStaffCategory}
+              onValueChange={(value) => {
+                setFilterStaffCategory(value);
+                setFilterStaffUserId("all");
+              }}
+            >
+              <SelectTrigger className="h-9 w-full text-xs lg:w-[190px]">
+                <SelectValue placeholder="All user categories" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="all">All user categories</SelectItem>
+                {staffCategoryOptions.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filterStaffUserId} onValueChange={setFilterStaffUserId}>
+              <SelectTrigger className="h-9 w-full text-xs sm:col-span-2 lg:w-[220px] lg:col-span-1">
+                <SelectValue placeholder="Filter by staff..." />
+              </SelectTrigger>
+              <SelectContent className="max-w-[calc(100vw-2rem)]">
+                <SelectItem value="all">All Staff</SelectItem>
+                {filteredStaffResources.map((staff: any) => (
+                  <SelectItem key={staff.id} value={String(staff.id)}>
+                    {staff.name}{staffCategoryValue(staff) ? ` (${staffCategoryLabel(staffCategoryValue(staff))})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {resourceView === "trades" && (
+          <div className="grid grid-cols-1 gap-2 sm:max-w-xs">
+            <Select value={filterInstallerId} onValueChange={setFilterInstallerId}>
+              <SelectTrigger className="h-9 w-full text-xs">
+                <SelectValue placeholder="Filter by trade..." />
+              </SelectTrigger>
+              <SelectContent className="max-w-[calc(100vw-2rem)]">
                 <SelectItem value="all">All Trades</SelectItem>
                 {(installersQuery.data || []).map((inst: any) => (
                   <SelectItem key={inst.id} value={String(inst.id)}>{inst.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          )}
-          <Button variant={viewMode === "day" ? "default" : "outline"} size="sm" onClick={() => setViewMode("day")} className="h-8 text-xs px-2">Day</Button>
-          <Button variant={viewMode === "week" ? "default" : "outline"} size="sm" onClick={() => setViewMode("week")} className="h-8 text-xs px-2">Week</Button>
-          {!isMobile && (
-            <Button variant={viewMode === "month" ? "default" : "outline"} size="sm" onClick={() => setViewMode("month")} className="h-8 text-xs px-2">Month</Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Mobile Day View */}
@@ -1132,6 +1224,43 @@ function EventForm({
     notifyInstaller: Boolean(initialEvent?.notifyInstaller),
     status: initialEvent?.status || "scheduled",
   });
+  const [assigneeBranchFilter, setAssigneeBranchFilter] = useState("all");
+  const [assigneeCategoryFilter, setAssigneeCategoryFilter] = useState("all");
+  const assigneeBranchOptions = useMemo(() => {
+    const byId = new Map<number, string>();
+    for (const staff of staffUsers as any[]) {
+      if (staff.branchId == null || !staff.branchName) continue;
+      byId.set(Number(staff.branchId), staff.branchName);
+    }
+    return Array.from(byId.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [staffUsers]);
+  const assigneeCategoryOptions = useMemo(() => {
+    const categories = new Set<string>();
+    for (const staff of staffUsers as any[]) {
+      const category = staffCategoryValue(staff);
+      if (category) categories.add(category);
+    }
+    return Array.from(categories)
+      .map((value) => ({ value, label: staffCategoryLabel(value) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [staffUsers]);
+  const visibleStaffUsers = useMemo(() => {
+    const selectedStaffId = form.assigneeId.startsWith("staff:")
+      ? Number(form.assigneeId.replace("staff:", ""))
+      : null;
+    const filtered = (staffUsers as any[]).filter((staff) => {
+      if (assigneeBranchFilter !== "all" && String(staff.branchId || "") !== assigneeBranchFilter) return false;
+      if (assigneeCategoryFilter !== "all" && staffCategoryValue(staff) !== assigneeCategoryFilter) return false;
+      return true;
+    });
+    if (selectedStaffId && !filtered.some((staff) => Number(staff.id) === selectedStaffId)) {
+      const selectedStaff = (staffUsers as any[]).find((staff) => Number(staff.id) === selectedStaffId);
+      if (selectedStaff) return [selectedStaff, ...filtered];
+    }
+    return filtered;
+  }, [staffUsers, assigneeBranchFilter, assigneeCategoryFilter, form.assigneeId]);
 
   const handleSubmit = () => {
     const startDateValue = form.allDay ? form.startTime.slice(0, 10) : form.startTime;
@@ -1202,7 +1331,7 @@ function EventForm({
         <Switch checked={form.allDay} onCheckedChange={(v) => setForm({ ...form, allDay: v })} />
         <Label>All Day Event</Label>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
           <Label>Start {form.allDay ? "Date" : "Date/Time"}</Label>
           <Input
@@ -1222,16 +1351,42 @@ function EventForm({
       </div>
       <div>
         <Label>Assigned Staff / Trade</Label>
+        {staffUsers.length > 0 && (
+          <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Select value={assigneeBranchFilter} onValueChange={setAssigneeBranchFilter}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder="All branches" />
+              </SelectTrigger>
+              <SelectContent className="max-w-[calc(100vw-2rem)]">
+                <SelectItem value="all">All branches</SelectItem>
+                {assigneeBranchOptions.map((branch) => (
+                  <SelectItem key={branch.id} value={String(branch.id)}>{branch.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={assigneeCategoryFilter} onValueChange={setAssigneeCategoryFilter}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder="All user categories" />
+              </SelectTrigger>
+              <SelectContent className="max-w-[calc(100vw-2rem)]">
+                <SelectItem value="all">All user categories</SelectItem>
+                {assigneeCategoryOptions.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>{category.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <Select value={form.assigneeId} onValueChange={(v) => setForm({ ...form, assigneeId: v })}>
-          <SelectTrigger><SelectValue placeholder="Leave empty for unallocated..." /></SelectTrigger>
-          <SelectContent>
+          <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Leave empty for unallocated..." /></SelectTrigger>
+          <SelectContent className="max-w-[calc(100vw-2rem)]">
             <SelectItem value="none">Unallocated</SelectItem>
             {staffUsers.length > 0 && (
               <SelectGroup>
                 <SelectLabel>Staff</SelectLabel>
-                {staffUsers.map((staff: any) => (
+                {visibleStaffUsers.map((staff: any) => (
                   <SelectItem key={`staff-${staff.id}`} value={`staff:${staff.id}`}>
-                    {staff.name}{staff.role ? ` (${staff.role.replace(/_/g, " ")})` : ""}
+                    {staff.name}{staffCategoryValue(staff) ? ` (${staffCategoryLabel(staffCategoryValue(staff))})` : ""}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -1266,7 +1421,7 @@ function EventForm({
           </Select>
         </div>
       )}
-      <div className="flex gap-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:gap-6">
         <div className="flex items-center gap-2">
           <Switch checked={form.notifyClient} onCheckedChange={(v) => setForm({ ...form, notifyClient: v })} />
           <Label className="flex items-center gap-1 text-sm">
