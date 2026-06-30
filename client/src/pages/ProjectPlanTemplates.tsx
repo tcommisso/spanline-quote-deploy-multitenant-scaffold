@@ -745,7 +745,7 @@ export default function ProjectPlanTemplates() {
             <HelpLink section="construction-dashboard" tooltip="Help: Project Plans" />
           </h1>
           <p className="text-muted-foreground">
-            Define reusable project plans with stages and tasks. Use "Seed from template" when creating construction jobs.
+            Define reusable project plans with stages and tasks. Apply templates from Project Plan or client job screens after CRM conversion creates the job.
           </p>
         </div>
         <Button variant="brand" onClick={handleCreate}>

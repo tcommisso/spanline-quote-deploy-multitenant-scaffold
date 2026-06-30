@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -7,8 +7,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -75,17 +73,6 @@ export default function ConstructionDashboard() {
 
   const [statusFilter, setStatusFilter] = useState<string>("not_completed");
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [showCreateJob, setShowCreateJob] = useState(false);
-
-  // Open create dialog if navigated with ?action=new
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("action") === "new") {
-      setShowCreateJob(true);
-      // Clean up URL
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
 
   const [tourActive, setTourActive] = useState(false);
 
@@ -160,26 +147,6 @@ export default function ConstructionDashboard() {
   });
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
-  const seedFromTemplate = trpc.projectPlanTemplates.seedFromTemplate.useMutation({
-    onSuccess: (data) => {
-      toast.success(`Template "${data.templateName}" applied: ${data.stagesCreated} stages, ${data.tasksCreated} tasks created`);
-    },
-    onError: (err: any) => toast.error(`Template seed failed: ${err.message}`),
-  });
-
-  const createJob = trpc.construction.jobs.create.useMutation({
-    onSuccess: (data, variables) => {
-      jobsQuery.refetch();
-      statsQuery.refetch();
-      setShowCreateJob(false);
-      toast.success("Job created successfully");
-      // Auto-seed from template if selected
-      if ((variables as any).templateId && data?.id) {
-        seedFromTemplate.mutate({ jobId: data.id, templateId: (variables as any).templateId });
-      }
-    },
-  });
-
   const updateJob = trpc.construction.jobs.update.useMutation({
     onSuccess: () => {
       jobsQuery.refetch();
@@ -370,20 +337,6 @@ export default function ConstructionDashboard() {
             <Download className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">Export CSV</span>
           </Button>
-        <Dialog open={showCreateJob} onOpenChange={setShowCreateJob}>
-          <DialogTrigger asChild>
-            <Button size="sm" variant="brand"><Plus className="h-4 w-4 sm:mr-2" /><span className="hidden sm:inline">New Job</span></Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create Construction Job</DialogTitle>
-            </DialogHeader>
-            <CreateJobForm
-              onSubmit={(data) => createJob.mutate(data)}
-              loading={createJob.isPending}
-            />
-          </DialogContent>
-        </Dialog>
         </div>
       </div>
 
@@ -1123,87 +1076,6 @@ function formatTimeAgo(date: Date): string {
   if (days < 7) return `${days}d ago`;
   return date.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
-
-// ─── Create Job Form ────────────────────────────────────────────────────────
-function CreateJobForm({ onSubmit, loading }: { onSubmit: (data: any) => void; loading: boolean }) {
-  const [clientName, setClientName] = useState("");
-  const [siteAddress, setSiteAddress] = useState("");
-  const [scheduledStart, setScheduledStart] = useState("");
-  const [priority, setPriority] = useState("normal");
-  const [notes, setNotes] = useState("");
-  const [templateId, setTemplateId] = useState<string>("none");
-
-  const templatesQuery = trpc.projectPlanTemplates.listActive.useQuery();
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <Label>Client Name *</Label>
-        <Input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. John Smith" />
-      </div>
-      <div>
-        <Label>Site Address</Label>
-        <Input value={siteAddress} onChange={(e) => setSiteAddress(e.target.value)} placeholder="e.g. 123 Main St, Brisbane" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <Label>Scheduled Start</Label>
-          <div className="flex gap-1 items-center">
-            <Input type="date" value={scheduledStart} onChange={(e) => setScheduledStart(e.target.value)} className="flex-1" />
-            {scheduledStart && <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground hover:text-destructive" onClick={() => setScheduledStart("")} title="Clear date">&times;</Button>}
-          </div>
-        </div>
-        <div>
-          <Label>Priority</Label>
-          <Select value={priority} onValueChange={setPriority}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="normal">Normal</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-              <SelectItem value="urgent">Urgent</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <div>
-        <Label>Seed from Template</Label>
-        <Select value={templateId} onValueChange={setTemplateId}>
-          <SelectTrigger><SelectValue placeholder="No template" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">No template</SelectItem>
-            {templatesQuery.data?.map((tpl) => (
-              <SelectItem key={tpl.id} value={String(tpl.id)}>
-                {tpl.name}{tpl.isDefault ? " (Default)" : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground mt-1">Auto-creates progress stages and kanban tasks from the template</p>
-      </div>
-      <div>
-        <Label>Notes</Label>
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
-      </div>
-      <Button
-        className="w-full"
-        disabled={!clientName || loading}
-        onClick={() => onSubmit({
-          clientName,
-          siteAddress: siteAddress || undefined,
-          scheduledStart: scheduledStart || undefined,
-          priority,
-          notes: notes || undefined,
-          templateId: templateId !== "none" ? Number(templateId) : undefined,
-        })}
-      >
-        {loading ? "Creating..." : "Create Job"}
-      </Button>
-    </div>
-  );
-}
-
-
 
 // ─── Job Detail Panel ───────────────────────────────────────────────────────
 function JobDetailPanel({

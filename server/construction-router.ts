@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb, createSmsDeliveryLog, getSmsDeliveryLogsByJob } from "./db";
-import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, quotes, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, portalPhotoComments, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, portalPhotoComments, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { eq, desc, and, sql, gte, lt, notInArray, or, isNull, like, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
@@ -15,10 +15,6 @@ import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-re
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const CLIENT_PORTAL_DOCUMENT_CATEGORIES = ["contract", "plans", "variation", "invoice", "photos", "other"] as const;
-
-function appendExactQuoteTenantScope(conditions: any[], column: any, tenantId: number | null | undefined) {
-  conditions.push(tenantId ? eq(column, tenantId) : sql`1 = 0`);
-}
 
 // Auto-archive plans when job is completed
 async function autoArchiveJobPlans(db: any, jobId: number) {
@@ -46,18 +42,6 @@ async function autoArchiveJobPlans(db: any, jobId: number) {
     });
   }
 }
-
-// ─── Default construction stages ─────────────────────────────────────────────
-const DEFAULT_STAGES = [
-  "Site Prep",
-  "Footings & Concrete",
-  "Frame & Posts",
-  "Roof Installation",
-  "Electrical",
-  "Plumbing",
-  "Walls & Cladding",
-  "Final Inspection",
-];
 
 function jobScope(ctx: any, jobId?: number) {
   const conditions: any[] = [];
@@ -293,70 +277,20 @@ export const constructionRouter = router({
         priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
         notes: z.string().optional(),
       }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        const tenantId = tenantIdFromContext(ctx);
-        const [result] = await db.insert(constructionJobs).values({
-          tenantId,
-          quoteId: input.quoteId || null,
-          quoteNumber: input.quoteNumber || null,
-          clientName: input.clientName,
-          siteAddress: input.siteAddress || null,
-          scheduledStart: input.scheduledStart ? new Date(input.scheduledStart) : null,
-          scheduledEnd: input.scheduledEnd ? new Date(input.scheduledEnd) : null,
-          priority: input.priority || "normal",
-          notes: input.notes || null,
-          createdBy: ctx.user.id,
+      .mutation(async () => {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Construction jobs must be created by converting a CRM lead. Update the lead to the contract stage from CRM.",
         });
-
-        const jobId = result.insertId;
-
-        for (const stage of DEFAULT_STAGES) {
-          await db.insert(constructionProgress).values({
-            tenantId,
-            jobId,
-            stage,
-            status: "pending",
-          });
-        }
-
-        return { id: jobId };
       }),
 
     createFromQuote: protectedProcedure
       .input(z.object({ quoteId: z.number() }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb();
-        if (!db) throw new Error("Database unavailable");
-        const tenantId = tenantIdFromContext(ctx);
-        const quoteConditions = [eq(quotes.id, input.quoteId)];
-        appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantId);
-        const [quote] = await db.select().from(quotes).where(and(...quoteConditions));
-        if (!quote) throw new Error("Quote not found");
-
-        const [result] = await db.insert(constructionJobs).values({
-          tenantId: quote.tenantId ?? tenantId,
-          quoteId: quote.id,
-          quoteNumber: quote.quoteNumber,
-          clientName: quote.clientName,
-          siteAddress: quote.siteAddress || null,
-          priority: "normal",
-          createdBy: ctx.user.id,
+      .mutation(async () => {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Construction jobs must be created from CRM lead conversion, not directly from quotes.",
         });
-
-        const jobId = result.insertId;
-
-        for (const stage of DEFAULT_STAGES) {
-          await db.insert(constructionProgress).values({
-            tenantId: quote.tenantId ?? tenantId,
-            jobId,
-            stage,
-            status: "pending",
-          });
-        }
-
-        return { id: jobId };
       }),
 
     update: protectedProcedure

@@ -5,7 +5,6 @@ import { isAdminRole, type UserRole } from "@shared/const";
 import {
   Plus,
   UserPlus,
-  HardHat,
   Package,
   Truck,
   ClipboardList,
@@ -25,7 +24,6 @@ const SECTION_ACTIONS: Record<string, QuickAction[]> = {
     { label: "New Lead", icon: UserPlus, path: "/crm/leads?action=new" },
   ],
   construction: [
-    { label: "New Job", icon: HardHat, path: "/construction?action=new" },
     { label: "Schedule", icon: ClipboardList, path: "/construction/schedule" },
   ],
   manufacturing: [

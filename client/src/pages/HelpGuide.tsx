@@ -107,8 +107,8 @@ const helpSections: HelpSection[] = [
         answer: "Project Health categorises active jobs by margin: Healthy (≥45% margin), Watch (35–44% margin), and At Risk (<35% margin). This helps you quickly identify jobs that may need attention.",
       },
       {
-        question: "How do I create a new construction job?",
-        answer: "Click '+ New Job' in the top-right corner of the Construction Dashboard. Fill in the job details including name, client, address, contract value, and status. The job will appear in the Jobs tab.",
+        question: "How are construction jobs created?",
+        answer: "Construction jobs are created from CRM lead conversion. Start with the client lead in CRM, progress it through the contract handover stage, and the linked construction job will appear in Construction.",
       },
       {
         question: "What are the Dashboard tabs?",
@@ -128,7 +128,7 @@ const helpSections: HelpSection[] = [
     content: [
       {
         question: "What are Project Plan Templates?",
-        answer: "Templates define reusable project plans with stages and tasks. When creating a new construction job, you can 'Seed from template' to automatically populate the job's project plan with predefined stages and tasks.",
+        answer: "Templates define reusable project plans with stages and tasks. Apply a template from the Project Plan or client job screens after the job has been created from CRM.",
       },
       {
         question: "How do I create a template?",
