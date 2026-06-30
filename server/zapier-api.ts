@@ -859,7 +859,8 @@ async function notifyBranchManager(branchId: number, tenantId: number | null | u
   try {
     const { getBranchManager } = await import("./territory-router");
     const manager = await getBranchManager(branchId, tenantId);
-    if (!manager || !manager.email) {
+    const recipientEmail = manager?.managerEmail || manager?.email || null;
+    if (!recipientEmail) {
       console.log(`[Zapier API] No branch manager email for branch ${branchId}, skipping notification`);
       return;
     }
@@ -882,12 +883,12 @@ async function notifyBranchManager(branchId: number, tenantId: number | null | u
     `;
 
     await sendNotificationEmail({
-      to: manager.email,
+      to: recipientEmail,
       subject: `New Lead: ${lead.leadName} (${lead.territory} - ${lead.postcode})`,
       htmlBody,
       fromName: "Altaspan CRM",
     });
-    console.log(`[Zapier API] Branch manager notification sent to ${manager.email} for lead ${lead.leadNumber}`);
+    console.log(`[Zapier API] Branch manager notification sent to ${recipientEmail} for lead ${lead.leadNumber}`);
   } catch (err: any) {
     console.error(`[Zapier API] Failed to notify branch manager for branch ${branchId}:`, err?.message || err);
   }
