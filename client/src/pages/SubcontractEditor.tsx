@@ -517,7 +517,7 @@ export default function SubcontractEditor() {
 
   if (isLoading) {
     return (
-      <div className="container py-6">
+      <div className="container px-4 py-4 sm:py-6">
         <div className="animate-pulse space-y-4">
           <div className="h-8 w-64 bg-muted rounded" />
           <div className="h-96 bg-muted rounded" />
@@ -528,7 +528,7 @@ export default function SubcontractEditor() {
 
   if (!subcontract) {
     return (
-      <div className="container py-6">
+      <div className="container px-4 py-4 sm:py-6">
         <p className="text-muted-foreground">Subcontract not found.</p>
         <Button variant="outline" className="mt-4" onClick={() => navigate("/construction")}>
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Jobs
@@ -538,28 +538,29 @@ export default function SubcontractEditor() {
   }
 
   return (
-    <div className="container py-6 max-w-5xl">
+    <div className="container max-w-5xl px-4 py-4 sm:py-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => window.history.back()}>
+      <div className="flex flex-col gap-4 mb-6 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start gap-3">
+          <Button variant="ghost" size="icon" className="shrink-0" onClick={() => window.history.back()}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div>
-            <h1 className="text-xl font-semibold flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold flex flex-wrap items-center gap-2">
               <FileText className="h-5 w-5" />
               Project Subcontract
             </h1>
-            <p className="text-sm text-muted-foreground">Job #{jobNumber} — {clientName}</p>
+            <p className="text-sm text-muted-foreground break-words">Job #{jobNumber} — {clientName}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          <Badge className={STATUS_COLORS[displayStatus]}>
+        <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:w-auto lg:flex lg:flex-wrap lg:justify-end">
+          <Badge className={`${STATUS_COLORS[displayStatus]} justify-center lg:justify-start`}>
             {formatStatusLabel(displayStatus)}
           </Badge>
           <Button
             size="sm"
             variant="outline"
+            className="w-full lg:w-auto"
             onClick={handleCreateAdditional}
             disabled={createMutation.isPending}
           >
@@ -569,6 +570,7 @@ export default function SubcontractEditor() {
           <Button
             size="sm"
             variant="outline"
+            className="w-full lg:w-auto"
             onClick={handleArchiveToggle}
             disabled={lifecycleMutationPending}
           >
@@ -579,6 +581,7 @@ export default function SubcontractEditor() {
             <Button
               size="sm"
               variant="outline"
+              className="w-full lg:w-auto"
               onClick={handleCancelSubcontract}
               disabled={lifecycleMutationPending}
             >
@@ -589,6 +592,7 @@ export default function SubcontractEditor() {
             <Button
               size="sm"
               variant="outline"
+              className="w-full lg:w-auto"
               onClick={handleMarkOnFile}
               disabled={lifecycleMutationPending || updateMutation.isPending}
             >
@@ -599,6 +603,7 @@ export default function SubcontractEditor() {
             <Button
               size="sm"
               variant="destructive"
+              className="w-full lg:w-auto"
               onClick={handleDeleteSubcontract}
               disabled={lifecycleMutationPending}
             >
@@ -608,6 +613,7 @@ export default function SubcontractEditor() {
           <Button
             size="sm"
             variant="outline"
+            className="w-full lg:w-auto"
             onClick={async () => {
               await handleSave();
               const previewWin = window.open("", "_blank");
@@ -632,6 +638,7 @@ export default function SubcontractEditor() {
           <Button
             size="sm"
             variant="outline"
+            className="w-full lg:w-auto"
             onClick={async () => {
               await handleSave();
               try {
@@ -651,7 +658,7 @@ export default function SubcontractEditor() {
           >
             <Download className="h-4 w-4 mr-1" /> Download PDF
           </Button>
-          <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending}>
+          <Button size="sm" className="w-full lg:w-auto" onClick={handleSave} disabled={updateMutation.isPending}>
             <Save className="h-4 w-4 mr-1" /> Save
           </Button>
         </div>
@@ -775,7 +782,7 @@ export default function SubcontractEditor() {
                 step="0.01"
                 value={subcontractSum}
                 onChange={(e) => setSubcontractSum(e.target.value)}
-                className="h-8 text-sm max-w-48"
+                className="h-8 w-full text-sm sm:max-w-48"
               />
             </div>
           </div>
@@ -814,7 +821,7 @@ export default function SubcontractEditor() {
       {/* Payment Schedule */}
       <Card className="mb-4">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between">
+          <CardTitle className="text-base flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <span>Payment Schedule</span>
             {claimStatus && claimStatus.length > 0 && (
               <Badge variant="outline" className="text-[10px] font-normal">
@@ -825,7 +832,7 @@ export default function SubcontractEditor() {
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[760px] text-sm">
               <thead>
                 <tr className="border-b">
                   <th className="text-left py-2 px-2 font-medium text-xs text-muted-foreground w-[35%]">Milestone</th>
@@ -905,7 +912,7 @@ export default function SubcontractEditor() {
               </tfoot>
             </table>
           </div>
-          <Button variant="outline" size="sm" className="mt-2 h-7 text-xs" onClick={addMilestone}>
+          <Button variant="outline" size="sm" className="mt-2 h-7 w-full text-xs sm:w-auto" onClick={addMilestone}>
             <Plus className="h-3 w-3 mr-1" /> Add Milestone
           </Button>
         </CardContent>
@@ -950,8 +957,8 @@ export default function SubcontractEditor() {
           </CardHeader>
           <CardContent className="space-y-2">
             {(["plans", "materialsList", "approvals"] as const).map((key) => (
-              <div key={key} className="flex items-center justify-between gap-2">
-                <Label className="text-xs capitalize w-28">{key === "materialsList" ? "Materials list" : key}</Label>
+              <div key={key} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center sm:gap-2">
+                <Label className="text-xs capitalize">{key === "materialsList" ? "Materials list" : key}</Label>
                 <ChecklistSelect
                   value={buildingFile[key]}
                   onChange={(value) => setBuildingFile({ ...buildingFile, [key]: value })}
@@ -967,8 +974,8 @@ export default function SubcontractEditor() {
           </CardHeader>
           <CardContent className="space-y-2">
             {(["footings", "slab", "plumbing", "framing", "roofing", "other"] as const).map((key) => (
-              <div key={key} className="flex items-center justify-between gap-2">
-                <Label className="text-xs capitalize w-28">{key}</Label>
+              <div key={key} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center sm:gap-2">
+                <Label className="text-xs capitalize">{key}</Label>
                 <ChecklistSelect
                   value={inspections[key]}
                   onChange={(value) => setInspections({ ...inspections, [key]: value })}
@@ -987,8 +994,8 @@ export default function SubcontractEditor() {
           </CardHeader>
           <CardContent className="space-y-2">
             {(["electrician", "plumber", "concreter", "flooring", "painter"] as const).map((key) => (
-              <div key={key} className="flex items-center justify-between gap-2">
-                <Label className="text-xs capitalize w-28">{key}</Label>
+              <div key={key} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center sm:gap-2">
+                <Label className="text-xs capitalize">{key}</Label>
                 <ChecklistSelect
                   value={otherContractors[key]}
                   onChange={(value) => setOtherContractors({ ...otherContractors, [key]: value })}
@@ -1005,8 +1012,8 @@ export default function SubcontractEditor() {
             </CardHeader>
             <CardContent className="space-y-2">
               {(["wall", "roof", "fan"] as const).map((key) => (
-                <div key={key} className="flex items-center justify-between gap-2">
-                  <Label className="text-xs capitalize w-28">{key}</Label>
+                <div key={key} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center sm:gap-2">
+                  <Label className="text-xs capitalize">{key}</Label>
                   <ChecklistSelect
                     value={electricalCabling[key]}
                     onChange={(value) => setElectricalCabling({ ...electricalCabling, [key]: value })}
@@ -1027,8 +1034,8 @@ export default function SubcontractEditor() {
                 { key: "toExistingDP" as const, label: "Downpipe to existing DP" },
                 { key: "toStormwater" as const, label: "Downpipe to Stormwater" },
               ]).map(({ key, label }) => (
-                <div key={key} className="flex items-center justify-between gap-2">
-                  <Label className="text-xs w-40">{label}</Label>
+                <div key={key} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center sm:gap-2">
+                  <Label className="text-xs">{label}</Label>
                   <ChecklistSelect
                     value={downpipes[key]}
                     onChange={(value) => setDownpipes({ ...downpipes, [key]: value })}
@@ -1043,12 +1050,12 @@ export default function SubcontractEditor() {
       {/* Flashing */}
       <Card className="mb-4">
         <CardContent className="pt-4">
-          <div className="flex items-center justify-between gap-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center">
             <Label className="text-sm font-medium">Flashing measurement and design by Subcontractor:</Label>
             <ChecklistSelect
               value={flashingBySubcontractor}
               onChange={setFlashingBySubcontractor}
-              className="h-8 text-sm max-w-32"
+              className="h-8 w-full text-sm"
             />
           </div>
         </CardContent>
@@ -1122,13 +1129,14 @@ export default function SubcontractEditor() {
       </Card>
 
       {/* Actions */}
-      <div className="flex items-center justify-between">
-        <Button variant="outline" onClick={() => window.history.back()}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Button variant="outline" className="w-full sm:w-auto" onClick={() => window.history.back()}>
           <ArrowLeft className="h-4 w-4 mr-1" /> Back
         </Button>
-        <div className="flex items-center gap-2">
+        <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-3 lg:w-auto lg:flex lg:items-center">
           <Button
             variant="outline"
+            className="w-full lg:w-auto"
             onClick={async () => {
               await handleSave();
               const previewWin = window.open("", "_blank");
@@ -1151,12 +1159,12 @@ export default function SubcontractEditor() {
           >
             <Eye className="h-4 w-4 mr-1" /> Preview / PDF
           </Button>
-          <Button variant="outline" onClick={handleSave} disabled={updateMutation.isPending}>
+          <Button variant="outline" className="w-full lg:w-auto" onClick={handleSave} disabled={updateMutation.isPending}>
             <Save className="h-4 w-4 mr-1" /> Save Draft
           </Button>
           <Dialog open={sendDialogOpen} onOpenChange={handleSendDialogOpenChange}>
             <DialogTrigger asChild>
-              <Button disabled={!canSend}>
+              <Button className="w-full lg:w-auto" disabled={!canSend}>
                 <Send className="h-4 w-4 mr-1" /> Send for Signature
               </Button>
             </DialogTrigger>
@@ -1199,8 +1207,9 @@ export default function SubcontractEditor() {
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setSendDialogOpen(false)}>Cancel</Button>
+                <Button variant="outline" className="w-full sm:w-auto" onClick={() => setSendDialogOpen(false)}>Cancel</Button>
                 <Button
+                  className="w-full sm:w-auto"
                   disabled={!subcontractorEmail || !spanlineSignerName || !spanlineSignerEmail || sendMutation.isPending}
                   onClick={async () => {
                     try {
@@ -1239,7 +1248,7 @@ export default function SubcontractEditor() {
 function ChecklistSelect({
   value,
   onChange,
-  className = "h-7 text-xs max-w-32",
+  className = "h-7 w-full text-xs sm:max-w-32",
 }: {
   value: string;
   onChange: (value: string) => void;

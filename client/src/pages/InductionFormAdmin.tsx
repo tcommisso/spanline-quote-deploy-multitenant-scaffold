@@ -141,29 +141,30 @@ export default function InductionFormAdmin() {
   }
 
   return (
-    <div className="container max-w-4xl py-6 space-y-6">
+    <div className="container max-w-4xl px-4 py-4 space-y-6 sm:py-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-amber-500/10">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-amber-500/10 shrink-0">
             <ClipboardCheck className="h-6 w-6 text-amber-500" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold tracking-tight">Induction Form Configuration</h1>
             <p className="text-sm text-muted-foreground">
               Manage the certificates, checklist items, site rules, and emergency procedures used in the Workplace Specific Induction Checklist.
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto lg:justify-end">
           {hasChanges && (
-            <Button variant="outline" size="sm" onClick={handleReset}>
+            <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={handleReset}>
               <RotateCcw className="h-4 w-4 mr-1" />
               Revert
             </Button>
           )}
           <Button
             size="sm"
+            className="w-full sm:w-auto"
             onClick={handleSave}
             disabled={!hasChanges || updateMutation.isPending}
           >
@@ -179,7 +180,7 @@ export default function InductionFormAdmin() {
 
       {/* Unsaved changes banner */}
       {hasChanges && (
-        <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-sm">
+        <div className="flex items-start gap-2 px-4 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-sm">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           You have unsaved changes.
         </div>
@@ -188,9 +189,9 @@ export default function InductionFormAdmin() {
       {/* Certificates Section */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <Award className="h-5 w-5 text-blue-500" />
-            <div>
+          <div className="flex items-start gap-2">
+            <Award className="h-5 w-5 text-blue-500 shrink-0" />
+            <div className="min-w-0">
               <CardTitle className="text-lg">Certificates &amp; Licences</CardTitle>
               <CardDescription>
                 Certificates that trades must confirm (Yes / No / N/A) during induction. Order determines display order on the form.
@@ -200,43 +201,45 @@ export default function InductionFormAdmin() {
         </CardHeader>
         <CardContent className="space-y-2">
           {certificates.map((cert, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground w-6 text-right shrink-0">{index + 1}.</span>
+            <div key={index} className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 sm:flex sm:items-center">
+              <span className="text-xs text-muted-foreground w-6 text-right shrink-0 pt-2 sm:pt-0">{index + 1}.</span>
               <Input
                 value={cert}
                 onChange={(e) => updateCertificate(index, e.target.value)}
                 placeholder="Certificate name..."
-                className="flex-1"
+                className="min-w-0 sm:flex-1"
               />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => moveCertificate(index, "up")}
-                disabled={index === 0}
-              >
-                <ArrowUp className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => moveCertificate(index, "down")}
-                disabled={index === certificates.length - 1}
-              >
-                <ArrowDown className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                onClick={() => removeCertificate(index)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              <div className="col-start-2 flex gap-1 sm:col-auto">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => moveCertificate(index, "up")}
+                  disabled={index === 0}
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => moveCertificate(index, "down")}
+                  disabled={index === certificates.length - 1}
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                  onClick={() => removeCertificate(index)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           ))}
-          <Button variant="outline" size="sm" onClick={addCertificate} className="mt-2">
+          <Button variant="outline" size="sm" onClick={addCertificate} className="mt-2 w-full sm:w-auto">
             <Plus className="h-4 w-4 mr-1" />
             Add Certificate
           </Button>
@@ -246,9 +249,9 @@ export default function InductionFormAdmin() {
       {/* Checklist Items Section */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <ListChecks className="h-5 w-5 text-green-500" />
-            <div>
+          <div className="flex items-start gap-2">
+            <ListChecks className="h-5 w-5 text-green-500 shrink-0" />
+            <div className="min-w-0">
               <CardTitle className="text-lg">Site Checklist Items</CardTitle>
               <CardDescription>
                 Items that trades must confirm (Yes / No / N/A) during site induction. These cover site-specific safety and orientation items.
@@ -258,43 +261,45 @@ export default function InductionFormAdmin() {
         </CardHeader>
         <CardContent className="space-y-2">
           {checklistItems.map((item, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground w-6 text-right shrink-0">{index + 1}.</span>
+            <div key={index} className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 sm:flex sm:items-center">
+              <span className="text-xs text-muted-foreground w-6 text-right shrink-0 pt-2 sm:pt-0">{index + 1}.</span>
               <Input
                 value={item}
                 onChange={(e) => updateChecklistItem(index, e.target.value)}
                 placeholder="Checklist item..."
-                className="flex-1"
+                className="min-w-0 sm:flex-1"
               />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => moveChecklistItem(index, "up")}
-                disabled={index === 0}
-              >
-                <ArrowUp className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => moveChecklistItem(index, "down")}
-                disabled={index === checklistItems.length - 1}
-              >
-                <ArrowDown className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
-                onClick={() => removeChecklistItem(index)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              <div className="col-start-2 flex gap-1 sm:col-auto">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => moveChecklistItem(index, "up")}
+                  disabled={index === 0}
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  onClick={() => moveChecklistItem(index, "down")}
+                  disabled={index === checklistItems.length - 1}
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                  onClick={() => removeChecklistItem(index)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           ))}
-          <Button variant="outline" size="sm" onClick={addChecklistItem} className="mt-2">
+          <Button variant="outline" size="sm" onClick={addChecklistItem} className="mt-2 w-full sm:w-auto">
             <Plus className="h-4 w-4 mr-1" />
             Add Checklist Item
           </Button>
@@ -304,9 +309,9 @@ export default function InductionFormAdmin() {
       {/* Site Rules Section */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <ScrollText className="h-5 w-5 text-orange-500" />
-            <div>
+          <div className="flex items-start gap-2">
+            <ScrollText className="h-5 w-5 text-orange-500 shrink-0" />
+            <div className="min-w-0">
               <CardTitle className="text-lg">Site Rules</CardTitle>
               <CardDescription>
                 Rules displayed to trades during induction that they must read and acknowledge. Enter one rule per line.
@@ -331,9 +336,9 @@ export default function InductionFormAdmin() {
       {/* Emergency Procedures Section */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-red-500" />
-            <div>
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="h-5 w-5 text-red-500 shrink-0" />
+            <div className="min-w-0">
               <CardTitle className="text-lg">Emergency Procedures</CardTitle>
               <CardDescription>
                 Emergency procedures displayed to trades during induction. Enter one procedure per line.
@@ -357,12 +362,12 @@ export default function InductionFormAdmin() {
 
       {/* Bottom save bar (sticky) */}
       {hasChanges && (
-        <div className="sticky bottom-4 flex justify-end gap-2 p-4 rounded-lg bg-card border shadow-lg">
-          <Button variant="outline" onClick={handleReset}>
+        <div className="sticky bottom-4 flex flex-col gap-2 p-4 rounded-lg bg-card border shadow-lg sm:flex-row sm:justify-end">
+          <Button variant="outline" className="w-full sm:w-auto" onClick={handleReset}>
             <RotateCcw className="h-4 w-4 mr-1" />
             Revert Changes
           </Button>
-          <Button onClick={handleSave} disabled={updateMutation.isPending}>
+          <Button className="w-full sm:w-auto" onClick={handleSave} disabled={updateMutation.isPending}>
             {updateMutation.isPending ? (
               <Loader2 className="h-4 w-4 mr-1 animate-spin" />
             ) : (

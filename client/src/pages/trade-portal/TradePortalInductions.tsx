@@ -43,7 +43,7 @@ export default function TradePortalInductions() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Site Inductions</h1>
+        <h1 className="text-xl font-bold sm:text-2xl">Site Inductions</h1>
         <p className="text-muted-foreground mt-1">
           Complete your workplace specific induction checklist for each job site
         </p>
@@ -60,22 +60,22 @@ export default function TradePortalInductions() {
             {pending.map((ind: any) => (
               <Card key={ind.id} className="border-primary/30 dark:border-primary">
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold">{ind.job?.clientName || `Job #${ind.jobId}`}</p>
-                      <div className="flex items-center gap-1.5 text-sm text-muted-foreground mt-0.5">
-                        <MapPin className="h-3.5 w-3.5" />
-                        <span>{ind.job?.siteAddress || "—"}</span>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="font-semibold break-words">{ind.job?.clientName || `Job #${ind.jobId}`}</p>
+                      <div className="flex items-start gap-1.5 text-sm text-muted-foreground mt-0.5">
+                        <MapPin className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span className="break-words">{ind.job?.siteAddress || "—"}</span>
                       </div>
                       {ind.job?.quoteNumber && (
                         <p className="text-xs text-muted-foreground mt-0.5">Quote: {ind.job.quoteNumber}</p>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
                       <Badge className="bg-primary/10 text-primary">
                         <Clock className="h-3 w-3 mr-1" /> Pending
                       </Badge>
-                      <Button onClick={() => setActiveInduction(ind)}>
+                      <Button className="flex-1 sm:flex-none" onClick={() => setActiveInduction(ind)}>
                         <ClipboardCheck className="h-4 w-4 mr-1.5" /> Complete Now
                       </Button>
                     </div>
@@ -98,23 +98,23 @@ export default function TradePortalInductions() {
             {completed.map((ind: any) => (
               <Card key={ind.id} className="border-green-300 dark:border-green-700">
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold">{ind.job?.clientName || `Job #${ind.jobId}`}</p>
-                      <div className="flex items-center gap-1.5 text-sm text-muted-foreground mt-0.5">
-                        <MapPin className="h-3.5 w-3.5" />
-                        <span>{ind.job?.siteAddress || "—"}</span>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="font-semibold break-words">{ind.job?.clientName || `Job #${ind.jobId}`}</p>
+                      <div className="flex items-start gap-1.5 text-sm text-muted-foreground mt-0.5">
+                        <MapPin className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span className="break-words">{ind.job?.siteAddress || "—"}</span>
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Completed: {ind.completedAt ? new Date(ind.completedAt).toLocaleString("en-AU") : "—"}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
                       <Badge className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
                         <CheckCircle2 className="h-3 w-3 mr-1" /> Done
                       </Badge>
                       {ind.pdfUrl && (
-                        <Button variant="outline" size="sm" onClick={() => window.open(ind.pdfUrl, "_blank")}>
+                        <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => window.open(ind.pdfUrl, "_blank")}>
                           <FileText className="h-4 w-4 mr-1" /> PDF
                         </Button>
                       )}
@@ -202,17 +202,17 @@ function InductionForm({ induction, onClose, onComplete }: {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <ClipboardCheck className="h-6 w-6" />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold flex items-center gap-2 sm:text-2xl">
+            <ClipboardCheck className="h-6 w-6 shrink-0" />
             Site Induction
           </h1>
-          <p className="text-muted-foreground mt-0.5">
+          <p className="text-muted-foreground mt-0.5 break-words">
             {induction.job?.clientName || `Job #${induction.jobId}`} — {induction.job?.siteAddress || ""}
           </p>
         </div>
-        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button variant="outline" className="w-full sm:w-auto" onClick={onClose}>Cancel</Button>
       </div>
 
       {/* Progress */}
@@ -231,7 +231,7 @@ function InductionForm({ induction, onClose, onComplete }: {
 
       {/* Step Content */}
       <Card>
-        <CardContent className="p-6 space-y-4">
+        <CardContent className="p-4 space-y-4 sm:p-6">
           {/* Step 0: Contractor Details */}
           {step === 0 && (
             <div className="space-y-4">
@@ -275,23 +275,23 @@ function InductionForm({ induction, onClose, onComplete }: {
               </p>
               <div className="space-y-2">
                 {certificates.map((cert, idx) => (
-                  <div key={idx} className="flex items-center gap-3 p-3 rounded-lg border">
-                    <div className="flex-1">
+                  <div key={idx} className="flex flex-col gap-3 p-3 rounded-lg border sm:flex-row sm:items-center">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium">{cert.name}</p>
                       <Input
                         placeholder="Expiry date (DD/MM/YYYY)"
                         value={cert.expiryDate || ""}
                         onChange={e => updateCertExpiry(idx, e.target.value)}
-                        className="h-8 text-xs mt-1 max-w-[200px]"
+                        className="h-8 w-full text-xs mt-1 sm:max-w-[200px]"
                       />
                     </div>
-                    <div className="flex gap-1">
+                    <div className="grid w-full grid-cols-3 gap-1 sm:w-auto sm:flex">
                       {["Y", "N", "NA"].map(s => (
                         <Button
                           key={s}
                           variant={cert.status === s ? "default" : "outline"}
                           size="sm"
-                          className={`w-10 ${cert.status === s && s === "Y" ? "bg-green-600 hover:bg-green-700" : ""} ${cert.status === s && s === "N" ? "bg-red-600 hover:bg-red-700" : ""}`}
+                          className={`w-full sm:w-10 ${cert.status === s && s === "Y" ? "bg-green-600 hover:bg-green-700" : ""} ${cert.status === s && s === "N" ? "bg-red-600 hover:bg-red-700" : ""}`}
                           onClick={() => updateCertStatus(idx, s)}
                         >
                           {s}
@@ -313,15 +313,15 @@ function InductionForm({ induction, onClose, onComplete }: {
               </p>
               <div className="space-y-2">
                 {siteChecklist.map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-3 p-3 rounded-lg border">
-                    <p className="flex-1 text-sm">{item.item}</p>
-                    <div className="flex gap-1">
+                  <div key={idx} className="flex flex-col gap-3 p-3 rounded-lg border sm:flex-row sm:items-center">
+                    <p className="min-w-0 flex-1 text-sm break-words">{item.item}</p>
+                    <div className="grid w-full grid-cols-3 gap-1 sm:w-auto sm:flex">
                       {["Y", "N", "NA"].map(s => (
                         <Button
                           key={s}
                           variant={item.status === s ? "default" : "outline"}
                           size="sm"
-                          className={`w-10 ${item.status === s && s === "Y" ? "bg-green-600 hover:bg-green-700" : ""} ${item.status === s && s === "N" ? "bg-red-600 hover:bg-red-700" : ""}`}
+                          className={`w-full sm:w-10 ${item.status === s && s === "Y" ? "bg-green-600 hover:bg-green-700" : ""} ${item.status === s && s === "N" ? "bg-red-600 hover:bg-red-700" : ""}`}
                           onClick={() => updateChecklistStatus(idx, s)}
                         >
                           {s}
@@ -374,7 +374,7 @@ function InductionForm({ induction, onClose, onComplete }: {
                   I, <strong>{induction.contractorName}</strong>, acknowledge that I have been inducted on the site-specific requirements for <strong>{induction.job?.siteAddress || "this site"}</strong>. I have read and understood the site rules and emergency procedures. This submission will be date and time stamped as a record of my induction.
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
                 <div className="p-3 rounded-lg bg-muted/30 border">
                   <span className="text-muted-foreground block text-xs">Contractor</span>
                   <span className="font-medium">{induction.contractorName}</span>
@@ -396,12 +396,12 @@ function InductionForm({ induction, onClose, onComplete }: {
           )}
 
           {/* Navigation */}
-          <div className="flex justify-between pt-4 border-t">
-            <Button variant="outline" onClick={step === 0 ? onClose : () => setStep(s => s - 1)}>
+          <div className="flex flex-col-reverse gap-2 pt-4 border-t sm:flex-row sm:justify-between">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={step === 0 ? onClose : () => setStep(s => s - 1)}>
               {step === 0 ? "Cancel" : "Back"}
             </Button>
             {step < 4 ? (
-              <Button onClick={() => setStep(s => s + 1)}>
+              <Button className="w-full sm:w-auto" onClick={() => setStep(s => s + 1)}>
                 Next
               </Button>
             ) : (
@@ -413,7 +413,7 @@ function InductionForm({ induction, onClose, onComplete }: {
                   siteChecklist,
                 })}
                 disabled={submitMutation.isPending}
-                className="bg-green-600 hover:bg-green-700"
+                className="w-full bg-green-600 hover:bg-green-700 sm:w-auto"
               >
                 {submitMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
