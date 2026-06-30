@@ -16,6 +16,7 @@ import { TRPCError } from "@trpc/server";
 import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 import { ENV } from "./_core/env";
 import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
+import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./canonical-client";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const jobInstructionCategorySchema = z.enum([
@@ -119,6 +120,16 @@ function parseInstructionDate(value?: string | null) {
   return date;
 }
 
+function parseJobDetailDate(value?: string | null, label = "date") {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const date = new Date(trimmed.length <= 10 ? `${trimmed}T00:00:00` : trimmed);
+  if (Number.isNaN(date.getTime())) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Invalid ${label}` });
+  }
+  return date;
+}
+
 function actorName(ctx: any) {
   return ctx.user?.name || ctx.user?.email || null;
 }
@@ -153,54 +164,6 @@ async function requireVisibleJobInstaller(db: any, ctx: any, jobId: number, inst
   if (!scheduledEvent) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Selected trade is not assigned or scheduled on this job" });
   }
-}
-
-function nullableName(value?: string | null) {
-  const trimmed = String(value || "").trim();
-  return trimmed || null;
-}
-
-function crmLeadDisplayName(lead?: {
-  contactFirstName?: string | null;
-  contactLastName?: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  company?: string | null;
-} | null) {
-  if (!lead) return null;
-  const firstName = nullableName(lead.contactFirstName ?? lead.firstName);
-  const lastName = nullableName(lead.contactLastName ?? lead.lastName);
-  return [firstName, lastName].filter(Boolean).join(" ") || nullableName(lead.company);
-}
-
-function canonicalClientFromLead(lead?: {
-  id?: number | null;
-  contactFirstName?: string | null;
-  contactLastName?: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  company?: string | null;
-  contactPhone?: string | null;
-  phone?: string | null;
-  contactEmail?: string | null;
-  email?: string | null;
-  contactAddress?: string | null;
-  address?: string | null;
-  clientNumber?: string | null;
-  status?: string | null;
-  displayName?: string | null;
-} | null) {
-  const name = crmLeadDisplayName(lead);
-  if (!lead || !name) return null;
-  return {
-    id: lead.id ?? null,
-    name,
-    phone: nullableName(lead.contactPhone ?? lead.phone),
-    email: nullableName(lead.contactEmail ?? lead.email),
-    address: nullableName(lead.contactAddress ?? lead.address),
-    clientNumber: nullableName(lead.clientNumber),
-    status: lead.status ?? null,
-  };
 }
 
 function addYears(date: Date, years: number) {
@@ -1634,6 +1597,66 @@ export const constructionClientsRouter = router({
       await db.update(portalDefects)
         .set(updates)
         .where(eq(portalDefects.id, input.id));
+
+      return { success: true };
+    }),
+
+  updateJobDetails: protectedProcedure
+    .input(z.object({
+      jobId: z.number(),
+      clientFirstName: z.string().max(100).nullable().optional(),
+      clientLastName: z.string().max(100).nullable().optional(),
+      company: z.string().max(255).nullable().optional(),
+      phone: z.string().max(50).nullable().optional(),
+      email: z.string().max(320).nullable().optional(),
+      siteAddress: z.string().max(5000).nullable().optional(),
+      scheduledStart: z.string().nullable().optional(),
+      scheduledEnd: z.string().nullable().optional(),
+      actualStart: z.string().nullable().optional(),
+      actualEnd: z.string().nullable().optional(),
+      notes: z.string().max(5000).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const job = await requireJobAccess(db, ctx, input.jobId);
+
+      const jobUpdates: Record<string, any> = {};
+      if (input.siteAddress !== undefined) jobUpdates.siteAddress = trimNullable(input.siteAddress);
+      if (input.scheduledStart !== undefined) jobUpdates.scheduledStart = parseJobDetailDate(input.scheduledStart, "scheduled start");
+      if (input.scheduledEnd !== undefined) jobUpdates.scheduledEnd = parseJobDetailDate(input.scheduledEnd, "scheduled end");
+      if (input.actualStart !== undefined) jobUpdates.actualStart = parseJobDetailDate(input.actualStart, "actual start");
+      if (input.actualEnd !== undefined) jobUpdates.actualEnd = parseJobDetailDate(input.actualEnd, "actual end");
+      if (input.notes !== undefined) jobUpdates.notes = trimNullable(input.notes);
+
+      const leadUpdates: Record<string, any> = {};
+      if (input.clientFirstName !== undefined) leadUpdates.contactFirstName = trimNullable(input.clientFirstName);
+      if (input.clientLastName !== undefined) leadUpdates.contactLastName = trimNullable(input.clientLastName);
+      if (input.company !== undefined) leadUpdates.company = trimNullable(input.company);
+      if (input.phone !== undefined) leadUpdates.contactPhone = trimNullable(input.phone);
+      if (input.email !== undefined) leadUpdates.contactEmail = trimNullable(input.email);
+      if (input.siteAddress !== undefined) leadUpdates.contactAddress = trimNullable(input.siteAddress);
+
+      if (Object.keys(leadUpdates).length > 0) {
+        if (job.leadId) {
+          const leadConditions = [eq(crmLeads.id, job.leadId)];
+          appendTenantScope(leadConditions, crmLeads.tenantId, tenantIdFromContext(ctx));
+          await db.update(crmLeads)
+            .set(leadUpdates)
+            .where(and(...leadConditions));
+        } else {
+          const fallbackName = [
+            trimNullable(input.clientFirstName),
+            trimNullable(input.clientLastName),
+          ].filter(Boolean).join(" ") || trimNullable(input.company);
+          if (fallbackName) jobUpdates.clientName = fallbackName;
+        }
+      }
+
+      if (Object.keys(jobUpdates).length > 0) {
+        await db.update(constructionJobs)
+          .set(jobUpdates)
+          .where(and(...jobTenantConditions(ctx, eq(constructionJobs.id, input.jobId))));
+      }
 
       return { success: true };
     }),

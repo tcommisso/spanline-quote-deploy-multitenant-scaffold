@@ -9,7 +9,7 @@ import {
   constructionJobs, constructionProgress, clientActivities, xeroProjectMappings, jobSharedFiles,
   portalPhotoComments,
   approvalProjects, approvalLodgements, approvalInspections, approvalTasks, approvalRfis,
-  patioPlanner,
+  patioPlanner, crmLeads,
 } from "../drizzle/schema";
 import { publicProcedure, router, middleware } from "./_core/trpc";
 import { notifyOwner } from "./_core/notification";
@@ -23,6 +23,7 @@ import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from 
 import { sendNotificationEmail } from "./email";
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { resolveClientPortalContacts } from "./client-contact-defaults";
+import { canonicalClientFromLead } from "./canonical-client";
 
 // ─── Portal Context ─────────────────────────────────────────────────────────
 // Portal now uses the main tRPC instance and reads portalAccess from the shared context
@@ -85,6 +86,69 @@ async function assertClientPortalSharedFile(db: any, ctx: any, fileId: number) {
 
 function portalTenantId(ctx: any) {
   return ctx.portalAccess?.tenantId ?? tenantIdFromContext(ctx);
+}
+
+function portalJobConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionJobs.tenantId, portalTenantId(ctx));
+  return conditions;
+}
+
+function portalLeadJoinConditions(ctx: any) {
+  const conditions = [eq(constructionJobs.leadId, crmLeads.id)];
+  appendTenantScope(conditions, crmLeads.tenantId, portalTenantId(ctx));
+  return and(...conditions);
+}
+
+function canonicalClientFromPortalJobRow(row: any) {
+  return canonicalClientFromLead({
+    id: row.leadId,
+    contactFirstName: row.leadFirstName,
+    contactLastName: row.leadLastName,
+    company: row.leadCompany,
+    contactPhone: row.leadPhone,
+    contactEmail: row.leadEmail,
+    contactAddress: row.leadAddress,
+    clientNumber: row.leadClientNumber,
+    status: row.leadStatus,
+  });
+}
+
+async function getPortalJobWithCanonicalClient(db: any, ctx: any, jobId: number) {
+  const [row] = await db.select({
+    id: constructionJobs.id,
+    quoteNumber: constructionJobs.quoteNumber,
+    clientName: constructionJobs.clientName,
+    siteAddress: constructionJobs.siteAddress,
+    status: constructionJobs.status,
+    leadId: crmLeads.id,
+    leadFirstName: crmLeads.contactFirstName,
+    leadLastName: crmLeads.contactLastName,
+    leadCompany: crmLeads.company,
+    leadPhone: crmLeads.contactPhone,
+    leadEmail: crmLeads.contactEmail,
+    leadAddress: crmLeads.contactAddress,
+    leadClientNumber: crmLeads.clientNumber,
+    leadStatus: crmLeads.status,
+  })
+    .from(constructionJobs)
+    .leftJoin(crmLeads, portalLeadJoinConditions(ctx))
+    .where(and(...portalJobConditions(ctx, eq(constructionJobs.id, jobId))))
+    .limit(1);
+
+  if (!row) return null;
+  const canonicalClient = canonicalClientFromPortalJobRow(row);
+  return canonicalClient
+    ? {
+        ...row,
+        storedClientName: row.clientName,
+        clientName: canonicalClient.name,
+        clientPhone: canonicalClient.phone,
+        clientEmail: canonicalClient.email,
+        clientNumber: canonicalClient.clientNumber,
+        canonicalClient,
+      }
+    : row;
 }
 
 function portalCmsConditions(ctx: any, column: any, ...baseConditions: any[]) {
@@ -162,6 +226,8 @@ export const portalRouter = router({
         `/portal/login?magic=${encodeURIComponent(magicLinkToken)}`,
         input.origin
       );
+      const job = await getPortalJobWithCanonicalClient(db, { ...ctx, portalAccess: access }, access.constructionJobId);
+      const clientName = job?.clientName || access.clientName;
 
       try {
         const result = await sendNotificationEmail({
@@ -171,7 +237,7 @@ export const portalRouter = router({
           htmlBody: `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                   <h2 style="color: #1a1a1a;">Altaspan Client Portal</h2>
-                  <p>Hi ${access.clientName || "there"},</p>
+                  <p>Hi ${clientName || "there"},</p>
                   <p>Click the button below to access your project portal:</p>
                   <a href="${magicLinkUrl}" style="display: inline-block; background: #0d9488; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 16px 0;">
                     Access My Portal
@@ -251,6 +317,8 @@ export const portalRouter = router({
       if (!access) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Invalid portal link" });
       }
+      const job = await getPortalJobWithCanonicalClient(db, { ...ctx, portalAccess: access }, access.constructionJobId);
+      const clientName = job?.clientName || access.clientName;
 
       const sessionToken = generateToken(64);
       await db.insert(portalSessions).values({
@@ -263,19 +331,15 @@ export const portalRouter = router({
         .set({ lastAccessedAt: new Date() })
         .where(eq(portalAccess.id, access.id));
 
-      return { sessionToken, clientName: access.clientName };
+      return { sessionToken, clientName };
     }),
 
   me: protectedPortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-    const [job] = await db
-      .select({ id: constructionJobs.id, clientName: constructionJobs.clientName, status: constructionJobs.status })
-      .from(constructionJobs)
-      .where(eq(constructionJobs.id, ctx.portalAccess.constructionJobId))
-      .limit(1);
+    const job = await getPortalJobWithCanonicalClient(db, ctx, ctx.portalAccess.constructionJobId);
 
     return {
-      clientName: ctx.portalAccess.clientName,
+      clientName: job?.clientName || ctx.portalAccess.clientName,
       clientEmail: ctx.portalAccess.clientEmail,
       job: job || null,
     };
@@ -287,11 +351,7 @@ export const portalRouter = router({
     const db = await requireDb();
     const jobId = ctx.portalAccess.constructionJobId;
 
-    const [job] = await db
-      .select()
-      .from(constructionJobs)
-      .where(eq(constructionJobs.id, jobId))
-      .limit(1);
+    const job = await getPortalJobWithCanonicalClient(db, ctx, jobId);
 
     if (!job) throw new TRPCError({ code: "NOT_FOUND" });
 

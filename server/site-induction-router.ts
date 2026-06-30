@@ -20,10 +20,12 @@ import {
 } from "./db";
 import { getDb } from "./db";
 import { eq, and } from "drizzle-orm";
-import { constructionJobs, constructionInstallers, siteInductions, users } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, siteInductions, users, crmLeads } from "../drizzle/schema";
 import { sendNotificationEmail } from "./email";
 import { storagePut } from "./storage";
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
+import { appendTenantScope } from "./_core/tenant-scope";
+import { canonicalClientFromLead } from "./canonical-client";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 // ─── Default Checklist Items ────────────────────────────────────────────────
@@ -78,6 +80,26 @@ const siteChecklistItemSchema = z.object({
   item: z.string(),
   status: z.enum(["Y", "N", "NA", ""]).default(""),
 });
+
+function inductionLeadJoinConditions(tenantId?: number | null) {
+  const conditions = [eq(constructionJobs.leadId, crmLeads.id)];
+  appendTenantScope(conditions, crmLeads.tenantId, tenantId);
+  return and(...conditions);
+}
+
+function withCanonicalInductionJobName(job: any) {
+  if (!job) return null;
+  const canonicalClient = canonicalClientFromLead({
+    id: job.leadId,
+    contactFirstName: job.leadFirstName,
+    contactLastName: job.leadLastName,
+    company: job.leadCompany,
+    clientNumber: job.leadClientNumber,
+  });
+  return canonicalClient
+    ? { ...job, storedClientName: job.clientName, clientName: canonicalClient.name }
+    : job;
+}
 
 // ─── PDF Generation ─────────────────────────────────────────────────────────
 const A4_WIDTH = 595.28;
@@ -513,7 +535,13 @@ export const siteInductionRouter = router({
           clientName: constructionJobs.clientName,
           siteAddress: constructionJobs.siteAddress,
           quoteNumber: constructionJobs.quoteNumber,
+          leadId: crmLeads.id,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+          leadCompany: crmLeads.company,
+          leadClientNumber: crmLeads.clientNumber,
         }).from(constructionJobs)
+          .leftJoin(crmLeads, inductionLeadJoinConditions(tenantId))
           .where(tenantId
             ? and(eq(constructionJobs.id, ind.jobId), eq(constructionJobs.tenantId, tenantId))
             : eq(constructionJobs.id, ind.jobId))
@@ -521,7 +549,7 @@ export const siteInductionRouter = router({
         enriched.push({
           ...ind,
           pdfUrl: await resolveStorageUrlForPortal(ind.pdfUrl),
-          job: job || null,
+          job: withCanonicalInductionJobName(job),
         });
       }
       return enriched;

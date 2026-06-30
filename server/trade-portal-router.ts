@@ -9,6 +9,7 @@ import {
   constructionInstallers, constructionJobs, constructionScheduleEvents,
   constructionHolidayCalendarDays,
   constructionAssignments, jobSharedFiles, quotes,
+  crmLeads,
   portalNews, poMilestones, cmWorkOrders,
   projectSubcontracts, tradeInvoiceLines,
   chatChannels, chatMessages, chatChannelMembers,
@@ -42,6 +43,7 @@ import {
   localDateKeyFromDate,
   toDateKey,
 } from "./_core/australianHolidays";
+import { canonicalClientFromLead } from "./canonical-client";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,54 @@ function tradeJobConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionJobs.tenantId, tradePortalTenantId(ctx));
   return conditions;
+}
+
+function tradeLeadJoinConditions(ctx: any) {
+  const conditions = [eq(constructionJobs.leadId, crmLeads.id)];
+  appendTenantScope(conditions, crmLeads.tenantId, tradePortalTenantId(ctx));
+  return and(...conditions);
+}
+
+function canonicalClientFromRow(row: any) {
+  return canonicalClientFromLead({
+    id: row.leadId,
+    contactFirstName: row.leadFirstName,
+    contactLastName: row.leadLastName,
+    company: row.leadCompany,
+    contactPhone: row.leadPhone,
+    contactEmail: row.leadEmail,
+    contactAddress: row.leadAddress,
+    clientNumber: row.leadClientNumber,
+    status: row.leadStatus,
+  });
+}
+
+function withCanonicalClientName<T extends { clientName?: string | null }>(row: T): T & { storedClientName?: string | null } {
+  const canonicalClient = canonicalClientFromRow(row);
+  if (!canonicalClient) return row;
+  return {
+    ...row,
+    storedClientName: row.clientName ?? null,
+    clientName: canonicalClient.name,
+  };
+}
+
+async function getCanonicalClientForTradeJob(db: any, ctx: any, job: typeof constructionJobs.$inferSelect) {
+  if (!job.leadId) return null;
+  const conditions = [eq(crmLeads.id, job.leadId)];
+  appendTenantScope(conditions, crmLeads.tenantId, tradePortalTenantId(ctx));
+  const [lead] = await db.select({
+    id: crmLeads.id,
+    contactFirstName: crmLeads.contactFirstName,
+    contactLastName: crmLeads.contactLastName,
+    company: crmLeads.company,
+    contactPhone: crmLeads.contactPhone,
+    contactEmail: crmLeads.contactEmail,
+    contactAddress: crmLeads.contactAddress,
+    clientNumber: crmLeads.clientNumber,
+    status: crmLeads.status,
+  }).from(crmLeads).where(and(...conditions)).limit(1);
+  return canonicalClientFromLead(lead);
 }
 
 function tradeJobInstructionConditions(ctx: any, ...baseConditions: any[]) {
@@ -1051,6 +1101,10 @@ export const tradePortalRouter = router({
         const pattern = `%${search.toLowerCase()}%`;
         conditions.push(or(
           like(sql`LOWER(${constructionJobs.clientName})`, pattern),
+          like(sql`LOWER(${crmLeads.contactFirstName})`, pattern),
+          like(sql`LOWER(${crmLeads.contactLastName})`, pattern),
+          like(sql`LOWER(${crmLeads.company})`, pattern),
+          like(sql`LOWER(${crmLeads.clientNumber})`, pattern),
           like(sql`LOWER(${constructionJobs.quoteNumber})`, pattern),
           like(sql`LOWER(${constructionJobs.siteAddress})`, pattern),
           like(sql`LOWER(${constructionJobs.status})`, pattern),
@@ -1066,8 +1120,14 @@ export const tradePortalRouter = router({
         scheduledStart: constructionJobs.scheduledStart,
         scheduledEnd: constructionJobs.scheduledEnd,
         updatedAt: constructionJobs.updatedAt,
+        leadId: crmLeads.id,
+        leadFirstName: crmLeads.contactFirstName,
+        leadLastName: crmLeads.contactLastName,
+        leadCompany: crmLeads.company,
+        leadClientNumber: crmLeads.clientNumber,
       })
         .from(constructionJobs)
+        .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
         .where(and(...conditions))
         .orderBy(desc(constructionJobs.updatedAt))
         .limit(parsed.limit);
@@ -1099,7 +1159,7 @@ export const tradePortalRouter = router({
       return jobs.map((job: any) => {
         const order = latestOrderByJob.get(job.id);
         return {
-          ...job,
+          ...withCanonicalClientName(job),
           flashingOrderId: order?.id ?? null,
           flashingOrderNumber: order?.orderNumber ?? null,
           flashingOrderStatus: order?.status ?? null,
@@ -1134,12 +1194,13 @@ export const tradePortalRouter = router({
 
       const orderNumber = await nextTradeFlashingOrderNumber(db, tenantId);
       const requestedByName = supplier.name || ctx.tradeAccess.email || "Trade Portal";
+      const canonicalClient = await getCanonicalClientForTradeJob(db, ctx, job);
       const [result] = await db.insert(flashingOrders).values({
         tenantId,
         orderNumber,
         jobId: job.id,
         jobNumber: job.quoteNumber || null,
-        clientName: job.clientName || null,
+        clientName: canonicalClient?.name || job.clientName || null,
         siteAddress: job.siteAddress || null,
         supplierId: supplier.id,
         supplierName: supplier.name,
@@ -1400,7 +1461,7 @@ export const tradePortalRouter = router({
     const installerId = ctx.tradeAccess.installerId;
 
     // Get assigned jobs via schedule events
-    const events = await db
+    const eventRows = await db
       .select({
         eventId: constructionScheduleEvents.id,
         eventTitle: constructionScheduleEvents.title,
@@ -1413,12 +1474,19 @@ export const tradePortalRouter = router({
         clientName: constructionJobs.clientName,
         siteAddress: constructionJobs.siteAddress,
         jobStatus: constructionJobs.status,
+        leadId: crmLeads.id,
+        leadFirstName: crmLeads.contactFirstName,
+        leadLastName: crmLeads.contactLastName,
+        leadCompany: crmLeads.company,
+        leadClientNumber: crmLeads.clientNumber,
       })
       .from(constructionScheduleEvents)
       .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
+      .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
       .where(and(...tradeJobConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, installerId))))
       .orderBy(desc(constructionScheduleEvents.startTime))
       .limit(50);
+    const events = eventRows.map((event: any) => withCanonicalClientName(event));
 
     const visibleJobIds = tenantIdFromContext(ctx)
       ? await getVisibleTradeJobIds(db, ctx, installerId)
@@ -1540,7 +1608,7 @@ export const tradePortalRouter = router({
         if (input?.endDate) conditions.push(lte(constructionScheduleEvents.startTime, new Date(input.endDate)));
       }
 
-      return db
+      const rows = await db
         .select({
           id: constructionScheduleEvents.id,
           title: constructionScheduleEvents.title,
@@ -1554,11 +1622,18 @@ export const tradePortalRouter = router({
           quoteNumber: constructionJobs.quoteNumber,
           clientName: constructionJobs.clientName,
           siteAddress: constructionJobs.siteAddress,
+          leadId: crmLeads.id,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+          leadCompany: crmLeads.company,
+          leadClientNumber: crmLeads.clientNumber,
         })
         .from(constructionScheduleEvents)
         .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
+        .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
         .where(and(...conditions))
         .orderBy(asc(constructionScheduleEvents.startTime));
+      return rows.map((row: any) => withCanonicalClientName(row));
     }),
 
   // ─── Availabilities ─────────────────────────────────────────────────────────
@@ -2134,16 +2209,23 @@ export const tradePortalRouter = router({
 
   getActiveJobs: protectedTradePortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
-    const events = await db.select({
+    const eventRows = await db.select({
       jobId: constructionJobs.id,
       quoteNumber: constructionJobs.quoteNumber,
       clientName: constructionJobs.clientName,
       siteAddress: constructionJobs.siteAddress,
       status: constructionJobs.status,
+      leadId: crmLeads.id,
+      leadFirstName: crmLeads.contactFirstName,
+      leadLastName: crmLeads.contactLastName,
+      leadCompany: crmLeads.company,
+      leadClientNumber: crmLeads.clientNumber,
     })
       .from(constructionScheduleEvents)
       .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
+      .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
       .where(and(...tradeJobConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, ctx.tradeAccess.installerId))));
+    const events = eventRows.map((event: any) => withCanonicalClientName(event));
     const uniqueJobs = new Map<number, typeof events[0]>();
     events.forEach(e => { if (e.jobId && !uniqueJobs.has(e.jobId)) uniqueJobs.set(e.jobId, e); });
     return Array.from(uniqueJobs.values()).filter(j => j.status !== "completed" && j.status !== "cancelled");
@@ -2251,16 +2333,23 @@ export const tradePortalRouter = router({
       return { jobs: [], workOrders: [], poMilestones: [], subcontractMilestones: [] };
     }
 
-    const jobs = await db.select({
+    const jobRows = await db.select({
       jobId: constructionJobs.id,
       quoteNumber: constructionJobs.quoteNumber,
       clientName: constructionJobs.clientName,
       siteAddress: constructionJobs.siteAddress,
       status: constructionJobs.status,
+      leadId: crmLeads.id,
+      leadFirstName: crmLeads.contactFirstName,
+      leadLastName: crmLeads.contactLastName,
+      leadCompany: crmLeads.company,
+      leadClientNumber: crmLeads.clientNumber,
     })
       .from(constructionJobs)
+      .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
       .where(and(...tradeJobConditions(ctx, inArray(constructionJobs.id, visibleJobIds))))
       .orderBy(desc(constructionJobs.updatedAt));
+    const jobs = jobRows.map((job: any) => withCanonicalClientName(job));
 
     const [installer] = await db.select()
       .from(constructionInstallers)
@@ -2653,11 +2742,20 @@ export const tradePortalRouter = router({
       let visibleJobIds = new Set<number>();
       if (jobIds.length > 0) {
         const jobConditions = tradeJobConditions(ctx, inArray(constructionJobs.id, jobIds));
-        const jobs = await db.select({
+        const jobRows = await db.select({
           id: constructionJobs.id,
           clientName: constructionJobs.clientName,
           quoteNumber: constructionJobs.quoteNumber,
-        }).from(constructionJobs).where(and(...jobConditions));
+          leadId: crmLeads.id,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+          leadCompany: crmLeads.company,
+          leadClientNumber: crmLeads.clientNumber,
+        })
+          .from(constructionJobs)
+          .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
+          .where(and(...jobConditions));
+        const jobs = jobRows.map((job: any) => withCanonicalClientName(job));
         visibleJobIds = new Set(jobs.map(j => j.id));
         jobMap = Object.fromEntries(jobs.map(j => [j.id, { clientName: j.clientName || "", quoteNumber: j.quoteNumber || "" }]));
       }
@@ -2695,10 +2793,11 @@ export const tradePortalRouter = router({
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
       const job = await requireTradeJobAccess(db, ctx, input.jobId);
+      const canonicalClient = await getCanonicalClientForTradeJob(db, ctx, job);
 
       // Get client phone from linked quote
-      let clientPhone: string | null = null;
-      let clientEmail: string | null = null;
+      let clientPhone: string | null = canonicalClient?.phone || null;
+      let clientEmail: string | null = canonicalClient?.email || null;
       if (job.quoteId) {
         const quoteConditions = [eq(quotes.id, job.quoteId)];
         appendExactQuoteTenantScope(quoteConditions, quotes.tenantId, tenantIdFromContext(ctx));
@@ -2706,8 +2805,8 @@ export const tradePortalRouter = router({
           clientPhone: quotes.clientPhone,
           clientEmail: quotes.clientEmail,
         }).from(quotes).where(and(...quoteConditions));
-        clientPhone = q?.clientPhone || null;
-        clientEmail = q?.clientEmail || null;
+        clientPhone = clientPhone || q?.clientPhone || null;
+        clientEmail = clientEmail || q?.clientEmail || null;
       }
 
       // Get all assigned trades on this job (visible to other trades)
@@ -2761,7 +2860,8 @@ export const tradePortalRouter = router({
         job: {
           id: job.id,
           quoteNumber: job.quoteNumber,
-          clientName: job.clientName,
+          storedClientName: job.clientName,
+          clientName: canonicalClient?.name || job.clientName,
           clientPhone,
           clientEmail,
           siteAddress: job.siteAddress,
@@ -2881,7 +2981,7 @@ export const tradePortalRouter = router({
       const jobIds = await getVisibleTradeJobIds(db, ctx, installerId);
       if (jobIds.length === 0) return [];
 
-      const jobs = await db.select({
+      const jobRows = await db.select({
         id: constructionJobs.id,
         quoteNumber: constructionJobs.quoteNumber,
         clientName: constructionJobs.clientName,
@@ -2889,10 +2989,17 @@ export const tradePortalRouter = router({
         status: constructionJobs.status,
         scheduledStart: constructionJobs.scheduledStart,
         scheduledEnd: constructionJobs.scheduledEnd,
+        leadId: crmLeads.id,
+        leadFirstName: crmLeads.contactFirstName,
+        leadLastName: crmLeads.contactLastName,
+        leadCompany: crmLeads.company,
+        leadClientNumber: crmLeads.clientNumber,
       })
         .from(constructionJobs)
+        .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
         .where(and(...tradeJobConditions(ctx, inArray(constructionJobs.id, jobIds))))
         .orderBy(desc(constructionJobs.scheduledStart));
+      const jobs = jobRows.map((job: any) => withCanonicalClientName(job));
 
       // Count shared files per job
       const visibleJobIds = jobs.map(j => j.id);

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useSwipeTabs } from "@/hooks/useSwipeTabs";
 import { useLocation, useParams } from "wouter";
 import ContactsSection from "@/components/construction/ContactsSection";
@@ -27,7 +28,7 @@ import {
   Users, Package, FolderOpen, PenTool, Download, X, ArrowLeftRight,
   KanbanSquare, GripVertical, Ruler, Clipboard, Printer,
   Cloud, Sun, CloudRain, CloudSun, CloudSnow, CloudDrizzle, CloudLightning, CloudFog, Thermometer,
-  Building, Save,
+  Building, Pencil, Save,
 } from "lucide-react";
 import { useIsMobile } from "@/hooks/useMobile";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -89,6 +90,34 @@ const SUMMARY_STATUS_CONFIG: Record<string, { label: string; badge: string; dot:
     badge: "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-800",
     dot: "bg-green-500",
   },
+};
+
+type JobDetailsForm = {
+  clientFirstName: string;
+  clientLastName: string;
+  company: string;
+  phone: string;
+  email: string;
+  siteAddress: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  actualStart: string;
+  actualEnd: string;
+  notes: string;
+};
+
+const EMPTY_JOB_DETAILS_FORM: JobDetailsForm = {
+  clientFirstName: "",
+  clientLastName: "",
+  company: "",
+  phone: "",
+  email: "",
+  siteAddress: "",
+  scheduledStart: "",
+  scheduledEnd: "",
+  actualStart: "",
+  actualEnd: "",
+  notes: "",
 };
 
 function formatSummaryStatus(value?: string | null) {
@@ -353,6 +382,16 @@ export default function ConstructionClientDetail() {
   });
 
   const detailQuery = trpc.constructionClients.detail.useQuery({ jobId }, { enabled: !!jobId });
+  const [jobDetailsOpen, setJobDetailsOpen] = useState(false);
+  const [jobDetailsForm, setJobDetailsForm] = useState<JobDetailsForm>(EMPTY_JOB_DETAILS_FORM);
+  const updateJobDetails = trpc.constructionClients.updateJobDetails.useMutation({
+    onSuccess: () => {
+      setJobDetailsOpen(false);
+      detailQuery.refetch();
+      toast.success("Job details updated");
+    },
+    onError: (err) => toast.error(err.message || "Failed to update job details"),
+  });
   const updateFinancials = trpc.constructionClients.updateFinancials.useMutation({
     onSuccess: () => {
       detailQuery.refetch();
@@ -398,6 +437,31 @@ export default function ConstructionClientDetail() {
   const displayPhone = job.clientPhone || leadData?.phone || quoteData?.clientPhone;
   const displayEmail = job.clientEmail || leadData?.email || quoteData?.clientEmail;
   const leadDisplayName = leadData?.displayName || [leadData?.firstName, leadData?.lastName].filter(Boolean).join(" ");
+  const openJobDetailsEditor = () => {
+    setJobDetailsForm({
+      clientFirstName: leadData?.firstName || "",
+      clientLastName: leadData?.lastName || "",
+      company: leadData?.company || (!leadData?.id ? job.clientName || "" : ""),
+      phone: displayPhone || "",
+      email: displayEmail || "",
+      siteAddress: job.siteAddress || leadData?.address || quoteData?.siteAddress || "",
+      scheduledStart: toDateInputValue(job.scheduledStart),
+      scheduledEnd: toDateInputValue(job.scheduledEnd),
+      actualStart: toDateInputValue(job.actualStart),
+      actualEnd: toDateInputValue(job.actualEnd),
+      notes: job.notes || "",
+    });
+    setJobDetailsOpen(true);
+  };
+  const updateJobDetailsField = (field: keyof JobDetailsForm, value: string) => {
+    setJobDetailsForm((current) => ({ ...current, [field]: value }));
+  };
+  const submitJobDetails = () => {
+    updateJobDetails.mutate({
+      jobId,
+      ...jobDetailsForm,
+    });
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -531,8 +595,12 @@ export default function ConstructionClientDetail() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Job Details */}
             <Card>
-              <CardHeader className="pb-3">
+              <CardHeader className="pb-3 flex flex-row items-center justify-between gap-3">
                 <CardTitle className="text-base">Job Details</CardTitle>
+                <Button variant="outline" size="sm" onClick={openJobDetailsEditor}>
+                  <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                  Edit
+                </Button>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
@@ -846,6 +914,135 @@ export default function ConstructionClientDetail() {
         </TabsContent>
       </Tabs>
       </div>
+
+      <Dialog open={jobDetailsOpen} onOpenChange={setJobDetailsOpen}>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Job Details</DialogTitle>
+            <DialogDescription>
+              Update job dates, notes, and the linked CRM client record.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            {!leadData?.id && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                No linked CRM lead. Client name changes will be stored on this construction job only.
+              </div>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label>First Name</Label>
+                <Input
+                  value={jobDetailsForm.clientFirstName}
+                  onChange={(event) => updateJobDetailsField("clientFirstName", event.target.value)}
+                  maxLength={100}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Last Name</Label>
+                <Input
+                  value={jobDetailsForm.clientLastName}
+                  onChange={(event) => updateJobDetailsField("clientLastName", event.target.value)}
+                  maxLength={100}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Company</Label>
+                <Input
+                  value={jobDetailsForm.company}
+                  onChange={(event) => updateJobDetailsField("company", event.target.value)}
+                  maxLength={255}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  value={jobDetailsForm.phone}
+                  onChange={(event) => updateJobDetailsField("phone", event.target.value)}
+                  maxLength={50}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={jobDetailsForm.email}
+                  onChange={(event) => updateJobDetailsField("email", event.target.value)}
+                  maxLength={320}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Site Address</Label>
+              <Input
+                value={jobDetailsForm.siteAddress}
+                onChange={(event) => updateJobDetailsField("siteAddress", event.target.value)}
+              />
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-4">
+              <div className="space-y-2">
+                <Label>Scheduled Start</Label>
+                <Input
+                  type="date"
+                  value={jobDetailsForm.scheduledStart}
+                  onChange={(event) => updateJobDetailsField("scheduledStart", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Scheduled End</Label>
+                <Input
+                  type="date"
+                  value={jobDetailsForm.scheduledEnd}
+                  onChange={(event) => updateJobDetailsField("scheduledEnd", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Actual Start</Label>
+                <Input
+                  type="date"
+                  value={jobDetailsForm.actualStart}
+                  onChange={(event) => updateJobDetailsField("actualStart", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Actual End</Label>
+                <Input
+                  type="date"
+                  value={jobDetailsForm.actualEnd}
+                  onChange={(event) => updateJobDetailsField("actualEnd", event.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={jobDetailsForm.notes}
+                onChange={(event) => updateJobDetailsField("notes", event.target.value)}
+                rows={4}
+                maxLength={5000}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setJobDetailsOpen(false)} disabled={updateJobDetails.isPending}>
+              Cancel
+            </Button>
+            <Button onClick={submitJobDetails} disabled={updateJobDetails.isPending}>
+              {updateJobDetails.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
