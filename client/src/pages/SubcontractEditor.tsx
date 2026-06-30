@@ -16,6 +16,8 @@ import {
   FileText,
   Plus,
   Trash2,
+  Archive,
+  ArchiveRestore,
   Calendar,
   Loader2,
   Eye,
@@ -82,7 +84,17 @@ const STATUS_COLORS: Record<string, string> = {
   sent: "bg-blue-100 text-blue-700",
   signed: "bg-green-100 text-green-700",
   cancelled: "bg-red-100 text-red-700",
+  declined: "bg-red-100 text-red-700",
+  archived: "bg-slate-100 text-slate-600",
 };
+
+function subcontractDisplayStatus(subcontract: any) {
+  return subcontract?.archivedAt ? "archived" : subcontract?.status || "draft";
+}
+
+function formatStatusLabel(status: string) {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
 
 export default function SubcontractEditor() {
   const [, params] = useRoute("/subcontracts/:id");
@@ -125,6 +137,11 @@ export default function SubcontractEditor() {
   const [spanlineSignerName, setSpanlineSignerName] = useState("");
   const [spanlineSignerEmail, setSpanlineSignerEmail] = useState("");
   const sendMutation = trpc.subcontract.sendForSignature.useMutation();
+  const createMutation = trpc.subcontract.create.useMutation();
+  const cancelMutation = trpc.subcontract.cancel.useMutation();
+  const archiveMutation = trpc.subcontract.archive.useMutation();
+  const unarchiveMutation = trpc.subcontract.unarchive.useMutation();
+  const deleteMutation = trpc.subcontract.delete.useMutation();
 
   // Payment Schedule
   const [milestones, setMilestones] = useState<PaymentMilestone[]>([]);
@@ -222,6 +239,71 @@ export default function SubcontractEditor() {
   // Calculate totals
   const totalDollars = milestones.reduce((sum, m) => sum + (m.usePercent ? 0 : (m.amountDollars || 0)), 0);
   const totalPercent = milestones.reduce((sum, m) => sum + (m.usePercent ? (m.percentOfTotal || 0) : 0), 0);
+  const displayStatus = subcontractDisplayStatus(subcontract);
+  const isArchived = !!subcontract?.archivedAt;
+  const isSigned = subcontract?.status === "signed" || !!subcontract?.signedAt || !!subcontract?.pdfUrl;
+  const canSend = subcontract?.status === "draft" && !isArchived;
+  const canCancel = subcontract?.status === "sent" && !isSigned && !isArchived;
+  const canDelete = !!subcontract && !isSigned && subcontract.status !== "sent";
+  const lifecycleMutationPending = createMutation.isPending || cancelMutation.isPending || archiveMutation.isPending || unarchiveMutation.isPending || deleteMutation.isPending;
+
+  const refreshSubcontract = () => {
+    if (subcontractId) utils.subcontract.get.invalidate({ id: subcontractId });
+  };
+
+  const handleCreateAdditional = async () => {
+    if (!subcontract) return;
+    try {
+      const result = await createMutation.mutateAsync({
+        jobId: subcontract.jobId,
+        sourceSubcontractId: subcontract.id,
+      });
+      toast.success("Additional subcontract draft created");
+      navigate(`/subcontracts/${result.id}`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create additional subcontract");
+    }
+  };
+
+  const handleCancelSubcontract = async () => {
+    if (!subcontractId) return;
+    if (!window.confirm("Cancel this unsigned subcontract? You can create another draft for replacement or extra work.")) return;
+    try {
+      await cancelMutation.mutateAsync({ id: subcontractId });
+      refreshSubcontract();
+      toast.success("Subcontract cancelled");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to cancel subcontract");
+    }
+  };
+
+  const handleArchiveToggle = async () => {
+    if (!subcontractId) return;
+    try {
+      if (isArchived) {
+        await unarchiveMutation.mutateAsync({ id: subcontractId });
+        toast.success("Subcontract restored");
+      } else {
+        await archiveMutation.mutateAsync({ id: subcontractId });
+        toast.success("Subcontract archived");
+      }
+      refreshSubcontract();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update archive status");
+    }
+  };
+
+  const handleDeleteSubcontract = async () => {
+    if (!subcontractId) return;
+    if (!window.confirm("Delete this unsigned subcontract? This cannot be undone.")) return;
+    try {
+      await deleteMutation.mutateAsync({ id: subcontractId });
+      toast.success("Subcontract deleted");
+      window.history.back();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete subcontract");
+    }
+  };
 
   if (isLoading) {
     return (
@@ -261,10 +343,48 @@ export default function SubcontractEditor() {
             <p className="text-sm text-muted-foreground">Job #{jobNumber} — {clientName}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge className={STATUS_COLORS[subcontract.status]}>
-            {subcontract.status.charAt(0).toUpperCase() + subcontract.status.slice(1)}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <Badge className={STATUS_COLORS[displayStatus]}>
+            {formatStatusLabel(displayStatus)}
           </Badge>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleCreateAdditional}
+            disabled={createMutation.isPending}
+          >
+            {createMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+            Create another
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleArchiveToggle}
+            disabled={lifecycleMutationPending}
+          >
+            {isArchived ? <ArchiveRestore className="h-4 w-4 mr-1" /> : <Archive className="h-4 w-4 mr-1" />}
+            {isArchived ? "Restore" : "Archive"}
+          </Button>
+          {canCancel && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleCancelSubcontract}
+              disabled={lifecycleMutationPending}
+            >
+              Cancel contract
+            </Button>
+          )}
+          {canDelete && (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleDeleteSubcontract}
+              disabled={lifecycleMutationPending}
+            >
+              <Trash2 className="h-4 w-4 mr-1" /> Delete
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -762,7 +882,7 @@ export default function SubcontractEditor() {
           </Button>
           <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
             <DialogTrigger asChild>
-              <Button disabled={subcontract.status === "sent" || subcontract.status === "signed"}>
+              <Button disabled={!canSend}>
                 <Send className="h-4 w-4 mr-1" /> Send for Signature
               </Button>
             </DialogTrigger>

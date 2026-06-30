@@ -445,6 +445,8 @@ async function requireVisibleTradeInstructionSource(
     .where(and(
       eq(projectSubcontracts.jobId, input.jobId),
       eq(projectSubcontracts.installerId, ctx.tradeAccess.installerId),
+      isNull(projectSubcontracts.archivedAt),
+      or(eq(projectSubcontracts.status, "sent"), eq(projectSubcontracts.status, "signed"))!,
     ));
   const items = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
   const item = items.find((candidate) => visibleInstructionSourceMatches(candidate, input.sourceType, input.sourceId, input.sourceKey));
@@ -540,6 +542,9 @@ async function requireSubcontractAccess(db: any, ctx: any, subcontractId: number
     .limit(1);
   if (!subcontract) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
+  }
+  if (subcontract.archivedAt) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Subcontract is archived" });
   }
   await requireTradeJobAccess(db, ctx, subcontract.jobId);
   if (
@@ -1475,6 +1480,12 @@ export const tradePortalRouter = router({
         .where(and(
           inArray(projectSubcontracts.jobId, activeJobIds),
           eq(projectSubcontracts.installerId, installerId),
+          isNull(projectSubcontracts.archivedAt),
+          or(
+            eq(projectSubcontracts.status, "draft"),
+            eq(projectSubcontracts.status, "sent"),
+            eq(projectSubcontracts.status, "signed"),
+          )!,
         ));
       for (const sc of subcontracts) {
         if (!subcontractMap[sc.jobId]) subcontractMap[sc.jobId] = { count: 0, signedCount: 0, totalValue: 0 };
@@ -1800,8 +1811,9 @@ export const tradePortalRouter = router({
     const conditions = [eq(tradeInvoices.installerId, ctx.tradeAccess.installerId)];
     if (tenantIdFromContext(ctx)) {
       const jobIds = await getVisibleTradeJobIds(db, ctx, ctx.tradeAccess.installerId);
-      if (jobIds.length === 0) return [];
-      conditions.push(inArray(tradeInvoices.jobId, jobIds));
+      conditions.push(jobIds.length
+        ? or(inArray(tradeInvoices.jobId, jobIds), isNull(tradeInvoices.jobId))!
+        : isNull(tradeInvoices.jobId));
     }
     const invoices = await db.select()
       .from(tradeInvoices)
@@ -1826,8 +1838,8 @@ export const tradePortalRouter = router({
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
-      if (tenantIdFromContext(ctx) && !input.jobId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Job is required for tenant-scoped invoice submission" });
+      if (!input.jobId && !input.description?.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Description is required for non-client invoice submissions" });
       }
       await requireOptionalTradeJobAccess(db, ctx, input.jobId);
 
@@ -2277,10 +2289,9 @@ export const tradePortalRouter = router({
       .from(projectSubcontracts)
       .where(and(
         inArray(projectSubcontracts.jobId, visibleJobIds),
-        or(
-          eq(projectSubcontracts.installerId, installerId),
-          eq(projectSubcontracts.status, "signed")
-        ),
+        eq(projectSubcontracts.installerId, installerId),
+        eq(projectSubcontracts.status, "signed"),
+        isNull(projectSubcontracts.archivedAt),
       ));
 
     const subcontractIds = subcontracts.map((subcontract: any) => subcontract.id);
@@ -2344,7 +2355,7 @@ export const tradePortalRouter = router({
         description: z.string().optional(),
         amount: z.string(),
         gstAmount: z.string().optional(),
-        jobId: z.number(),
+        jobId: z.number().optional(),
         workOrderId: z.number().optional(),
         milestoneId: z.number().optional(),
         subcontractId: z.number().optional(),
@@ -2370,15 +2381,15 @@ export const tradePortalRouter = router({
           subcontractMilestoneIndex: input.subcontractMilestoneIndex,
         }];
 
-      if (!rawItems.length || rawItems.some((item) => !item.jobId || moneyNumber(item.amount) <= 0)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "At least one claim item with a job and amount is required" });
+      if (!rawItems.length || rawItems.some((item) => moneyNumber(item.amount) <= 0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "At least one claim item with an amount is required" });
       }
 
       const validatedItems: Array<{
         description: string;
         amount: string;
         gstAmount: string;
-        jobId: number;
+        jobId: number | null;
         workOrderId: number | null;
         milestoneId: number | null;
         subcontractId: number | null;
@@ -2387,22 +2398,34 @@ export const tradePortalRouter = router({
 
       for (let index = 0; index < rawItems.length; index++) {
         const item = rawItems[index];
-        await requireTradeJobAccess(db, ctx, item.jobId);
+        const jobId = item.jobId ?? null;
+        const description = item.description?.trim() || input.description?.trim() || "";
         let workOrderId = item.workOrderId ?? null;
         let milestoneId = item.milestoneId ?? null;
         let subcontractId = item.subcontractId ?? null;
         const subcontractMilestoneIndex = item.subcontractMilestoneIndex ?? null;
 
+        if (!jobId) {
+          if (workOrderId || milestoneId || subcontractId != null || subcontractMilestoneIndex != null) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: non-client charges cannot be linked to job milestones` });
+          }
+          if (!description) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: description is required for non-client charges` });
+          }
+        } else {
+          await requireTradeJobAccess(db, ctx, jobId);
+        }
+
         if (workOrderId) {
           const workOrder = await requireWorkOrderAccess(db, ctx, workOrderId);
-          if (workOrder.jobId !== item.jobId) {
+          if (workOrder.jobId !== jobId) {
             throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: work order does not belong to this job` });
           }
         }
 
         if (subcontractId != null) {
           const subcontract = await requireSubcontractAccess(db, ctx, subcontractId);
-          if (subcontract.jobId !== item.jobId) {
+          if (subcontract.jobId !== jobId) {
             throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: subcontract does not belong to this job` });
           }
         }
@@ -2416,7 +2439,7 @@ export const tradePortalRouter = router({
             .from(poMilestones)
             .where(and(
               eq(poMilestones.id, milestoneId),
-              eq(poMilestones.jobId, item.jobId),
+              eq(poMilestones.jobId, jobId!),
               ...(workOrderId ? [eq(poMilestones.workOrderId, workOrderId)] : []),
             ))
             .limit(1);
@@ -2428,10 +2451,10 @@ export const tradePortalRouter = router({
         }
 
         validatedItems.push({
-          description: item.description?.trim() || input.description?.trim() || `Invoice claim line ${index + 1}`,
+          description: description || `Invoice claim line ${index + 1}`,
           amount: moneyString(moneyNumber(item.amount)),
           gstAmount: moneyString(moneyNumber(item.gstAmount)),
-          jobId: item.jobId,
+          jobId,
           workOrderId,
           milestoneId,
           subcontractId,
@@ -2543,7 +2566,9 @@ export const tradePortalRouter = router({
         .from(projectSubcontracts)
         .where(and(
           eq(projectSubcontracts.jobId, input.jobId),
-          eq(projectSubcontracts.installerId, installerId)
+          eq(projectSubcontracts.installerId, installerId),
+          isNull(projectSubcontracts.archivedAt),
+          or(eq(projectSubcontracts.status, "sent"), eq(projectSubcontracts.status, "signed"))!,
         ));
 
       // Also get subcontracts that are signed (available to all trades on the job)
@@ -2551,7 +2576,8 @@ export const tradePortalRouter = router({
         .from(projectSubcontracts)
         .where(and(
           eq(projectSubcontracts.jobId, input.jobId),
-          eq(projectSubcontracts.status, "signed")
+          eq(projectSubcontracts.status, "signed"),
+          isNull(projectSubcontracts.archivedAt),
         ));
 
       // Merge and deduplicate

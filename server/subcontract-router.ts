@@ -1,8 +1,8 @@
 import {
   router,
   tenantProcedure as protectedProcedure,
-  tenantAdminProcedure as adminProcedure,
 } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb } from "./db";
 import {
@@ -18,7 +18,7 @@ import {
   type ElectricalCablingChecklist,
   type DownpipesChecklist,
 } from "../drizzle/schema";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, isNull } from "drizzle-orm";
 import { generateSubcontractHtml } from "./subcontract-pdf";
 import { createDocument } from "./signwell";
 import { storagePut } from "./storage";
@@ -138,6 +138,7 @@ export const subcontractRouter = router({
     .input(z.object({
       jobId: z.number(),
       installerId: z.number().optional(),
+      sourceSubcontractId: z.number().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -152,6 +153,19 @@ export const subcontractRouter = router({
 
       if (!job) throw new Error("Job not found");
 
+      let sourceSubcontract: typeof projectSubcontracts.$inferSelect | null = null;
+      if (input.sourceSubcontractId) {
+        const [source] = await db
+          .select()
+          .from(projectSubcontracts)
+          .where(subcontractScope(input.sourceSubcontractId, ctx.tenant!.id))
+          .limit(1);
+        if (!source || source.jobId !== input.jobId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Source subcontract not found for this job" });
+        }
+        sourceSubcontract = source;
+      }
+
       // Fetch installer if specified
       let installer: any = null;
       if (input.installerId) {
@@ -163,24 +177,28 @@ export const subcontractRouter = router({
         installer = inst;
       }
 
+      const selectedInstallerId = input.installerId ?? sourceSubcontract?.installerId ?? null;
+
       const [result] = await db.insert(projectSubcontracts).values({
         tenantId: ctx.tenant!.id,
         jobId: input.jobId,
-        installerId: input.installerId || null,
-        jobNumber: job.quoteNumber || String(job.id),
-        clientName: job.clientName,
-        constructionManager: job.supervisorName || job.designAdviserName || "",
-        subcontractorName: installer?.name || "",
-        subcontractorPhone: installer?.phone || "",
-        siteAddress: job.siteAddress || "",
-        subcontractSum: "0.00",
-        paymentSchedule: DEFAULT_PAYMENT_MILESTONES,
-        buildingFile: DEFAULT_BUILDING_FILE,
-        inspections: DEFAULT_INSPECTIONS,
-        otherContractors: DEFAULT_OTHER_CONTRACTORS,
-        electricalCabling: DEFAULT_ELECTRICAL_CABLING,
-        downpipes: DEFAULT_DOWNPIPES,
-        flashingBySubcontractor: "N/A",
+        installerId: selectedInstallerId,
+        jobNumber: sourceSubcontract?.jobNumber || job.quoteNumber || String(job.id),
+        clientName: sourceSubcontract?.clientName || job.clientName,
+        constructionManager: sourceSubcontract?.constructionManager || job.supervisorName || job.designAdviserName || "",
+        subcontractorName: installer?.name || sourceSubcontract?.subcontractorName || "",
+        subcontractorPhone: installer?.phone || sourceSubcontract?.subcontractorPhone || "",
+        siteAddress: sourceSubcontract?.siteAddress || job.siteAddress || "",
+        subcontractSum: sourceSubcontract?.subcontractSum || "0.00",
+        paymentSchedule: sourceSubcontract?.paymentSchedule || DEFAULT_PAYMENT_MILESTONES,
+        estimatedCommencement: sourceSubcontract?.estimatedCommencement || null,
+        estimatedCompletion: sourceSubcontract?.estimatedCompletion || null,
+        buildingFile: sourceSubcontract?.buildingFile || DEFAULT_BUILDING_FILE,
+        inspections: sourceSubcontract?.inspections || DEFAULT_INSPECTIONS,
+        otherContractors: sourceSubcontract?.otherContractors || DEFAULT_OTHER_CONTRACTORS,
+        electricalCabling: sourceSubcontract?.electricalCabling || DEFAULT_ELECTRICAL_CABLING,
+        downpipes: sourceSubcontract?.downpipes || DEFAULT_DOWNPIPES,
+        flashingBySubcontractor: sourceSubcontract?.flashingBySubcontractor || "N/A",
         status: "draft",
         createdBy: ctx.user.id,
       });
@@ -204,25 +222,34 @@ export const subcontractRouter = router({
 
   // List subcontracts for a job
   listByJob: protectedProcedure
-    .input(z.object({ jobId: z.number() }))
+    .input(z.object({ jobId: z.number(), includeArchived: z.boolean().optional() }))
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
+      const conditions = [
+        eq(projectSubcontracts.jobId, input.jobId),
+        eq(projectSubcontracts.tenantId, ctx.tenant!.id),
+      ];
+      if (!input.includeArchived) conditions.push(isNull(projectSubcontracts.archivedAt));
       return db
         .select()
         .from(projectSubcontracts)
-        .where(and(eq(projectSubcontracts.jobId, input.jobId), eq(projectSubcontracts.tenantId, ctx.tenant!.id)))
+        .where(and(...conditions))
         .orderBy(desc(projectSubcontracts.createdAt));
     }),
 
   // List all subcontracts
-  listAll: protectedProcedure.query(async ({ ctx }) => {
+  listAll: protectedProcedure
+    .input(z.object({ includeArchived: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
     const db = await getDb();
     if (!db) return [];
+    const conditions = [eq(projectSubcontracts.tenantId, ctx.tenant!.id)];
+    if (!input?.includeArchived) conditions.push(isNull(projectSubcontracts.archivedAt));
     return db
       .select()
       .from(projectSubcontracts)
-      .where(eq(projectSubcontracts.tenantId, ctx.tenant!.id))
+      .where(and(...conditions))
       .orderBy(desc(projectSubcontracts.createdAt))
       .limit(100);
   }),
@@ -248,7 +275,7 @@ export const subcontractRouter = router({
       electricalCabling: electricalCablingSchema.optional(),
       downpipes: downpipesSchema.optional(),
       flashingBySubcontractor: z.string().optional(),
-      status: z.enum(["draft", "sent", "signed", "cancelled"]).optional(),
+      status: z.enum(["draft", "sent", "signed", "cancelled", "declined"]).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -276,12 +303,78 @@ export const subcontractRouter = router({
       return { success: true };
     }),
 
-  // Delete a subcontract
-  delete: adminProcedure
+  // Cancel an unsigned subcontract so a replacement can be issued.
+  cancel: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new Error("Database unavailable");
+      const [sc] = await db
+        .select()
+        .from(projectSubcontracts)
+        .where(subcontractScope(input.id, ctx.tenant!.id))
+        .limit(1);
+      if (!sc) throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
+      if (sc.status === "signed" || sc.signedAt || sc.pdfUrl) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Signed subcontracts cannot be cancelled" });
+      }
+      await db
+        .update(projectSubcontracts)
+        .set({ status: "cancelled" })
+        .where(subcontractScope(input.id, ctx.tenant!.id));
+      return { success: true };
+    }),
+
+  archive: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+      await db
+        .update(projectSubcontracts)
+        .set({ archivedAt: new Date() })
+        .where(subcontractScope(input.id, ctx.tenant!.id));
+      return { success: true };
+    }),
+
+  unarchive: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+      await db
+        .update(projectSubcontracts)
+        .set({ archivedAt: null })
+        .where(subcontractScope(input.id, ctx.tenant!.id));
+      return { success: true };
+    }),
+
+  // Delete an unsigned, inactive subcontract.
+  delete: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+      const [sc] = await db
+        .select()
+        .from(projectSubcontracts)
+        .where(subcontractScope(input.id, ctx.tenant!.id))
+        .limit(1);
+      if (!sc) throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
+      if (sc.status === "signed" || sc.signedAt || sc.pdfUrl) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Signed subcontracts cannot be deleted. Archive them instead." });
+      }
+      if (sc.status === "sent") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Cancel the sent subcontract before deleting it." });
+      }
+      const [claim] = await db
+        .select({ id: tradeInvoiceLines.id })
+        .from(tradeInvoiceLines)
+        .where(eq(tradeInvoiceLines.subcontractId, input.id))
+        .limit(1);
+      if (claim) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Subcontracts with invoice claims cannot be deleted. Archive them instead." });
+      }
       await db
         .delete(projectSubcontracts)
         .where(subcontractScope(input.id, ctx.tenant!.id));
@@ -308,6 +401,12 @@ export const subcontractRouter = router({
         .limit(1);
 
       if (!sc) throw new Error("Subcontract not found");
+      if (sc.archivedAt) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Archived subcontracts must be unarchived before sending" });
+      }
+      if (sc.status !== "draft") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Only draft subcontracts can be sent. Create another subcontract for extra work or replacement documents." });
+      }
 
       // Generate HTML
       const html = generateSubcontractHtml({

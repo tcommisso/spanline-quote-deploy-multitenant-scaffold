@@ -1667,7 +1667,8 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
 // ─── Subcontracts Section ────────────────────────────────────────────────────
 function SubcontractsSection({ jobId }: { jobId: number }) {
   const [, navigate] = useLocation();
-  const { data: subcontracts, isLoading } = trpc.subcontract.listByJob.useQuery({ jobId });
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: subcontracts, isLoading } = trpc.subcontract.listByJob.useQuery({ jobId, includeArchived: showArchived });
   const createMutation = trpc.subcontract.create.useMutation();
   const utils = trpc.useUtils();
 
@@ -1686,21 +1687,28 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
     sent: "bg-blue-100 text-blue-700",
     signed: "bg-green-100 text-green-700",
     cancelled: "bg-red-100 text-red-700",
+    declined: "bg-red-100 text-red-700",
+    archived: "bg-slate-100 text-slate-600",
   };
 
   if (isLoading) return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-16 bg-muted/50 rounded-lg animate-pulse" />)}</div>;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold text-base">Subcontracts</h3>
           <p className="text-xs text-muted-foreground">{subcontracts?.length || 0} subcontract(s) for this job</p>
         </div>
-        <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="gap-1.5">
-          {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          New Subcontract
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)}>
+            {showArchived ? "Hide archived" : "Show archived"}
+          </Button>
+          <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="gap-1.5">
+            {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            New Subcontract
+          </Button>
+        </div>
       </div>
 
       {!subcontracts?.length ? (
@@ -1734,6 +1742,7 @@ function SubcontractCard({ sc, statusColors, navigate }: { sc: any; statusColors
   const totalMilestones = milestones.length;
   const claimedCount = claimStatus ? new Set(claimStatus.map((c: any) => c.subcontractMilestoneIndex)).size : 0;
   const paidCount = claimStatus ? new Set(claimStatus.filter((c: any) => c.approvalStatus === "paid" || c.approvalStatus === "approved").map((c: any) => c.subcontractMilestoneIndex)).size : 0;
+  const displayStatus = sc.archivedAt ? "archived" : sc.status;
 
   return (
     <Card className="hover:shadow-sm transition-shadow cursor-pointer" onClick={() => navigate(`/subcontracts/${sc.id}`)}>
@@ -1798,7 +1807,7 @@ function SubcontractCard({ sc, statusColors, navigate }: { sc: any; statusColors
               <Download className="h-3.5 w-3.5" />
             </Button>
             <span className="text-sm font-semibold">${sc.subcontractSum || "0.00"}</span>
-            <Badge className={`text-[10px] ${statusColors[sc.status] || ""}`}>{sc.status}</Badge>
+            <Badge className={`text-[10px] ${statusColors[displayStatus] || ""}`}>{displayStatus}</Badge>
           </div>
         </div>
         {/* Milestone Payment Summary */}

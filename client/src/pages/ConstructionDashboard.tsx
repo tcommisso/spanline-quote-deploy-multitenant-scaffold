@@ -1684,7 +1684,8 @@ function JobCalendarView({ jobs, onSelectJob }: { jobs: any[]; onSelectJob: (id:
 // ─── Subcontract Section ─────────────────────────────────────────────────
 function SubcontractSection({ jobId }: { jobId: number }) {
   const [, navigate] = useLocation();
-  const { data: subcontracts, isLoading } = trpc.subcontract.listByJob.useQuery({ jobId });
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: subcontracts, isLoading } = trpc.subcontract.listByJob.useQuery({ jobId, includeArchived: showArchived });
   const createMutation = trpc.subcontract.create.useMutation();
   const utils = trpc.useUtils();
 
@@ -1704,6 +1705,8 @@ function SubcontractSection({ jobId }: { jobId: number }) {
       sent: "bg-blue-100 text-blue-700",
       signed: "bg-green-100 text-green-700",
       cancelled: "bg-red-100 text-red-700",
+      declined: "bg-red-100 text-red-700",
+      archived: "bg-slate-100 text-slate-600",
     };
     return <Badge className={`text-[10px] ${colors[status] || ""}`}>{status}</Badge>;
   };
@@ -1716,15 +1719,25 @@ function SubcontractSection({ jobId }: { jobId: number }) {
         <Label className="text-xs font-semibold flex items-center gap-1">
           <FileText className="h-3 w-3" /> Subcontracts
         </Label>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 text-[10px]"
-          onClick={handleCreate}
-          disabled={createMutation.isPending}
-        >
-          <Plus className="h-3 w-3 mr-1" /> New
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant={showArchived ? "secondary" : "outline"}
+            size="sm"
+            className="h-6 text-[10px]"
+            onClick={() => setShowArchived((value) => !value)}
+          >
+            {showArchived ? "Hide archived" : "Archived"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px]"
+            onClick={handleCreate}
+            disabled={createMutation.isPending}
+          >
+            <Plus className="h-3 w-3 mr-1" /> New
+          </Button>
+        </div>
       </div>
 
       {subcontracts && subcontracts.length > 0 ? (
@@ -1741,7 +1754,7 @@ function SubcontractSection({ jobId }: { jobId: number }) {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">${sc.subcontractSum || "0.00"}</span>
-                {statusBadge(sc.status)}
+                {statusBadge(sc.archivedAt ? "archived" : sc.status)}
               </div>
             </button>
           ))}

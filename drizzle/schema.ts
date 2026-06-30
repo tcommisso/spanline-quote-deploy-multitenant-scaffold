@@ -3296,6 +3296,7 @@ export const projectSubcontracts = mysqlTable("project_subcontracts", {
   signedByCompany: varchar("signedByCompany", { length: 255 }),
   pdfUrl: text("pdfUrl"),
   pdfKey: text("pdfKey"),
+  archivedAt: timestamp("archivedAt"),
   // Metadata
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

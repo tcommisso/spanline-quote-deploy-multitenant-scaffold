@@ -39,6 +39,7 @@ type SubmitStep = "upload" | "ai_review" | "confirm";
 
 type ClaimItem = {
   id: string;
+  chargeType: "job" | "non_client";
   jobId: string;
   workOrderId: string;
   milestoneId: string;
@@ -51,6 +52,7 @@ type ClaimItem = {
 function createClaimItem(): ClaimItem {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    chargeType: "job",
     jobId: "",
     workOrderId: "",
     milestoneId: "",
@@ -144,13 +146,20 @@ export default function TradePortalInvoices() {
   }
 
   async function handleSubmit() {
-    const validItems = claimItems.filter((item) => item.jobId && amountNumber(item.amount) > 0);
+    const validItems = claimItems.filter((item) => (
+      amountNumber(item.amount) > 0 &&
+      (item.chargeType === "non_client" || !!item.jobId)
+    ));
     if (!invoiceNumber || validItems.length === 0) {
       toast.error("Please fill in all required fields");
       return;
     }
     if (validItems.length !== claimItems.length) {
-      toast.error("Each claim item needs a job and claimed amount");
+      toast.error("Each claim item needs a claimed amount and job, unless it is a non-client charge");
+      return;
+    }
+    if (validItems.some((item) => item.chargeType === "non_client" && !item.description.trim())) {
+      toast.error("Non-client charges need a description");
       return;
     }
 
@@ -178,11 +187,11 @@ export default function TradePortalInvoices() {
               description: item.description || undefined,
               amount: moneyString(amountNumber(item.amount)),
               gstAmount: moneyString(amountNumber(item.gstAmount)),
-              jobId: parseInt(item.jobId),
-              workOrderId: item.workOrderId ? parseInt(item.workOrderId) : undefined,
-              milestoneId: item.milestoneId ? parseInt(item.milestoneId) : undefined,
-              subcontractId: subcontractId ? parseInt(subcontractId) : undefined,
-              subcontractMilestoneIndex: subcontractMilestoneIndex !== undefined ? parseInt(subcontractMilestoneIndex) : undefined,
+              jobId: item.chargeType === "job" && item.jobId ? parseInt(item.jobId) : undefined,
+              workOrderId: item.chargeType === "job" && item.workOrderId ? parseInt(item.workOrderId) : undefined,
+              milestoneId: item.chargeType === "job" && item.milestoneId ? parseInt(item.milestoneId) : undefined,
+              subcontractId: item.chargeType === "job" && subcontractId ? parseInt(subcontractId) : undefined,
+              subcontractMilestoneIndex: item.chargeType === "job" && subcontractMilestoneIndex !== undefined ? parseInt(subcontractMilestoneIndex) : undefined,
             };
           }),
           fileBase64: base64,
@@ -589,6 +598,7 @@ function ClaimItemsEditor({
       <div className="space-y-3">
         {items.map((item, index) => {
           const jobId = item.jobId ? parseInt(item.jobId) : null;
+          const isNonClient = item.chargeType === "non_client";
           const workOrderOptions = jobId ? workOrders.filter((wo: any) => wo.jobId === jobId) : [];
           const milestoneOptions = item.workOrderId
             ? poMilestones.filter((milestone: any) => milestone.workOrderId === parseInt(item.workOrderId) && milestone.status === "pending")
@@ -615,9 +625,30 @@ function ClaimItemsEditor({
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <Label className="text-xs">Job *</Label>
+                  <Label className="text-xs">Charge type *</Label>
+                  <Select
+                    value={item.chargeType}
+                    onValueChange={(value) => updateItem(item.id, {
+                      chargeType: value as ClaimItem["chargeType"],
+                      jobId: value === "non_client" ? "" : item.jobId,
+                      workOrderId: "",
+                      milestoneId: "",
+                      subcontractKey: "",
+                    })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="job">Client job</SelectItem>
+                      <SelectItem value="non_client">Non-client charge</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs">Job {isNonClient ? "" : "*"}</Label>
                   <Select
                     value={item.jobId}
+                    disabled={isNonClient}
                     onValueChange={(value) => updateItem(item.id, {
                       jobId: value,
                       workOrderId: "",
@@ -625,7 +656,7 @@ function ClaimItemsEditor({
                       subcontractKey: "",
                     })}
                   >
-                    <SelectTrigger><SelectValue placeholder="Select a job" /></SelectTrigger>
+                    <SelectTrigger><SelectValue placeholder={isNonClient ? "Not related to a client job" : "Select a job"} /></SelectTrigger>
                     <SelectContent>
                       {jobs.map((job: any) => (
                         <SelectItem key={job.jobId} value={job.jobId.toString()}>
@@ -640,7 +671,7 @@ function ClaimItemsEditor({
                   <Label className="text-xs">Work Order</Label>
                   <Select
                     value={item.workOrderId || "none"}
-                    disabled={!item.jobId || workOrderOptions.length === 0}
+                    disabled={isNonClient || !item.jobId || workOrderOptions.length === 0}
                     onValueChange={(value) => updateItem(item.id, {
                       workOrderId: value === "none" ? "" : value,
                       milestoneId: "",
@@ -662,7 +693,7 @@ function ClaimItemsEditor({
                   <Label className="text-xs">PO Milestone</Label>
                   <Select
                     value={item.milestoneId || "none"}
-                    disabled={!item.workOrderId || milestoneOptions.length === 0}
+                    disabled={isNonClient || !item.workOrderId || milestoneOptions.length === 0}
                     onValueChange={(value) => {
                       if (value === "none") {
                         updateItem(item.id, { milestoneId: "" });
@@ -693,7 +724,7 @@ function ClaimItemsEditor({
                   <Label className="text-xs">Subcontract Milestone</Label>
                   <Select
                     value={item.subcontractKey || "none"}
-                    disabled={!item.jobId || subcontractOptions.length === 0}
+                    disabled={isNonClient || !item.jobId || subcontractOptions.length === 0}
                     onValueChange={(value) => {
                       if (value === "none") {
                         updateItem(item.id, { subcontractKey: "" });
@@ -733,7 +764,7 @@ function ClaimItemsEditor({
                   <Input
                     value={item.description}
                     onChange={(event) => updateItem(item.id, { description: event.target.value })}
-                    placeholder="Work completed or claim note"
+                    placeholder={isNonClient ? "Describe the sundry work or charge" : "Work completed or claim note"}
                   />
                 </div>
                 <div>
@@ -852,7 +883,7 @@ function InvoiceCard({ invoice }: { invoice: any }) {
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              Job #{invoice.jobId || "—"}
+              {invoice.jobId ? `Job #${invoice.jobId}` : "Non-client charge"}
               {invoice.workOrderId && ` • WO-${invoice.workOrderId}`}
             </p>
             <p className="text-xs text-muted-foreground">

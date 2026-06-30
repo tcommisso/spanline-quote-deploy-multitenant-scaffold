@@ -615,11 +615,14 @@ const SC_STATUS_COLORS: Record<string, string> = {
   sent: "bg-blue-50 text-blue-700 border-blue-200",
   signed: "bg-green-50 text-green-700 border-green-200",
   cancelled: "bg-red-50 text-red-700 border-red-200",
+  declined: "bg-red-50 text-red-700 border-red-200",
+  archived: "bg-slate-50 text-slate-600 border-slate-200",
 };
 
 function SubcontractsTab() {
   const [, navigate] = useLocation();
-  const { data: subcontracts, isLoading } = trpc.subcontract.listAll.useQuery();
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: subcontracts, isLoading } = trpc.subcontract.listAll.useQuery({ includeArchived: showArchived });
   const createMutation = trpc.subcontract.create.useMutation();
   const utils = trpc.useUtils();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -659,9 +662,14 @@ function SubcontractsTab() {
         <p className="text-sm text-muted-foreground">
           {subcontracts?.length || 0} subcontract(s) across all jobs
         </p>
-        <Button variant="brand" size="sm" onClick={() => setShowCreateDialog(true)} className="gap-1.5">
-          <Plus className="h-4 w-4" /> New Subcontract
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant={showArchived ? "secondary" : "outline"} size="sm" onClick={() => setShowArchived((value) => !value)}>
+            {showArchived ? "Hide archived" : "Show archived"}
+          </Button>
+          <Button variant="brand" size="sm" onClick={() => setShowCreateDialog(true)} className="gap-1.5">
+            <Plus className="h-4 w-4" /> New Subcontract
+          </Button>
+        </div>
       </div>
 
       {!subcontracts?.length ? (
@@ -682,8 +690,8 @@ function SubcontractsTab() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <FileText className="h-4 w-4 text-muted-foreground" />
                       <span className="font-semibold text-sm">{sc.subcontractorName || "Unnamed Subcontractor"}</span>
-                      <Badge variant="outline" className={`text-[10px] ${SC_STATUS_COLORS[sc.status] || ""}`}>
-                        {sc.status}
+                      <Badge variant="outline" className={`text-[10px] ${SC_STATUS_COLORS[sc.archivedAt ? "archived" : sc.status] || ""}`}>
+                        {sc.archivedAt ? "archived" : sc.status}
                       </Badge>
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground flex-wrap">

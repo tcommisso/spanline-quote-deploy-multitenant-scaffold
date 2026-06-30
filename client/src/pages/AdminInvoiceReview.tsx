@@ -158,6 +158,11 @@ function InvoiceRow({ inv, onClick }: { inv: any; onClick: () => void }) {
                   {inv.invoiceNumber || `INV-${inv.id}`}
                 </span>
                 <StatusBadge status={inv.status} />
+                {!inv.jobId && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-700">
+                    Non-client charge
+                  </span>
+                )}
                 {isUrgent && (
                   <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-orange-500 text-white">
                     <Zap className="h-2.5 w-2.5" /> {age}d
@@ -750,7 +755,7 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                                 )}
                               </td>
                               <td className="p-2 text-xs text-muted-foreground">
-                                {line.jobId ? `Job #${line.jobId}` : "—"}
+                                {line.jobId ? `Job #${line.jobId}` : "Non-client charge"}
                                 {line.workOrderId && ` / WO #${line.workOrderId}`}
                               </td>
                               <td className="p-2 text-right">{line.quantity || "—"}</td>
