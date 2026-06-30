@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -13,24 +13,31 @@ import { toast } from "sonner";
 interface BulkAssignAdvisorDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  leadIds?: number[];
+  onAssigned?: () => void;
 }
 
-export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdvisorDialogProps) {
+export function BulkAssignAdvisorDialog({ open, onOpenChange, leadIds, onAssigned }: BulkAssignAdvisorDialogProps) {
   const [step, setStep] = useState<"summary" | "select" | "done">("summary");
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [advisorName, setAdvisorName] = useState("");
   const [assignedCount, setAssignedCount] = useState(0);
+  const [assignedFromSelectedMode, setAssignedFromSelectedMode] = useState(false);
   const [page, setPage] = useState(0);
   const pageSize = 50;
+  const selectedLeadIds = useMemo(() => Array.from(new Set(leadIds || [])), [leadIds]);
+  const selectedMode = selectedLeadIds.length > 0;
+  const activeSelectedMode = selectedMode || assignedFromSelectedMode;
+  const selectedModeCount = selectedMode ? selectedLeadIds.length : assignedCount;
 
-  const { data: summary } = trpc.crm.leads.advisorAssignmentSummary.useQuery(undefined, { enabled: open });
+  const { data: summary } = trpc.crm.leads.advisorAssignmentSummary.useQuery(undefined, { enabled: open && !activeSelectedMode });
   const { data: advisors } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true }, { enabled: open });
 
   // Fetch unassigned leads for selection
   const { data: leadsData, isLoading: leadsLoading } = trpc.crm.leads.list.useQuery(
     { search: search || undefined, designAdvisor: "__unassigned__", limit: pageSize, offset: page * pageSize },
-    { enabled: open && step === "select" }
+    { enabled: open && step === "select" && !activeSelectedMode }
   );
 
   const utils = trpc.useUtils();
@@ -38,9 +45,11 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
   const bulkAssignMut = trpc.crm.leads.bulkAssignAdvisor.useMutation({
     onSuccess: (result) => {
       setAssignedCount(result.updatedCount);
+      setAssignedFromSelectedMode(selectedMode);
       setStep("done");
       utils.crm.leads.list.invalidate();
       utils.crm.leads.advisorAssignmentSummary.invalidate();
+      onAssigned?.();
       toast.success(`Assigned ${result.updatedCount} leads to ${advisorName}`);
     },
     onError: (err) => {
@@ -49,15 +58,20 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
   });
 
   const handleAssign = () => {
-    if (selectedIds.size === 0) {
+    const idsToAssign = selectedMode ? selectedLeadIds : Array.from(selectedIds);
+    if (idsToAssign.length === 0) {
       toast.error("Please select at least one lead");
+      return;
+    }
+    if (idsToAssign.length > 500) {
+      toast.error("Assign up to 500 leads at a time");
       return;
     }
     if (!advisorName) {
       toast.error("Please select a design advisor");
       return;
     }
-    bulkAssignMut.mutate({ leadIds: Array.from(selectedIds), advisorName });
+    bulkAssignMut.mutate({ leadIds: idsToAssign, advisorName });
   };
 
   const toggleAll = () => {
@@ -86,8 +100,19 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
     setSelectedIds(new Set());
     setAdvisorName("");
     setAssignedCount(0);
+    setAssignedFromSelectedMode(false);
     setPage(0);
   };
+
+  useEffect(() => {
+    if (!open || !selectedMode) return;
+    setStep("select");
+    setSelectedIds(new Set());
+    setAssignedCount(0);
+    setPage(0);
+  }, [open, selectedMode, selectedLeadIds.length]);
+
+  const selectedCount = selectedMode ? selectedLeadIds.length : selectedIds.size;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o); }}>
@@ -95,11 +120,13 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
         <DialogHeader>
           <DialogTitle>Bulk Assign Design Advisor</DialogTitle>
           <DialogDescription>
-            Assign a design advisor to multiple leads at once to ensure complete performance data.
+            {activeSelectedMode
+              ? `Assign a design advisor to ${selectedModeCount} selected lead${selectedModeCount === 1 ? "" : "s"}.`
+              : "Assign a design advisor to multiple leads at once to ensure complete performance data."}
           </DialogDescription>
         </DialogHeader>
 
-        {step === "summary" && summary && (
+        {!activeSelectedMode && step === "summary" && summary && (
           <div className="space-y-4">
             {/* KPI Cards */}
             <div className="grid grid-cols-3 gap-3">
@@ -181,90 +208,103 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
               </div>
             </div>
 
-            {/* Selection info */}
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
-                {selectedIds.size > 0 ? (
-                  <span className="text-foreground font-medium">{selectedIds.size} lead{selectedIds.size !== 1 ? "s" : ""} selected</span>
-                ) : (
-                  "Select leads to assign"
-                )}
-              </p>
-              {leadsData?.leads && leadsData.leads.length > 0 && (
-                <Button variant="ghost" size="sm" onClick={toggleAll}>
-                  {leadsData.leads.every((l: any) => selectedIds.has(l.id)) ? "Deselect Page" : "Select Page"}
-                </Button>
-              )}
-            </div>
-
-            {/* Leads list */}
-            <div className="border rounded-lg max-h-[300px] overflow-y-auto">
-              {leadsLoading ? (
-                <div className="p-4 text-center text-muted-foreground">Loading leads...</div>
-              ) : !leadsData?.leads || leadsData.leads.length === 0 ? (
-                <div className="p-4 text-center text-muted-foreground">No unassigned leads found.</div>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-background border-b">
-                    <tr>
-                      <th className="w-10 py-2 px-2">
-                        <Checkbox
-                          checked={leadsData.leads.length > 0 && leadsData.leads.every((l: any) => selectedIds.has(l.id))}
-                          onCheckedChange={toggleAll}
-                        />
-                      </th>
-                      <th className="text-left py-2 px-2 font-medium">Lead #</th>
-                      <th className="text-left py-2 px-2 font-medium">Contact</th>
-                      <th className="text-left py-2 px-2 font-medium">Product</th>
-                      <th className="text-left py-2 px-2 font-medium">Status</th>
-                      <th className="text-left py-2 px-2 font-medium">Lead Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {leadsData.leads.map((lead: any) => (
-                      <tr
-                        key={lead.id}
-                        className={`border-b hover:bg-muted/50 cursor-pointer ${selectedIds.has(lead.id) ? "bg-primary/5" : ""}`}
-                        onClick={() => toggleOne(lead.id)}
-                      >
-                        <td className="py-2 px-2">
-                          <Checkbox checked={selectedIds.has(lead.id)} onCheckedChange={() => toggleOne(lead.id)} />
-                        </td>
-                        <td className="py-2 px-2 font-mono text-xs">{lead.leadNumber}</td>
-                        <td className="py-2 px-2">
-                          {lead.contactFirstName} {lead.contactLastName}
-                        </td>
-                        <td className="py-2 px-2 text-muted-foreground">{lead.productType || "—"}</td>
-                        <td className="py-2 px-2">
-                          <Badge variant="secondary" className="text-xs">{lead.status}</Badge>
-                        </td>
-                        <td className="py-2 px-2 text-xs text-muted-foreground">
-                          {lead.leadDate ? new Date(lead.leadDate).toLocaleDateString("en-AU") : "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* Pagination */}
-            {leadsData && leadsData.total > pageSize && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">
-                  Page {page + 1} of {Math.ceil(leadsData.total / pageSize)} ({leadsData.total} leads)
-                </span>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Prev</Button>
-                  <Button variant="outline" size="sm" disabled={(page + 1) * pageSize >= leadsData.total} onClick={() => setPage(p => p + 1)}>Next</Button>
-                </div>
+            {activeSelectedMode ? (
+              <div className="rounded-lg border bg-muted/30 p-4 text-sm">
+                <p className="font-medium">{selectedModeCount} selected lead{selectedModeCount === 1 ? "" : "s"}</p>
+                <p className="mt-1 text-muted-foreground">
+                  The selected leads will be assigned to the chosen design adviser. Linked quotes without an adviser will also be filled.
+                </p>
               </div>
+            ) : (
+              <>
+                {/* Selection info */}
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-muted-foreground">
+                    {selectedIds.size > 0 ? (
+                      <span className="text-foreground font-medium">{selectedIds.size} lead{selectedIds.size !== 1 ? "s" : ""} selected</span>
+                    ) : (
+                      "Select leads to assign"
+                    )}
+                  </p>
+                  {leadsData?.leads && leadsData.leads.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={toggleAll}>
+                      {leadsData.leads.every((l: any) => selectedIds.has(l.id)) ? "Deselect Page" : "Select Page"}
+                    </Button>
+                  )}
+                </div>
+
+                {/* Leads list */}
+                <div className="border rounded-lg max-h-[300px] overflow-y-auto">
+                  {leadsLoading ? (
+                    <div className="p-4 text-center text-muted-foreground">Loading leads...</div>
+                  ) : !leadsData?.leads || leadsData.leads.length === 0 ? (
+                    <div className="p-4 text-center text-muted-foreground">No unassigned leads found.</div>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-background border-b">
+                        <tr>
+                          <th className="w-10 py-2 px-2">
+                            <Checkbox
+                              checked={leadsData.leads.length > 0 && leadsData.leads.every((l: any) => selectedIds.has(l.id))}
+                              onCheckedChange={toggleAll}
+                            />
+                          </th>
+                          <th className="text-left py-2 px-2 font-medium">Lead #</th>
+                          <th className="text-left py-2 px-2 font-medium">Contact</th>
+                          <th className="text-left py-2 px-2 font-medium">Product</th>
+                          <th className="text-left py-2 px-2 font-medium">Status</th>
+                          <th className="text-left py-2 px-2 font-medium">Lead Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leadsData.leads.map((lead: any) => (
+                          <tr
+                            key={lead.id}
+                            className={`border-b hover:bg-muted/50 cursor-pointer ${selectedIds.has(lead.id) ? "bg-primary/5" : ""}`}
+                            onClick={() => toggleOne(lead.id)}
+                          >
+                            <td className="py-2 px-2">
+                              <Checkbox checked={selectedIds.has(lead.id)} onCheckedChange={() => toggleOne(lead.id)} />
+                            </td>
+                            <td className="py-2 px-2 font-mono text-xs">{lead.leadNumber}</td>
+                            <td className="py-2 px-2">
+                              {lead.contactFirstName} {lead.contactLastName}
+                            </td>
+                            <td className="py-2 px-2 text-muted-foreground">{lead.productType || "—"}</td>
+                            <td className="py-2 px-2">
+                              <Badge variant="secondary" className="text-xs">{lead.status}</Badge>
+                            </td>
+                            <td className="py-2 px-2 text-xs text-muted-foreground">
+                              {lead.leadDate ? new Date(lead.leadDate).toLocaleDateString("en-AU") : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Pagination */}
+                {leadsData && leadsData.total > pageSize && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      Page {page + 1} of {Math.ceil(leadsData.total / pageSize)} ({leadsData.total} leads)
+                    </span>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Prev</Button>
+                      <Button variant="outline" size="sm" disabled={(page + 1) * pageSize >= leadsData.total} onClick={() => setPage(p => p + 1)}>Next</Button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             <DialogFooter>
-              <Button variant="outline" onClick={() => setStep("summary")}>Back</Button>
-              <Button onClick={handleAssign} disabled={selectedIds.size === 0 || !advisorName || bulkAssignMut.isPending}>
-                {bulkAssignMut.isPending ? "Assigning..." : `Assign ${selectedIds.size} Lead${selectedIds.size !== 1 ? "s" : ""}`}
+              <Button variant="outline" onClick={() => activeSelectedMode ? onOpenChange(false) : setStep("summary")}>
+                {activeSelectedMode ? "Cancel" : "Back"}
+              </Button>
+              <Button onClick={handleAssign} disabled={selectedCount === 0 || selectedCount > 500 || !advisorName || bulkAssignMut.isPending}>
+                {bulkAssignMut.isPending ? "Assigning..." : `Assign ${selectedCount} Lead${selectedCount !== 1 ? "s" : ""}`}
               </Button>
             </DialogFooter>
           </div>
@@ -281,7 +321,7 @@ export function BulkAssignAdvisorDialog({ open, onOpenChange }: BulkAssignAdviso
               Linked quotes without an advisor have also been updated.
             </p>
             <DialogFooter className="justify-center">
-              <Button variant="outline" onClick={() => { reset(); setStep("select"); }}>Assign More</Button>
+              {!activeSelectedMode && <Button variant="outline" onClick={() => { reset(); setStep("select"); }}>Assign More</Button>}
               <Button onClick={() => onOpenChange(false)}>Done</Button>
             </DialogFooter>
           </div>

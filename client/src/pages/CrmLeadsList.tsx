@@ -420,8 +420,10 @@ export default function CrmLeadsList() {
 
   // Bulk assign state
   const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [showSelectedAdvisorAssign, setShowSelectedAdvisorAssign] = useState(false);
   const [showBulkAssignBranch, setShowBulkAssignBranch] = useState(false);
   const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null);
+  const selectedLeadIdList = useMemo(() => Array.from(selectedIds), [selectedIds]);
 
   // Bulk delete mutation
   const utils = trpc.useUtils();
@@ -884,6 +886,22 @@ export default function CrmLeadsList() {
             >
               <GitMerge className="h-4 w-4 mr-1" />
               Merge {selectedIds.size}
+            </Button>
+          )}
+          {isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (selectedIds.size > 500) {
+                  toast.error("Assign up to 500 leads at a time");
+                  return;
+                }
+                setShowSelectedAdvisorAssign(true);
+              }}
+            >
+              <UserCheck className="h-4 w-4 mr-1" />
+              Assign Design Adviser
             </Button>
           )}
           {isAdmin && (
@@ -1673,6 +1691,15 @@ export default function CrmLeadsList() {
 
       {/* Bulk Assign Advisor Dialog */}
       <BulkAssignAdvisorDialog open={showBulkAssign} onOpenChange={setShowBulkAssign} />
+      <BulkAssignAdvisorDialog
+        open={showSelectedAdvisorAssign}
+        onOpenChange={setShowSelectedAdvisorAssign}
+        leadIds={selectedLeadIdList}
+        onAssigned={() => {
+          setSelectedIds(new Set());
+          setSelectAllMatchingMode(false);
+        }}
+      />
 
       {/* Merge Leads Dialog */}
       <Dialog open={showMergeDialog} onOpenChange={(open) => { if (!open) { setShowMergeDialog(false); setPrimaryLeadId(null); } }}>
