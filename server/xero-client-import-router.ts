@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, isNull, and, isNotNull, sql } from "drizzle-orm";
+import { eq, isNull, and, isNotNull, sql, or, inArray, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
@@ -23,6 +23,11 @@ import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
  * as "converted" status. This bridges the gap where Xero contacts don't have
  * a CRM lead record for communication history.
  */
+
+const POST_SALE_LEAD_STATUSES = ["contract", "building_authority", "construction", "completed", "won"] as const;
+const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+const NON_ACTIVE_CONSTRUCTION_JOB_STATUSES = ["completed", "cancelled"] as const;
+const CONSISTENCY_SAMPLE_LIMIT = 100;
 
 // ─── Helper: resolve branchId from branch name ──────────────────────────────
 async function resolveBranchId(db: any, branchName: string, tenantId?: number | null): Promise<number | undefined> {
@@ -111,6 +116,157 @@ async function fetchXeroContactsBatch(
 }
 
 export const xeroClientImportRouter = router({
+  /**
+   * Read-only CRM/construction consistency report.
+   * CRM leads are the client source of truth; construction jobs should be linked
+   * execution records, not independent client records.
+   */
+  getConstructionClientConsistencyReport: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+    const tenantId = tenantIdFromContext(ctx);
+
+    const jobTenantConditions: any[] = [];
+    appendTenantScope(jobTenantConditions, constructionJobs.tenantId, tenantId);
+    const leadTenantConditions: any[] = [];
+    appendTenantScope(leadTenantConditions, crmLeads.tenantId, tenantId);
+    const jobLeadJoinConditions = [eq(constructionJobs.leadId, crmLeads.id), ...leadTenantConditions];
+    const leadJobJoinConditions = [eq(constructionJobs.leadId, crmLeads.id), ...jobTenantConditions];
+    const leadDisplayName = sql<string>`COALESCE(
+      NULLIF(TRIM(CONCAT(COALESCE(${crmLeads.contactFirstName}, ''), ' ', COALESCE(${crmLeads.contactLastName}, ''))), ''),
+      NULLIF(TRIM(${crmLeads.company}), ''),
+      ${crmLeads.leadNumber}
+    )`;
+
+    const orphanJobWhere = and(
+      ...jobTenantConditions,
+      or(isNull(constructionJobs.leadId), isNull(crmLeads.id)),
+    );
+    const activeJobHiddenByCrmWhere = and(
+      ...jobTenantConditions,
+      inArray(constructionJobs.status, [...ACTIVE_CONSTRUCTION_JOB_STATUSES]),
+      or(isNull(crmLeads.id), eq(crmLeads.archived, true)),
+    );
+    const postSaleLeadMissingJobWhere = and(
+      ...leadTenantConditions,
+      eq(crmLeads.archived, false),
+      inArray(crmLeads.status, [...POST_SALE_LEAD_STATUSES]),
+      isNull(constructionJobs.id),
+    );
+    const postSaleLeadInactiveJobWhere = and(
+      ...leadTenantConditions,
+      eq(crmLeads.archived, false),
+      inArray(crmLeads.status, [...POST_SALE_LEAD_STATUSES]),
+      inArray(constructionJobs.status, [...NON_ACTIVE_CONSTRUCTION_JOB_STATUSES]),
+    );
+
+    const [
+      [orphanJobCount],
+      orphanJobs,
+      [activeJobHiddenByCrmCount],
+      activeJobsHiddenByCrm,
+      [postSaleLeadMissingJobCount],
+      postSaleLeadsMissingJobs,
+      [postSaleLeadInactiveJobCount],
+      postSaleLeadsWithInactiveJobs,
+    ] = await Promise.all([
+      db.select({ count: sql<number>`COUNT(DISTINCT ${constructionJobs.id})` })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, and(...jobLeadJoinConditions))
+        .where(orphanJobWhere),
+      db.select({
+        jobId: constructionJobs.id,
+        quoteNumber: constructionJobs.quoteNumber,
+        clientName: constructionJobs.clientName,
+        siteAddress: constructionJobs.siteAddress,
+        jobStatus: constructionJobs.status,
+        leadId: constructionJobs.leadId,
+        updatedAt: constructionJobs.updatedAt,
+      })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, and(...jobLeadJoinConditions))
+        .where(orphanJobWhere)
+        .orderBy(desc(constructionJobs.updatedAt))
+        .limit(CONSISTENCY_SAMPLE_LIMIT),
+      db.select({ count: sql<number>`COUNT(DISTINCT ${constructionJobs.id})` })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, and(...jobLeadJoinConditions))
+        .where(activeJobHiddenByCrmWhere),
+      db.select({
+        jobId: constructionJobs.id,
+        quoteNumber: constructionJobs.quoteNumber,
+        clientName: constructionJobs.clientName,
+        siteAddress: constructionJobs.siteAddress,
+        jobStatus: constructionJobs.status,
+        leadId: constructionJobs.leadId,
+        leadArchived: crmLeads.archived,
+        leadStatus: crmLeads.status,
+        updatedAt: constructionJobs.updatedAt,
+      })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, and(...jobLeadJoinConditions))
+        .where(activeJobHiddenByCrmWhere)
+        .orderBy(desc(constructionJobs.updatedAt))
+        .limit(CONSISTENCY_SAMPLE_LIMIT),
+      db.select({ count: sql<number>`COUNT(DISTINCT ${crmLeads.id})` })
+        .from(crmLeads)
+        .leftJoin(constructionJobs, and(...leadJobJoinConditions))
+        .where(postSaleLeadMissingJobWhere),
+      db.select({
+        leadId: crmLeads.id,
+        leadNumber: crmLeads.leadNumber,
+        clientNumber: crmLeads.clientNumber,
+        clientName: leadDisplayName,
+        leadStatus: crmLeads.status,
+        constructionJobNumber: crmLeads.constructionJobNumber,
+        contactEmail: crmLeads.contactEmail,
+        updatedAt: crmLeads.updatedAt,
+      })
+        .from(crmLeads)
+        .leftJoin(constructionJobs, and(...leadJobJoinConditions))
+        .where(postSaleLeadMissingJobWhere)
+        .orderBy(desc(crmLeads.updatedAt))
+        .limit(CONSISTENCY_SAMPLE_LIMIT),
+      db.select({ count: sql<number>`COUNT(DISTINCT ${crmLeads.id})` })
+        .from(crmLeads)
+        .innerJoin(constructionJobs, and(...leadJobJoinConditions))
+        .where(postSaleLeadInactiveJobWhere),
+      db.select({
+        leadId: crmLeads.id,
+        leadNumber: crmLeads.leadNumber,
+        clientNumber: crmLeads.clientNumber,
+        clientName: leadDisplayName,
+        leadStatus: crmLeads.status,
+        jobId: constructionJobs.id,
+        quoteNumber: constructionJobs.quoteNumber,
+        jobStatus: constructionJobs.status,
+        jobUpdatedAt: constructionJobs.updatedAt,
+      })
+        .from(crmLeads)
+        .innerJoin(constructionJobs, and(...leadJobJoinConditions))
+        .where(postSaleLeadInactiveJobWhere)
+        .orderBy(desc(constructionJobs.updatedAt))
+        .limit(CONSISTENCY_SAMPLE_LIMIT),
+    ]);
+
+    return {
+      generatedAt: new Date().toISOString(),
+      sampleLimit: CONSISTENCY_SAMPLE_LIMIT,
+      counts: {
+        orphanConstructionJobs: Number(orphanJobCount?.count || 0),
+        activeJobsHiddenByCrm: Number(activeJobHiddenByCrmCount?.count || 0),
+        postSaleLeadsMissingConstructionJobs: Number(postSaleLeadMissingJobCount?.count || 0),
+        postSaleLeadsWithInactiveConstructionJobs: Number(postSaleLeadInactiveJobCount?.count || 0),
+      },
+      samples: {
+        orphanConstructionJobs: orphanJobs,
+        activeJobsHiddenByCrm,
+        postSaleLeadsMissingConstructionJobs: postSaleLeadsMissingJobs,
+        postSaleLeadsWithInactiveConstructionJobs: postSaleLeadsWithInactiveJobs,
+      },
+    };
+  }),
+
   /**
    * Get stats on how many orphan jobs exist (no leadId)
    */

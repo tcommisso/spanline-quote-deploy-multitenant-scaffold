@@ -117,9 +117,194 @@ function formatXeroSourceType(value: string) {
   }
 }
 
+function ConsistencyIssueTable({
+  title,
+  description,
+  count,
+  rows,
+  sampleLimit,
+}: {
+  title: string;
+  description: string;
+  count: number;
+  rows: any[];
+  sampleLimit: number;
+}) {
+  if (count <= 0) return null;
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <div className="flex items-start justify-between gap-3 bg-muted/40 px-3 py-2">
+        <div>
+          <p className="text-sm font-medium">{title}</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        <Badge variant="outline">{count}</Badge>
+      </div>
+      <div className="max-h-52 overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-background">
+            <tr className="text-left text-muted-foreground border-t border-b">
+              <th className="py-2 px-3">Client</th>
+              <th className="py-2 px-3">CRM</th>
+              <th className="py-2 px-3">Job</th>
+              <th className="py-2 px-3">Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row: any, index: number) => (
+              <tr key={`${row.leadId || "lead"}-${row.jobId || "job"}-${index}`} className="border-b last:border-b-0">
+                <td className="py-2 px-3">
+                  <div className="font-medium">{row.clientName || row.leadNumber || row.quoteNumber || `Record ${index + 1}`}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {row.clientNumber || row.contactEmail || row.siteAddress || "—"}
+                  </div>
+                </td>
+                <td className="py-2 px-3">
+                  <div className="text-xs text-muted-foreground">{row.leadNumber || (row.leadId ? `Lead #${row.leadId}` : "No linked lead")}</div>
+                  {row.leadStatus && <Badge variant="secondary" className="text-[10px] mt-1">{row.leadStatus}</Badge>}
+                  {row.leadArchived ? <Badge variant="outline" className="text-[10px] mt-1 ml-1">Archived</Badge> : null}
+                </td>
+                <td className="py-2 px-3">
+                  <div className="text-xs text-muted-foreground">{row.quoteNumber || (row.jobId ? `Job #${row.jobId}` : "No linked job")}</div>
+                  {row.jobStatus && <Badge variant="secondary" className="text-[10px] mt-1">{row.jobStatus}</Badge>}
+                </td>
+                <td className="py-2 px-3 text-xs text-muted-foreground">
+                  {formatShortDate(row.updatedAt || row.jobUpdatedAt)}
+                </td>
+              </tr>
+            ))}
+            {count > sampleLimit && (
+              <tr>
+                <td colSpan={4} className="py-2 px-3 text-center text-xs text-muted-foreground">
+                  ...and {count - sampleLimit} more
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ConstructionClientConsistencyReport({
+  report,
+  isLoading,
+  isError,
+  onRefresh,
+}: {
+  report: any;
+  isLoading: boolean;
+  isError: boolean;
+  onRefresh: () => void;
+}) {
+  const counts = report?.counts || {};
+  const samples = report?.samples || {};
+  const sampleLimit = report?.sampleLimit || 100;
+  const totalIssues =
+    Number(counts.orphanConstructionJobs || 0) +
+    Number(counts.activeJobsHiddenByCrm || 0) +
+    Number(counts.postSaleLeadsMissingConstructionJobs || 0) +
+    Number(counts.postSaleLeadsWithInactiveConstructionJobs || 0);
+
+  return (
+    <div className="border rounded-lg p-4 space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-sm font-semibold">CRM / Construction Consistency Report</h4>
+          <p className="text-xs text-muted-foreground mt-1">
+            Finds linked-data gaps where CRM clients and construction job records have drifted apart.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
+          {isLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+          Refresh
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Checking CRM and construction links...
+        </div>
+      ) : isError ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AlertTriangle className="h-4 w-4 text-amber-500" />
+          Could not load consistency report.
+        </div>
+      ) : totalIssues === 0 ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <CheckCircle2 className="h-4 w-4 text-green-600" />
+          No CRM/construction consistency issues found.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Orphan jobs</p>
+              <p className="text-xl font-semibold">{counts.orphanConstructionJobs || 0}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Hidden active jobs</p>
+              <p className="text-xl font-semibold">{counts.activeJobsHiddenByCrm || 0}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">CRM clients missing jobs</p>
+              <p className="text-xl font-semibold">{counts.postSaleLeadsMissingConstructionJobs || 0}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">CRM clients inactive jobs</p>
+              <p className="text-xl font-semibold">{counts.postSaleLeadsWithInactiveConstructionJobs || 0}</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <ConsistencyIssueTable
+              title="Construction jobs without a valid CRM lead"
+              description="Imported or legacy jobs where the construction row is not owned by an active CRM client record."
+              count={counts.orphanConstructionJobs || 0}
+              rows={samples.orphanConstructionJobs || []}
+              sampleLimit={sampleLimit}
+            />
+            <ConsistencyIssueTable
+              title="Active construction jobs hidden by CRM state"
+              description="Active jobs linked to missing or archived CRM leads."
+              count={counts.activeJobsHiddenByCrm || 0}
+              rows={samples.activeJobsHiddenByCrm || []}
+              sampleLimit={sampleLimit}
+            />
+            <ConsistencyIssueTable
+              title="Post-sale CRM clients missing construction jobs"
+              description="CRM clients in Contract, Approvals, Construction, Completed, or Won without a linked construction job."
+              count={counts.postSaleLeadsMissingConstructionJobs || 0}
+              rows={samples.postSaleLeadsMissingConstructionJobs || []}
+              sampleLimit={sampleLimit}
+            />
+            <ConsistencyIssueTable
+              title="Post-sale CRM clients linked to inactive jobs"
+              description="Post-sale CRM clients where the linked construction job is completed or cancelled."
+              count={counts.postSaleLeadsWithInactiveConstructionJobs || 0}
+              rows={samples.postSaleLeadsWithInactiveConstructionJobs || []}
+              sampleLimit={sampleLimit}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function XeroClientImportSection() {
   const [showConfirm, setShowConfirm] = useState(false);
   const { data: stats, isLoading, isError, refetch } = trpc.xeroClientImport.getOrphanStats.useQuery(undefined, {
+    retry: 1,
+    staleTime: 60_000,
+  });
+  const {
+    data: consistencyReport,
+    isLoading: consistencyLoading,
+    isError: consistencyError,
+    refetch: refetchConsistency,
+  } = trpc.xeroClientImport.getConstructionClientConsistencyReport.useQuery(undefined, {
     retry: 1,
     staleTime: 60_000,
   });
@@ -156,6 +341,13 @@ function XeroClientImportSection() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <ConstructionClientConsistencyReport
+          report={consistencyReport}
+          isLoading={consistencyLoading}
+          isError={consistencyError}
+          onRefresh={() => void refetchConsistency()}
+        />
+
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Checking for orphan jobs...
