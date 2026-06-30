@@ -1169,7 +1169,9 @@ function SubcontractMilestonesSummary({ jobs }: { jobs: any[] | undefined }) {
                       <span className="font-medium">
                         ${amount.toLocaleString("en-AU", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         {claimed && (
-                          <Badge className="ml-2 text-[9px] bg-green-100 text-green-800">Claimed</Badge>
+                          <Badge className="ml-2 text-[9px] bg-green-100 text-green-800">
+                            {m.paidBeforeSystem ? "Paid before system" : "Claimed"}
+                          </Badge>
                         )}
                       </span>
                     </div>

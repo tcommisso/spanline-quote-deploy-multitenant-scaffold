@@ -30,6 +30,8 @@ import { storagePut } from "./storage";
 import { buildTrustedAppUrl } from "./_core/url";
 import { getCompanyName } from "./company-name";
 import { ENV } from "./_core/env";
+import { invokeLLM, type MessageContent } from "./_core/llm";
+import { assertRateLimit } from "./_core/rateLimit";
 
 function subcontractScope(id: number, tenantId: number) {
   return and(eq(projectSubcontracts.id, id), eq(projectSubcontracts.tenantId, tenantId));
@@ -46,6 +48,23 @@ function installerScope(id: number, tenantId: number) {
 function nullableText(value: unknown) {
   const trimmed = String(value ?? "").trim();
   return trimmed || null;
+}
+
+function moneyString(value: unknown) {
+  const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "0").replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed.toFixed(2) : "0.00";
+}
+
+function moneyNumber(value: unknown) {
+  const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "0").replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dateOrNull(value: unknown) {
+  const text = nullableText(value);
+  if (!text) return null;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function canonicalClientNameFromLead(lead?: {
@@ -207,6 +226,10 @@ const paymentMilestoneSchema = z.object({
   amountDollars: z.number().nullable(),
   percentOfTotal: z.number().nullable(),
   usePercent: z.boolean(),
+  paidBeforeSystem: z.boolean().optional(),
+  paidBeforeSystemAt: z.string().nullable().optional(),
+  paidBeforeSystemBy: z.number().nullable().optional(),
+  paidBeforeSystemNote: z.string().nullable().optional(),
 });
 
 const buildingFileSchema = z.object({
@@ -246,6 +269,268 @@ const downpipesSchema = z.object({
 });
 const subcontractStatusSchema = z.enum(["draft", "sent", "signed", "cancelled", "declined", "on_file"]);
 const contractSourceSchema = z.enum(["generated", "manual_on_file"]);
+
+const CHECKLIST_VALUE_SET = new Set(["N/A", "Yes", "No"]);
+const MAX_SUBCONTRACT_IMPORT_BYTES = 10 * 1024 * 1024;
+
+function checklistValue(value: unknown) {
+  const text = String(value || "").trim();
+  if (CHECKLIST_VALUE_SET.has(text)) return text;
+  const normalised = text.toLowerCase();
+  if (normalised === "yes" || normalised === "y") return "Yes";
+  if (normalised === "no" || normalised === "n") return "No";
+  if (normalised === "na" || normalised === "n/a" || normalised === "not applicable") return "N/A";
+  return "N/A";
+}
+
+function inferSubcontractImportMimeType(fileName: string, fileMimeType?: string | null) {
+  const explicit = String(fileMimeType || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  const lowerName = fileName.toLowerCase();
+  if (lowerName.endsWith(".pdf")) return "application/pdf";
+  if (lowerName.endsWith(".png")) return "image/png";
+  if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream";
+}
+
+function safeStorageFileName(fileName: string) {
+  const safe = fileName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").slice(0, 120);
+  return safe || "existing-subcontract.pdf";
+}
+
+function subcontractImportContentPart(input: {
+  fileBase64: string;
+  fileName: string;
+  fileMimeType: string;
+}): MessageContent {
+  if (input.fileMimeType.startsWith("image/")) {
+    return {
+      type: "image_url",
+      image_url: {
+        url: `data:${input.fileMimeType};base64,${input.fileBase64}`,
+        detail: "high",
+      },
+    };
+  }
+
+  return {
+    type: "file_data",
+    file_data: {
+      data: input.fileBase64,
+      filename: input.fileName,
+      mime_type: "application/pdf",
+    },
+  };
+}
+
+function cleanPaymentSchedule(value: unknown): PaymentMilestone[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row: any) => {
+      const label = nullableText(row?.label);
+      if (!label) return null;
+      const amount = row?.amountDollars == null ? null : parseFloat(String(row.amountDollars).replace(/[$,]/g, ""));
+      const percent = row?.percentOfTotal == null ? null : parseFloat(String(row.percentOfTotal).replace(/%/g, ""));
+      return {
+        label,
+        amountDollars: Number.isFinite(amount) && amount! >= 0 ? amount! : null,
+        percentOfTotal: Number.isFinite(percent) && percent! >= 0 ? percent! : null,
+        usePercent: Boolean(row?.usePercent ?? (Number.isFinite(percent) && percent! > 0)),
+      };
+    })
+    .filter(Boolean) as PaymentMilestone[];
+}
+
+function cleanBuildingFileChecklist(value: any): BuildingFileChecklist {
+  return {
+    plans: checklistValue(value?.plans),
+    materialsList: checklistValue(value?.materialsList),
+    approvals: checklistValue(value?.approvals),
+  };
+}
+
+function cleanInspectionChecklist(value: any): InspectionChecklist {
+  return {
+    footings: checklistValue(value?.footings),
+    slab: checklistValue(value?.slab),
+    plumbing: checklistValue(value?.plumbing),
+    framing: checklistValue(value?.framing),
+    roofing: checklistValue(value?.roofing),
+    other: checklistValue(value?.other),
+  };
+}
+
+function cleanOtherContractorsChecklist(value: any): OtherContractorsChecklist {
+  return {
+    electrician: checklistValue(value?.electrician),
+    plumber: checklistValue(value?.plumber),
+    concreter: checklistValue(value?.concreter),
+    flooring: checklistValue(value?.flooring),
+    painter: checklistValue(value?.painter),
+  };
+}
+
+function cleanElectricalCablingChecklist(value: any): ElectricalCablingChecklist {
+  return {
+    wall: checklistValue(value?.wall),
+    roof: checklistValue(value?.roof),
+    fan: checklistValue(value?.fan),
+  };
+}
+
+function cleanDownpipesChecklist(value: any): DownpipesChecklist {
+  return {
+    toGround: checklistValue(value?.toGround),
+    toSpreader: checklistValue(value?.toSpreader),
+    toExistingDP: checklistValue(value?.toExistingDP),
+    toStormwater: checklistValue(value?.toStormwater),
+  };
+}
+
+async function extractExistingSubcontract(input: {
+  fileBase64: string;
+  fileName: string;
+  fileMimeType: string;
+}) {
+  const result = await invokeLLM({
+    messages: [
+      {
+        role: "system",
+        content: `You extract data from existing Australian construction subcontract documents for migration into a job management system. Return only JSON matching the schema. Do not invent missing fields. Use null for unknown nullable fields, "N/A" for unknown checklist fields, empty arrays for missing payment schedules, and AUD numeric values excluding GST where visible.`,
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `Extract project subcontract details from ${input.fileName}.` },
+          subcontractImportContentPart(input),
+        ],
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "existing_subcontract_extraction",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            jobNumber: { type: ["string", "null"] },
+            clientName: { type: ["string", "null"] },
+            clientAccountNumber: { type: ["string", "null"] },
+            constructionManager: { type: ["string", "null"] },
+            subcontractorName: { type: ["string", "null"] },
+            subcontractorPhone: { type: ["string", "null"] },
+            siteAddress: { type: ["string", "null"] },
+            subcontractSum: { type: ["number", "null"] },
+            estimatedCommencement: { type: ["string", "null"] },
+            estimatedCompletion: { type: ["string", "null"] },
+            paymentSchedule: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  amountDollars: { type: ["number", "null"] },
+                  percentOfTotal: { type: ["number", "null"] },
+                  usePercent: { type: "boolean" },
+                },
+                required: ["label", "amountDollars", "percentOfTotal", "usePercent"],
+                additionalProperties: false,
+              },
+            },
+            buildingFile: {
+              type: "object",
+              properties: {
+                plans: { type: "string", enum: ["N/A", "Yes", "No"] },
+                materialsList: { type: "string", enum: ["N/A", "Yes", "No"] },
+                approvals: { type: "string", enum: ["N/A", "Yes", "No"] },
+              },
+              required: ["plans", "materialsList", "approvals"],
+              additionalProperties: false,
+            },
+            inspections: {
+              type: "object",
+              properties: {
+                footings: { type: "string", enum: ["N/A", "Yes", "No"] },
+                slab: { type: "string", enum: ["N/A", "Yes", "No"] },
+                plumbing: { type: "string", enum: ["N/A", "Yes", "No"] },
+                framing: { type: "string", enum: ["N/A", "Yes", "No"] },
+                roofing: { type: "string", enum: ["N/A", "Yes", "No"] },
+                other: { type: "string", enum: ["N/A", "Yes", "No"] },
+              },
+              required: ["footings", "slab", "plumbing", "framing", "roofing", "other"],
+              additionalProperties: false,
+            },
+            otherContractors: {
+              type: "object",
+              properties: {
+                electrician: { type: "string", enum: ["N/A", "Yes", "No"] },
+                plumber: { type: "string", enum: ["N/A", "Yes", "No"] },
+                concreter: { type: "string", enum: ["N/A", "Yes", "No"] },
+                flooring: { type: "string", enum: ["N/A", "Yes", "No"] },
+                painter: { type: "string", enum: ["N/A", "Yes", "No"] },
+              },
+              required: ["electrician", "plumber", "concreter", "flooring", "painter"],
+              additionalProperties: false,
+            },
+            electricalCabling: {
+              type: "object",
+              properties: {
+                wall: { type: "string", enum: ["N/A", "Yes", "No"] },
+                roof: { type: "string", enum: ["N/A", "Yes", "No"] },
+                fan: { type: "string", enum: ["N/A", "Yes", "No"] },
+              },
+              required: ["wall", "roof", "fan"],
+              additionalProperties: false,
+            },
+            downpipes: {
+              type: "object",
+              properties: {
+                toGround: { type: "string", enum: ["N/A", "Yes", "No"] },
+                toSpreader: { type: "string", enum: ["N/A", "Yes", "No"] },
+                toExistingDP: { type: "string", enum: ["N/A", "Yes", "No"] },
+                toStormwater: { type: "string", enum: ["N/A", "Yes", "No"] },
+              },
+              required: ["toGround", "toSpreader", "toExistingDP", "toStormwater"],
+              additionalProperties: false,
+            },
+            flashingBySubcontractor: { type: "string", enum: ["N/A", "Yes", "No"] },
+            confidence: { type: "integer" },
+            notes: { type: ["string", "null"] },
+          },
+          required: [
+            "jobNumber",
+            "clientName",
+            "clientAccountNumber",
+            "constructionManager",
+            "subcontractorName",
+            "subcontractorPhone",
+            "siteAddress",
+            "subcontractSum",
+            "estimatedCommencement",
+            "estimatedCompletion",
+            "paymentSchedule",
+            "buildingFile",
+            "inspections",
+            "otherContractors",
+            "electricalCabling",
+            "downpipes",
+            "flashingBySubcontractor",
+            "confidence",
+            "notes",
+          ],
+          additionalProperties: false,
+        },
+      },
+    },
+  });
+
+  const content = result.choices[0]?.message?.content;
+  if (!content || typeof content !== "string") {
+    throw new Error("No structured subcontract data returned");
+  }
+  return JSON.parse(content);
+}
 
 function isExecutedSubcontract(sc: { status?: string | null; signedAt?: Date | null; pdfUrl?: string | null }) {
   return sc.status === "signed" || sc.status === "on_file" || Boolean(sc.signedAt) || Boolean(sc.pdfUrl);
@@ -348,6 +633,139 @@ export const subcontractRouter = router({
       });
 
       return { id: result.insertId };
+    }),
+
+  importExistingContract: protectedProcedure
+    .input(z.object({
+      jobId: z.number(),
+      fileBase64: z.string().min(1).max(15_000_000),
+      fileName: z.string().min(1).max(255),
+      fileMimeType: z.string().optional(),
+      onFileNotes: z.string().max(2000).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      assertRateLimit({
+        key: `subcontract-import:${ctx.tenant!.id}:${ctx.user.id}:${ctx.req.ip}`,
+        limit: 10,
+        windowMs: 60 * 60 * 1000,
+      });
+
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+
+      const fileMimeType = inferSubcontractImportMimeType(input.fileName, input.fileMimeType);
+      const isSupported = fileMimeType === "application/pdf" || fileMimeType === "image/png" || fileMimeType === "image/jpeg";
+      if (!isSupported) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Subcontract import supports PDF, JPG, and PNG files" });
+      }
+
+      const fileBuffer = Buffer.from(input.fileBase64, "base64");
+      if (fileBuffer.length === 0 || fileBuffer.length > MAX_SUBCONTRACT_IMPORT_BYTES) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Contract file must be 10MB or smaller" });
+      }
+
+      const [job] = await db
+        .select()
+        .from(constructionJobs)
+        .where(jobScope(input.jobId, ctx.tenant!.id))
+        .limit(1);
+
+      if (!job) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Job not found" });
+      }
+
+      const [lead] = job.leadId
+        ? await db.select({
+            contactFirstName: crmLeads.contactFirstName,
+            contactLastName: crmLeads.contactLastName,
+            company: crmLeads.company,
+            clientNumber: crmLeads.clientNumber,
+          })
+            .from(crmLeads)
+            .where(and(eq(crmLeads.id, job.leadId), eq(crmLeads.tenantId, ctx.tenant!.id)))
+            .limit(1)
+        : [];
+      const canonicalClientName = canonicalClientNameFromLead(lead);
+      const branchConstructionManager = await getBranchConstructionManagerForJob(db, ctx.tenant!.id, input.jobId);
+
+      const storageFileName = safeStorageFileName(input.fileName);
+      const storageKey = `tenants/${ctx.tenant!.id}/jobs/${input.jobId}/subcontracts/imports/${Date.now()}-${storageFileName}`;
+      const storedFile = await storagePut(storageKey, fileBuffer, fileMimeType);
+
+      let extracted: any = null;
+      let extractionStatus: "ok" | "failed" = "ok";
+      let extractionMessage: string | null = null;
+      try {
+        extracted = await extractExistingSubcontract({
+          fileBase64: input.fileBase64,
+          fileName: input.fileName,
+          fileMimeType,
+        });
+      } catch (err: any) {
+        extractionStatus = "failed";
+        extractionMessage = err?.message || "AI extraction failed";
+      }
+
+      const extractedSubcontractorName = nullableText(extracted?.subcontractorName);
+      const [matchedInstaller] = extractedSubcontractorName
+        ? await db
+            .select()
+            .from(constructionInstallers)
+            .where(and(
+              eq(constructionInstallers.tenantId, ctx.tenant!.id),
+              eq(sql`LOWER(TRIM(${constructionInstallers.name}))`, extractedSubcontractorName.toLowerCase()),
+            ))
+            .limit(1)
+        : [];
+
+      const paymentSchedule = cleanPaymentSchedule(extracted?.paymentSchedule);
+      const importedNotes = [
+        `Imported existing subcontract file: ${input.fileName}`,
+        nullableText(input.onFileNotes),
+        extractionStatus === "ok"
+          ? `AI extraction confidence: ${Number.isFinite(Number(extracted?.confidence)) ? Number(extracted.confidence) : 0}/100`
+          : `AI extraction failed: ${extractionMessage}`,
+        paymentSchedule.length === 0 ? "Payment schedule defaulted because no schedule was detected in the uploaded contract." : null,
+        nullableText(extracted?.notes),
+      ].filter(Boolean).join("\n");
+
+      const [result] = await db.insert(projectSubcontracts).values({
+        tenantId: ctx.tenant!.id,
+        jobId: input.jobId,
+        installerId: matchedInstaller?.id || null,
+        jobNumber: nullableText(extracted?.jobNumber) || job.quoteNumber || String(job.id),
+        clientName: canonicalClientName || nullableText(extracted?.clientName) || job.clientName || "",
+        clientAccountNumber: lead?.clientNumber || nullableText(extracted?.clientAccountNumber) || "",
+        constructionManager: nullableText(extracted?.constructionManager) || branchConstructionManager?.name || job.supervisorName || job.designAdviserName || "",
+        subcontractorName: matchedInstaller?.name || extractedSubcontractorName || "",
+        subcontractorPhone: nullableText(extracted?.subcontractorPhone) || matchedInstaller?.phone || "",
+        siteAddress: nullableText(extracted?.siteAddress) || job.siteAddress || "",
+        subcontractSum: moneyString(extracted?.subcontractSum),
+        paymentSchedule: paymentSchedule.length > 0 ? paymentSchedule : DEFAULT_PAYMENT_MILESTONES,
+        estimatedCommencement: dateOrNull(extracted?.estimatedCommencement),
+        estimatedCompletion: dateOrNull(extracted?.estimatedCompletion),
+        buildingFile: extracted?.buildingFile ? cleanBuildingFileChecklist(extracted.buildingFile) : DEFAULT_BUILDING_FILE,
+        inspections: extracted?.inspections ? cleanInspectionChecklist(extracted.inspections) : DEFAULT_INSPECTIONS,
+        otherContractors: extracted?.otherContractors ? cleanOtherContractorsChecklist(extracted.otherContractors) : DEFAULT_OTHER_CONTRACTORS,
+        electricalCabling: extracted?.electricalCabling ? cleanElectricalCablingChecklist(extracted.electricalCabling) : DEFAULT_ELECTRICAL_CABLING,
+        downpipes: extracted?.downpipes ? cleanDownpipesChecklist(extracted.downpipes) : DEFAULT_DOWNPIPES,
+        flashingBySubcontractor: checklistValue(extracted?.flashingBySubcontractor),
+        status: "on_file",
+        contractSource: "manual_on_file",
+        onFileAt: new Date(),
+        onFileNotes: importedNotes,
+        pdfUrl: storedFile.url,
+        pdfKey: storedFile.key,
+        createdBy: ctx.user.id,
+      });
+
+      return {
+        id: result.insertId,
+        pdfUrl: storedFile.url,
+        extractionStatus,
+        extractionMessage,
+        extracted,
+      };
     }),
 
   // Get a single subcontract by ID
@@ -460,6 +878,67 @@ export const subcontractRouter = router({
         .update(projectSubcontracts)
         .set(updateData)
         .where(subcontractScope(id, ctx.tenant!.id));
+
+      return { success: true };
+    }),
+
+  markMilestonePaidBeforeSystem: protectedProcedure
+    .input(z.object({
+      subcontractId: z.number(),
+      milestoneIndex: z.number().int().min(0),
+      paid: z.boolean(),
+      paidAt: z.string().nullable().optional(),
+      note: z.string().max(1000).nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database unavailable");
+
+      const [sc] = await db
+        .select()
+        .from(projectSubcontracts)
+        .where(subcontractScope(input.subcontractId, ctx.tenant!.id))
+        .limit(1);
+
+      if (!sc) throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
+
+      const schedule = ([...((sc.paymentSchedule as PaymentMilestone[]) || [])] as PaymentMilestone[]);
+      const milestone = schedule[input.milestoneIndex];
+      if (!milestone) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Payment milestone not found" });
+      }
+
+      const [existingClaim] = await db.select({ id: tradeInvoiceLines.id })
+        .from(tradeInvoiceLines)
+        .where(and(
+          eq(tradeInvoiceLines.subcontractId, input.subcontractId),
+          eq(tradeInvoiceLines.subcontractMilestoneIndex, input.milestoneIndex),
+        ))
+        .limit(1);
+
+      if (input.paid && existingClaim) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This milestone already has an invoice claim. Use invoice review instead." });
+      }
+
+      schedule[input.milestoneIndex] = input.paid
+        ? {
+            ...milestone,
+            paidBeforeSystem: true,
+            paidBeforeSystemAt: input.paidAt || new Date().toISOString(),
+            paidBeforeSystemBy: ctx.user.id,
+            paidBeforeSystemNote: nullableText(input.note),
+          }
+        : {
+            ...milestone,
+            paidBeforeSystem: false,
+            paidBeforeSystemAt: null,
+            paidBeforeSystemBy: null,
+            paidBeforeSystemNote: null,
+          };
+
+      await db.update(projectSubcontracts)
+        .set({ paymentSchedule: schedule })
+        .where(subcontractScope(input.subcontractId, ctx.tenant!.id));
 
       return { success: true };
     }),
@@ -706,7 +1185,11 @@ export const subcontractRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
-      const [subcontract] = await db.select({ id: projectSubcontracts.id })
+      const [subcontract] = await db.select({
+        id: projectSubcontracts.id,
+        paymentSchedule: projectSubcontracts.paymentSchedule,
+        subcontractSum: projectSubcontracts.subcontractSum,
+      })
         .from(projectSubcontracts)
         .where(subcontractScope(input.subcontractId, ctx.tenant!.id))
         .limit(1);
@@ -719,6 +1202,29 @@ export const subcontractRouter = router({
       })
         .from(tradeInvoiceLines)
         .where(eq(tradeInvoiceLines.subcontractId, input.subcontractId));
-      return claims;
+
+      const historicalClaims = ((subcontract as any).paymentSchedule as PaymentMilestone[] || [])
+        .map((milestone, index) => {
+          if (!milestone?.paidBeforeSystem) return null;
+          const amount = milestone.usePercent
+            ? ((milestone.percentOfTotal || 0) / 100) * moneyNumber(subcontract.subcontractSum)
+            : Number(milestone.amountDollars || 0);
+          return {
+            subcontractMilestoneIndex: index,
+            amount: amount.toFixed(2),
+            approvalStatus: "paid",
+            invoiceId: null,
+            source: "historical",
+            paidBeforeSystem: true,
+            paidBeforeSystemAt: milestone.paidBeforeSystemAt || null,
+            paidBeforeSystemNote: milestone.paidBeforeSystemNote || null,
+          };
+        })
+        .filter(Boolean);
+
+      return [
+        ...historicalClaims,
+        ...claims.map((claim: any) => ({ ...claim, source: "invoice" })),
+      ];
     }),
 });

@@ -28,7 +28,7 @@ import {
   Users, Package, FolderOpen, PenTool, Download, X, ArrowLeftRight,
   KanbanSquare, GripVertical, Ruler, Clipboard, Printer,
   Cloud, Sun, CloudRain, CloudSun, CloudSnow, CloudDrizzle, CloudLightning, CloudFog, Thermometer,
-  Building, Pencil, Save,
+  Building, Pencil, Save, Upload,
 } from "lucide-react";
 import { useIsMobile } from "@/hooks/useMobile";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -1986,11 +1986,27 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
 }
 
 // ─── Subcontracts Section ────────────────────────────────────────────────────
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",")[1] : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function SubcontractsSection({ jobId }: { jobId: number }) {
   const [, navigate] = useLocation();
   const [showArchived, setShowArchived] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importNotes, setImportNotes] = useState("");
   const { data: subcontracts, isLoading } = trpc.subcontract.listByJob.useQuery({ jobId, includeArchived: showArchived });
   const createMutation = trpc.subcontract.create.useMutation();
+  const importMutation = trpc.subcontract.importExistingContract.useMutation();
   const utils = trpc.useUtils();
 
   const handleCreate = async () => {
@@ -2013,6 +2029,43 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
       navigate(`/subcontracts/${result.id}`);
     } catch (err: any) {
       toast.error(err.message || "Failed to record on-file contract");
+    }
+  };
+
+  const resetImportDialog = () => {
+    setImportFile(null);
+    setImportNotes("");
+  };
+
+  const handleImportExistingContract = async () => {
+    if (!importFile) {
+      toast.error("Select an existing subcontract file first");
+      return;
+    }
+    if (importFile.size > 10 * 1024 * 1024) {
+      toast.error("Contract file must be 10MB or smaller");
+      return;
+    }
+    try {
+      const fileBase64 = await readFileAsBase64(importFile);
+      const result = await importMutation.mutateAsync({
+        jobId,
+        fileBase64,
+        fileName: importFile.name,
+        fileMimeType: importFile.type || undefined,
+        onFileNotes: importNotes || null,
+      });
+      await utils.subcontract.listByJob.invalidate({ jobId });
+      if (result.extractionStatus === "failed") {
+        toast.warning("Contract uploaded. AI extraction failed, so please complete the form manually.");
+      } else {
+        toast.success("Existing subcontract imported for review");
+      }
+      setImportDialogOpen(false);
+      resetImportDialog();
+      navigate(`/subcontracts/${result.id}`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to import contract");
     }
   };
 
@@ -2039,16 +2092,80 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
           <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)} className="w-full lg:w-auto">
             {showArchived ? "Hide archived" : "Show archived"}
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setImportDialogOpen(true)} disabled={importMutation.isPending} className="w-full gap-1.5 lg:w-auto">
+            {importMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            Import contract
+          </Button>
           <Button size="sm" variant="outline" onClick={handleCreateOnFile} disabled={createMutation.isPending} className="w-full gap-1.5 lg:w-auto">
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             Contract on file
           </Button>
-          <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="w-full gap-1.5 sm:col-span-2 lg:w-auto lg:col-span-1">
+          <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="w-full gap-1.5 lg:w-auto">
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             New Subcontract
           </Button>
         </div>
       </div>
+
+      <Dialog
+        open={importDialogOpen}
+        onOpenChange={(open) => {
+          setImportDialogOpen(open);
+          if (!open) resetImportDialog();
+        }}
+      >
+        <DialogContent className="w-[94vw] max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Import existing subcontract</DialogTitle>
+            <DialogDescription>
+              Upload a signed or manual contract. AI will read the file, create a contract-on-file record, and open it for review.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="existing-subcontract-file" className="text-sm font-medium">Contract file</Label>
+              <Input
+                id="existing-subcontract-file"
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+                onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+              />
+              <p className="text-xs text-muted-foreground">PDF, JPG, or PNG up to 10MB.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="existing-subcontract-notes" className="text-sm font-medium">Notes</Label>
+              <Textarea
+                id="existing-subcontract-notes"
+                value={importNotes}
+                onChange={(event) => setImportNotes(event.target.value)}
+                rows={3}
+                placeholder="Optional reference, signed date, or migration note"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => setImportDialogOpen(false)}
+              disabled={importMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="w-full sm:w-auto"
+              onClick={handleImportExistingContract}
+              disabled={!importFile || importMutation.isPending}
+            >
+              {importMutation.isPending ? (
+                <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Importing...</>
+              ) : (
+                <><Upload className="h-4 w-4 mr-1" /> Import contract</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {!subcontracts?.length ? (
         <Card>

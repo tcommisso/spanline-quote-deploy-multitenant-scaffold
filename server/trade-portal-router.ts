@@ -635,6 +635,27 @@ function moneyString(value: number): string {
   return value.toFixed(2);
 }
 
+function subcontractMilestoneAmount(subcontract: any, milestone: PaymentMilestone): number {
+  return milestone.usePercent
+    ? ((milestone.percentOfTotal || 0) / 100) * moneyNumber(subcontract.subcontractSum)
+    : moneyNumber(milestone.amountDollars);
+}
+
+function historicalSubcontractClaim(subcontract: any, milestone: PaymentMilestone, index: number) {
+  if (!milestone?.paidBeforeSystem) return null;
+  return {
+    subcontractId: subcontract.id,
+    subcontractMilestoneIndex: index,
+    amount: moneyString(subcontractMilestoneAmount(subcontract, milestone)),
+    approvalStatus: "paid",
+    invoiceId: null,
+    source: "historical",
+    paidBeforeSystem: true,
+    paidBeforeSystemAt: milestone.paidBeforeSystemAt || null,
+    paidBeforeSystemNote: milestone.paidBeforeSystemNote || null,
+  };
+}
+
 const MAX_INVOICE_EXTRACTION_BYTES = 10 * 1024 * 1024;
 
 function inferInvoiceMimeType(fileName: string, fileMimeType?: string | null) {
@@ -2458,12 +2479,15 @@ export const tradePortalRouter = router({
     const subcontractMilestones = subcontracts.flatMap((subcontract: any) => {
       const schedule = ((subcontract.paymentSchedule as PaymentMilestone[]) || []);
       return schedule.map((milestone, index) => {
-        const claims = existingClaims.filter((claim: any) =>
+        const invoiceClaims = existingClaims.filter((claim: any) =>
           claim.subcontractId === subcontract.id && claim.subcontractMilestoneIndex === index
         );
-        const amount = milestone.usePercent
-          ? ((milestone.percentOfTotal || 0) / 100) * moneyNumber(subcontract.subcontractSum)
-          : moneyNumber(milestone.amountDollars);
+        const historicalClaim = historicalSubcontractClaim(subcontract, milestone, index);
+        const claims = [
+          ...(historicalClaim ? [historicalClaim] : []),
+          ...invoiceClaims,
+        ];
+        const amount = subcontractMilestoneAmount(subcontract, milestone);
         return {
           subcontractId: subcontract.id,
           subcontractMilestoneIndex: index,
@@ -2476,6 +2500,9 @@ export const tradePortalRouter = router({
           claimed: claims.length > 0,
           claimStatus: claims.length > 0 ? claims[0].approvalStatus : null,
           claimedAmount: claims.reduce((sum: number, claim: any) => sum + moneyNumber(claim.amount), 0),
+          paidBeforeSystem: Boolean(historicalClaim),
+          paidBeforeSystemAt: milestone.paidBeforeSystemAt || null,
+          paidBeforeSystemNote: milestone.paidBeforeSystemNote || null,
         };
       });
     });
@@ -2649,6 +2676,7 @@ export const tradePortalRouter = router({
         let milestoneId = item.milestoneId ?? null;
         let subcontractId = item.subcontractId ?? null;
         const subcontractMilestoneIndex = item.subcontractMilestoneIndex ?? null;
+        let subcontract: any = null;
 
         if (!jobId) {
           if (workOrderId || milestoneId || subcontractId != null || subcontractMilestoneIndex != null) {
@@ -2669,9 +2697,30 @@ export const tradePortalRouter = router({
         }
 
         if (subcontractId != null) {
-          const subcontract = await requireSubcontractAccess(db, ctx, subcontractId);
+          subcontract = await requireSubcontractAccess(db, ctx, subcontractId);
           if (subcontract.jobId !== jobId) {
             throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: subcontract does not belong to this job` });
+          }
+          if (subcontractMilestoneIndex != null) {
+            const schedule = (subcontract.paymentSchedule as PaymentMilestone[]) || [];
+            const milestone = schedule[subcontractMilestoneIndex];
+            if (!milestone) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: subcontract milestone does not exist` });
+            }
+            if (milestone.paidBeforeSystem) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: this subcontract milestone was already paid before the system was implemented` });
+            }
+            const [existingClaim] = await db.select({ id: tradeInvoiceLines.id })
+              .from(tradeInvoiceLines)
+              .where(and(
+                eq(tradeInvoiceLines.subcontractId, subcontractId),
+                eq(tradeInvoiceLines.subcontractMilestoneIndex, subcontractMilestoneIndex),
+                sql`${tradeInvoiceLines.approvalStatus} <> 'rejected'`,
+              ))
+              .limit(1);
+            if (existingClaim) {
+              throw new TRPCError({ code: "BAD_REQUEST", message: `Line ${index + 1}: this subcontract milestone has already been claimed` });
+            }
           }
         }
 
@@ -2853,9 +2902,14 @@ export const tradePortalRouter = router({
         subcontractSum: sc.subcontractSum,
         status: sc.status,
         milestones: ((sc.paymentSchedule as PaymentMilestone[]) || []).map((m, index) => {
-          const claims = existingClaims.filter(
+          const invoiceClaims = existingClaims.filter(
             c => c.subcontractId === sc.id && c.subcontractMilestoneIndex === index
           );
+          const historicalClaim = historicalSubcontractClaim(sc, m, index);
+          const claims = [
+            ...(historicalClaim ? [historicalClaim] : []),
+            ...invoiceClaims,
+          ];
           return {
             index,
             label: m.label,
@@ -2865,6 +2919,9 @@ export const tradePortalRouter = router({
             claimed: claims.length > 0,
             claimStatus: claims.length > 0 ? claims[0].approvalStatus : null,
             claimedAmount: claims.reduce((sum: number, c: any) => sum + parseFloat(c.amount || "0"), 0),
+            paidBeforeSystem: Boolean(historicalClaim),
+            paidBeforeSystemAt: m.paidBeforeSystemAt || null,
+            paidBeforeSystemNote: m.paidBeforeSystemNote || null,
           };
         }),
       }));
@@ -2936,7 +2993,7 @@ export const tradePortalRouter = router({
     .input(z.object({ subcontractId: z.number() }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
-      await requireSubcontractAccess(db, ctx, input.subcontractId);
+      const subcontract = await requireSubcontractAccess(db, ctx, input.subcontractId);
       const claims = await db.select({
         subcontractMilestoneIndex: tradeInvoiceLines.subcontractMilestoneIndex,
         amount: tradeInvoiceLines.amount,
@@ -2945,7 +3002,13 @@ export const tradePortalRouter = router({
       })
         .from(tradeInvoiceLines)
         .where(eq(tradeInvoiceLines.subcontractId, input.subcontractId));
-      return claims;
+      const historicalClaims = ((subcontract.paymentSchedule as PaymentMilestone[]) || [])
+        .map((milestone, index) => historicalSubcontractClaim(subcontract, milestone, index))
+        .filter(Boolean);
+      return [
+        ...historicalClaims,
+        ...claims.map((claim: any) => ({ ...claim, source: "invoice" })),
+      ];
     }),
 
   // ─── Job Details (full info for a specific job) ────────────────────────────

@@ -27,6 +27,7 @@ import {
   Clock,
   AlertCircle,
   Download,
+  ExternalLink,
 } from "lucide-react";
 import {
   Dialog,
@@ -43,6 +44,10 @@ interface PaymentMilestone {
   amountDollars: number | null;
   percentOfTotal: number | null;
   usePercent: boolean;
+  paidBeforeSystem?: boolean;
+  paidBeforeSystemAt?: string | null;
+  paidBeforeSystemBy?: number | null;
+  paidBeforeSystemNote?: string | null;
 }
 
 interface BuildingFileChecklist {
@@ -112,6 +117,10 @@ function normalise(value: unknown) {
 
 function textOrEmpty(value: unknown) {
   return String(value || "").trim();
+}
+
+function todayDateInputValue() {
+  return new Date().toISOString().split("T")[0];
 }
 
 function supplierTypeLabel(supplier: any) {
@@ -205,12 +214,17 @@ export default function SubcontractEditor() {
   const [subcontractorEmail, setSubcontractorEmail] = useState("");
   const [spanlineSignerName, setSpanlineSignerName] = useState("");
   const [spanlineSignerEmail, setSpanlineSignerEmail] = useState("");
+  const [historicalPaymentDialogOpen, setHistoricalPaymentDialogOpen] = useState(false);
+  const [historicalPaymentMilestoneIndex, setHistoricalPaymentMilestoneIndex] = useState<number | null>(null);
+  const [historicalPaymentDate, setHistoricalPaymentDate] = useState(todayDateInputValue());
+  const [historicalPaymentNote, setHistoricalPaymentNote] = useState("");
   const sendMutation = trpc.subcontract.sendForSignature.useMutation();
   const createMutation = trpc.subcontract.create.useMutation();
   const cancelMutation = trpc.subcontract.cancel.useMutation();
   const archiveMutation = trpc.subcontract.archive.useMutation();
   const unarchiveMutation = trpc.subcontract.unarchive.useMutation();
   const deleteMutation = trpc.subcontract.delete.useMutation();
+  const markHistoricalPaymentMutation = trpc.subcontract.markMilestonePaidBeforeSystem.useMutation();
 
   // Payment Schedule
   const [milestones, setMilestones] = useState<PaymentMilestone[]>([]);
@@ -430,6 +444,9 @@ export default function SubcontractEditor() {
   // Calculate totals
   const totalDollars = milestones.reduce((sum, m) => sum + (m.usePercent ? 0 : (m.amountDollars || 0)), 0);
   const totalPercent = milestones.reduce((sum, m) => sum + (m.usePercent ? (m.percentOfTotal || 0) : 0), 0);
+  const historicalPaymentMilestone = historicalPaymentMilestoneIndex != null
+    ? milestones[historicalPaymentMilestoneIndex]
+    : null;
   const displayStatus = subcontractDisplayStatus(subcontract);
   const isArchived = !!subcontract?.archivedAt;
   const isOnFile = subcontract?.status === "on_file";
@@ -489,6 +506,53 @@ export default function SubcontractEditor() {
       toast.success("Contract marked as on file");
     } catch (err: any) {
       toast.error(err.message || "Failed to mark contract on file");
+    }
+  };
+
+  const refreshMilestoneClaims = () => {
+    if (!subcontractId) return;
+    utils.subcontract.get.invalidate({ id: subcontractId });
+    utils.subcontract.getClaimStatus.invalidate({ subcontractId });
+  };
+
+  const openHistoricalPaymentDialog = (index: number) => {
+    setHistoricalPaymentMilestoneIndex(index);
+    setHistoricalPaymentDate(todayDateInputValue());
+    setHistoricalPaymentNote("");
+    setHistoricalPaymentDialogOpen(true);
+  };
+
+  const handleSaveHistoricalPayment = async () => {
+    if (!subcontractId || historicalPaymentMilestoneIndex == null) return;
+    try {
+      await markHistoricalPaymentMutation.mutateAsync({
+        subcontractId,
+        milestoneIndex: historicalPaymentMilestoneIndex,
+        paid: true,
+        paidAt: historicalPaymentDate || null,
+        note: historicalPaymentNote || null,
+      });
+      refreshMilestoneClaims();
+      setHistoricalPaymentDialogOpen(false);
+      toast.success("Milestone marked as paid before system");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to mark milestone as paid");
+    }
+  };
+
+  const handleClearHistoricalPayment = async (index: number) => {
+    if (!subcontractId) return;
+    if (!window.confirm("Clear the pre-system paid marker for this milestone?")) return;
+    try {
+      await markHistoricalPaymentMutation.mutateAsync({
+        subcontractId,
+        milestoneIndex: index,
+        paid: false,
+      });
+      refreshMilestoneClaims();
+      toast.success("Pre-system paid marker cleared");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to clear paid marker");
     }
   };
 
@@ -820,6 +884,19 @@ export default function SubcontractEditor() {
               </div>
             )}
           </div>
+          {subcontract?.pdfUrl && (
+            <div className="mt-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50/70 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="font-medium text-emerald-900">Uploaded contract file</p>
+                <p className="text-xs text-emerald-700">Use this to compare the original file with the imported subcontract fields.</p>
+              </div>
+              <Button asChild variant="outline" size="sm" className="w-full shrink-0 sm:w-auto">
+                <a href={subcontract.pdfUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink className="h-4 w-4 mr-1" /> View file
+                </a>
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -837,73 +914,103 @@ export default function SubcontractEditor() {
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="w-full min-w-[920px] text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left py-2 px-2 font-medium text-xs text-muted-foreground w-[35%]">Milestone</th>
-                  <th className="text-right py-2 px-2 font-medium text-xs text-muted-foreground w-[18%]">$ Amount</th>
+                  <th className="text-left py-2 px-2 font-medium text-xs text-muted-foreground w-[30%]">Milestone</th>
+                  <th className="text-right py-2 px-2 font-medium text-xs text-muted-foreground w-[15%]">$ Amount</th>
                   <th className="text-center py-2 px-2 font-medium text-xs text-muted-foreground w-[6%]">or</th>
-                  <th className="text-right py-2 px-2 font-medium text-xs text-muted-foreground w-[18%]">% of Total</th>
-                  <th className="text-center py-2 px-2 font-medium text-xs text-muted-foreground w-[13%]">Status</th>
+                  <th className="text-right py-2 px-2 font-medium text-xs text-muted-foreground w-[15%]">% of Total</th>
+                  <th className="text-center py-2 px-2 font-medium text-xs text-muted-foreground w-[12%]">Status</th>
+                  <th className="text-center py-2 px-2 font-medium text-xs text-muted-foreground w-[14%]">Migration paid</th>
                   <th className="w-[10%]"></th>
                 </tr>
               </thead>
               <tbody>
-                {milestones.map((m, i) => (
-                  <tr key={i} className="border-b last:border-0">
-                    <td className="py-1 px-2">
-                      <Input
-                        value={m.label}
-                        onChange={(e) => updateMilestone(i, "label", e.target.value)}
-                        className="h-7 text-xs"
-                        placeholder="Milestone name"
-                      />
-                    </td>
-                    <td className="py-1 px-2">
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={m.amountDollars ?? ""}
-                        onChange={(e) => updateMilestone(i, "amountDollars", e.target.value ? parseFloat(e.target.value) : null)}
-                        className="h-7 text-xs text-right"
-                        disabled={m.usePercent}
-                      />
-                    </td>
-                    <td className="py-1 px-2 text-center">
-                      <Select
-                        value={m.usePercent ? "percent" : "dollar"}
-                        onValueChange={(v) => updateMilestone(i, "usePercent", v === "percent")}
-                      >
-                        <SelectTrigger className="h-7 text-xs w-16 mx-auto">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="dollar">or</SelectItem>
-                          <SelectItem value="percent">Select</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </td>
-                    <td className="py-1 px-2">
-                      <Input
-                        type="number"
-                        step="0.01"
-                        value={m.percentOfTotal ?? ""}
-                        onChange={(e) => updateMilestone(i, "percentOfTotal", e.target.value ? parseFloat(e.target.value) : null)}
-                        className="h-7 text-xs text-right"
-                        disabled={!m.usePercent}
-                        placeholder="%"
-                      />
-                    </td>
-                    <td className="py-1 px-2 text-center">
-                      <MilestoneClaimBadge index={i} claimStatus={claimStatus} />
-                    </td>
-                    <td className="py-1 px-2">
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeMilestone(i)}>
-                        <Trash2 className="h-3 w-3 text-muted-foreground" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {milestones.map((m, i) => {
+                  const claims = getMilestoneClaims(i, claimStatus);
+                  const historicalPaid = claims.some((claim: any) => claim.source === "historical" || claim.paidBeforeSystem);
+                  const invoiceClaimed = claims.some((claim: any) => claim.source !== "historical" && !claim.paidBeforeSystem);
+                  return (
+                    <tr key={i} className="border-b last:border-0">
+                      <td className="py-1 px-2">
+                        <Input
+                          value={m.label}
+                          onChange={(e) => updateMilestone(i, "label", e.target.value)}
+                          className="h-7 text-xs"
+                          placeholder="Milestone name"
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={m.amountDollars ?? ""}
+                          onChange={(e) => updateMilestone(i, "amountDollars", e.target.value ? parseFloat(e.target.value) : null)}
+                          className="h-7 text-xs text-right"
+                          disabled={m.usePercent}
+                        />
+                      </td>
+                      <td className="py-1 px-2 text-center">
+                        <Select
+                          value={m.usePercent ? "percent" : "dollar"}
+                          onValueChange={(v) => updateMilestone(i, "usePercent", v === "percent")}
+                        >
+                          <SelectTrigger className="h-7 text-xs w-16 mx-auto">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="dollar">or</SelectItem>
+                            <SelectItem value="percent">Select</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={m.percentOfTotal ?? ""}
+                          onChange={(e) => updateMilestone(i, "percentOfTotal", e.target.value ? parseFloat(e.target.value) : null)}
+                          className="h-7 text-xs text-right"
+                          disabled={!m.usePercent}
+                          placeholder="%"
+                        />
+                      </td>
+                      <td className="py-1 px-2 text-center">
+                        <MilestoneClaimBadge index={i} claimStatus={claimStatus} />
+                      </td>
+                      <td className="py-1 px-2 text-center">
+                        {historicalPaid ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => handleClearHistoricalPayment(i)}
+                            disabled={markHistoricalPaymentMutation.isPending}
+                          >
+                            Clear paid
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => openHistoricalPaymentDialog(i)}
+                            disabled={invoiceClaimed || markHistoricalPaymentMutation.isPending}
+                            title={invoiceClaimed ? "This milestone already has an invoice claim" : "Mark as paid before this system was implemented"}
+                          >
+                            Mark paid
+                          </Button>
+                        )}
+                      </td>
+                      <td className="py-1 px-2">
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeMilestone(i)}>
+                          <Trash2 className="h-3 w-3 text-muted-foreground" />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="border-t font-medium">
@@ -911,6 +1018,7 @@ export default function SubcontractEditor() {
                   <td className="py-2 px-2 text-right text-xs">${totalDollars.toFixed(2)}</td>
                   <td></td>
                   <td className="py-2 px-2 text-right text-xs">{totalPercent.toFixed(2)}%</td>
+                  <td></td>
                   <td></td>
                   <td></td>
                 </tr>
@@ -922,6 +1030,70 @@ export default function SubcontractEditor() {
           </Button>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={historicalPaymentDialogOpen}
+        onOpenChange={(open) => {
+          setHistoricalPaymentDialogOpen(open);
+          if (!open) {
+            setHistoricalPaymentMilestoneIndex(null);
+            setHistoricalPaymentNote("");
+          }
+        }}
+      >
+        <DialogContent className="w-[94vw] max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark progress payment as paid</DialogTitle>
+            <DialogDescription>
+              Record that this milestone was already paid before the system was implemented. Contractors will not be able to claim it again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-md border bg-muted/40 p-3 text-sm">
+              <p className="font-medium">{historicalPaymentMilestone?.label || "Selected milestone"}</p>
+              <p className="text-xs text-muted-foreground">This creates a migration-only paid marker, not a new invoice.</p>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Paid date</Label>
+              <Input
+                type="date"
+                value={historicalPaymentDate}
+                onChange={(event) => setHistoricalPaymentDate(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Reference note</Label>
+              <Textarea
+                value={historicalPaymentNote}
+                onChange={(event) => setHistoricalPaymentNote(event.target.value)}
+                rows={3}
+                placeholder="Optional receipt, Xero reference, or migration note"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => setHistoricalPaymentDialogOpen(false)}
+              disabled={markHistoricalPaymentMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="w-full sm:w-auto"
+              onClick={handleSaveHistoricalPayment}
+              disabled={historicalPaymentMilestoneIndex == null || markHistoricalPaymentMutation.isPending}
+            >
+              {markHistoricalPaymentMutation.isPending ? (
+                <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Saving...</>
+              ) : (
+                <><CheckCircle2 className="h-4 w-4 mr-1" /> Mark paid</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dates */}
       <Card className="mb-4">
@@ -1277,13 +1449,18 @@ function ChecklistSelect({
   );
 }
 
+function getMilestoneClaims(index: number, claimStatus: any[] | undefined) {
+  return (claimStatus || []).filter((c: any) => c.subcontractMilestoneIndex === index);
+}
+
 function MilestoneClaimBadge({ index, claimStatus }: { index: number; claimStatus: any[] | undefined }) {
   if (!claimStatus) return <span className="text-[10px] text-muted-foreground">—</span>;
   
-  const claims = claimStatus.filter((c: any) => c.subcontractMilestoneIndex === index);
+  const claims = getMilestoneClaims(index, claimStatus);
   if (claims.length === 0) return <span className="text-[10px] text-muted-foreground">—</span>;
 
-  const status = claims[0].approvalStatus;
+  const firstClaim = claims[0];
+  const status = firstClaim.approvalStatus;
   
   switch (status) {
     case "approved":
@@ -1291,7 +1468,7 @@ function MilestoneClaimBadge({ index, claimStatus }: { index: number; claimStatu
       return (
         <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-green-300 text-green-700 bg-green-50">
           <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" />
-          {status === "paid" ? "Paid" : "Approved"}
+          {firstClaim.source === "historical" || firstClaim.paidBeforeSystem ? "Paid before system" : status === "paid" ? "Paid" : "Approved"}
         </Badge>
       );
     case "submitted":

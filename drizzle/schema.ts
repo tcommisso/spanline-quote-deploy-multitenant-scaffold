@@ -3321,6 +3321,10 @@ export interface PaymentMilestone {
   amountDollars: number | null;
   percentOfTotal: number | null;
   usePercent: boolean; // true = use %, false = use $
+  paidBeforeSystem?: boolean;
+  paidBeforeSystemAt?: string | null;
+  paidBeforeSystemBy?: number | null;
+  paidBeforeSystemNote?: string | null;
 }
 
 export interface BuildingFileChecklist {
