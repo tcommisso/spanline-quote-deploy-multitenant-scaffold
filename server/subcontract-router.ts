@@ -8,10 +8,14 @@ import { getDb } from "./db";
 import {
   projectSubcontracts,
   constructionJobs,
+  constructionJobFinancials,
   constructionInstallers,
   constructionAssignments,
   tradeInvoiceLines,
   crmLeads,
+  branches,
+  users,
+  tenantMemberships,
   type PaymentMilestone,
   type BuildingFileChecklist,
   type InspectionChecklist,
@@ -19,12 +23,13 @@ import {
   type ElectricalCablingChecklist,
   type DownpipesChecklist,
 } from "../drizzle/schema";
-import { and, eq, desc, isNull } from "drizzle-orm";
+import { and, eq, desc, isNull, sql } from "drizzle-orm";
 import { generateSubcontractHtml } from "./subcontract-pdf";
 import { createDocument } from "./signwell";
 import { storagePut } from "./storage";
 import { buildTrustedAppUrl } from "./_core/url";
 import { getCompanyName } from "./company-name";
+import { ENV } from "./_core/env";
 
 function subcontractScope(id: number, tenantId: number) {
   return and(eq(projectSubcontracts.id, id), eq(projectSubcontracts.tenantId, tenantId));
@@ -52,6 +57,102 @@ function canonicalClientNameFromLead(lead?: {
   const firstName = nullableText(lead.contactFirstName);
   const lastName = nullableText(lead.contactLastName);
   return [firstName, lastName].filter(Boolean).join(" ") || nullableText(lead.company);
+}
+
+async function getTenantUserById(db: any, tenantId: number, userId: number | null | undefined) {
+  if (!userId) return null;
+  const selectFields = {
+    id: users.id,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+  };
+
+  if (ENV.tenancyMode === "single") {
+    const [user] = await db.select(selectFields)
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return user || null;
+  }
+
+  const [user] = await db.select(selectFields)
+    .from(tenantMemberships)
+    .innerJoin(users, eq(users.id, tenantMemberships.userId))
+    .where(and(
+      eq(tenantMemberships.tenantId, tenantId),
+      eq(tenantMemberships.userId, userId),
+    ))
+    .limit(1);
+  return user || null;
+}
+
+async function getBranchConstructionManagerForJob(db: any, tenantId: number, jobId: number) {
+  const [context] = await db.select({
+    leadBranchId: crmLeads.branchId,
+    financialBranch: constructionJobFinancials.branch,
+  })
+    .from(constructionJobs)
+    .leftJoin(crmLeads, and(eq(constructionJobs.leadId, crmLeads.id), eq(crmLeads.tenantId, tenantId)))
+    .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+    .where(jobScope(jobId, tenantId))
+    .limit(1);
+
+  if (!context) return null;
+
+  let branch: {
+    id: number;
+    name: string;
+    managerName: string | null;
+    managerEmail: string | null;
+    defaultConstructionManagerStaffId: number | null;
+  } | null = null;
+
+  if (context.leadBranchId) {
+    const [byId] = await db.select({
+      id: branches.id,
+      name: branches.name,
+      managerName: branches.managerName,
+      managerEmail: branches.managerEmail,
+      defaultConstructionManagerStaffId: branches.defaultConstructionManagerStaffId,
+    })
+      .from(branches)
+      .where(and(eq(branches.id, context.leadBranchId), eq(branches.tenantId, tenantId)))
+      .limit(1);
+    branch = byId || null;
+  }
+
+  const financialBranch = nullableText(context.financialBranch);
+  if (!branch && financialBranch) {
+    const [byName] = await db.select({
+      id: branches.id,
+      name: branches.name,
+      managerName: branches.managerName,
+      managerEmail: branches.managerEmail,
+      defaultConstructionManagerStaffId: branches.defaultConstructionManagerStaffId,
+    })
+      .from(branches)
+      .where(and(
+        eq(branches.tenantId, tenantId),
+        eq(sql`LOWER(TRIM(${branches.name}))`, financialBranch.toLowerCase()),
+      ))
+      .limit(1);
+    branch = byName || null;
+  }
+
+  if (!branch) return null;
+
+  const defaultUser = await getTenantUserById(db, tenantId, branch.defaultConstructionManagerStaffId);
+  const name = nullableText(defaultUser?.name) || nullableText(defaultUser?.email) || nullableText(branch.managerName);
+  const email = nullableText(defaultUser?.email) || nullableText(branch.managerEmail);
+
+  if (!name && !email) return null;
+  return {
+    branchId: branch.id,
+    branchName: branch.name,
+    name,
+    email,
+  };
 }
 
 // ─── Default Payment Milestones ──────────────────────────────────────────────
@@ -213,6 +314,7 @@ export const subcontractRouter = router({
       const canonicalClientName = canonicalClientNameFromLead(lead);
       const sourceClientName = nullableText(sourceSubcontract?.clientName);
       const sourceUsesStoredJobName = sourceClientName && sourceClientName === nullableText(job.clientName);
+      const branchConstructionManager = await getBranchConstructionManagerForJob(db, ctx.tenant!.id, input.jobId);
 
       const isOnFile = input.contractSource === "manual_on_file";
       const [result] = await db.insert(projectSubcontracts).values({
@@ -224,7 +326,7 @@ export const subcontractRouter = router({
           ? canonicalClientName || sourceClientName
           : sourceClientName || canonicalClientName || job.clientName,
         clientAccountNumber: sourceSubcontract?.clientAccountNumber || lead?.clientNumber || "",
-        constructionManager: sourceSubcontract?.constructionManager || job.supervisorName || job.designAdviserName || "",
+        constructionManager: sourceSubcontract?.constructionManager || branchConstructionManager?.name || job.supervisorName || job.designAdviserName || "",
         subcontractorName: installer?.name || sourceSubcontract?.subcontractorName || "",
         subcontractorPhone: installer?.phone || sourceSubcontract?.subcontractorPhone || "",
         siteAddress: sourceSubcontract?.siteAddress || job.siteAddress || "",
@@ -259,7 +361,14 @@ export const subcontractRouter = router({
         .from(projectSubcontracts)
         .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
-      return row || null;
+      if (!row) return null;
+      const branchConstructionManager = await getBranchConstructionManagerForJob(db, ctx.tenant!.id, row.jobId);
+      return {
+        ...row,
+        branchConstructionManagerName: branchConstructionManager?.name || null,
+        branchConstructionManagerEmail: branchConstructionManager?.email || null,
+        branchName: branchConstructionManager?.branchName || null,
+      };
     }),
 
   // List subcontracts for a job

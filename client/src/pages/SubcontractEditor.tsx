@@ -317,6 +317,11 @@ export default function SubcontractEditor() {
     ) || null;
   }, [constructionManager, managerOptions]);
 
+  const defaultSignatoryName = textOrEmpty((subcontract as any)?.branchConstructionManagerName)
+    || textOrEmpty(constructionManager);
+  const defaultSignatoryEmail = textOrEmpty((subcontract as any)?.branchConstructionManagerEmail)
+    || textOrEmpty(selectedManagerUser?.email);
+
   const supplierTypes = useMemo(() => {
     const types = new Set<string>();
     for (const category of supplierCategories as any[]) {
@@ -400,9 +405,9 @@ export default function SubcontractEditor() {
 
   const handleSendDialogOpenChange = (open: boolean) => {
     if (open) {
-      setSubcontractorEmail(textOrEmpty(selectedSupplier?.email) || subcontractorEmail);
-      setSpanlineSignerName(textOrEmpty(constructionManager) || spanlineSignerName);
-      setSpanlineSignerEmail(textOrEmpty(selectedManagerUser?.email) || spanlineSignerEmail);
+      setSubcontractorEmail((current) => textOrEmpty(current) || textOrEmpty(selectedSupplier?.email));
+      setSpanlineSignerName((current) => textOrEmpty(current) || defaultSignatoryName);
+      setSpanlineSignerEmail((current) => textOrEmpty(current) || defaultSignatoryEmail);
     }
     setSendDialogOpen(open);
   };

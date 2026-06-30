@@ -72,6 +72,77 @@ function moneyString(value: number): string {
   return value.toFixed(2);
 }
 
+function textOrEmpty(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function normaliseForMatch(value: unknown): string {
+  return textOrEmpty(value).toLowerCase().replace(/\s+/g, " ");
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",")[1] : result);
+    };
+    reader.onerror = () => reject(new Error("Failed to read invoice file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function inferJobIdForExtractedLine(line: any, extracted: any, claimOptions: any): string {
+  const jobs = claimOptions?.jobs || [];
+  if (jobs.length === 1) return String(jobs[0].jobId);
+
+  const haystack = normaliseForMatch([
+    line?.description,
+    extracted?.supplierName,
+    extracted?.invoiceNumber,
+    extracted?.notes,
+  ].filter(Boolean).join(" "));
+
+  const match = jobs.find((job: any) => {
+    const identifiers = [
+      job.quoteNumber,
+      job.clientName,
+      job.siteAddress,
+      job.leadClientNumber,
+    ].map(normaliseForMatch).filter(Boolean);
+    return identifiers.some((identifier) => haystack.includes(identifier));
+  });
+  return match ? String(match.jobId) : "";
+}
+
+function createClaimItemsFromExtraction(extracted: any, claimOptions: any): ClaimItem[] {
+  const lines = Array.isArray(extracted?.lines) ? extracted.lines : [];
+  const sourceLines = lines.length > 0
+    ? lines
+    : [{
+      description: extracted?.supplierName ? `Invoice from ${extracted.supplierName}` : "Invoice claim",
+      amount: amountNumber(extracted?.subtotal || Math.max(amountNumber(extracted?.total) - amountNumber(extracted?.gst), 0)),
+      gst: amountNumber(extracted?.gst),
+    }];
+
+  const items = sourceLines
+    .map((line: any) => {
+      const amount = amountNumber(line?.amount ?? line?.lineTotal);
+      const gst = amountNumber(line?.gst ?? line?.gstAmount);
+      if (amount <= 0 && gst <= 0) return null;
+      return {
+        ...createClaimItem(),
+        jobId: inferJobIdForExtractedLine(line, extracted, claimOptions),
+        description: textOrEmpty(line?.description) || "Invoice claim",
+        amount: moneyString(amount),
+        gstAmount: moneyString(gst),
+      };
+    })
+    .filter(Boolean) as ClaimItem[];
+
+  return items.length > 0 ? items : [createClaimItem()];
+}
+
 export default function TradePortalInvoices() {
   const { data: invoices, isLoading, refetch } = trpc.tradePortal.getInvoices.useQuery();
   const { data: jobs } = trpc.tradePortal.getActiveJobs.useQuery();
@@ -102,23 +173,23 @@ export default function TradePortalInvoices() {
     onError: (err) => toast.error(err.message),
   });
 
-  // AI extraction mutation (uses the admin endpoint but we'll call it after submission)
-  const extractMutation = trpc.tradeInvoice.extractInvoiceData.useMutation({
+  const extractMutation = trpc.tradePortal.extractInvoiceUpload.useMutation({
     onSuccess: (res) => {
-      setAiData(res.extracted);
-      // Pre-fill form with AI data
-      if (res.extracted.invoiceNumber) setInvoiceNumber(res.extracted.invoiceNumber);
-      if (res.extracted.subtotal) setAmount(String(res.extracted.subtotal));
-      if (res.extracted.gst) setGstAmount(String(res.extracted.gst));
+      const extracted = res.extracted;
+      setAiData(extracted);
+      if (extracted.invoiceNumber) setInvoiceNumber(extracted.invoiceNumber);
+      if (extracted.subtotal != null) setAmount(String(extracted.subtotal));
+      if (extracted.gst != null) setGstAmount(String(extracted.gst));
+      if (!description && extracted.notes) setDescription(extracted.notes);
+      setClaimItems(createClaimItemsFromExtraction(extracted, claimOptions));
       setExtracting(false);
       setStep("ai_review");
-      toast.success("AI extraction complete! Please review the details.");
+      toast.success("Invoice read. Please review the prefilled claim lines.");
     },
     onError: () => {
       setExtracting(false);
-      // Continue without AI data
       setStep("confirm");
-      toast.info("AI extraction unavailable. Please fill in details manually.");
+      toast.info("Invoice reading unavailable. Please fill in details manually.");
     },
   });
 
@@ -141,8 +212,19 @@ export default function TradePortalInvoices() {
       return;
     }
 
-    // Move to confirm step (AI extraction happens server-side after submission)
-    setStep("confirm");
+    setExtracting(true);
+    try {
+      const base64 = await readFileAsBase64(file);
+      extractMutation.mutate({
+        fileBase64: base64,
+        fileName: file.name,
+        fileMimeType: file.type || undefined,
+      });
+    } catch {
+      setExtracting(false);
+      setStep("confirm");
+      toast.info("Invoice reading unavailable. Please fill in details manually.");
+    }
   }
 
   async function handleSubmit() {
@@ -173,35 +255,31 @@ export default function TradePortalInvoices() {
 
     setUploading(true);
     try {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = (reader.result as string).split(",")[1];
-        submitMutation.mutate({
-          invoiceNumber,
-          amount: moneyString(subtotal),
-          gstAmount: moneyString(gstTotal),
-          description: description || undefined,
-          items: validItems.map((item) => {
-            const [subcontractId, subcontractMilestoneIndex] = item.subcontractKey ? item.subcontractKey.split(":") : [];
-            return {
-              description: item.description || undefined,
-              amount: moneyString(amountNumber(item.amount)),
-              gstAmount: moneyString(amountNumber(item.gstAmount)),
-              jobId: item.chargeType === "job" && item.jobId ? parseInt(item.jobId) : undefined,
-              workOrderId: item.chargeType === "job" && item.workOrderId ? parseInt(item.workOrderId) : undefined,
-              milestoneId: item.chargeType === "job" && item.milestoneId ? parseInt(item.milestoneId) : undefined,
-              subcontractId: item.chargeType === "job" && subcontractId ? parseInt(subcontractId) : undefined,
-              subcontractMilestoneIndex: item.chargeType === "job" && subcontractMilestoneIndex !== undefined ? parseInt(subcontractMilestoneIndex) : undefined,
-            };
-          }),
-          fileBase64: base64,
-          fileName: file.name,
-          fileMimeType: file.type || "application/octet-stream",
-        });
-      };
-      reader.readAsDataURL(file);
-    } catch {
-      toast.error("Failed to process file");
+      const base64 = await readFileAsBase64(file);
+      await submitMutation.mutateAsync({
+        invoiceNumber,
+        amount: moneyString(subtotal),
+        gstAmount: moneyString(gstTotal),
+        description: description || undefined,
+        items: validItems.map((item) => {
+          const [subcontractId, subcontractMilestoneIndex] = item.subcontractKey ? item.subcontractKey.split(":") : [];
+          return {
+            description: item.description || undefined,
+            amount: moneyString(amountNumber(item.amount)),
+            gstAmount: moneyString(amountNumber(item.gstAmount)),
+            jobId: item.chargeType === "job" && item.jobId ? parseInt(item.jobId) : undefined,
+            workOrderId: item.chargeType === "job" && item.workOrderId ? parseInt(item.workOrderId) : undefined,
+            milestoneId: item.chargeType === "job" && item.milestoneId ? parseInt(item.milestoneId) : undefined,
+            subcontractId: item.chargeType === "job" && subcontractId ? parseInt(subcontractId) : undefined,
+            subcontractMilestoneIndex: item.chargeType === "job" && subcontractMilestoneIndex !== undefined ? parseInt(subcontractMilestoneIndex) : undefined,
+          };
+        }),
+        fileBase64: base64,
+        fileName: file.name,
+        fileMimeType: file.type || "application/octet-stream",
+      });
+    } catch (err: any) {
+      if (!err?.message) toast.error("Failed to process file");
     } finally {
       setUploading(false);
     }
@@ -397,9 +475,13 @@ export default function TradePortalInvoices() {
               </div>
 
               <DialogFooter className="gap-2">
-                <Button variant="outline" onClick={resetForm}>Cancel</Button>
-                <Button onClick={handleFileUpload} disabled={!file} className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                  <ChevronRight className="w-4 h-4 mr-1" /> Continue
+                <Button variant="outline" onClick={resetForm} disabled={extracting}>Cancel</Button>
+                <Button onClick={handleFileUpload} disabled={!file || extracting} className="bg-primary hover:bg-primary/90 text-primary-foreground">
+                  {extracting ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Reading invoice...</>
+                  ) : (
+                    <><Brain className="w-4 h-4 mr-1" /> Read invoice</>
+                  )}
                 </Button>
               </DialogFooter>
             </div>
@@ -412,7 +494,7 @@ export default function TradePortalInvoices() {
                 <div className="text-sm">
                   <p className="font-medium text-green-800">AI Extraction Complete</p>
                   <p className="text-green-700 text-xs mt-0.5">
-                    Confidence: {aiData.confidence}% — Please review and correct any errors
+                    Confidence: {aiData.confidence}% — Claim lines have been prefilled for review
                   </p>
                 </div>
               </div>
@@ -443,7 +525,7 @@ export default function TradePortalInvoices() {
               {aiData.lines && aiData.lines.length > 0 && (
                 <div>
                   <Label className="mb-2 block">Extracted Line Items ({aiData.lines.length})</Label>
-                  <div className="border rounded-lg overflow-hidden">
+                  <div className="border rounded-lg overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead className="bg-muted">
                         <tr>
@@ -457,7 +539,7 @@ export default function TradePortalInvoices() {
                           <tr key={idx} className="border-t">
                             <td className="p-2">{line.description}</td>
                             <td className="p-2 text-right">{line.quantity}</td>
-                            <td className="p-2 text-right">${line.amount?.toFixed(2)}</td>
+                            <td className="p-2 text-right">${amountNumber(line.amount).toFixed(2)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -474,7 +556,7 @@ export default function TradePortalInvoices() {
               <DialogFooter className="gap-2">
                 <Button variant="outline" onClick={() => setStep("upload")}>Back</Button>
                 <Button onClick={() => setStep("confirm")} className="bg-primary hover:bg-primary/90 text-primary-foreground">
-                  Confirm & Submit
+                  Review claim lines
                 </Button>
               </DialogFooter>
             </div>
@@ -486,7 +568,7 @@ export default function TradePortalInvoices() {
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                   <p className="font-medium text-blue-800">Manual Entry</p>
                   <p className="text-blue-700 text-xs mt-0.5">
-                    Fill in the invoice details below. AI extraction will be performed after submission.
+                    Invoice reading was skipped or unavailable. Fill in the invoice and claim line details below.
                   </p>
                 </div>
               )}

@@ -2030,20 +2030,20 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h3 className="font-semibold text-base">Subcontracts</h3>
           <p className="text-xs text-muted-foreground">{subcontracts?.length || 0} subcontract(s) for this job</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)}>
+        <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-2 lg:flex lg:flex-wrap lg:justify-end">
+          <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)} className="w-full lg:w-auto">
             {showArchived ? "Hide archived" : "Show archived"}
           </Button>
-          <Button size="sm" variant="outline" onClick={handleCreateOnFile} disabled={createMutation.isPending} className="gap-1.5">
+          <Button size="sm" variant="outline" onClick={handleCreateOnFile} disabled={createMutation.isPending} className="w-full gap-1.5 lg:w-auto">
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             Contract on file
           </Button>
-          <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="gap-1.5">
+          <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="w-full gap-1.5 sm:col-span-2 lg:w-auto lg:col-span-1">
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             New Subcontract
           </Button>

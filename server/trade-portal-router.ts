@@ -31,6 +31,7 @@ import { buildTrustedAppUrlForTenant } from "./_core/url";
 import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from "./_core/tenant-scope";
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { sendNotificationEmail } from "./email";
+import { invokeLLM, type MessageContent } from "./_core/llm";
 import {
   addTradeRemittanceDedupeKeys,
   dedupeTradeRemittances,
@@ -632,6 +633,43 @@ function moneyNumber(value: unknown): number {
 
 function moneyString(value: number): string {
   return value.toFixed(2);
+}
+
+const MAX_INVOICE_EXTRACTION_BYTES = 10 * 1024 * 1024;
+
+function inferInvoiceMimeType(fileName: string, fileMimeType?: string | null) {
+  const explicit = String(fileMimeType || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  const lowerName = fileName.toLowerCase();
+  if (lowerName.endsWith(".pdf")) return "application/pdf";
+  if (lowerName.endsWith(".png")) return "image/png";
+  if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream";
+}
+
+function invoiceDocumentContentPart(input: {
+  fileBase64: string;
+  fileName: string;
+  fileMimeType: string;
+}): MessageContent {
+  if (input.fileMimeType.startsWith("image/")) {
+    return {
+      type: "image_url",
+      image_url: {
+        url: `data:${input.fileMimeType};base64,${input.fileBase64}`,
+        detail: "high",
+      },
+    };
+  }
+
+  return {
+    type: "file_data",
+    file_data: {
+      data: input.fileBase64,
+      filename: input.fileName,
+      mime_type: "application/pdf",
+    },
+  };
 }
 
 const tradeFlashingOrderStatuses = [
@@ -1545,7 +1583,9 @@ export const tradePortalRouter = router({
     // Upcoming events (next 14 days)
     const now = new Date();
     const twoWeeks = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-    const upcoming = events.filter(e => e.startTime >= now && e.startTime <= twoWeeks);
+    const upcoming = events
+      .filter(e => e.startTime >= now && e.startTime <= twoWeeks)
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
     // Unique active jobs
     const uniqueJobs = new Map<number, typeof events[0]>();
@@ -2447,6 +2487,102 @@ export const tradePortalRouter = router({
       subcontractMilestones,
     };
   }),
+
+  extractInvoiceUpload: protectedTradePortalProcedure
+    .input(z.object({
+      fileBase64: z.string().min(1).max(15_000_000),
+      fileName: z.string().min(1).max(255),
+      fileMimeType: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      assertRateLimit({
+        key: `trade-invoice-extract:${ctx.tradeAccess.installerId}:${ctx.req.ip}`,
+        limit: 10,
+        windowMs: 60 * 60 * 1000,
+      });
+
+      const fileMimeType = inferInvoiceMimeType(input.fileName, input.fileMimeType);
+      const isSupported = fileMimeType === "application/pdf" || fileMimeType === "image/png" || fileMimeType === "image/jpeg";
+      if (!isSupported) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invoice extraction supports PDF, JPG, and PNG files" });
+      }
+
+      const fileBuffer = Buffer.from(input.fileBase64, "base64");
+      if (fileBuffer.length === 0 || fileBuffer.length > MAX_INVOICE_EXTRACTION_BYTES) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Invoice file must be 10MB or smaller" });
+      }
+
+      try {
+        const result = await invokeLLM({
+          messages: [
+            {
+              role: "system",
+              content: `You extract invoice data for an Australian construction trade portal. Return only JSON matching the schema. Amounts must be numbers in AUD. Treat "amount" on each line as the line value excluding GST, and "gst" as the GST amount for that line. If a field is not visible, use null for nullable fields, 0 for unknown numeric amounts, and an empty array for missing lines.`,
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: `Extract invoice number, supplier details, totals, and claim line items from ${input.fileName}.` },
+                invoiceDocumentContentPart({
+                  fileBase64: input.fileBase64,
+                  fileName: input.fileName,
+                  fileMimeType,
+                }),
+              ],
+            },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "trade_invoice_extraction",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  invoiceNumber: { type: ["string", "null"] },
+                  invoiceDate: { type: ["string", "null"] },
+                  supplierName: { type: ["string", "null"] },
+                  supplierABN: { type: ["string", "null"] },
+                  subtotal: { type: "number" },
+                  gst: { type: "number" },
+                  total: { type: "number" },
+                  lines: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        lineNumber: { type: "integer" },
+                        description: { type: "string" },
+                        quantity: { type: "number" },
+                        unitPrice: { type: "number" },
+                        amount: { type: "number" },
+                        gst: { type: "number" },
+                      },
+                      required: ["lineNumber", "description", "quantity", "unitPrice", "amount", "gst"],
+                      additionalProperties: false,
+                    },
+                  },
+                  confidence: { type: "integer" },
+                  notes: { type: ["string", "null"] },
+                },
+                required: ["invoiceNumber", "invoiceDate", "supplierName", "supplierABN", "subtotal", "gst", "total", "lines", "confidence", "notes"],
+                additionalProperties: false,
+              },
+            },
+          },
+        });
+
+        const content = result.choices[0]?.message?.content;
+        if (!content || typeof content !== "string") {
+          throw new Error("No structured invoice data returned");
+        }
+
+        const extracted = JSON.parse(content);
+        return { success: true, extracted };
+      } catch (err: any) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Invoice extraction failed: ${err.message || "Unknown error"}` });
+      }
+    }),
 
   // Submit invoice with PO milestone linking
   submitInvoiceWithMilestone: protectedTradePortalProcedure

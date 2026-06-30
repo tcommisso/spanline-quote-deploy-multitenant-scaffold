@@ -23,7 +23,16 @@ export type FileContent = {
   };
 };
 
-export type MessageContent = string | TextContent | ImageContent | FileContent;
+export type FileDataContent = {
+  type: "file_data";
+  file_data: {
+    data: string;
+    filename?: string;
+    mime_type?: "audio/mpeg" | "audio/wav" | "application/pdf" | "audio/mp4" | "video/mp4";
+  };
+};
+
+export type MessageContent = string | TextContent | ImageContent | FileContent | FileDataContent;
 
 export type Message = {
   role: Role;
@@ -85,7 +94,7 @@ export type InvokeResult = {
     index: number;
     message: {
       role: Role;
-      content: string | Array<TextContent | ImageContent | FileContent>;
+      content: string | Array<TextContent | ImageContent | FileContent | FileDataContent>;
       tool_calls?: ToolCall[];
     };
     finish_reason: string | null;
@@ -116,7 +125,7 @@ const ensureArray = (
 
 const normalizeContentPart = (
   part: MessageContent
-): TextContent | ImageContent | FileContent => {
+): TextContent | ImageContent | FileContent | FileDataContent => {
   if (typeof part === "string") {
     return { type: "text", text: part };
   }
@@ -130,6 +139,10 @@ const normalizeContentPart = (
   }
 
   if (part.type === "file_url") {
+    return part;
+  }
+
+  if (part.type === "file_data") {
     return part;
   }
 
@@ -338,6 +351,18 @@ const toOpenAiContentPart = async (
       type: "input_file",
       filename: `input.${mimeType.includes("pdf") ? "pdf" : "bin"}`,
       file_data: `data:${mimeType};base64,${buffer.toString("base64")}`,
+    };
+  }
+
+  if (part.type === "file_data") {
+    const mimeType = part.file_data.mime_type || "application/pdf";
+    const rawData = part.file_data.data.startsWith("data:")
+      ? part.file_data.data
+      : `data:${mimeType};base64,${part.file_data.data}`;
+    return {
+      type: "input_file",
+      filename: part.file_data.filename || `input.${mimeType.includes("pdf") ? "pdf" : "bin"}`,
+      file_data: rawData,
     };
   }
 
