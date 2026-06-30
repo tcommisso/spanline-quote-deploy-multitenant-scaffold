@@ -136,6 +136,7 @@ import { useSettingsSync } from "@/hooks/useSettingsSync";
 import PWAInstallPrompt from "@/components/PWAInstallPrompt";
 import { PushNotificationOptIn } from "@/components/PushNotificationOptIn";
 import { QuickActions } from "@/components/QuickActions";
+import { UserLocationTracker } from "@/components/UserLocationTracker";
 import { useUnreadNotification } from "@/hooks/useUnreadNotification";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { getSelectedTenantId, setSelectedTenantId } from "@/lib/tenantSelection";
@@ -1075,6 +1076,7 @@ function DashboardLayoutContent({
 
   return (
     <>
+      <UserLocationTracker userRole={user?.role} />
       <div className="relative" ref={sidebarRef}>
         <Sidebar collapsible="icon" className="border-r-0" disableTransition={isResizing}>
           <SidebarHeader className="min-h-[4.5rem] justify-center">

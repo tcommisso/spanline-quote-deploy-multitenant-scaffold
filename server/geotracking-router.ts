@@ -143,7 +143,7 @@ export const geotrackingRouter = router({
     }));
 
     return {
-      positions: positions.filter(p => p.location !== null),
+      positions,
       isTrackingActive: isWithinTrackingWindow(),
     };
   }),
