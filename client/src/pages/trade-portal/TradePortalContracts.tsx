@@ -64,6 +64,11 @@ export default function TradePortalContracts() {
                           Job: {contract.quoteNumber}
                         </p>
                       )}
+                      {contract.clientAccountNumber && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Account: {contract.clientAccountNumber}
+                        </p>
+                      )}
                     </div>
                     <Badge variant={status.variant} className="shrink-0 flex items-center gap-1">
                       <StatusIcon className="w-3 h-3" />

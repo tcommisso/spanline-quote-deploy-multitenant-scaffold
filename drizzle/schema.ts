@@ -3269,6 +3269,7 @@ export const projectSubcontracts = mysqlTable("project_subcontracts", {
   // Header fields
   jobNumber: varchar("jobNumber", { length: 32 }),
   clientName: varchar("clientName", { length: 255 }),
+  clientAccountNumber: varchar("clientAccountNumber", { length: 64 }),
   constructionManager: varchar("constructionManager", { length: 255 }),
   subcontractorName: varchar("subcontractorName", { length: 255 }),
   subcontractorPhone: varchar("subcontractorPhone", { length: 64 }),

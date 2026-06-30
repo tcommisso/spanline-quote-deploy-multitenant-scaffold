@@ -2634,6 +2634,7 @@ export const tradePortalRouter = router({
         id: projectSubcontracts.id,
         jobId: projectSubcontracts.jobId,
         subcontractorName: projectSubcontracts.subcontractorName,
+        clientAccountNumber: projectSubcontracts.clientAccountNumber,
         subcontractSum: projectSubcontracts.subcontractSum,
         siteAddress: projectSubcontracts.siteAddress,
         status: projectSubcontracts.status,

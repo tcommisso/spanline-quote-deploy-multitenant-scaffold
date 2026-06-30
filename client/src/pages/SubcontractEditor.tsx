@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -88,6 +88,34 @@ const STATUS_COLORS: Record<string, string> = {
   archived: "bg-slate-100 text-slate-600",
 };
 
+const UNASSIGNED_VALUE = "__unassigned";
+const CUSTOM_SUBCONTRACTOR_VALUE = "__custom";
+const ALL_SUPPLIER_TYPES_VALUE = "__all";
+const SUPPLIER_PREFIX = "supplier:";
+const INSTALLER_PREFIX = "installer:";
+const CHECKLIST_OPTIONS = ["N/A", "Yes", "No"];
+
+function userDisplayName(user: any) {
+  return user?.name || user?.email || `User #${user?.id}`;
+}
+
+function roleLabel(role?: string | null) {
+  return String(role || "user").replace(/_/g, " ");
+}
+
+function normalise(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function supplierTypeLabel(supplier: any) {
+  return String(supplier?.category || supplier?.tradeType || "").trim();
+}
+
+function supplierOptionValue(supplier: any) {
+  if (supplier?.installerId) return `${INSTALLER_PREFIX}${supplier.installerId}`;
+  return `${SUPPLIER_PREFIX}${supplier.id}`;
+}
+
 function subcontractDisplayStatus(subcontract: any) {
   return subcontract?.archivedAt ? "archived" : subcontract?.status || "draft";
 }
@@ -115,14 +143,20 @@ export default function SubcontractEditor() {
   const updateMutation = trpc.subcontract.update.useMutation();
   const utils = trpc.useUtils();
 
-  // Fetch all trades for the dropdown
-  const { data: allInstallers } = trpc.construction.installers.list.useQuery();
+  // Fetch form option lists.
+  const { data: allUsers } = trpc.constructionClients.assignableUsers.useQuery();
+  const { data: constructionSuppliers = [] } = trpc.suppliers.list.useQuery({
+    activeOnly: true,
+    supplierScope: "construction",
+  });
 
   // Form state
   const [installerId, setInstallerId] = useState<number | null>(null);
   const [jobNumber, setJobNumber] = useState("");
   const [clientName, setClientName] = useState("");
+  const [clientAccountNumber, setClientAccountNumber] = useState("");
   const [constructionManager, setConstructionManager] = useState("");
+  const [supplierTypeFilter, setSupplierTypeFilter] = useState(ALL_SUPPLIER_TYPES_VALUE);
   const [subcontractorName, setSubcontractorName] = useState("");
   const [subcontractorPhone, setSubcontractorPhone] = useState("");
   const [siteAddress, setSiteAddress] = useState("");
@@ -168,6 +202,7 @@ export default function SubcontractEditor() {
     if (subcontract) {
       setJobNumber(subcontract.jobNumber || "");
       setClientName(subcontract.clientName || "");
+      setClientAccountNumber(subcontract.clientAccountNumber || "");
       setConstructionManager(subcontract.constructionManager || "");
       setInstallerId(subcontract.installerId || null);
       setSubcontractorName(subcontract.subcontractorName || "");
@@ -199,6 +234,7 @@ export default function SubcontractEditor() {
         installerId: installerId || null,
         jobNumber,
         clientName,
+        clientAccountNumber,
         constructionManager,
         subcontractorName,
         subcontractorPhone,
@@ -219,7 +255,91 @@ export default function SubcontractEditor() {
     } catch (err: any) {
       toast.error(err.message || "Failed to save");
     }
-  }, [subcontractId, installerId, jobNumber, clientName, constructionManager, subcontractorName, subcontractorPhone, siteAddress, subcontractSum, milestones, estimatedCommencement, estimatedCompletion, buildingFile, inspections, otherContractors, electricalCabling, downpipes, flashingBySubcontractor]);
+  }, [subcontractId, installerId, jobNumber, clientName, clientAccountNumber, constructionManager, subcontractorName, subcontractorPhone, siteAddress, subcontractSum, milestones, estimatedCommencement, estimatedCompletion, buildingFile, inspections, otherContractors, electricalCabling, downpipes, flashingBySubcontractor]);
+
+  const managerOptions = useMemo(
+    () => [...(allUsers || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
+    [allUsers],
+  );
+
+  const managerSelectValue = useMemo(() => {
+    if (!constructionManager) return UNASSIGNED_VALUE;
+    const match = managerOptions.find((user: any) => userDisplayName(user) === constructionManager);
+    return match ? `user:${match.id}` : `saved:${constructionManager}`;
+  }, [constructionManager, managerOptions]);
+
+  const supplierTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const supplier of constructionSuppliers as any[]) {
+      const type = supplierTypeLabel(supplier);
+      if (type) types.add(type);
+    }
+    return Array.from(types).sort((a, b) => a.localeCompare(b));
+  }, [constructionSuppliers]);
+
+  const filteredSuppliers = useMemo(() => {
+    const rows = constructionSuppliers as any[];
+    if (supplierTypeFilter === ALL_SUPPLIER_TYPES_VALUE) return rows;
+    return rows.filter((supplier) => supplierTypeLabel(supplier) === supplierTypeFilter);
+  }, [constructionSuppliers, supplierTypeFilter]);
+
+  const selectedSupplier = useMemo(() => {
+    const rows = constructionSuppliers as any[];
+    if (installerId != null) {
+      const byInstaller = rows.find((supplier) => Number(supplier.installerId) === installerId);
+      if (byInstaller) return byInstaller;
+    }
+    const name = normalise(subcontractorName);
+    if (!name) return null;
+    return rows.find((supplier) => normalise(supplier.name) === name) || null;
+  }, [constructionSuppliers, installerId, subcontractorName]);
+
+  const selectedSupplierValue = selectedSupplier
+    ? supplierOptionValue(selectedSupplier)
+    : CUSTOM_SUBCONTRACTOR_VALUE;
+
+  const visibleSuppliers = useMemo(() => {
+    if (!selectedSupplier) return filteredSuppliers;
+    const selectedValue = supplierOptionValue(selectedSupplier);
+    const hasSelected = filteredSuppliers.some((supplier: any) => supplierOptionValue(supplier) === selectedValue);
+    return hasSelected ? filteredSuppliers : [selectedSupplier, ...filteredSuppliers];
+  }, [filteredSuppliers, selectedSupplier]);
+
+  useEffect(() => {
+    if (subcontractorPhone.trim() || !subcontractorName.trim()) return;
+    const match = (constructionSuppliers as any[]).find((supplier) => normalise(supplier.name) === normalise(subcontractorName));
+    if (!match) return;
+    if (match.phone) setSubcontractorPhone(match.phone);
+    if (!installerId && match.installerId) setInstallerId(match.installerId);
+  }, [constructionSuppliers, installerId, subcontractorName, subcontractorPhone]);
+
+  const handleManagerChange = (value: string) => {
+    if (value === UNASSIGNED_VALUE) {
+      setConstructionManager("");
+      return;
+    }
+    if (value.startsWith("user:")) {
+      const id = Number(value.slice("user:".length));
+      const user = managerOptions.find((candidate: any) => candidate.id === id);
+      setConstructionManager(user ? userDisplayName(user) : "");
+      return;
+    }
+    if (value.startsWith("saved:")) {
+      setConstructionManager(value.slice("saved:".length));
+    }
+  };
+
+  const handleSupplierChange = (value: string) => {
+    if (value === CUSTOM_SUBCONTRACTOR_VALUE) {
+      setInstallerId(null);
+      return;
+    }
+    const selected = (constructionSuppliers as any[]).find((supplier) => supplierOptionValue(supplier) === value);
+    if (!selected) return;
+    setSubcontractorName(selected.name || "");
+    setSubcontractorPhone(selected.phone || "");
+    setInstallerId(selected.installerId ? Number(selected.installerId) : null);
+  };
 
   // Payment schedule helpers
   const updateMilestone = (index: number, field: keyof PaymentMilestone, value: any) => {
@@ -465,40 +585,70 @@ export default function SubcontractEditor() {
               <Input value={clientName} onChange={(e) => setClientName(e.target.value)} className="h-8 text-sm" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-medium">Construction Manager</Label>
-              <Input value={constructionManager} onChange={(e) => setConstructionManager(e.target.value)} className="h-8 text-sm" />
+              <Label className="text-xs font-medium">Client Account Number</Label>
+              <Input value={clientAccountNumber} onChange={(e) => setClientAccountNumber(e.target.value)} className="h-8 text-sm" />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs font-medium">Subcontractor</Label>
-              <Select
-                value={installerId ? installerId.toString() : "custom"}
-                onValueChange={(v) => {
-                  if (v === "custom") {
-                    setInstallerId(null);
-                  } else {
-                    const id = parseInt(v);
-                    setInstallerId(id);
-                    const selected = allInstallers?.find((i: any) => i.id === id);
-                    if (selected) {
-                      setSubcontractorName(selected.name);
-                      setSubcontractorPhone(selected.phone || "");
-                    }
-                  }
-                }}
-              >
+              <Label className="text-xs font-medium">Construction Manager</Label>
+              <Select value={managerSelectValue} onValueChange={handleManagerChange}>
                 <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Select trade..." />
+                  <SelectValue placeholder="Select construction manager..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="custom">Custom (type manually)</SelectItem>
-                  {allInstallers?.filter((i: any) => i.active).map((i: any) => (
-                    <SelectItem key={i.id} value={i.id.toString()}>
-                      {i.name}{i.tradeType && i.tradeType !== "installer" ? ` (${i.tradeType})` : ""}
+                  <SelectItem value={UNASSIGNED_VALUE}>Unassigned</SelectItem>
+                  {constructionManager && managerSelectValue.startsWith("saved:") && (
+                    <SelectItem value={managerSelectValue}>{constructionManager}</SelectItem>
+                  )}
+                  {managerOptions.map((user: any) => (
+                    <SelectItem key={user.id} value={`user:${user.id}`}>
+                      {userDisplayName(user)} ({roleLabel(user.role)})
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {!installerId && (
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Supplier Type</Label>
+              <Select value={supplierTypeFilter} onValueChange={setSupplierTypeFilter}>
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="All supplier types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_SUPPLIER_TYPES_VALUE}>All supplier types</SelectItem>
+                  {supplierTypes.map((type) => (
+                    <SelectItem key={type} value={type}>{type}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Subcontractor</Label>
+              <Select
+                value={selectedSupplierValue}
+                onValueChange={handleSupplierChange}
+              >
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="Select subcontractor..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CUSTOM_SUBCONTRACTOR_VALUE}>Custom (type manually)</SelectItem>
+                  {visibleSuppliers.length === 0 && (
+                    <SelectItem value="__no_suppliers" disabled>No suppliers for this type</SelectItem>
+                  )}
+                  {visibleSuppliers.map((supplier: any) => {
+                    const type = supplierTypeLabel(supplier);
+                    return (
+                      <SelectItem key={supplierOptionValue(supplier)} value={supplierOptionValue(supplier)}>
+                        {supplier.name}{type ? ` (${type})` : ""}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              {selectedSupplier && selectedSupplier.phone && (
+                <p className="text-[11px] text-muted-foreground">Phone will prefill from supplier: {selectedSupplier.phone}</p>
+              )}
+              {selectedSupplierValue === CUSTOM_SUBCONTRACTOR_VALUE && (
                 <Input
                   value={subcontractorName}
                   onChange={(e) => setSubcontractorName(e.target.value)}
@@ -673,10 +823,9 @@ export default function SubcontractEditor() {
             {(["plans", "materialsList", "approvals"] as const).map((key) => (
               <div key={key} className="flex items-center justify-between gap-2">
                 <Label className="text-xs capitalize w-28">{key === "materialsList" ? "Materials list" : key}</Label>
-                <Input
+                <ChecklistSelect
                   value={buildingFile[key]}
-                  onChange={(e) => setBuildingFile({ ...buildingFile, [key]: e.target.value })}
-                  className="h-7 text-xs max-w-32"
+                  onChange={(value) => setBuildingFile({ ...buildingFile, [key]: value })}
                 />
               </div>
             ))}
@@ -691,10 +840,9 @@ export default function SubcontractEditor() {
             {(["footings", "slab", "plumbing", "framing", "roofing", "other"] as const).map((key) => (
               <div key={key} className="flex items-center justify-between gap-2">
                 <Label className="text-xs capitalize w-28">{key}</Label>
-                <Input
+                <ChecklistSelect
                   value={inspections[key]}
-                  onChange={(e) => setInspections({ ...inspections, [key]: e.target.value })}
-                  className="h-7 text-xs max-w-32"
+                  onChange={(value) => setInspections({ ...inspections, [key]: value })}
                 />
               </div>
             ))}
@@ -712,10 +860,9 @@ export default function SubcontractEditor() {
             {(["electrician", "plumber", "concreter", "flooring", "painter"] as const).map((key) => (
               <div key={key} className="flex items-center justify-between gap-2">
                 <Label className="text-xs capitalize w-28">{key}</Label>
-                <Input
+                <ChecklistSelect
                   value={otherContractors[key]}
-                  onChange={(e) => setOtherContractors({ ...otherContractors, [key]: e.target.value })}
-                  className="h-7 text-xs max-w-32"
+                  onChange={(value) => setOtherContractors({ ...otherContractors, [key]: value })}
                 />
               </div>
             ))}
@@ -731,10 +878,9 @@ export default function SubcontractEditor() {
               {(["wall", "roof", "fan"] as const).map((key) => (
                 <div key={key} className="flex items-center justify-between gap-2">
                   <Label className="text-xs capitalize w-28">{key}</Label>
-                  <Input
+                  <ChecklistSelect
                     value={electricalCabling[key]}
-                    onChange={(e) => setElectricalCabling({ ...electricalCabling, [key]: e.target.value })}
-                    className="h-7 text-xs max-w-32"
+                    onChange={(value) => setElectricalCabling({ ...electricalCabling, [key]: value })}
                   />
                 </div>
               ))}
@@ -754,10 +900,9 @@ export default function SubcontractEditor() {
               ]).map(({ key, label }) => (
                 <div key={key} className="flex items-center justify-between gap-2">
                   <Label className="text-xs w-40">{label}</Label>
-                  <Input
+                  <ChecklistSelect
                     value={downpipes[key]}
-                    onChange={(e) => setDownpipes({ ...downpipes, [key]: e.target.value })}
-                    className="h-7 text-xs max-w-32"
+                    onChange={(value) => setDownpipes({ ...downpipes, [key]: value })}
                   />
                 </div>
               ))}
@@ -771,9 +916,9 @@ export default function SubcontractEditor() {
         <CardContent className="pt-4">
           <div className="flex items-center justify-between gap-4">
             <Label className="text-sm font-medium">Flashing measurement and design by Subcontractor:</Label>
-            <Input
+            <ChecklistSelect
               value={flashingBySubcontractor}
-              onChange={(e) => setFlashingBySubcontractor(e.target.value)}
+              onChange={setFlashingBySubcontractor}
               className="h-8 text-sm max-w-32"
             />
           </div>
@@ -959,6 +1104,33 @@ export default function SubcontractEditor() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ChecklistSelect({
+  value,
+  onChange,
+  className = "h-7 text-xs max-w-32",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  const selectedValue = String(value || "N/A");
+  const isCustom = selectedValue && !CHECKLIST_OPTIONS.includes(selectedValue);
+
+  return (
+    <Select value={selectedValue} onValueChange={onChange}>
+      <SelectTrigger className={className}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {isCustom && <SelectItem value={selectedValue}>{selectedValue}</SelectItem>}
+        {CHECKLIST_OPTIONS.map((option) => (
+          <SelectItem key={option} value={option}>{option}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

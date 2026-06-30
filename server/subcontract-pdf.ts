@@ -6,6 +6,7 @@
 interface SubcontractPdfData {
   jobNumber: string;
   clientName: string;
+  clientAccountNumber: string;
   constructionManager: string;
   subcontractorName: string;
   subcontractorPhone: string;
@@ -113,6 +114,9 @@ export function generateSubcontractHtml(data: SubcontractPdfData): string {
     <div class="field-row">
       <span class="field-pair"><span class="field-label">Job No.:</span><span class="field-value">${data.jobNumber}</span></span>
       <span class="field-pair"><span class="field-label">Client Name:</span><span class="field-value">${data.clientName}</span></span>
+    </div>
+    <div class="field-row">
+      <span class="field-pair"><span class="field-label">Client Account Number:</span><span class="field-value" style="min-width:180px;">${data.clientAccountNumber}</span></span>
     </div>
     <div class="field-row">
       <span class="field-pair"><span class="field-label">Construction Manager:</span><span class="field-value" style="min-width:280px;">${data.constructionManager}</span></span>

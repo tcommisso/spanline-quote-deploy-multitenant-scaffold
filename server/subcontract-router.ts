@@ -11,6 +11,7 @@ import {
   constructionInstallers,
   constructionAssignments,
   tradeInvoiceLines,
+  crmLeads,
   type PaymentMilestone,
   type BuildingFileChecklist,
   type InspectionChecklist,
@@ -38,22 +39,17 @@ function installerScope(id: number, tenantId: number) {
 
 // ─── Default Payment Milestones ──────────────────────────────────────────────
 export const DEFAULT_PAYMENT_MILESTONES: PaymentMilestone[] = [
-  { label: "Demo", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Commencement", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Completion of Deck", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Frame Erected", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Roof Installed", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Completion", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Week of Windows Installation", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Retention for 15 days", amountDollars: null, percentOfTotal: null, usePercent: false },
-  { label: "Travel allowance", amountDollars: null, percentOfTotal: null, usePercent: true },
+  { label: "Demo", amountDollars: null, percentOfTotal: 20, usePercent: true },
+  { label: "Week of Commencement", amountDollars: null, percentOfTotal: 20, usePercent: true },
+  { label: "Week of Frame Erected", amountDollars: null, percentOfTotal: 20, usePercent: true },
+  { label: "Week of Roof Installed", amountDollars: null, percentOfTotal: 25, usePercent: true },
+  { label: "Week of Completion", amountDollars: null, percentOfTotal: 10, usePercent: true },
+  { label: "Retention for 15 days", amountDollars: null, percentOfTotal: 5, usePercent: true },
 ];
 
 export const DEFAULT_BUILDING_FILE: BuildingFileChecklist = {
-  plans: "N/A",
-  materialsList: "N/A",
+  plans: "Yes",
+  materialsList: "Yes",
   approvals: "N/A",
 };
 
@@ -178,6 +174,12 @@ export const subcontractRouter = router({
       }
 
       const selectedInstallerId = input.installerId ?? sourceSubcontract?.installerId ?? null;
+      const [lead] = job.leadId
+        ? await db.select({ clientNumber: crmLeads.clientNumber })
+            .from(crmLeads)
+            .where(and(eq(crmLeads.id, job.leadId), eq(crmLeads.tenantId, ctx.tenant!.id)))
+            .limit(1)
+        : [];
 
       const [result] = await db.insert(projectSubcontracts).values({
         tenantId: ctx.tenant!.id,
@@ -185,6 +187,7 @@ export const subcontractRouter = router({
         installerId: selectedInstallerId,
         jobNumber: sourceSubcontract?.jobNumber || job.quoteNumber || String(job.id),
         clientName: sourceSubcontract?.clientName || job.clientName,
+        clientAccountNumber: sourceSubcontract?.clientAccountNumber || lead?.clientNumber || "",
         constructionManager: sourceSubcontract?.constructionManager || job.supervisorName || job.designAdviserName || "",
         subcontractorName: installer?.name || sourceSubcontract?.subcontractorName || "",
         subcontractorPhone: installer?.phone || sourceSubcontract?.subcontractorPhone || "",
@@ -198,7 +201,7 @@ export const subcontractRouter = router({
         otherContractors: sourceSubcontract?.otherContractors || DEFAULT_OTHER_CONTRACTORS,
         electricalCabling: sourceSubcontract?.electricalCabling || DEFAULT_ELECTRICAL_CABLING,
         downpipes: sourceSubcontract?.downpipes || DEFAULT_DOWNPIPES,
-        flashingBySubcontractor: sourceSubcontract?.flashingBySubcontractor || "N/A",
+        flashingBySubcontractor: sourceSubcontract?.flashingBySubcontractor || "Yes",
         status: "draft",
         createdBy: ctx.user.id,
       });
@@ -261,6 +264,7 @@ export const subcontractRouter = router({
       installerId: z.number().nullable().optional(),
       jobNumber: z.string().optional(),
       clientName: z.string().optional(),
+      clientAccountNumber: z.string().nullable().optional(),
       constructionManager: z.string().optional(),
       subcontractorName: z.string().optional(),
       subcontractorPhone: z.string().optional(),
@@ -412,6 +416,7 @@ export const subcontractRouter = router({
       const html = generateSubcontractHtml({
         jobNumber: sc.jobNumber || "",
         clientName: sc.clientName || "",
+        clientAccountNumber: sc.clientAccountNumber || "",
         constructionManager: sc.constructionManager || "",
         subcontractorName: sc.subcontractorName || "",
         subcontractorPhone: sc.subcontractorPhone || "",
@@ -420,12 +425,12 @@ export const subcontractRouter = router({
         paymentSchedule: (sc.paymentSchedule as PaymentMilestone[]) || [],
         estimatedCommencement: sc.estimatedCommencement ? sc.estimatedCommencement.toISOString() : null,
         estimatedCompletion: sc.estimatedCompletion ? sc.estimatedCompletion.toISOString() : null,
-        buildingFile: (sc.buildingFile as any) || { plans: "N/A", materialsList: "N/A", approvals: "N/A" },
+        buildingFile: (sc.buildingFile as any) || DEFAULT_BUILDING_FILE,
         inspections: (sc.inspections as any) || { footings: "N/A", slab: "N/A", plumbing: "N/A", framing: "N/A", roofing: "N/A", other: "N/A" },
         otherContractors: (sc.otherContractors as any) || { electrician: "N/A", plumber: "N/A", concreter: "N/A", flooring: "N/A", painter: "N/A" },
         electricalCabling: (sc.electricalCabling as any) || { wall: "N/A", roof: "N/A", fan: "N/A" },
         downpipes: (sc.downpipes as any) || { toGround: "N/A", toSpreader: "N/A", toExistingDP: "N/A", toStormwater: "N/A" },
-        flashingBySubcontractor: sc.flashingBySubcontractor || "N/A",
+        flashingBySubcontractor: sc.flashingBySubcontractor || "Yes",
       });
 
       // Convert HTML to PDF using built-in approach (base64 encode the HTML for SignWell)
@@ -489,6 +494,7 @@ export const subcontractRouter = router({
       const html = generateSubcontractHtml({
         jobNumber: sc.jobNumber || "",
         clientName: sc.clientName || "",
+        clientAccountNumber: sc.clientAccountNumber || "",
         constructionManager: sc.constructionManager || "",
         subcontractorName: sc.subcontractorName || "",
         subcontractorPhone: sc.subcontractorPhone || "",
@@ -497,12 +503,12 @@ export const subcontractRouter = router({
         paymentSchedule: (sc.paymentSchedule as PaymentMilestone[]) || [],
         estimatedCommencement: sc.estimatedCommencement ? sc.estimatedCommencement.toISOString() : null,
         estimatedCompletion: sc.estimatedCompletion ? sc.estimatedCompletion.toISOString() : null,
-        buildingFile: (sc.buildingFile as any) || { plans: "N/A", materialsList: "N/A", approvals: "N/A" },
+        buildingFile: (sc.buildingFile as any) || DEFAULT_BUILDING_FILE,
         inspections: (sc.inspections as any) || { footings: "N/A", slab: "N/A", plumbing: "N/A", framing: "N/A", roofing: "N/A", other: "N/A" },
         otherContractors: (sc.otherContractors as any) || { electrician: "N/A", plumber: "N/A", concreter: "N/A", flooring: "N/A", painter: "N/A" },
         electricalCabling: (sc.electricalCabling as any) || { wall: "N/A", roof: "N/A", fan: "N/A" },
         downpipes: (sc.downpipes as any) || { toGround: "N/A", toSpreader: "N/A", toExistingDP: "N/A", toStormwater: "N/A" },
-        flashingBySubcontractor: sc.flashingBySubcontractor || "N/A",
+        flashingBySubcontractor: sc.flashingBySubcontractor || "Yes",
       });
       return { html };
     }),
