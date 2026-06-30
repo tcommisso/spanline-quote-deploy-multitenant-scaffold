@@ -11,6 +11,7 @@ import {
   constructionInstallers,
   constructionHolidayCalendarDays,
   notificationLog,
+  tenantMemberships,
   tradeAvailabilities,
   users,
 } from "../drizzle/schema";
@@ -21,6 +22,7 @@ import { TRPCError } from "@trpc/server";
 import { isAdminRole } from "@shared/const";
 import { sendPushToUser } from "./push";
 import { getTradeReadinessMap, tradeReadinessKey, type TradeReadiness } from "./construction-trade-readiness";
+import { ENV } from "./_core/env";
 import {
   AU_HOLIDAY_JURISDICTIONS,
   type AuHolidayJurisdiction,
@@ -60,6 +62,35 @@ function holidayIdentityKey(value: { dateKey: string; jurisdiction: string; name
   return `${value.dateKey}|${value.jurisdiction}|${value.name.trim().toLowerCase()}`;
 }
 
+function rowsFromExecuteResult(result: any): any[] {
+  if (Array.isArray(result) && Array.isArray(result[0])) return result[0];
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.rows)) return result.rows;
+  return [];
+}
+
+async function hasDbColumn(db: any, tableName: string, columnName: string) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `);
+  return Number(rowsFromExecuteResult(result)?.[0]?.count || 0) > 0;
+}
+
+async function hasDbIndex(db: any, tableName: string, indexName: string) {
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = ${tableName}
+      AND index_name = ${indexName}
+  `);
+  return Number(rowsFromExecuteResult(result)?.[0]?.count || 0) > 0;
+}
+
 async function nullableExistingUserId(db: any, userId: unknown): Promise<number | null> {
   const id = Number(userId);
   if (!Number.isInteger(id) || id <= 0) return null;
@@ -71,6 +102,25 @@ async function nullableExistingUserId(db: any, userId: unknown): Promise<number 
     .limit(1);
 
   return user?.id ?? null;
+}
+
+let scheduleEventStaffSchemaReady: Promise<void> | null = null;
+
+async function ensureScheduleEventStaffSchema(db: any) {
+  scheduleEventStaffSchemaReady ??= (async () => {
+    if (!(await hasDbColumn(db, "construction_schedule_events", "assignedUserId"))) {
+      await db.execute(sql.raw("ALTER TABLE `construction_schedule_events` ADD COLUMN `assignedUserId` int NULL AFTER `assignedInstallerId`"));
+    }
+
+    if (!(await hasDbIndex(db, "construction_schedule_events", "idx_construction_schedule_events_assigned_user"))) {
+      await db.execute(sql.raw("CREATE INDEX `idx_construction_schedule_events_assigned_user` ON `construction_schedule_events` (`tenantId`, `assignedUserId`)"));
+    }
+  })().catch((err: unknown) => {
+    scheduleEventStaffSchemaReady = null;
+    throw err;
+  });
+
+  return scheduleEventStaffSchemaReady;
 }
 
 let holidayCalendarSchemaReady: Promise<void> | null = null;
@@ -166,7 +216,48 @@ async function requireInstallerAccess(db: any, ctx: any, installerId: number) {
   return installer;
 }
 
+async function selectTenantStaffUsers(db: any, ctx: any, userIds?: number[]) {
+  const tenantId = tenantIdFromContext(ctx);
+  const userIdFilter = userIds?.length ? inArray(users.id, userIds) : undefined;
+
+  if (ENV.tenancyMode === "single") {
+    const conditions = userIdFilter ? [userIdFilter] : [];
+    const query = db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    })
+      .from(users);
+    if (conditions.length) {
+      return query.where(and(...conditions)).orderBy(asc(users.name));
+    }
+    return query.orderBy(asc(users.name));
+  }
+
+  if (!tenantId) return [];
+  const conditions = [eq(tenantMemberships.tenantId, tenantId)];
+  if (userIdFilter) conditions.push(userIdFilter);
+  return db.select({
+    id: users.id,
+    name: users.name,
+    email: users.email,
+    role: users.role,
+  })
+    .from(tenantMemberships)
+    .innerJoin(users, eq(users.id, tenantMemberships.userId))
+    .where(and(...conditions))
+    .orderBy(asc(users.name));
+}
+
+async function requireStaffUserAccess(db: any, ctx: any, userId: number) {
+  const [user] = await selectTenantStaffUsers(db, ctx, [userId]);
+  if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Staff user not found" });
+  return user;
+}
+
 async function requireEventAccess(db: any, ctx: any, eventId: number) {
+  await ensureScheduleEventStaffSchema(db);
   const [row] = await db.select({ event: constructionScheduleEvents })
     .from(constructionScheduleEvents)
     .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
@@ -346,6 +437,26 @@ async function notifySchedulerOfTradeReadiness(db: any, ctx: any, params: {
   }
 }
 
+async function notifyAssignedStaffOfScheduleEvent(params: {
+  userId?: number | null;
+  eventId: number;
+  eventTitle: string;
+  job: any;
+  updated?: boolean;
+}) {
+  if (!params.userId) return;
+  try {
+    await sendPushToUser(params.userId, {
+      title: params.updated ? "Schedule event updated" : "Schedule event assigned",
+      body: `${params.eventTitle} - ${params.job?.clientName || "Construction job"}`,
+      url: "/construction/schedule",
+      tag: `schedule-event-${params.eventId}`,
+    });
+  } catch (err) {
+    console.error("[ConstructionSchedule] Failed to notify assigned staff:", err);
+  }
+}
+
 async function applyScheduledTradeSideEffects(db: any, ctx: any, params: {
   eventId: number;
   eventTitle: string;
@@ -377,6 +488,16 @@ async function applyScheduledTradeSideEffects(db: any, ctx: any, params: {
 }
 
 export const constructionScheduleRouter = router({
+  staffResources: protectedProcedure
+    .query(async ({ ctx }) => {
+      const db = await requireDb();
+      const staff = await selectTenantStaffUsers(db, ctx);
+      return staff.map((user: any) => ({
+        ...user,
+        name: user.name || user.email || `User #${user.id}`,
+      }));
+    }),
+
   holidayCalendar: protectedProcedure
     .input(z.object({
       year: z.number().min(2020).max(2050).optional(),
@@ -560,9 +681,11 @@ export const constructionScheduleRouter = router({
       startDate: z.string().optional(), // ISO date string
       endDate: z.string().optional(),
       installerId: z.number().optional(),
+      assignedUserId: z.number().optional(),
     }).optional())
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureScheduleEventStaffSchema(db);
       const conditions: any[] = [];
       if (input?.jobId) conditions.push(eq(constructionScheduleEvents.jobId, input.jobId));
       if (input?.startDate && input?.endDate) {
@@ -583,6 +706,10 @@ export const constructionScheduleRouter = router({
         await requireInstallerAccess(db, ctx, input.installerId);
         conditions.push(eq(constructionScheduleEvents.assignedInstallerId, input.installerId));
       }
+      if (input?.assignedUserId) {
+        await requireStaffUserAccess(db, ctx, input.assignedUserId);
+        conditions.push(eq(constructionScheduleEvents.assignedUserId, input.assignedUserId));
+      }
 
       const rows = await db.select({ event: constructionScheduleEvents }).from(constructionScheduleEvents)
         .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
@@ -593,6 +720,7 @@ export const constructionScheduleRouter = router({
       // Enrich with job and installer names
       const jobIds = Array.from(new Set(events.map(e => e.jobId)));
       const installerIds = Array.from(new Set(events.filter(e => e.assignedInstallerId).map(e => e.assignedInstallerId!)));
+      const assignedUserIds = Array.from(new Set(events.filter(e => e.assignedUserId).map(e => e.assignedUserId!)));
 
       const jobs = jobIds.length > 0
         ? await db.select({ id: constructionJobs.id, clientName: constructionJobs.clientName, siteAddress: constructionJobs.siteAddress })
@@ -610,13 +738,19 @@ export const constructionScheduleRouter = router({
             .from(constructionInstallers)
             .where(and(...installerTenantConditions(ctx, inArray(constructionInstallers.id, installerIds))))
         : [];
+      const staffUsers = assignedUserIds.length > 0
+        ? await selectTenantStaffUsers(db, ctx, assignedUserIds)
+        : [];
 
       const jobMap = Object.fromEntries(jobs.map(j => [j.id, j]));
       const installerMap = Object.fromEntries(installers.map(i => [i.id, i]));
+      const staffUserMap = Object.fromEntries(staffUsers.map((user: any) => [user.id, user]));
       const readinessMap = await getTradeReadinessMap(
         db,
         ctx,
-        events.map((event) => ({ jobId: event.jobId, installerId: event.assignedInstallerId })),
+        events
+          .filter((event) => event.assignedInstallerId)
+          .map((event) => ({ jobId: event.jobId, installerId: event.assignedInstallerId })),
         new Map(installers.map((installer) => [installer.id, installer])),
       );
 
@@ -625,6 +759,13 @@ export const constructionScheduleRouter = router({
         jobClientName: jobMap[e.jobId]?.clientName || "Unknown",
         jobSiteAddress: jobMap[e.jobId]?.siteAddress || "",
         installerName: e.assignedInstallerId ? (installerMap[e.assignedInstallerId]?.name || "Unassigned") : null,
+        assignedUserName: e.assignedUserId ? (staffUserMap[e.assignedUserId]?.name || staffUserMap[e.assignedUserId]?.email || "Unassigned") : null,
+        assignedUserEmail: e.assignedUserId ? (staffUserMap[e.assignedUserId]?.email || null) : null,
+        assignedUserRole: e.assignedUserId ? (staffUserMap[e.assignedUserId]?.role || null) : null,
+        assigneeType: e.assignedUserId ? "staff" : e.assignedInstallerId ? "trade" : null,
+        assigneeName: e.assignedUserId
+          ? (staffUserMap[e.assignedUserId]?.name || staffUserMap[e.assignedUserId]?.email || "Unassigned")
+          : e.assignedInstallerId ? (installerMap[e.assignedInstallerId]?.name || "Unassigned") : null,
         tradeReadiness: e.assignedInstallerId ? (readinessMap.get(tradeReadinessKey(e.jobId, e.assignedInstallerId)) || null) : null,
         readinessWarnings: e.assignedInstallerId ? (readinessMap.get(tradeReadinessKey(e.jobId, e.assignedInstallerId))?.warnings || []) : [],
       }));
@@ -640,13 +781,19 @@ export const constructionScheduleRouter = router({
       allDay: z.boolean().optional(),
       eventType: z.enum(["installation", "inspection", "meeting", "delivery", "other"]).optional(),
       assignedInstallerId: z.number().optional(),
+      assignedUserId: z.number().optional(),
       notifyClient: z.boolean().optional(),
       notifyInstaller: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await requireDb();
+      await ensureScheduleEventStaffSchema(db);
+      if (input.assignedInstallerId && input.assignedUserId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Choose either a staff member or a trade, not both." });
+      }
       const job = await requireJobAccess(db, ctx, input.jobId);
       const installer = input.assignedInstallerId ? await requireInstallerAccess(db, ctx, input.assignedInstallerId) : null;
+      const assignedUser = input.assignedUserId ? await requireStaffUserAccess(db, ctx, input.assignedUserId) : null;
       const startTime = parseScheduleDateTime(input.startTime, "Start date", true)!;
       const endTime = parseScheduleDateTime(input.endTime, "End date");
       assertScheduleRange(startTime, endTime);
@@ -660,6 +807,7 @@ export const constructionScheduleRouter = router({
         allDay: input.allDay || false,
         eventType: input.eventType || "installation",
         assignedInstallerId: input.assignedInstallerId,
+        assignedUserId: input.assignedUserId,
         notifyClient: input.notifyClient || false,
         notifyInstaller: input.notifyInstaller || false,
         createdBy: ctx.user.id,
@@ -674,6 +822,14 @@ export const constructionScheduleRouter = router({
           job,
           installer,
           notifyScheduler: true,
+        });
+      }
+      if (assignedUser && input.notifyInstaller) {
+        await notifyAssignedStaffOfScheduleEvent({
+          userId: assignedUser.id,
+          eventId: insertedId,
+          eventTitle: input.title,
+          job,
         });
       }
 
@@ -691,16 +847,24 @@ export const constructionScheduleRouter = router({
       allDay: z.boolean().optional(),
       eventType: z.enum(["installation", "inspection", "meeting", "delivery", "other"]).optional(),
       assignedInstallerId: z.number().nullable().optional(),
+      assignedUserId: z.number().nullable().optional(),
       notifyClient: z.boolean().optional(),
       notifyInstaller: z.boolean().optional(),
       status: z.enum(["scheduled", "confirmed", "completed", "cancelled"]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = await requireDb();
+      await ensureScheduleEventStaffSchema(db);
       const { id, ...updates } = input;
       const existingEvent = await requireEventAccess(db, ctx, id);
       if (updates.jobId !== undefined) await requireJobAccess(db, ctx, updates.jobId);
       if (updates.assignedInstallerId) await requireInstallerAccess(db, ctx, updates.assignedInstallerId);
+      if (updates.assignedUserId) await requireStaffUserAccess(db, ctx, updates.assignedUserId);
+      const requestedInstallerId = updates.assignedInstallerId !== undefined ? updates.assignedInstallerId : existingEvent.assignedInstallerId;
+      const requestedUserId = updates.assignedUserId !== undefined ? updates.assignedUserId : existingEvent.assignedUserId;
+      if (requestedInstallerId && requestedUserId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Choose either a staff member or a trade, not both." });
+      }
       const vals: any = {};
       if (updates.jobId !== undefined) vals.jobId = updates.jobId;
       if (updates.title !== undefined) vals.title = updates.title;
@@ -722,6 +886,7 @@ export const constructionScheduleRouter = router({
       if (updates.allDay !== undefined) vals.allDay = updates.allDay;
       if (updates.eventType !== undefined) vals.eventType = updates.eventType;
       if (updates.assignedInstallerId !== undefined) vals.assignedInstallerId = updates.assignedInstallerId;
+      if (updates.assignedUserId !== undefined) vals.assignedUserId = updates.assignedUserId;
       if (updates.notifyClient !== undefined) vals.notifyClient = updates.notifyClient;
       if (updates.notifyInstaller !== undefined) vals.notifyInstaller = updates.notifyInstaller;
       if (updates.status !== undefined) vals.status = updates.status;
@@ -733,7 +898,7 @@ export const constructionScheduleRouter = router({
         notifyScheduleEventUpdated(id, changes).catch(() => {});
       }
       const nextJobId = updates.jobId !== undefined ? updates.jobId : existingEvent.jobId;
-      const nextInstallerId = updates.assignedInstallerId !== undefined ? updates.assignedInstallerId : existingEvent.assignedInstallerId;
+      const nextInstallerId = requestedInstallerId;
       if (nextInstallerId) {
         const [nextJob, nextInstaller] = await Promise.all([
           requireJobAccess(db, ctx, nextJobId),
@@ -745,6 +910,16 @@ export const constructionScheduleRouter = router({
           job: nextJob,
           installer: nextInstaller,
           notifyScheduler: updates.jobId !== undefined || updates.assignedInstallerId !== undefined,
+        });
+      }
+      if (requestedUserId && updates.notifyInstaller) {
+        const nextJob = await requireJobAccess(db, ctx, nextJobId);
+        await notifyAssignedStaffOfScheduleEvent({
+          userId: requestedUserId,
+          eventId: id,
+          eventTitle: updates.title || existingEvent.title,
+          job: nextJob,
+          updated: true,
         });
       }
 

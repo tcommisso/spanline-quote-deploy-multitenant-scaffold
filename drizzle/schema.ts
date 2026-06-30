@@ -1536,6 +1536,7 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
   allDay: boolean("allDay").default(false).notNull(),
   eventType: mysqlEnum("eventType", ["installation", "inspection", "meeting", "delivery", "other"]).default("installation").notNull(),
   assignedInstallerId: int("assignedInstallerId"),
+  assignedUserId: int("assignedUserId").references(() => users.id, { onDelete: "set null" }),
   notifyClient: boolean("notifyClient").default(false).notNull(),
   notifyInstaller: boolean("notifyInstaller").default(false).notNull(),
   clientNotifiedAt: timestamp("clientNotifiedAt"),
@@ -1547,6 +1548,7 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
 }, (table) => [
   index("idx_construction_schedule_events_tenant").on(table.tenantId),
   index("idx_construction_schedule_events_tenant_start").on(table.tenantId, table.startTime),
+  index("idx_construction_schedule_events_assigned_user").on(table.tenantId, table.assignedUserId),
   foreignKey({
     name: "fk_sched_event_installer",
     columns: [table.assignedInstallerId],

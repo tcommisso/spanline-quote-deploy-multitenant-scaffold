@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,7 +25,7 @@ import { useSwipeGesture } from "@/hooks/useSwipeGesture";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
 
-type ResourceView = "all" | "staff" | "unallocated" | "equipment";
+type ResourceView = "all" | "staff" | "trades" | "unallocated" | "equipment";
 
 const EVENT_TYPE_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   installation: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Wrench, label: "Installation" },
@@ -45,6 +45,7 @@ const STATUS_COLORS: Record<string, string> = {
 const RESOURCE_TABS: { value: ResourceView; label: string; icon: any }[] = [
   { value: "all", label: "All", icon: CalendarDays },
   { value: "staff", label: "Staff", icon: UserCircle },
+  { value: "trades", label: "Trades", icon: Wrench },
   { value: "unallocated", label: "Unalloc", icon: HelpCircle },
   { value: "equipment", label: "Equip", icon: Package },
 ];
@@ -127,6 +128,14 @@ function scheduleReadinessWarnings(event: any) {
 
 function hasScheduleReadinessWarnings(event: any) {
   return scheduleReadinessWarnings(event).length > 0;
+}
+
+function eventAssigneeName(event: any) {
+  return event?.assignedUserName || event?.installerName || event?.assigneeName || "";
+}
+
+function eventIsUnallocated(event: any) {
+  return !event?.assignedUserId && !event?.assignedInstallerId;
 }
 
 function ScheduleReadinessTags({ warnings, compact = false }: { warnings: any[]; compact?: boolean }) {
@@ -276,6 +285,7 @@ export default function ConstructionSchedule() {
   const [selectedBooking, setSelectedBooking] = useState<any>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [filterInstallerId, setFilterInstallerId] = useState<string>("all");
+  const [filterStaffUserId, setFilterStaffUserId] = useState<string>("all");
   const [resourceView, setResourceView] = useState<ResourceView>("all");
 
   const mobileContainerRef = useRef<HTMLDivElement>(null);
@@ -315,10 +325,12 @@ export default function ConstructionSchedule() {
   const eventsQuery = trpc.constructionSchedule.list.useQuery({
     startDate: dateRange.start,
     endDate: dateRange.end,
-    ...(filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
+    ...(resourceView === "trades" && filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
+    ...(resourceView === "staff" && filterStaffUserId !== "all" ? { assignedUserId: Number(filterStaffUserId) } : {}),
   });
   const jobsQuery = trpc.construction.jobs.list.useQuery();
   const installersQuery = trpc.construction.installers.list.useQuery();
+  const staffResourcesQuery = trpc.constructionSchedule.staffResources.useQuery();
   const equipmentQuery = trpc.equipment.list.useQuery({ activeOnly: true });
   const equipmentBookingsQuery = trpc.equipment.bookings.list.useQuery({
     startDate: dateRange.start,
@@ -333,7 +345,7 @@ export default function ConstructionSchedule() {
   const availabilityBlocksQuery = trpc.constructionSchedule.availabilityBlocks.useQuery({
     startDate: dateRange.startKey,
     endDate: dateRange.endKey,
-    ...(filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
+    ...(resourceView === "trades" && filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
   }, { enabled: Boolean(dateRange.startKey && dateRange.endKey) });
 
   const createEvent = trpc.constructionSchedule.create.useMutation({
@@ -461,9 +473,11 @@ export default function ConstructionSchedule() {
     const events = eventsQuery.data || [];
     switch (resourceView) {
       case "staff":
+        return events.filter((e: any) => e.assignedUserId != null);
+      case "trades":
         return events.filter((e: any) => e.assignedInstallerId != null);
       case "unallocated":
-        return events.filter((e: any) => e.assignedInstallerId == null);
+        return events.filter((e: any) => eventIsUnallocated(e));
       case "equipment":
         return []; // Equipment view shows bookings, not events
       default:
@@ -537,8 +551,9 @@ export default function ConstructionSchedule() {
 
   // Counts for resource tabs
   const allEvents = eventsQuery.data || [];
-  const staffCount = allEvents.filter((e: any) => e.assignedInstallerId != null).length;
-  const unallocatedCount = allEvents.filter((e: any) => e.assignedInstallerId == null).length;
+  const staffCount = allEvents.filter((e: any) => e.assignedUserId != null).length;
+  const tradeCount = allEvents.filter((e: any) => e.assignedInstallerId != null).length;
+  const unallocatedCount = allEvents.filter((e: any) => eventIsUnallocated(e)).length;
   const eqBookingCount = (equipmentBookingsQuery.data || []).length;
 
   // Current day key for day view
@@ -614,6 +629,7 @@ export default function ConstructionSchedule() {
               <EventForm
                 jobs={jobsQuery.data || []}
                 installers={installersQuery.data || []}
+                staffUsers={staffResourcesQuery.data || []}
                 equipment={equipmentQuery.data || []}
                 defaultDate={selectedDate || currentDayKey}
                 onSubmit={(data) => createEvent.mutate(data)}
@@ -631,6 +647,7 @@ export default function ConstructionSchedule() {
           const Icon = tab.icon;
           const count = tab.value === "all" ? allEvents.length
             : tab.value === "staff" ? staffCount
+            : tab.value === "trades" ? tradeCount
             : tab.value === "unallocated" ? unallocatedCount
             : eqBookingCount;
           return (
@@ -670,7 +687,20 @@ export default function ConstructionSchedule() {
           <h3 className="text-sm md:text-lg font-semibold ml-1 md:ml-2 truncate max-w-[180px] md:max-w-none">{headerLabel}</h3>
         </div>
         <div className="flex items-center gap-1 md:gap-2">
-          {!isMobile && resourceView !== "equipment" && (
+          {!isMobile && resourceView === "staff" && (
+            <Select value={filterStaffUserId} onValueChange={setFilterStaffUserId}>
+              <SelectTrigger className="w-[190px] h-8 text-xs">
+                <SelectValue placeholder="Filter by staff..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Staff</SelectItem>
+                {(staffResourcesQuery.data || []).map((staff: any) => (
+                  <SelectItem key={staff.id} value={String(staff.id)}>{staff.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {!isMobile && resourceView === "trades" && (
             <Select value={filterInstallerId} onValueChange={setFilterInstallerId}>
               <SelectTrigger className="w-[180px] h-8 text-xs">
                 <SelectValue placeholder="Filter by trade..." />
@@ -748,8 +778,9 @@ export default function ConstructionSchedule() {
                 {dayEvents.map((event: any) => {
                   const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
                   const Icon = config.icon;
-                  const isUnallocated = !event.assignedInstallerId;
+                  const isUnallocated = eventIsUnallocated(event);
                   const readinessWarnings = scheduleReadinessWarnings(event);
+                  const assigneeName = eventAssigneeName(event);
                   const startTime = event.allDay ? "All day" : new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
                   const endTime = event.endTime && !event.allDay ? new Date(event.endTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" }) : null;
 
@@ -775,10 +806,10 @@ export default function ConstructionSchedule() {
                                 <Clock className="h-3 w-3 inline mr-0.5" />
                                 {startTime}{endTime ? ` – ${endTime}` : ""}
                               </span>
-                              {event.installerName && (
+                              {assigneeName && (
                                 <span className="text-xs text-muted-foreground">
                                   <UserCircle className="h-3 w-3 inline mr-0.5" />
-                                  {event.installerName}
+                                  {assigneeName}
                                 </span>
                               )}
                             </div>
@@ -894,7 +925,7 @@ export default function ConstructionSchedule() {
                     {showEvents && cellEvents.map((event: any) => {
                       const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
                       const Icon = config.icon;
-                      const isUnallocated = !event.assignedInstallerId;
+                      const isUnallocated = eventIsUnallocated(event);
                       const needsReview = hasScheduleReadinessWarnings(event);
                       return (
                         <button
@@ -983,6 +1014,7 @@ export default function ConstructionSchedule() {
               event={selectedEvent}
               jobs={jobsQuery.data || []}
               installers={installersQuery.data || []}
+              staffUsers={staffResourcesQuery.data || []}
               onUpdate={(data) => updateEvent.mutate({ id: selectedEvent.id, ...data })}
               onDelete={() => { if (confirm("Delete this event?")) deleteEvent.mutate({ id: selectedEvent.id }); }}
               loading={updateEvent.isPending}
@@ -1057,10 +1089,11 @@ export default function ConstructionSchedule() {
 
 // ─── Event Form ──────────────────────────────────────────────────────────────
 function EventForm({
-  jobs, installers, defaultDate, initialEvent, mode = "create", onSubmit, loading,
+  jobs, installers, staffUsers, defaultDate, initialEvent, mode = "create", onSubmit, loading,
 }: {
   jobs: any[];
   installers: any[];
+  staffUsers: any[];
   equipment?: any[];
   defaultDate?: string | null;
   initialEvent?: any;
@@ -1073,6 +1106,11 @@ function EventForm({
   const normalisedDefaultDate = toDateInputValue(defaultDate);
   const initialStartDate = initialEvent?.startTime ? toLocalDateKey(initialEvent.startTime) : normalisedDefaultDate;
   const initialEndDate = initialEvent?.endTime ? toLocalDateKey(initialEvent.endTime) : initialStartDate;
+  const initialAssignee = initialEvent?.assignedUserId
+    ? `staff:${initialEvent.assignedUserId}`
+    : initialEvent?.assignedInstallerId
+    ? `trade:${initialEvent.assignedInstallerId}`
+    : "none";
   const [form, setForm] = useState({
     jobId: initialEvent?.jobId ? String(initialEvent.jobId) : "",
     title: initialEvent?.title || "",
@@ -1089,7 +1127,7 @@ function EventForm({
       : normalisedDefaultDate ? `${normalisedDefaultDate}T17:00` : "",
     allDay: initialAllDay,
     eventType: initialEvent?.eventType || "installation",
-    assignedInstallerId: initialEvent?.assignedInstallerId ? String(initialEvent.assignedInstallerId) : "none",
+    assigneeId: initialAssignee,
     notifyClient: Boolean(initialEvent?.notifyClient),
     notifyInstaller: Boolean(initialEvent?.notifyInstaller),
     status: initialEvent?.status || "scheduled",
@@ -1120,8 +1158,11 @@ function EventForm({
       endTime,
       allDay: form.allDay,
       eventType: form.eventType as any,
-      assignedInstallerId: form.assignedInstallerId && form.assignedInstallerId !== "none"
-        ? Number(form.assignedInstallerId)
+      assignedInstallerId: form.assigneeId.startsWith("trade:")
+        ? Number(form.assigneeId.replace("trade:", ""))
+        : (mode === "edit" ? null : undefined),
+      assignedUserId: form.assigneeId.startsWith("staff:")
+        ? Number(form.assigneeId.replace("staff:", ""))
         : (mode === "edit" ? null : undefined),
       notifyClient: form.notifyClient,
       notifyInstaller: form.notifyInstaller,
@@ -1181,16 +1222,31 @@ function EventForm({
       </div>
       <div>
         <Label>Assigned Staff / Trade</Label>
-        <Select value={form.assignedInstallerId} onValueChange={(v) => setForm({ ...form, assignedInstallerId: v })}>
+        <Select value={form.assigneeId} onValueChange={(v) => setForm({ ...form, assigneeId: v })}>
           <SelectTrigger><SelectValue placeholder="Leave empty for unallocated..." /></SelectTrigger>
           <SelectContent>
             <SelectItem value="none">Unallocated</SelectItem>
-            {installers.map((i: any) => (
-              <SelectItem key={i.id} value={String(i.id)}>{i.name}{i.tradeType ? ` (${i.tradeType})` : ""}</SelectItem>
-            ))}
+            {staffUsers.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Staff</SelectLabel>
+                {staffUsers.map((staff: any) => (
+                  <SelectItem key={`staff-${staff.id}`} value={`staff:${staff.id}`}>
+                    {staff.name}{staff.role ? ` (${staff.role.replace(/_/g, " ")})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
+            {installers.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Trades</SelectLabel>
+                {installers.map((i: any) => (
+                  <SelectItem key={`trade-${i.id}`} value={`trade:${i.id}`}>{i.name}{i.tradeType ? ` (${i.tradeType})` : ""}</SelectItem>
+                ))}
+              </SelectGroup>
+            )}
           </SelectContent>
         </Select>
-        <p className="text-[10px] text-muted-foreground mt-1">Leave as "Unallocated" to create a job entry without assigning anyone</p>
+        <p className="text-[10px] text-muted-foreground mt-1">Choose a staff member for appointments, a trade for site work, or leave unallocated.</p>
       </div>
       <div>
         <Label>Description</Label>
@@ -1222,7 +1278,7 @@ function EventForm({
           <Switch checked={form.notifyInstaller} onCheckedChange={(v) => setForm({ ...form, notifyInstaller: v })} />
           <Label className="flex items-center gap-1 text-sm">
             {form.notifyInstaller ? <Bell className="h-3.5 w-3.5" /> : <BellOff className="h-3.5 w-3.5" />}
-            Notify Trade
+            Notify Assignee
           </Label>
         </div>
       </div>
@@ -1320,11 +1376,12 @@ function EquipmentBookingForm({
 
 // ─── Event Detail View ───────────────────────────────────────────────────────
 function EventDetailView({
-  event, jobs, installers, onUpdate, onDelete, loading,
+  event, jobs, installers, staffUsers, onUpdate, onDelete, loading,
 }: {
   event: any;
   jobs: any[];
   installers: any[];
+  staffUsers: any[];
   onUpdate: (data: any) => void;
   onDelete: () => void;
   loading: boolean;
@@ -1350,7 +1407,7 @@ function EventDetailView({
         </Badge>
       </div>
 
-      {!event.assignedInstallerId && (
+      {eventIsUnallocated(event) && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-sm">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>This event is <strong>unallocated</strong> — no staff assigned yet</span>
@@ -1376,6 +1433,7 @@ function EventDetailView({
         key={event.id}
         jobs={jobs}
         installers={installers}
+        staffUsers={staffUsers}
         initialEvent={event}
         mode="edit"
         onSubmit={onUpdate}
