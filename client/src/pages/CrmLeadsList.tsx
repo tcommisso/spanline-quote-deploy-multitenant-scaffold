@@ -290,6 +290,8 @@ export default function CrmLeadsList() {
   const getLeadSourceCreatedAt = (lead: any) => lead.sourceCreatedAt || lead.createdAt;
 
   const { data: branchesList } = trpc.branches.list.useQuery();
+  const { data: branchFilterList } = trpc.branches.crmFilterList.useQuery();
+  const branchFilterOptions = branchFilterList ?? branchesList ?? [];
   const { data: advisorsList } = trpc.designAdvisors.list.useQuery({ includePendingInvites: true });
   const activeAdvisors = useMemo(
     () => (advisorsList || []).filter((advisor: any) => !advisor.archived && (advisor.name || advisor.email)),
@@ -1107,7 +1109,7 @@ export default function CrmLeadsList() {
                   </SelectContent>
                 </Select>
               </div>
-              {branchesList && branchesList.length > 0 && (
+              {(branchFilterOptions.length > 0 || unassignedCount > 0) && (
                 <div>
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">Branch</label>
                   <Select value={branchFilter ? String(branchFilter) : "all"} onValueChange={(v) => { setBranchFilter(v === "all" ? undefined : v === "unassigned" ? "unassigned" as const : parseInt(v)); resetLeadList(); }}>
@@ -1120,7 +1122,7 @@ export default function CrmLeadsList() {
                       <SelectItem value="unassigned">
                         Unassigned {unassignedCount > 0 && `(${unassignedCount})`}
                       </SelectItem>
-                      {branchesList.map(b => (
+                      {branchFilterOptions.map(b => (
                         <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>
                       ))}
                     </SelectContent>

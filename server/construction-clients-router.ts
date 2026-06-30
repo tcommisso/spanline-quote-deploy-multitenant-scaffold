@@ -478,6 +478,10 @@ function normalizeSuburb(value?: string | null) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function normalizeOptionName(value?: string | null) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 function cleanSuburbLabel(value?: string | null) {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
@@ -699,16 +703,29 @@ export const constructionClientsRouter = router({
     const branchConditions: any[] = [eq(branches.isActive, true)];
     appendTenantScope(branchConditions, branches.tenantId, tenantIdFromContext(ctx));
 
-    const [branchRows, leadSuburbRows, quoteSuburbRows, siteAddressRows, installers, managerRows] = await Promise.all([
+    const [branchRows, usedBranchRows, leadSuburbRows, quoteSuburbRows, siteAddressRows, installers, managerRows] = await Promise.all([
       db.select({ id: branches.id, name: branches.name })
         .from(branches)
         .where(and(...branchConditions))
         .orderBy(asc(branches.name)),
+      db.select({
+        leadBranchId: crmLeads.branchId,
+        financialBranch: constructionJobFinancials.branch,
+      })
+        .from(constructionJobs)
+        .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+        .where(and(
+          ...tenantConditions,
+          visibleConstructionClientCondition(),
+        ))
+        .groupBy(crmLeads.branchId, constructionJobFinancials.branch),
       db.select({ suburb: crmLeads.suburb })
         .from(constructionJobs)
         .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
         .where(and(
           ...tenantConditions,
+          visibleConstructionClientCondition(),
           sql`${crmLeads.suburb} IS NOT NULL`,
           sql`${crmLeads.suburb} != ''`,
         ))
@@ -716,9 +733,11 @@ export const constructionClientsRouter = router({
         .orderBy(crmLeads.suburb),
       db.select({ suburb: quotes.suburb })
         .from(constructionJobs)
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
         .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
         .where(and(
           ...tenantConditions,
+          visibleConstructionClientCondition(),
           sql`${quotes.suburb} IS NOT NULL`,
           sql`${quotes.suburb} != ''`,
         ))
@@ -726,8 +745,10 @@ export const constructionClientsRouter = router({
         .orderBy(quotes.suburb),
       db.select({ siteAddress: constructionJobs.siteAddress })
         .from(constructionJobs)
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
         .where(and(
           ...tenantConditions,
+          visibleConstructionClientCondition(),
           sql`${constructionJobs.siteAddress} IS NOT NULL`,
           sql`${constructionJobs.siteAddress} != ''`,
         ))
@@ -758,9 +779,18 @@ export const constructionClientsRouter = router({
         ),
     ]);
 
+    const usedBranchIds = new Set<number>();
+    const usedBranchNames = new Set<string>();
+    for (const row of usedBranchRows as any[]) {
+      if (row.leadBranchId != null) usedBranchIds.add(Number(row.leadBranchId));
+      const normalizedBranch = normalizeOptionName(row.financialBranch);
+      if (normalizedBranch) usedBranchNames.add(normalizedBranch);
+    }
+
     const branchOptions = branchRows
       .map((row: any) => ({ id: Number(row.id), name: String(row.name || "").trim() }))
-      .filter((row) => row.id > 0 && row.name);
+      .filter((row) => row.id > 0 && row.name)
+      .filter((row) => usedBranchIds.has(row.id) || usedBranchNames.has(normalizeOptionName(row.name)));
 
     const suburbs = buildSuburbOptions([...leadSuburbRows, ...quoteSuburbRows, ...siteAddressRows] as any[]);
 

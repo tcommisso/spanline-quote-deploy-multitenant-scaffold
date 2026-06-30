@@ -92,7 +92,7 @@ const DEFAULT_FILTERS: ConstructionClientFilterSnapshot = {
   installerFilter: "all",
   branchFilter: "all",
   suburbFilter: "all",
-  fyFilter: "unset",
+  fyFilter: null,
   monthFilter: null,
   sortField: "clientName",
   sortDir: "asc",
@@ -126,7 +126,7 @@ export default function ConstructionClients() {
   const fysQuery = trpc.constructionClients.availableFYs.useQuery();
   const currentFy = fysQuery.data?.currentFy;
   // "unset" = user hasn't chosen yet (default to currentFy), null = user chose "All Years"
-  const [fyFilter, setFyFilter] = useState<number | null | "unset">("unset");
+  const [fyFilter, setFyFilter] = useState<number | null | "unset">(null);
 
   // Month filter
   const [monthFilter, setMonthFilter] = useState<number | null>(null);

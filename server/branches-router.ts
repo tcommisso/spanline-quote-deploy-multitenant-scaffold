@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { tenantProcedure, tenantAdminProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
-import { branches, designAdvisors, tenantMemberships, users } from "../drizzle/schema";
+import { branches, crmLeads, designAdvisors, tenantMemberships, users } from "../drizzle/schema";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
 import { privateTenantConditions } from "./private-tenant-scope";
 
@@ -140,6 +140,24 @@ export const branchesRouter = router({
       .select()
       .from(branches)
       .where(and(...await branchTenantConditions(ctx, eq(branches.isActive, true))))
+      .orderBy(asc(branches.name));
+  }),
+
+  crmFilterList: tenantProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    if (!db) return [];
+    return db
+      .select({
+        id: branches.id,
+        name: branches.name,
+      })
+      .from(branches)
+      .innerJoin(crmLeads, eq(crmLeads.branchId, branches.id))
+      .where(and(
+        ...await branchTenantConditions(ctx, eq(branches.isActive, true)),
+        ...await privateTenantConditions(ctx, crmLeads.tenantId, eq(crmLeads.archived, false)),
+      ))
+      .groupBy(branches.id, branches.name)
       .orderBy(asc(branches.name));
   }),
 

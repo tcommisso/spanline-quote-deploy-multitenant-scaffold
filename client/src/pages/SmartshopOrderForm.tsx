@@ -949,7 +949,7 @@ function ProductBrowserSection({
   const { data: subGroupsList } = trpc.smartshop.subGroups.useQuery();
 
   // Build query params based on browse mode
-  const queryEnabled = browseMode === "category" ? !!category : !!selectedTag;
+  const queryEnabled = browseMode === "category" ? true : !!selectedTag;
   const queryParams = useMemo(() => {
     if (browseMode === "tag") {
       return {
@@ -961,7 +961,7 @@ function ProductBrowserSection({
       };
     }
     return {
-      category,
+      category: category || undefined,
       search,
       offset,
       limit: PAGE_SIZE,
@@ -1269,6 +1269,14 @@ function ProductBrowserSection({
         {/* Category Tabs (category mode) */}
         {browseMode === "category" && categories && categories.length > 0 && (
           <div className="mb-4 flex flex-wrap gap-2">
+            <Button
+              variant={!category ? "default" : "outline"}
+              size="sm"
+              onClick={() => handleCategoryChange("")}
+              className="text-xs"
+            >
+              All products
+            </Button>
             {categories.map((cat: string) => (
               <Button
                 key={cat}
@@ -1422,7 +1430,7 @@ function ProductBrowserSection({
         )}
 
         {/* Flat Product Table (category mode or favourites) */}
-        {!isFetching && ((browseMode === "category" && category) || showFavouritesOnly) && displayProducts.length > 0 && !(browseMode === "tag" && !showFavouritesOnly) && (
+        {!isFetching && (browseMode === "category" || showFavouritesOnly) && displayProducts.length > 0 && !(browseMode === "tag" && !showFavouritesOnly) && (
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
@@ -1498,12 +1506,6 @@ function ProductBrowserSection({
                 ? "No favourite products found."
                 : "No products found. Try a different search term."}
             </p>
-          </div>
-        )}
-        {browseMode === "category" && !category && (
-          <div className="py-12 text-center text-muted-foreground">
-            <Package className="mx-auto h-12 w-12 opacity-50" />
-            <p className="mt-4">Select a category to browse products</p>
           </div>
         )}
         {browseMode === "tag" && !selectedTag && allTags && allTags.length > 0 && (
