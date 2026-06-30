@@ -1168,17 +1168,6 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
   );
 }
 
-const FINAL_INSPECTION_DEFAULTS = [
-  "Final inspection booked",
-  "Structure checked against approved specification",
-  "Fixings and finishes inspected",
-  "Drainage and downpipes checked",
-  "Site cleaned and made safe",
-  "Client walkthrough completed",
-  "Final photos uploaded",
-  "Final inspection report uploaded",
-];
-
 const POST_BUILD_CLASSIFICATIONS = [
   { value: "unclassified", label: "Unclassified" },
   { value: "warranty", label: "Warranty" },
@@ -1222,6 +1211,7 @@ function isFinalInspectionInstruction(instruction: any) {
 function FinalInspectionSection({ jobId }: { jobId: number }) {
   const utils = trpc.useUtils();
   const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
+  const templatesQuery = trpc.globalSettings.getConstructionChecklistTemplates.useQuery();
   const createInstruction = trpc.constructionClients.createJobInstruction.useMutation();
   const updateInstruction = trpc.constructionClients.updateJobInstruction.useMutation({
     onSuccess: () => utils.constructionClients.jobInstructions.invalidate({ jobId }),
@@ -1235,26 +1225,31 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
   const progress = finalItems.length > 0 ? Math.round((completedCount / finalItems.length) * 100) : 0;
 
   const seedDefaults = async () => {
+    const templateItems = templatesQuery.data?.finalInspection?.items || [];
+    if (templateItems.length === 0) {
+      toast.error("No final inspection checklist template items are configured");
+      return;
+    }
     const existingTitles = new Set(finalItems.map((item: any) => String(item.title || "").toLowerCase()));
-    const missing = FINAL_INSPECTION_DEFAULTS.filter((title) => !existingTitles.has(title.toLowerCase()));
+    const missing = templateItems.filter((item: any) => !existingTitles.has(String(item.title || "").toLowerCase()));
     if (missing.length === 0) {
       toast.info("Final inspection checklist is already loaded");
       return;
     }
     try {
-      await Promise.all(missing.map((title, index) => createInstruction.mutateAsync({
+      await Promise.all(missing.map((item: any, index) => createInstruction.mutateAsync({
         jobId,
-        title,
+        title: String(item.title || "").trim(),
         description: null,
         category: "inspection",
         status: "open",
-        priority: title.includes("uploaded") ? "important" : "normal",
-        visibleToTrade: false,
+        priority: item.priority || "normal",
+        visibleToTrade: Boolean(item.visibleToTrade),
         assignedInstallerId: null,
-        isBlocking: title.includes("report"),
+        isBlocking: Boolean(item.isBlocking),
         dueAt: null,
         triggerLabel: "Final Inspection",
-        sortOrder: 500 + index,
+        sortOrder: 500 + (Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index),
       })));
       await utils.constructionClients.jobInstructions.invalidate({ jobId });
       toast.success("Final inspection checklist loaded");
@@ -1304,7 +1299,7 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
               </CardTitle>
               <p className="text-sm text-muted-foreground">Checklist, report, and final photo evidence before close-out.</p>
             </div>
-            <Button variant="outline" size="sm" onClick={seedDefaults} disabled={createInstruction.isPending}>
+            <Button variant="outline" size="sm" onClick={seedDefaults} disabled={createInstruction.isPending || templatesQuery.isLoading}>
               {createInstruction.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
               Load Default Checklist
             </Button>

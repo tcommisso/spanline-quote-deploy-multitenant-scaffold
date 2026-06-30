@@ -316,6 +316,7 @@ const adminGroups: AdminGroup[] = [
       { icon: Send, label: "SMS Templates", path: "/admin/master-data/general/sms-templates" },
       { icon: Layers, label: "Order Templates", path: "/admin/order-templates" },
       { icon: ClipboardList, label: "Project Plan Templates", path: "/admin/project-plan-templates" },
+      { icon: ClipboardCheck, label: "Construction Checklists", path: "/admin/construction-checklist-templates" },
       { icon: ClipboardCheck, label: "Induction Form", path: "/admin/induction-config" },
       { icon: FileText, label: "Text Blocks", path: "/admin/text-blocks" },
     ],

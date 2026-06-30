@@ -150,6 +150,7 @@ const TerritoryCoverage = lazy(() => import("./pages/TerritoryCoverage"));
 const ProfilePage = lazy(() => import("./pages/ProfilePage"));
 const CalendarAvailability = lazy(() => import("./pages/CalendarAvailability"));
 const CalendarViewsAdmin = lazy(() => import("./pages/admin/CalendarViewsAdmin"));
+const ConstructionChecklistTemplates = lazy(() => import("./pages/admin/ConstructionChecklistTemplates"));
 
 // Approvals pages (lazy)
 const ApprovalsDashboard = lazy(() => import("./pages/ApprovalsDashboard"));
@@ -534,6 +535,7 @@ function MainRouter() {
         <Route path="/admin/blinds">{() => <MasterDataPage><AdminBlinds /></MasterDataPage>}</Route>
         <Route path="/admin/text-blocks">{() => <AdminRoute><AdminTextBlocks /></AdminRoute>}</Route>
         <Route path="/admin/order-templates">{() => <AdminRoute><TemplateManager /></AdminRoute>}</Route>
+        <Route path="/admin/construction-checklist-templates">{() => <AdminRoute><ConstructionChecklistTemplates /></AdminRoute>}</Route>
         <Route path="/admin/checklist-pricing">{() => <AdminRoute><AdminChecklistPricing /></AdminRoute>}</Route>
         <Route path="/admin/impersonation-log">{() => <AdminRoute><AdminImpersonationLog /></AdminRoute>}</Route>
         <Route path="/admin/calendar-views">{() => <AdminRoute><CalendarViewsAdmin /></AdminRoute>}</Route>

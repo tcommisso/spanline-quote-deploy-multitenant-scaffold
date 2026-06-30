@@ -12,9 +12,22 @@ import {
   NAVIGATION_SETTINGS_KEY,
   normalizeNavigationSettings,
 } from "../shared/navigation-config";
+import {
+  CONSTRUCTION_CHECKLIST_PRIORITIES,
+  CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY,
+  normalizeConstructionChecklistTemplates,
+} from "../shared/construction-checklist-templates";
 
 const LOGIN_BACKGROUND_MAX_BYTES = 1.5 * 1024 * 1024;
 const LOGIN_BACKGROUND_ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const constructionChecklistTemplateItemSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  priority: z.enum(CONSTRUCTION_CHECKLIST_PRIORITIES),
+  isBlocking: z.boolean(),
+  visibleToTrade: z.boolean(),
+  sortOrder: z.number().int().min(0).max(10000),
+});
 
 function loginBackgroundDataUrl(mimeType: string, base64: string) {
   return `data:${mimeType};base64,${base64}`;
@@ -126,6 +139,23 @@ export const globalSettingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const settings = normalizeNavigationSettings(input);
       await setTenantAppSetting(ctx.tenant!.id, NAVIGATION_SETTINGS_KEY, settings);
+      return settings;
+    }),
+
+  getConstructionChecklistTemplates: tenantProcedure.query(async ({ ctx }) => {
+    const stored = await getTenantAppSetting(ctx.tenant?.id, CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY);
+    return normalizeConstructionChecklistTemplates(stored);
+  }),
+
+  setConstructionChecklistTemplates: tenantAdminProcedure
+    .input(z.object({
+      finalInspection: z.object({
+        items: z.array(constructionChecklistTemplateItemSchema).min(1),
+      }),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const settings = normalizeConstructionChecklistTemplates(input);
+      await setTenantAppSetting(ctx.tenant!.id, CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY, settings);
       return settings;
     }),
 
