@@ -12,6 +12,7 @@ import {
   constructionHolidayCalendarDays,
   notificationLog,
   tradeAvailabilities,
+  users,
 } from "../drizzle/schema";
 import { eq, and, gte, lte, inArray, isNull, or, asc } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
@@ -55,8 +56,21 @@ function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
   return conditions;
 }
 
-function tenantIdentityCondition(column: any, tenantId: number | null | undefined) {
-  return tenantId == null ? isNull(column) : eq(column, tenantId);
+function holidayIdentityKey(value: { dateKey: string; jurisdiction: string; name: string }) {
+  return `${value.dateKey}|${value.jurisdiction}|${value.name.trim().toLowerCase()}`;
+}
+
+async function nullableExistingUserId(db: any, userId: unknown): Promise<number | null> {
+  const id = Number(userId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+
+  const [user] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+
+  return user?.id ?? null;
 }
 
 function parseScheduleDateTime(value: string | null | undefined, fieldName: string, required = false) {
@@ -360,48 +374,56 @@ export const constructionScheduleRouter = router({
       }
       const db = await requireDb();
       const tenantId = tenantIdFromContext(ctx);
-      const holidays = generateAustralianHolidays(input.year, (input.jurisdictions || ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[])
-        .filter((holiday) => isValidDateKey(holiday.dateKey));
+      const jurisdictions = (input.jurisdictions?.length
+        ? input.jurisdictions
+        : ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[];
+      const holidaysByKey = new Map<string, ReturnType<typeof generateAustralianHolidays>[number]>();
+      for (const holiday of generateAustralianHolidays(input.year, jurisdictions).filter((holiday) => isValidDateKey(holiday.dateKey))) {
+        holidaysByKey.set(holidayIdentityKey(holiday), holiday);
+      }
+      const holidays = Array.from(holidaysByKey.values());
       if (holidays.length === 0) return { inserted: 0, updated: 0, total: 0 };
 
-      let inserted = 0;
-      let updated = 0;
       try {
-        for (const holiday of holidays) {
-          const identity = and(
-            tenantIdentityCondition(constructionHolidayCalendarDays.tenantId, tenantId),
-            eq(constructionHolidayCalendarDays.dateKey, holiday.dateKey),
-            eq(constructionHolidayCalendarDays.jurisdiction, holiday.jurisdiction),
-            eq(constructionHolidayCalendarDays.name, holiday.name),
-          );
-          const [existing] = await db.select({ id: constructionHolidayCalendarDays.id })
-            .from(constructionHolidayCalendarDays)
-            .where(identity)
-            .limit(1);
+        const existingRows = await db.select({
+          dateKey: constructionHolidayCalendarDays.dateKey,
+          jurisdiction: constructionHolidayCalendarDays.jurisdiction,
+          name: constructionHolidayCalendarDays.name,
+        })
+          .from(constructionHolidayCalendarDays)
+          .where(and(
+            ...holidayTenantConditions(
+              ctx,
+              eq(constructionHolidayCalendarDays.year, input.year),
+              inArray(constructionHolidayCalendarDays.jurisdiction, jurisdictions),
+            ),
+          ));
+        const existingKeys = new Set(existingRows.map(holidayIdentityKey));
+        const createdBy = await nullableExistingUserId(db, ctx.user?.id);
+        const rows = holidays.map((holiday) => ({
+          tenantId,
+          dateKey: holiday.dateKey,
+          name: holiday.name,
+          jurisdiction: holiday.jurisdiction,
+          year: holiday.year,
+          source: holiday.source,
+          active: true,
+          createdBy,
+        }));
 
-          if (existing?.id) {
-            await db.update(constructionHolidayCalendarDays)
-              .set({
-                year: holiday.year,
-                source: holiday.source,
-                active: true,
-              })
-              .where(eq(constructionHolidayCalendarDays.id, existing.id));
-            updated += 1;
-          } else {
-            await db.insert(constructionHolidayCalendarDays).values({
-              tenantId,
-              dateKey: holiday.dateKey,
-              name: holiday.name,
-              jurisdiction: holiday.jurisdiction,
-              year: holiday.year,
-              source: holiday.source,
+        await db.insert(constructionHolidayCalendarDays)
+          .values(rows)
+          .onDuplicateKeyUpdate({
+            set: {
+              year: input.year,
+              source: "built_in",
               active: true,
-              createdBy: ctx.user.id,
-            });
-            inserted += 1;
-          }
-        }
+              updatedAt: new Date(),
+            },
+          });
+
+        const inserted = rows.filter((row) => !existingKeys.has(holidayIdentityKey(row))).length;
+        return { inserted, updated: rows.length - inserted, total: rows.length };
       } catch (err) {
         console.error("[ConstructionSchedule] Failed to import Australian holidays:", err);
         throw new TRPCError({
@@ -409,7 +431,6 @@ export const constructionScheduleRouter = router({
           message: "Could not import Australian holidays. Refresh the page and try again.",
         });
       }
-      return { inserted, updated, total: holidays.length };
     }),
 
   setHolidayActive: protectedProcedure
