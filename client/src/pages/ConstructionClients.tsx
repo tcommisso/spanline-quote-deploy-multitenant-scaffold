@@ -7,15 +7,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import {
   Users, Search, Phone, Mail,
   HardHat, CheckCircle2, Clock, AlertTriangle, Ban, Calendar, ChevronDown, Loader2,
-  ArrowUpDown, ArrowUp, ArrowDown, Download, CheckSquare,
+  ArrowUpDown, ArrowUp, ArrowDown, Download, CheckSquare, Bookmark, Save, Trash2, X,
 } from "lucide-react";
 import { PullToRefresh } from "@/components/PullToRefresh";
 import CollapsibleFilters from "@/components/CollapsibleFilters";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   scheduled: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Clock, label: "Scheduled" },
@@ -43,8 +46,45 @@ const formatCurrency = formatCurrencyShort;
 
 const PAGE_SIZE = 50;
 
+type ConstructionClientFilterSnapshot = {
+  search: string;
+  statusFilter: string;
+  paymentFilter: string;
+  baFilter: string;
+  scheduledFilter: string;
+  installerFilter: string;
+  branchFilter: string;
+  suburbFilter: string;
+  fyFilter: number | null | "unset";
+  monthFilter: number | null;
+  sortField: string;
+  sortDir: "asc" | "desc";
+};
+
+type ConstructionClientFilterPreset = {
+  id: string;
+  name: string;
+  filters: ConstructionClientFilterSnapshot;
+};
+
+const DEFAULT_FILTERS: ConstructionClientFilterSnapshot = {
+  search: "",
+  statusFilter: "not_completed",
+  paymentFilter: "all",
+  baFilter: "all",
+  scheduledFilter: "all",
+  installerFilter: "all",
+  branchFilter: "all",
+  suburbFilter: "all",
+  fyFilter: "unset",
+  monthFilter: null,
+  sortField: "clientName",
+  sortDir: "asc",
+};
+
 export default function ConstructionClients() {
   const [, navigate] = useLocation();
+  const { user } = useAuth();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("not_completed");
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
@@ -58,6 +98,11 @@ export default function ConstructionClients() {
   const [bulkBaStatus, setBulkBaStatus] = useState<string>("");
   const [offset, setOffset] = useState(0);
   const [allClients, setAllClients] = useState<any[]>([]);
+  const presetStorageKey = `construction-client-filter-presets:${user?.id ?? user?.openId ?? "local"}`;
+  const [filterPresets, setFilterPresets] = useState<ConstructionClientFilterPreset[]>([]);
+  const [presetSelectValue, setPresetSelectValue] = useState("placeholder");
+  const [showSavePreset, setShowSavePreset] = useState(false);
+  const [presetName, setPresetName] = useState("");
 
   // Load available FYs and default to current
   const fysQuery = trpc.constructionClients.availableFYs.useQuery();
@@ -79,8 +124,10 @@ export default function ConstructionClients() {
     status: (statusFilter !== "all" && statusFilter !== "all_incl_completed") ? statusFilter as any : undefined,
     scheduled: scheduledFilter !== "all" ? scheduledFilter as any : undefined,
     installerId: installerFilter !== "all" ? Number(installerFilter) : undefined,
-    branch: branchFilter !== "all" ? branchFilter : undefined,
+    branchId: branchFilter !== "all" ? (branchFilter === "unassigned" ? "unassigned" as const : Number(branchFilter)) : undefined,
     suburb: suburbFilter !== "all" ? suburbFilter : undefined,
+    paymentStatus: paymentFilter !== "all" ? paymentFilter as any : undefined,
+    baStatus: baFilter !== "all" ? baFilter as any : undefined,
     fyStartYear: activeFy ?? undefined,
     month: monthFilter ?? undefined,
     limit: PAGE_SIZE,
@@ -107,7 +154,7 @@ export default function ConstructionClients() {
   useEffect(() => {
     setOffset(0);
     setAllClients([]);
-  }, [search, statusFilter, activeFy, monthFilter, baFilter, scheduledFilter, installerFilter, branchFilter, suburbFilter]);
+  }, [search, statusFilter, activeFy, monthFilter, paymentFilter, baFilter, scheduledFilter, installerFilter, branchFilter, suburbFilter]);
 
   const total = clientsQuery.data?.total || 0;
   const hasMore = allClients.length < total;
@@ -135,46 +182,7 @@ export default function ConstructionClients() {
 
   const fyOptions = fysQuery.data?.years || [];
 
-  const paymentCounts = useMemo(() => {
-    const clients = allClients;
-    let paymentCounts = { paid: 0, partial: 0, invoiced: 0, unpaid: 0 };
-
-    clients.forEach((c: any) => {
-      if (c.paymentStatus && paymentCounts.hasOwnProperty(c.paymentStatus)) {
-        paymentCounts[c.paymentStatus as keyof typeof paymentCounts]++;
-      }
-    });
-
-    return paymentCounts;
-  }, [allClients]);
-
-  // Filter by payment status and Approvals status client-side
-  const displayClients = useMemo(() => {
-    let filtered = allClients;
-    if (paymentFilter !== "all") {
-      filtered = filtered.filter((c: any) => c.paymentStatus === paymentFilter);
-    }
-    if (baFilter !== "all") {
-      if (baFilter === "overdue") {
-        // Stale pending: pending/lodged/submitted for > 30 days
-        const thirtyDaysAgo = Date.now() - overdueDays * 24 * 60 * 60 * 1000;
-        filtered = filtered.filter((c: any) => {
-          const s = (c.baStatus || "").toLowerCase();
-          if (s !== "pending" && s !== "lodged" && s !== "submitted") return false;
-          const appDate = c.baApplicationDate ? new Date(c.baApplicationDate).getTime() : 0;
-          return appDate > 0 && appDate < thirtyDaysAgo;
-        });
-      } else if (baFilter === "none") {
-        filtered = filtered.filter((c: any) => !c.baStatus);
-      } else {
-        filtered = filtered.filter((c: any) => {
-          const s = (c.baStatus || "").toLowerCase();
-          return s === baFilter || (baFilter === "approved" && s === "approved with conditions");
-        });
-      }
-    }
-    return filtered;
-  }, [allClients, paymentFilter, baFilter, overdueDays]);
+  const displayClients = useMemo(() => allClients, [allClients]);
 
   // ─── Bulk Approvals Update ────────────────────────────────────────────────────────
   const utils = trpc.useUtils();
@@ -293,6 +301,102 @@ export default function ConstructionClients() {
     ]);
   }, [utils]);
 
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(presetStorageKey);
+      setFilterPresets(stored ? JSON.parse(stored) : []);
+    } catch {
+      setFilterPresets([]);
+    }
+  }, [presetStorageKey]);
+
+  const getCurrentFilterSnapshot = (): ConstructionClientFilterSnapshot => ({
+    search,
+    statusFilter,
+    paymentFilter,
+    baFilter,
+    scheduledFilter,
+    installerFilter,
+    branchFilter,
+    suburbFilter,
+    fyFilter,
+    monthFilter,
+    sortField,
+    sortDir,
+  });
+
+  const persistFilterPresets = (nextPresets: ConstructionClientFilterPreset[]) => {
+    setFilterPresets(nextPresets);
+    localStorage.setItem(presetStorageKey, JSON.stringify(nextPresets));
+  };
+
+  const applyFilterSnapshot = (filters: ConstructionClientFilterSnapshot) => {
+    setSearch(filters.search || "");
+    setStatusFilter(filters.statusFilter || DEFAULT_FILTERS.statusFilter);
+    setPaymentFilter(filters.paymentFilter || DEFAULT_FILTERS.paymentFilter);
+    setBaFilter(filters.baFilter || DEFAULT_FILTERS.baFilter);
+    setScheduledFilter(filters.scheduledFilter || DEFAULT_FILTERS.scheduledFilter);
+    setInstallerFilter(filters.installerFilter || DEFAULT_FILTERS.installerFilter);
+    setBranchFilter(filters.branchFilter || DEFAULT_FILTERS.branchFilter);
+    setSuburbFilter(filters.suburbFilter || DEFAULT_FILTERS.suburbFilter);
+    setFyFilter(filters.fyFilter === undefined ? DEFAULT_FILTERS.fyFilter : filters.fyFilter);
+    setMonthFilter(filters.monthFilter ?? DEFAULT_FILTERS.monthFilter);
+    setSortField(filters.sortField || DEFAULT_FILTERS.sortField);
+    setSortDir(filters.sortDir || DEFAULT_FILTERS.sortDir);
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    setOffset(0);
+    setAllClients([]);
+  };
+
+  const handleSavePreset = () => {
+    const name = presetName.trim();
+    if (!name) {
+      toast.error("Enter a preset name");
+      return;
+    }
+
+    const existing = filterPresets.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+    const nextPreset: ConstructionClientFilterPreset = {
+      id: existing?.id || String(Date.now()),
+      name,
+      filters: getCurrentFilterSnapshot(),
+    };
+    const nextPresets = existing
+      ? filterPresets.map((preset) => preset.id === existing.id ? nextPreset : preset)
+      : [...filterPresets, nextPreset];
+
+    persistFilterPresets(nextPresets);
+    setPresetName("");
+    setShowSavePreset(false);
+    toast.success(existing ? "Filter preset updated" : "Filter preset saved");
+  };
+
+  const handleDeletePreset = (presetId: string) => {
+    persistFilterPresets(filterPresets.filter((preset) => preset.id !== presetId));
+  };
+
+  const handleClearFilters = () => {
+    applyFilterSnapshot(DEFAULT_FILTERS);
+  };
+
+  const branchOptions = filterOptionsQuery.data?.branches || [];
+  const selectedBranchLabel = branchFilter === "unassigned"
+    ? "Unassigned"
+    : branchOptions.find((branch: any) => String(branch.id) === branchFilter)?.name;
+  const hasActiveFilters = search
+    || statusFilter !== DEFAULT_FILTERS.statusFilter
+    || paymentFilter !== DEFAULT_FILTERS.paymentFilter
+    || baFilter !== DEFAULT_FILTERS.baFilter
+    || scheduledFilter !== DEFAULT_FILTERS.scheduledFilter
+    || installerFilter !== DEFAULT_FILTERS.installerFilter
+    || branchFilter !== DEFAULT_FILTERS.branchFilter
+    || suburbFilter !== DEFAULT_FILTERS.suburbFilter
+    || fyFilter !== DEFAULT_FILTERS.fyFilter
+    || monthFilter !== DEFAULT_FILTERS.monthFilter
+    || sortField !== DEFAULT_FILTERS.sortField
+    || sortDir !== DEFAULT_FILTERS.sortDir;
+
   return (
     <PullToRefresh onRefresh={handleRefresh}>
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -356,6 +460,39 @@ export default function ConstructionClients() {
             className="pl-9"
           />
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={presetSelectValue}
+            onValueChange={(presetId) => {
+              const preset = filterPresets.find((item) => item.id === presetId);
+              if (preset) applyFilterSnapshot(preset.filters);
+              setPresetSelectValue("placeholder");
+            }}
+          >
+            <SelectTrigger className="w-[180px]">
+              <Bookmark className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+              <SelectValue placeholder="Saved presets" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="placeholder" disabled>Saved presets</SelectItem>
+              {filterPresets.length === 0 ? (
+                <SelectItem value="none" disabled>No saved presets</SelectItem>
+              ) : filterPresets.map((preset) => (
+                <SelectItem key={preset.id} value={preset.id}>{preset.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={() => { setPresetName(""); setShowSavePreset(true); }}>
+            <Save className="h-4 w-4 mr-1" />
+            Save Preset
+          </Button>
+          {hasActiveFilters && (
+            <Button variant="ghost" size="sm" onClick={handleClearFilters}>
+              <X className="h-4 w-4 mr-1" />
+              Clear
+            </Button>
+          )}
+        </div>
         <CollapsibleFilters label="Filters">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-[160px]">
@@ -377,14 +514,7 @@ export default function ConstructionClients() {
             <SelectContent>
               <SelectItem value="all">All Payments</SelectItem>
               {Object.entries(PAYMENT_STATUS_CONFIG).map(([key, config]) => (
-                <SelectItem key={key} value={key}>
-                  {config.label}
-                  {paymentCounts[key as keyof typeof paymentCounts] > 0 && (
-                    <span className="ml-1 text-muted-foreground">
-                      ({paymentCounts[key as keyof typeof paymentCounts]})
-                    </span>
-                  )}
-                </SelectItem>
+                <SelectItem key={key} value={key}>{config.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -436,8 +566,9 @@ export default function ConstructionClients() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Branches</SelectItem>
-              {(filterOptionsQuery.data?.branches || []).map((branch: string) => (
-                <SelectItem key={branch} value={branch}>{branch}</SelectItem>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
+              {branchOptions.map((branch: any) => (
+                <SelectItem key={branch.id} value={String(branch.id)}>{branch.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -462,8 +593,9 @@ export default function ConstructionClients() {
             Showing {displayClients.length} of {total} project{total !== 1 ? "s" : ""}
             {statusFilter !== "all_incl_completed" && ` (${STATUS_FILTER_LABELS[statusFilter] || STATUS_CONFIG[statusFilter]?.label || statusFilter})`}
             {paymentFilter !== "all" && ` · ${PAYMENT_STATUS_CONFIG[paymentFilter]?.label}`}
+            {baFilter !== "all" && ` · Approval ${baFilter.replace(/_/g, " ")}`}
             {scheduledFilter !== "all" && ` · ${scheduledFilter.replace(/_/g, " ")}`}
-            {branchFilter !== "all" && ` · ${branchFilter}`}
+            {branchFilter !== "all" && selectedBranchLabel && ` · ${selectedBranchLabel}`}
             {suburbFilter !== "all" && ` · ${suburbFilter}`}
           </p>
         )}
@@ -710,7 +842,7 @@ export default function ConstructionClients() {
             </div>
 
             {/* Load More */}
-            {hasMore && paymentFilter === "all" && (
+            {hasMore && (
               <div className="flex justify-center py-4 border-t">
                 <Button
                   variant="outline"
@@ -729,6 +861,60 @@ export default function ConstructionClients() {
           </CardContent>
         </Card>
       )}
+      <Dialog open={showSavePreset} onOpenChange={setShowSavePreset}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bookmark className="h-5 w-5" />
+              Save Filter Preset
+            </DialogTitle>
+            <DialogDescription>
+              Save the current Construction Clients filters, period, and sorting for one-click access.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs font-medium">Preset name</Label>
+              <Input
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                placeholder="Riverina approvals due"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleSavePreset();
+                }}
+              />
+            </div>
+            {filterPresets.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Existing presets</Label>
+                <div className="max-h-40 overflow-y-auto rounded-md border">
+                  {filterPresets.map((preset) => (
+                    <div key={preset.id} className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0">
+                      <span className="min-w-0 flex-1 truncate text-sm">{preset.name}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeletePreset(preset.id)}
+                        className="h-8 w-8 p-0"
+                        title="Delete preset"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSavePreset(false)}>Cancel</Button>
+            <Button onClick={handleSavePreset}>
+              <Save className="h-4 w-4 mr-1" />
+              Save Preset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
     </PullToRefresh>
   );

@@ -10,6 +10,7 @@ import {
   siteInductions, quotes, crmLeads, crmBuildingAuthority, tenantMemberships, users,
   approvalProjects, approvalRfis, approvalInspections, approvalCertificates,
   approvalLodgements, hbcfCertificates, suppliers, portalDefects, portalMaintenanceRequests,
+  branches,
 } from "../drizzle/schema";
 import { eq, desc, asc, and, like, sql, or, inArray, isNull } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
@@ -19,6 +20,7 @@ import { ENV } from "./_core/env";
 import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
 import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./canonical-client";
 import { storagePut } from "./storage";
+import { getTenantAppSetting } from "./tenant-settings-store";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const jobInstructionCategorySchema = z.enum([
@@ -324,6 +326,74 @@ function visibleConstructionClientCondition() {
   );
 }
 
+function financialAmountExpr(primary: any, fallback: any) {
+  return sql<number>`CAST(COALESCE(${primary}, ${fallback}, 0) AS DECIMAL(12, 2))`;
+}
+
+function appendPaymentStatusFilter(conditions: any[], status: "paid" | "partial" | "invoiced" | "unpaid") {
+  const contractValue = financialAmountExpr(constructionJobFinancials.xeroContractValue, constructionJobFinancials.contractValue);
+  const invoicedAmount = financialAmountExpr(constructionJobFinancials.xeroInvoicedAmount, constructionJobFinancials.invoicedAmount);
+  const paidAmount = financialAmountExpr(constructionJobFinancials.xeroPaidAmount, constructionJobFinancials.paidAmount);
+
+  if (status === "paid") {
+    conditions.push(sql`${contractValue} > 0 AND ${paidAmount} >= ${contractValue}`);
+  } else if (status === "partial") {
+    conditions.push(sql`${contractValue} > 0 AND ${paidAmount} > 0 AND ${paidAmount} < ${contractValue}`);
+  } else if (status === "invoiced") {
+    conditions.push(sql`${contractValue} > 0 AND ${paidAmount} <= 0 AND ${invoicedAmount} > 0`);
+  } else {
+    conditions.push(sql`${contractValue} <= 0 OR (${paidAmount} <= 0 AND ${invoicedAmount} <= 0)`);
+  }
+}
+
+function appendApprovalStatusFilter(
+  conditions: any[],
+  status: "approved" | "pending" | "lodged" | "rejected" | "exempt" | "none" | "overdue",
+  overdueDays: number,
+) {
+  const statusExpr = sql`LOWER(COALESCE(${crmBuildingAuthority.status}, ''))`;
+  const baseRecordMatch = sql`${crmBuildingAuthority.leadId} = ${crmLeads.id}`;
+
+  if (status === "none") {
+    conditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${crmBuildingAuthority}
+      WHERE ${baseRecordMatch}
+        AND ${crmBuildingAuthority.status} IS NOT NULL
+        AND ${crmBuildingAuthority.status} != ''
+    )`);
+    return;
+  }
+
+  if (status === "overdue") {
+    const cutoff = new Date(Date.now() - overdueDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    conditions.push(sql`EXISTS (
+      SELECT 1 FROM ${crmBuildingAuthority}
+      WHERE ${baseRecordMatch}
+        AND ${statusExpr} IN ('pending', 'lodged', 'submitted')
+        AND ${crmBuildingAuthority.applicationDate} IS NOT NULL
+        AND ${crmBuildingAuthority.applicationDate} != ''
+        AND ${crmBuildingAuthority.applicationDate} < ${cutoff}
+    )`);
+    return;
+  }
+
+  const statusValues: Record<string, string[]> = {
+    approved: ["approved", "approved with conditions"],
+    pending: ["pending"],
+    lodged: ["lodged", "submitted"],
+    rejected: ["rejected", "refused"],
+    exempt: ["exempt", "not required"],
+    none: [],
+    overdue: [],
+  };
+  const values = statusValues[status] || [];
+  conditions.push(sql`EXISTS (
+    SELECT 1 FROM ${crmBuildingAuthority}
+    WHERE ${baseRecordMatch}
+      AND ${statusExpr} IN (${sql.join(values.map((value) => sql`${value}`), sql`, `)})
+  )`);
+}
+
 /** Get the current Australian FY start year. Before July → previous year. */
 function currentFyStartYear(): number {
   const now = new Date();
@@ -359,18 +429,14 @@ export const constructionClientsRouter = router({
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const tenantConditions = jobTenantConditions(ctx);
+    const branchConditions: any[] = [eq(branches.isActive, true)];
+    appendTenantScope(branchConditions, branches.tenantId, tenantIdFromContext(ctx));
 
     const [branchRows, leadSuburbRows, quoteSuburbRows, installers, managerRows] = await Promise.all([
-      db.select({ branch: constructionJobFinancials.branch })
-        .from(constructionJobs)
-        .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
-        .where(and(
-          ...tenantConditions,
-          sql`${constructionJobFinancials.branch} IS NOT NULL`,
-          sql`${constructionJobFinancials.branch} != ''`,
-        ))
-        .groupBy(constructionJobFinancials.branch)
-        .orderBy(constructionJobFinancials.branch),
+      db.select({ id: branches.id, name: branches.name })
+        .from(branches)
+        .where(and(...branchConditions))
+        .orderBy(asc(branches.name)),
       db.select({ suburb: crmLeads.suburb })
         .from(constructionJobs)
         .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
@@ -416,9 +482,9 @@ export const constructionClientsRouter = router({
         ),
     ]);
 
-    const branches = Array.from(new Set(
-      branchRows.map((row: any) => String(row.branch || "").trim()).filter(Boolean),
-    )).sort((a, b) => a.localeCompare(b));
+    const branchOptions = branchRows
+      .map((row: any) => ({ id: Number(row.id), name: String(row.name || "").trim() }))
+      .filter((row) => row.id > 0 && row.name);
 
     const suburbs = Array.from(new Set(
       [...leadSuburbRows, ...quoteSuburbRows]
@@ -444,7 +510,7 @@ export const constructionClientsRouter = router({
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return {
-      branches,
+      branches: branchOptions,
       suburbs,
       installers,
       constructionManagers,
@@ -457,10 +523,13 @@ export const constructionClientsRouter = router({
       status: z.enum(["scheduled", "in_progress", "on_hold", "completed", "cancelled", "not_completed"]).optional(),
       search: z.string().optional(),
       branch: z.string().optional(),
+      branchId: z.union([z.number(), z.literal("unassigned")]).optional(),
       suburb: z.string().optional(),
       scheduled: z.enum(["unscheduled", "scheduled", "overdue", "today", "next_7_days", "future"]).optional(),
       installerId: z.number().optional(),
       constructionManagerId: z.number().optional(),
+      paymentStatus: z.enum(["paid", "partial", "invoiced", "unpaid"]).optional(),
+      baStatus: z.enum(["approved", "pending", "lodged", "rejected", "exempt", "none", "overdue"]).optional(),
       fyStartYear: z.number().optional(), // e.g. 2025 for FY 2025-26
       month: z.number().min(1).max(12).optional(), // 1-12, calendar month within the FY
       limit: z.number().optional(),
@@ -495,8 +564,37 @@ export const constructionClientsRouter = router({
           )
         );
       }
-      if (input?.branch) {
+      if (input?.branchId === "unassigned") {
+        conditions.push(and(
+          isNull(crmLeads.branchId),
+          or(
+            isNull(constructionJobFinancials.branch),
+            eq(constructionJobFinancials.branch, ""),
+          ),
+        ));
+      } else if (typeof input?.branchId === "number") {
+        const branchConditions: any[] = [eq(branches.id, input.branchId)];
+        appendTenantScope(branchConditions, branches.tenantId, tenantIdFromContext(ctx));
+        const [branch] = await db.select({ id: branches.id, name: branches.name })
+          .from(branches)
+          .where(and(...branchConditions))
+          .limit(1);
+        if (!branch) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Selected branch is not available for this tenant" });
+        }
+        conditions.push(or(
+          eq(crmLeads.branchId, input.branchId),
+          eq(sql`LOWER(${constructionJobFinancials.branch})`, branch.name.toLowerCase()),
+        ));
+      } else if (input?.branch) {
         conditions.push(eq(constructionJobFinancials.branch, input.branch));
+      }
+      if (input?.paymentStatus) {
+        appendPaymentStatusFilter(conditions, input.paymentStatus);
+      }
+      if (input?.baStatus) {
+        const overdueDays = (await getTenantAppSetting<number>(tenantIdFromContext(ctx), "baOverdueThresholdDays")) ?? 30;
+        appendApprovalStatusFilter(conditions, input.baStatus, overdueDays);
       }
       if (input?.suburb) {
         conditions.push(or(
@@ -582,6 +680,8 @@ export const constructionClientsRouter = router({
           leadStatus: crmLeads.status,
           leadSuburb: crmLeads.suburb,
           quoteSuburb: quotes.suburb,
+          leadBranchId: crmLeads.branchId,
+          leadBranchName: branches.name,
           branch: constructionJobFinancials.branch,
           constructionManagerId: constructionJobFinancials.constructionManagerId,
           constructionManagerName: constructionJobFinancials.constructionManagerName,
@@ -590,6 +690,7 @@ export const constructionClientsRouter = router({
         }).from(constructionJobs)
           .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
           .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+          .leftJoin(branches, eq(crmLeads.branchId, branches.id))
           .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
           .where(where)
           .orderBy(desc(constructionJobs.updatedAt))
@@ -599,6 +700,7 @@ export const constructionClientsRouter = router({
           .from(constructionJobs)
           .leftJoin(constructionJobFinancials, eq(constructionJobFinancials.jobId, constructionJobs.id))
           .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+          .leftJoin(branches, eq(crmLeads.branchId, branches.id))
           .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
           .where(where),
       ]);
@@ -626,7 +728,9 @@ export const constructionClientsRouter = router({
           clientEmail: nullableName(row.leadEmail),
           leadSuburb: row.leadSuburb,
           quoteSuburb: row.quoteSuburb,
-          branch: row.branch,
+          branchId: row.leadBranchId,
+          storedBranch: row.branch,
+          branch: nullableName(row.leadBranchName) || row.branch,
           constructionManagerId: row.constructionManagerId,
           constructionManagerName: row.constructionManagerName,
           technicalDesignerId: row.technicalDesignerId,
