@@ -1580,9 +1580,18 @@ function photoLinks(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
+type MaintenanceAttachmentUpload = {
+  fileName: string;
+  fileMimeType: string;
+  fileBase64: string;
+};
+
 function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
   const utils = trpc.useUtils();
   const dataQuery = trpc.constructionClients.postBuildMaintenance.useQuery({ jobId }, { enabled: !!jobId });
+  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
+  const [preparingAttachments, setPreparingAttachments] = useState(false);
+  const [uploadingRequestId, setUploadingRequestId] = useState<number | null>(null);
   const [form, setForm] = useState({
     description: "",
     urgency: "medium",
@@ -1608,6 +1617,7 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
         responseNotes: "",
         scheduledDate: "",
       });
+      setAttachmentFiles([]);
       toast.success("Maintenance request added");
     },
     onError: (err) => toast.error(err.message || "Failed to add maintenance request"),
@@ -1620,26 +1630,92 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
     onSuccess: () => invalidate(),
     onError: (err) => toast.error(err.message || "Failed to update defect"),
   });
+  const addRequestAttachments = trpc.constructionClients.addMaintenanceRequestAttachments.useMutation({
+    onSuccess: () => {
+      invalidate();
+      toast.success("Attachments uploaded");
+    },
+    onError: (err) => toast.error(err.message || "Failed to upload attachments"),
+  });
 
   const requests = dataQuery.data?.requests || [];
   const defects = dataQuery.data?.defects || [];
 
-  const submitRequest = () => {
+  const addCreateAttachments = (fileList: FileList | null) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    const accepted = files.filter((file) => {
+      if (file.size <= 20 * 1024 * 1024) return true;
+      toast.error(`${file.name} is over 20MB`);
+      return false;
+    });
+    setAttachmentFiles((current) => {
+      const next = [...current, ...accepted].slice(0, 10);
+      if (current.length + accepted.length > 10) toast.info("Only the first 10 attachments were kept");
+      return next;
+    });
+  };
+
+  const readAttachmentFiles = (files: File[]) => Promise.all(
+    files.map((file) => new Promise<MaintenanceAttachmentUpload>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const base64 = result.includes(",") ? result.split(",")[1] : result;
+        resolve({
+          fileName: file.name,
+          fileMimeType: file.type || "application/octet-stream",
+          fileBase64: base64,
+        });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    })),
+  );
+
+  const submitRequest = async () => {
     if (!form.description.trim()) {
       toast.error("Maintenance request details are required");
       return;
     }
-    createRequest.mutate({
-      jobId,
-      description: form.description,
-      urgency: form.urgency as any,
-      requestSource: form.requestSource as any,
-      classification: form.classification as any,
-      reportedByName: form.reportedByName || null,
-      reportedByContact: form.reportedByContact || null,
-      responseNotes: form.responseNotes || null,
-      scheduledDate: form.scheduledDate || null,
+    setPreparingAttachments(true);
+    try {
+      const attachments = await readAttachmentFiles(attachmentFiles);
+      createRequest.mutate({
+        jobId,
+        description: form.description,
+        urgency: form.urgency as any,
+        requestSource: form.requestSource as any,
+        classification: form.classification as any,
+        reportedByName: form.reportedByName || null,
+        reportedByContact: form.reportedByContact || null,
+        responseNotes: form.responseNotes || null,
+        scheduledDate: form.scheduledDate || null,
+        attachments,
+      });
+    } catch {
+      toast.error("Failed to read attachment files");
+    } finally {
+      setPreparingAttachments(false);
+    }
+  };
+
+  const uploadRequestAttachments = async (requestId: number, fileList: FileList | null) => {
+    const files = Array.from(fileList || []).filter((file) => {
+      if (file.size <= 20 * 1024 * 1024) return true;
+      toast.error(`${file.name} is over 20MB`);
+      return false;
     });
+    if (files.length === 0) return;
+    setUploadingRequestId(requestId);
+    try {
+      const attachments = await readAttachmentFiles(files.slice(0, 10));
+      await addRequestAttachments.mutateAsync({ id: requestId, attachments });
+    } catch {
+      toast.error("Failed to read attachment files");
+    } finally {
+      setUploadingRequestId(null);
+    }
   };
 
   return (
@@ -1710,8 +1786,41 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
             <Label>Response Notes</Label>
             <Textarea value={form.responseNotes} onChange={(event) => setForm({ ...form, responseNotes: event.target.value })} rows={2} placeholder="Initial response or action taken..." />
           </div>
-          <Button onClick={submitRequest} disabled={createRequest.isPending || !form.description.trim()}>
-            {createRequest.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
+          <div className="space-y-2 rounded-md border border-dashed p-3">
+            <div className="space-y-1.5">
+              <Label>Photos / Documents</Label>
+              <Input
+                type="file"
+                multiple
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv"
+                onChange={(event) => {
+                  addCreateAttachments(event.currentTarget.files);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </div>
+            {attachmentFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {attachmentFiles.map((file, index) => (
+                  <Badge key={`${file.name}-${index}`} variant="secondary" className="gap-1 pr-1">
+                    <FileText className="h-3 w-3" />
+                    <span className="max-w-[180px] truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      className="ml-1 rounded px-1 text-muted-foreground hover:text-foreground"
+                      onClick={() => setAttachmentFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      X
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">Up to 10 files, 20MB each.</p>
+          </div>
+          <Button onClick={submitRequest} disabled={createRequest.isPending || preparingAttachments || !form.description.trim()}>
+            {createRequest.isPending || preparingAttachments ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Plus className="h-4 w-4 mr-1.5" />}
             Add Request
           </Button>
         </CardContent>
@@ -1789,7 +1898,7 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
                 {requests.length === 0 ? (
                   <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No maintenance requests recorded.</div>
                 ) : requests.map((request: any) => {
-                  const photos = photoLinks(request.photoUrls);
+                  const attachments = photoLinks(request.photoUrls);
                   return (
                     <div key={request.id} className="rounded-md border p-3">
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1808,15 +1917,35 @@ function MaintenanceWarrantySection({ jobId }: { jobId: number }) {
                             {request.scheduledDate ? ` - Scheduled ${new Date(request.scheduledDate).toLocaleDateString("en-AU")}` : ""}
                           </p>
                           {request.responseNotes && <p className="text-xs text-muted-foreground whitespace-pre-wrap">Response: {request.responseNotes}</p>}
-                          {photos.length > 0 && (
+                          {attachments.length > 0 && (
                             <div className="flex flex-wrap gap-2 pt-1">
-                              {photos.map((url, index) => (
+                              {attachments.map((url, index) => (
                                 <Button key={url} variant="outline" size="sm" onClick={() => window.open(url, "_blank")}>
-                                  <ExternalLink className="h-3.5 w-3.5 mr-1" /> Photo {index + 1}
+                                  <ExternalLink className="h-3.5 w-3.5 mr-1" /> Attachment {index + 1}
                                 </Button>
                               ))}
                             </div>
                           )}
+                          <div className="pt-2">
+                            <Label className="text-xs">Add photos/documents</Label>
+                            <Input
+                              type="file"
+                              multiple
+                              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv"
+                              className="mt-1 h-8 text-xs"
+                              disabled={uploadingRequestId === request.id}
+                              onChange={(event) => {
+                                uploadRequestAttachments(request.id, event.currentTarget.files);
+                                event.currentTarget.value = "";
+                              }}
+                            />
+                            {uploadingRequestId === request.id && (
+                              <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                Uploading attachments...
+                              </p>
+                            )}
+                          </div>
                         </div>
                         <div className="grid w-full gap-2 sm:grid-cols-2 lg:w-[520px]">
                           <Select value={request.status || "submitted"} onValueChange={(status) => updateRequest.mutate({ id: request.id, status: status as any })}>

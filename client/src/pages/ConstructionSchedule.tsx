@@ -845,7 +845,8 @@ export default function ConstructionSchedule() {
               const cellBookings = bookingsByDate[dateKey] || [];
               const isToday2 = dateKey === today;
               const isCurrentMonth = day.getMonth() === currentMonth;
-              const minHeight = viewMode === "week" ? "min-h-[200px]" : "min-h-[100px]";
+              const minHeight = viewMode === "week" ? "min-h-[360px] xl:min-h-[420px]" : "min-h-[100px]";
+              const eventsMaxHeight = viewMode === "week" ? "max-h-[310px] xl:max-h-[370px]" : "max-h-[80px]";
               const showEvents = resourceView !== "equipment";
               const showEquipment = resourceView === "all" || resourceView === "equipment";
 
@@ -888,7 +889,7 @@ export default function ConstructionSchedule() {
                       {unavailable ? availabilityLabel : `Available: ${availabilityLabel}`}
                     </div>
                   )}
-                  <div className="space-y-0.5 overflow-y-auto max-h-[80px]">
+                  <div className={`space-y-0.5 overflow-y-auto ${eventsMaxHeight}`}>
                     {/* Schedule events */}
                     {showEvents && cellEvents.map((event: any) => {
                       const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;

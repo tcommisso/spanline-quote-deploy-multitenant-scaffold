@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
@@ -17,6 +18,7 @@ import { getXeroAccountingSummaryForJob } from "./xero-accounting-sync";
 import { ENV } from "./_core/env";
 import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
 import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./canonical-client";
+import { storagePut } from "./storage";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const jobInstructionCategorySchema = z.enum([
@@ -33,6 +35,11 @@ const jobInstructionStatusSchema = z.enum(["open", "acknowledged", "done", "bloc
 const jobInstructionPrioritySchema = z.enum(["normal", "important", "urgent"]);
 const postBuildClassificationSchema = z.enum(["unclassified", "warranty", "workmanship", "chargeable"]);
 const maintenanceRequestSourceSchema = z.enum(["portal", "phone", "email", "internal"]);
+const maintenanceAttachmentSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  fileMimeType: z.string().trim().max(128).nullable().optional(),
+  fileBase64: z.string().min(1),
+});
 
 async function requireDb() {
   const db = await getDb();
@@ -108,6 +115,43 @@ async function requirePortalDefectAccess(db: any, ctx: any, defectId: number) {
 function trimNullable(value?: string | null) {
   const trimmed = String(value ?? "").trim();
   return trimmed || null;
+}
+
+function safeUploadFilename(filename: string) {
+  const cleaned = String(filename || "attachment")
+    .normalize("NFKD")
+    .replace(/[^\w.\-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 160);
+  return cleaned || "attachment";
+}
+
+async function storeMaintenanceAttachments({
+  tenantId,
+  jobId,
+  files,
+}: {
+  tenantId: number | null | undefined;
+  jobId: number;
+  files?: Array<z.infer<typeof maintenanceAttachmentSchema>>;
+}) {
+  const uploads = files || [];
+  if (uploads.length === 0) return [];
+  const tenantSegment = tenantId ? String(tenantId) : "single";
+  const urls: string[] = [];
+  for (const file of uploads) {
+    const buffer = Buffer.from(file.fileBase64, "base64");
+    if (buffer.byteLength > 20 * 1024 * 1024) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `${file.fileName} must be under 20MB` });
+    }
+    const suffix = crypto.randomBytes(6).toString("hex");
+    const safeName = safeUploadFilename(file.fileName);
+    const fileKey = `maintenance-requests/${tenantSegment}/jobs/${jobId}/${Date.now()}-${suffix}-${safeName}`;
+    const result = await storagePut(fileKey, buffer, file.fileMimeType || "application/octet-stream");
+    urls.push(result.url);
+  }
+  return urls;
 }
 
 function parseInstructionDate(value?: string | null) {
@@ -1512,10 +1556,16 @@ export const constructionClientsRouter = router({
       reportedByContact: z.string().max(255).nullable().optional(),
       responseNotes: z.string().max(5000).nullable().optional(),
       scheduledDate: z.string().nullable().optional(),
+      attachments: z.array(maintenanceAttachmentSchema).max(10).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
       await requireJobAccess(db, ctx, input.jobId);
+      const attachmentUrls = await storeMaintenanceAttachments({
+        tenantId: tenantIdFromContext(ctx),
+        jobId: input.jobId,
+        files: input.attachments,
+      });
 
       const [result] = await db.insert(portalMaintenanceRequests).values({
         constructionJobId: input.jobId,
@@ -1525,7 +1575,7 @@ export const constructionClientsRouter = router({
         reportedByName: trimNullable(input.reportedByName),
         reportedByContact: trimNullable(input.reportedByContact),
         description: input.description,
-        photoUrls: null,
+        photoUrls: attachmentUrls.length > 0 ? attachmentUrls : null,
         urgency: input.urgency,
         status: "submitted",
         responseNotes: trimNullable(input.responseNotes),
@@ -1571,6 +1621,28 @@ export const constructionClientsRouter = router({
         .where(eq(portalMaintenanceRequests.id, input.id));
 
       return { success: true };
+    }),
+
+  addMaintenanceRequestAttachments: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      attachments: z.array(maintenanceAttachmentSchema).min(1).max(10),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const request = await requireMaintenanceRequestAccess(db, ctx, input.id);
+      const attachmentUrls = await storeMaintenanceAttachments({
+        tenantId: tenantIdFromContext(ctx),
+        jobId: request.constructionJobId,
+        files: input.attachments,
+      });
+      const existing = Array.isArray(request.photoUrls)
+        ? request.photoUrls.filter((url: unknown): url is string => typeof url === "string" && url.trim().length > 0)
+        : [];
+      await db.update(portalMaintenanceRequests)
+        .set({ photoUrls: [...existing, ...attachmentUrls] })
+        .where(eq(portalMaintenanceRequests.id, input.id));
+      return { success: true, attachments: attachmentUrls };
     }),
 
   updatePortalDefect: protectedProcedure
