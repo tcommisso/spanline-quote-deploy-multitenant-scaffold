@@ -3,6 +3,9 @@ import { trpc } from "@/lib/trpc";
 import { normalizeUserRole, type UserRole } from "@shared/const";
 
 const TRACKED_LOCATION_ROLES = new Set<UserRole>([
+  "super_admin",
+  "admin",
+  "office_user",
   "construction_user",
   "driver",
   "warehouse",

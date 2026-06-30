@@ -10,8 +10,8 @@ const TRACKING_START_HOUR_AEST = 7;
 const TRACKING_END_HOUR_AEST = 17;
 const AEST_OFFSET_HOURS = 10;
 
-/** Tracked roles — trades and construction users */
-const TRACKED_ROLES = ["construction_user", "driver", "warehouse"] as const;
+/** Tracked roles — construction team and operations users */
+const TRACKED_ROLES = ["super_admin", "admin", "office_user", "construction_user", "driver", "warehouse"] as const;
 
 /** Check if current time is within the 7am–5pm AEST tracking window */
 function isWithinTrackingWindow(): boolean {

@@ -120,7 +120,7 @@ export default function LiveTracking() {
         <div>
           <h1 className="text-2xl font-bold">Live Tracking</h1>
           <p className="text-muted-foreground text-sm">
-            Trades & Construction user locations (7am–5pm AEST)
+            Construction team and operations user locations (7am–5pm AEST)
           </p>
         </div>
         <div className="flex items-center gap-3">
