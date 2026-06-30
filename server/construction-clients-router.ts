@@ -23,6 +23,8 @@ import { storagePut } from "./storage";
 import { getTenantAppSetting } from "./tenant-settings-store";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+const SCHEDULE_TIME_ZONE = "Australia/Sydney";
+const AU_STATE_TOKENS = new Set(["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]);
 const jobInstructionCategorySchema = z.enum([
   "general",
   "inspection",
@@ -303,19 +305,189 @@ async function resolveProjectTeamRole(db: any, ctx: any, userId?: number | null,
  */
 function fyDateRange(fyStartYear: number): { from: Date; to: Date } {
   return {
-    from: new Date(Date.UTC(fyStartYear, 6, 1)),      // 1 Jul
-    to: new Date(Date.UTC(fyStartYear + 1, 6, 1)),    // 1 Jul next year (exclusive)
+    from: dateKeyStartInTimeZone(calendarDateKey(fyStartYear, 7, 1)),      // 1 Jul
+    to: dateKeyStartInTimeZone(calendarDateKey(fyStartYear + 1, 7, 1)),    // 1 Jul next year (exclusive)
   };
 }
 
+function monthDateRange(year: number, month: number): { from: Date; to: Date } {
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextMonthYear = month === 12 ? year + 1 : year;
+  return {
+    from: dateKeyStartInTimeZone(calendarDateKey(year, month, 1)),
+    to: dateKeyStartInTimeZone(calendarDateKey(nextMonthYear, nextMonth, 1)),
+  };
+}
+
+function fyStartYearForDate(value: Date): number {
+  const [year, month] = dateKeyInTimeZone(value).split("-").map(Number);
+  return month < 7 ? year - 1 : year;
+}
+
 function constructionJobDateExpr() {
-  return sql<Date>`COALESCE(${constructionJobs.actualEnd}, ${constructionJobs.actualStart}, ${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart}, ${constructionJobs.createdAt})`;
+  return sql<Date>`COALESCE(
+    ${constructionJobs.actualEnd},
+    ${constructionJobs.actualStart},
+    (
+      SELECT MIN(${constructionScheduleEvents.startTime})
+      FROM ${constructionScheduleEvents}
+      WHERE ${constructionScheduleEvents.jobId} = ${constructionJobs.id}
+        AND ${constructionScheduleEvents.status} != 'cancelled'
+    ),
+    ${constructionJobs.scheduledEnd},
+    ${constructionJobs.scheduledStart},
+    ${constructionJobs.createdAt}
+  )`;
 }
 
 function appendProjectDateRange(conditions: any[], from: Date, to: Date) {
   const jobDate = constructionJobDateExpr();
   conditions.push(sql`${jobDate} >= ${from}`);
   conditions.push(sql`${jobDate} < ${to}`);
+}
+
+function dateKeyInTimeZone(value: Date, timeZone = SCHEDULE_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return year && month && day ? `${year}-${month}-${day}` : "";
+}
+
+function addDaysToDateKey(dateKey: string, days: number) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days, 12));
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function calendarDateKey(year: number, month: number, day: number) {
+  return [
+    year,
+    String(month).padStart(2, "0"),
+    String(day).padStart(2, "0"),
+  ].join("-");
+}
+
+function timeZoneOffsetMs(value: Date, timeZone = SCHEDULE_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(value);
+  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  const localAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return localAsUtc - value.getTime();
+}
+
+function dateKeyStartInTimeZone(dateKey: string, timeZone = SCHEDULE_TIME_ZONE) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const localMidnightAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0);
+  let utc = new Date(localMidnightAsUtc);
+  for (let i = 0; i < 3; i += 1) {
+    utc = new Date(localMidnightAsUtc - timeZoneOffsetMs(utc, timeZone));
+  }
+  return utc;
+}
+
+function dateKeyRangeInTimeZone(startKey: string, days: number, timeZone = SCHEDULE_TIME_ZONE) {
+  const endKey = addDaysToDateKey(startKey, days);
+  return {
+    from: dateKeyStartInTimeZone(startKey, timeZone),
+    to: dateKeyStartInTimeZone(endKey, timeZone),
+  };
+}
+
+function eventTenantPredicate(ctx: any) {
+  const tenantId = tenantIdFromContext(ctx);
+  if (!tenantId) return ENV.tenancyMode === "multi" ? sql`1 = 0` : sql`1 = 1`;
+  if (ENV.tenancyMode === "multi") return sql`${constructionScheduleEvents.tenantId} = ${tenantId}`;
+  return sql`(${constructionScheduleEvents.tenantId} = ${tenantId} OR ${constructionScheduleEvents.tenantId} IS NULL)`;
+}
+
+function scheduleEventExists(ctx: any, extraCondition?: any) {
+  const baseCondition = sql`
+    ${constructionScheduleEvents.jobId} = ${constructionJobs.id}
+    AND ${constructionScheduleEvents.status} != 'cancelled'
+    AND ${eventTenantPredicate(ctx)}
+  `;
+  return extraCondition
+    ? sql`EXISTS (SELECT 1 FROM ${constructionScheduleEvents} WHERE ${baseCondition} AND ${extraCondition})`
+    : sql`EXISTS (SELECT 1 FROM ${constructionScheduleEvents} WHERE ${baseCondition})`;
+}
+
+function scheduleEventOverlap(from: Date, to: Date) {
+  const eventEnd = sql`COALESCE(${constructionScheduleEvents.endTime}, ${constructionScheduleEvents.startTime})`;
+  return sql`${constructionScheduleEvents.startTime} < ${to} AND ${eventEnd} >= ${from}`;
+}
+
+function legacyJobScheduleOverlap(from: Date, to: Date) {
+  const jobEnd = sql`COALESCE(${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart})`;
+  return sql`${constructionJobs.scheduledStart} IS NOT NULL AND ${constructionJobs.scheduledStart} < ${to} AND ${jobEnd} >= ${from}`;
+}
+
+function activeScheduleCondition(ctx: any) {
+  return or(
+    scheduleEventExists(ctx),
+    sql`${constructionJobs.scheduledStart} IS NOT NULL`,
+  );
+}
+
+function normalizeSuburb(value?: string | null) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function cleanSuburbLabel(value?: string | null) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function extractSuburbFromAddress(address?: string | null) {
+  const parts = String(address || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const stateIndex = parts.findIndex((part) => {
+    const token = part.toUpperCase().split(/\s+/)[0];
+    return AU_STATE_TOKENS.has(token);
+  });
+  if (stateIndex > 0) return cleanSuburbLabel(parts[stateIndex - 1]);
+
+  const postcodeIndex = parts.findIndex((part) => /^\d{4}$/.test(part));
+  if (postcodeIndex > 1) return cleanSuburbLabel(parts[postcodeIndex - 2]);
+
+  return null;
+}
+
+function buildSuburbOptions(rows: Array<{ suburb?: string | null; siteAddress?: string | null }>) {
+  const byNormalized = new Map<string, string>();
+  for (const row of rows) {
+    const candidates = [
+      cleanSuburbLabel(row.suburb),
+      extractSuburbFromAddress(row.siteAddress),
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeSuburb(candidate);
+      if (normalized && !byNormalized.has(normalized)) {
+        byNormalized.set(normalized, cleanSuburbLabel(candidate));
+      }
+    }
+  }
+  return Array.from(byNormalized.values()).sort((a, b) => a.localeCompare(b));
 }
 
 function visibleConstructionClientCondition() {
@@ -396,8 +568,7 @@ function appendApprovalStatusFilter(
 
 /** Get the current Australian FY start year. Before July → previous year. */
 function currentFyStartYear(): number {
-  const now = new Date();
-  return now.getMonth() < 6 ? now.getFullYear() - 1 : now.getFullYear();
+  return fyStartYearForDate(new Date());
 }
 
 export const constructionClientsRouter = router({
@@ -432,7 +603,7 @@ export const constructionClientsRouter = router({
     const branchConditions: any[] = [eq(branches.isActive, true)];
     appendTenantScope(branchConditions, branches.tenantId, tenantIdFromContext(ctx));
 
-    const [branchRows, leadSuburbRows, quoteSuburbRows, installers, managerRows] = await Promise.all([
+    const [branchRows, leadSuburbRows, quoteSuburbRows, siteAddressRows, installers, managerRows] = await Promise.all([
       db.select({ id: branches.id, name: branches.name })
         .from(branches)
         .where(and(...branchConditions))
@@ -457,6 +628,15 @@ export const constructionClientsRouter = router({
         ))
         .groupBy(quotes.suburb)
         .orderBy(quotes.suburb),
+      db.select({ siteAddress: constructionJobs.siteAddress })
+        .from(constructionJobs)
+        .where(and(
+          ...tenantConditions,
+          sql`${constructionJobs.siteAddress} IS NOT NULL`,
+          sql`${constructionJobs.siteAddress} != ''`,
+        ))
+        .groupBy(constructionJobs.siteAddress)
+        .orderBy(constructionJobs.siteAddress),
       db.select({
         id: constructionInstallers.id,
         name: constructionInstallers.name,
@@ -486,11 +666,7 @@ export const constructionClientsRouter = router({
       .map((row: any) => ({ id: Number(row.id), name: String(row.name || "").trim() }))
       .filter((row) => row.id > 0 && row.name);
 
-    const suburbs = Array.from(new Set(
-      [...leadSuburbRows, ...quoteSuburbRows]
-        .map((row: any) => String(row.suburb || "").trim())
-        .filter(Boolean),
-    )).sort((a, b) => a.localeCompare(b));
+    const suburbs = buildSuburbOptions([...leadSuburbRows, ...quoteSuburbRows, ...siteAddressRows] as any[]);
 
     const managerMap = new Map<string, { id: number | null; name: string }>();
     for (const row of managerRows as any[]) {
@@ -584,7 +760,7 @@ export const constructionClientsRouter = router({
         }
         conditions.push(or(
           eq(crmLeads.branchId, input.branchId),
-          eq(sql`LOWER(${constructionJobFinancials.branch})`, branch.name.toLowerCase()),
+          eq(sql`LOWER(TRIM(${constructionJobFinancials.branch}))`, branch.name.toLowerCase()),
         ));
       } else if (input?.branch) {
         conditions.push(eq(constructionJobFinancials.branch, input.branch));
@@ -597,43 +773,57 @@ export const constructionClientsRouter = router({
         appendApprovalStatusFilter(conditions, input.baStatus, overdueDays);
       }
       if (input?.suburb) {
+        const suburb = normalizeSuburb(input.suburb);
         conditions.push(or(
-          like(constructionJobs.siteAddress, `%${input.suburb}%`),
-          eq(sql`LOWER(${quotes.suburb})`, input.suburb.toLowerCase()),
-          eq(sql`LOWER(${crmLeads.suburb})`, input.suburb.toLowerCase()),
+          like(sql`LOWER(${constructionJobs.siteAddress})`, `%${suburb}%`),
+          eq(sql`LOWER(TRIM(${quotes.suburb}))`, suburb),
+          eq(sql`LOWER(TRIM(${crmLeads.suburb}))`, suburb),
         ));
       }
       if (input?.constructionManagerId != null) {
         conditions.push(eq(constructionJobFinancials.constructionManagerId, input.constructionManagerId));
       }
       if (input?.installerId != null) {
-        conditions.push(sql`EXISTS (
-          SELECT 1 FROM ${constructionAssignments}
-          WHERE ${constructionAssignments.jobId} = ${constructionJobs.id}
-            AND ${constructionAssignments.installerId} = ${input.installerId}
-        )`);
+        conditions.push(or(
+          sql`EXISTS (
+            SELECT 1 FROM ${constructionAssignments}
+            WHERE ${constructionAssignments.jobId} = ${constructionJobs.id}
+              AND ${constructionAssignments.installerId} = ${input.installerId}
+          )`,
+          scheduleEventExists(ctx, eq(constructionScheduleEvents.assignedInstallerId, input.installerId)),
+        ));
       }
       if (input?.scheduled) {
-        const now = new Date();
-        const todayStart = new Date(now);
-        todayStart.setHours(0, 0, 0, 0);
-        const tomorrowStart = new Date(todayStart);
-        tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-        const nextWeekEnd = new Date(todayStart);
-        nextWeekEnd.setDate(nextWeekEnd.getDate() + 8);
+        const todayKey = dateKeyInTimeZone(new Date());
+        const todayRange = dateKeyRangeInTimeZone(todayKey, 1);
+        const nextWeekRange = dateKeyRangeInTimeZone(todayKey, 8);
+        const eventEnd = sql`COALESCE(${constructionScheduleEvents.endTime}, ${constructionScheduleEvents.startTime})`;
+        const legacyJobEnd = sql`COALESCE(${constructionJobs.scheduledEnd}, ${constructionJobs.scheduledStart})`;
 
         if (input.scheduled === "unscheduled") {
-          conditions.push(sql`${constructionJobs.scheduledStart} IS NULL`);
+          conditions.push(sql`NOT (${scheduleEventExists(ctx)}) AND ${constructionJobs.scheduledStart} IS NULL`);
         } else if (input.scheduled === "scheduled") {
-          conditions.push(sql`${constructionJobs.scheduledStart} IS NOT NULL`);
+          conditions.push(activeScheduleCondition(ctx));
         } else if (input.scheduled === "overdue") {
-          conditions.push(sql`${constructionJobs.scheduledStart} IS NOT NULL AND ${constructionJobs.scheduledStart} < ${todayStart} AND ${constructionJobs.status} != 'completed'`);
+          conditions.push(sql`${constructionJobs.status} != 'completed' AND (${or(
+            scheduleEventExists(ctx, sql`${eventEnd} < ${todayRange.from}`),
+            sql`${constructionJobs.scheduledStart} IS NOT NULL AND ${legacyJobEnd} < ${todayRange.from}`,
+          )})`);
         } else if (input.scheduled === "today") {
-          conditions.push(sql`${constructionJobs.scheduledStart} >= ${todayStart} AND ${constructionJobs.scheduledStart} < ${tomorrowStart}`);
+          conditions.push(or(
+            scheduleEventExists(ctx, scheduleEventOverlap(todayRange.from, todayRange.to)),
+            legacyJobScheduleOverlap(todayRange.from, todayRange.to),
+          ));
         } else if (input.scheduled === "next_7_days") {
-          conditions.push(sql`${constructionJobs.scheduledStart} >= ${todayStart} AND ${constructionJobs.scheduledStart} < ${nextWeekEnd}`);
+          conditions.push(or(
+            scheduleEventExists(ctx, scheduleEventOverlap(nextWeekRange.from, nextWeekRange.to)),
+            legacyJobScheduleOverlap(nextWeekRange.from, nextWeekRange.to),
+          ));
         } else if (input.scheduled === "future") {
-          conditions.push(sql`${constructionJobs.scheduledStart} >= ${nextWeekEnd}`);
+          conditions.push(or(
+            scheduleEventExists(ctx, sql`${constructionScheduleEvents.startTime} >= ${nextWeekRange.to}`),
+            sql`${constructionJobs.scheduledStart} >= ${nextWeekRange.to}`,
+          ));
         }
       }
 
@@ -649,16 +839,13 @@ export const constructionClientsRouter = router({
         // FY 2025-26: Jul 2025 (month 7) – Jun 2026 (month 6)
         if (input?.fyStartYear != null) {
           const year = input.month >= 7 ? input.fyStartYear : input.fyStartYear + 1;
-          const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
-          const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          appendProjectDateRange(conditions, monthStart, monthEnd);
+          const range = monthDateRange(year, input.month);
+          appendProjectDateRange(conditions, range.from, range.to);
         } else {
           // No FY set — filter by month in current calendar year
-          const now = new Date();
-          const year = now.getFullYear();
-          const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
-          const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          appendProjectDateRange(conditions, monthStart, monthEnd);
+          const [year] = dateKeyInTimeZone(new Date()).split("-").map(Number);
+          const range = monthDateRange(year, input.month);
+          appendProjectDateRange(conditions, range.from, range.to);
         }
       }
 
@@ -759,6 +946,25 @@ export const constructionClientsRouter = router({
             .where(inArray(constructionAssignments.jobId, jobIds))
         : [];
 
+      const scheduleEventConditions: any[] = [
+        inArray(constructionScheduleEvents.jobId, jobIds),
+        sql`${constructionScheduleEvents.status} != 'cancelled'`,
+      ];
+      appendTenantScope(scheduleEventConditions, constructionScheduleEvents.tenantId, tenantIdFromContext(ctx));
+      const allScheduleEvents = jobIds.length > 0
+        ? await db.select({
+            jobId: constructionScheduleEvents.jobId,
+            startTime: constructionScheduleEvents.startTime,
+            endTime: constructionScheduleEvents.endTime,
+            assignedInstallerId: constructionScheduleEvents.assignedInstallerId,
+            assignedInstallerName: constructionInstallers.name,
+          })
+            .from(constructionScheduleEvents)
+            .leftJoin(constructionInstallers, and(...installerTenantConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, constructionInstallers.id))))
+            .where(and(...scheduleEventConditions))
+            .orderBy(constructionScheduleEvents.startTime)
+        : [];
+
       // Get financials for each job
       const allFinancials = jobIds.length > 0
         ? await db.select({
@@ -785,14 +991,48 @@ export const constructionClientsRouter = router({
 
       const assignmentCountByJob: Record<number, number> = {};
       const assignmentsByJob: Record<number, Array<{ installerId: number; installerName: string; role: string | null }>> = {};
+      const seenTradeKeysByJob: Record<number, Set<string>> = {};
       for (const a of allAssignments) {
-        assignmentCountByJob[a.jobId] = (assignmentCountByJob[a.jobId] || 0) + 1;
         if (!assignmentsByJob[a.jobId]) assignmentsByJob[a.jobId] = [];
+        if (!seenTradeKeysByJob[a.jobId]) seenTradeKeysByJob[a.jobId] = new Set();
+        const tradeKey = a.installerId != null ? `id:${a.installerId}` : `name:${a.installerName || "Unknown"}`;
+        seenTradeKeysByJob[a.jobId].add(tradeKey);
         assignmentsByJob[a.jobId].push({
           installerId: a.installerId,
           installerName: a.installerName || 'Unknown',
           role: a.role,
         });
+      }
+
+      const scheduleByJob: Record<number, { startTime: Date | null; endTime: Date | null; count: number }> = {};
+      for (const event of allScheduleEvents) {
+        const existing = scheduleByJob[event.jobId];
+        if (!existing) {
+          scheduleByJob[event.jobId] = {
+            startTime: event.startTime || null,
+            endTime: event.endTime || null,
+            count: 1,
+          };
+        } else {
+          existing.count += 1;
+        }
+
+        if (event.assignedInstallerId != null) {
+          if (!assignmentsByJob[event.jobId]) assignmentsByJob[event.jobId] = [];
+          if (!seenTradeKeysByJob[event.jobId]) seenTradeKeysByJob[event.jobId] = new Set();
+          const tradeKey = `id:${event.assignedInstallerId}`;
+          if (!seenTradeKeysByJob[event.jobId].has(tradeKey)) {
+            seenTradeKeysByJob[event.jobId].add(tradeKey);
+            assignmentsByJob[event.jobId].push({
+              installerId: event.assignedInstallerId,
+              installerName: event.assignedInstallerName || "Scheduled trade",
+              role: "scheduled",
+            });
+          }
+        }
+      }
+      for (const [jobId, trades] of Object.entries(assignmentsByJob)) {
+        assignmentCountByJob[Number(jobId)] = trades.length;
       }
 
       const financialsByJob: Record<number, typeof allFinancials[0]> = {};
@@ -815,6 +1055,7 @@ export const constructionClientsRouter = router({
       }
 
       const clients = jobRows.map(job => {
+        const scheduleSummary = scheduleByJob[job.id];
         const progress = progressByJob[job.id] || [];
         const completedStages = progress.filter(p => p.status === "completed").length;
         const totalStages = progress.length;
@@ -841,6 +1082,9 @@ export const constructionClientsRouter = router({
 
         return {
           ...job,
+          scheduledStart: scheduleSummary?.startTime || job.scheduledStart,
+          scheduledEnd: scheduleSummary?.endTime || job.scheduledEnd,
+          scheduleEventCount: scheduleSummary?.count || 0,
           completedStages,
           totalStages,
           currentStage,
@@ -880,15 +1124,12 @@ export const constructionClientsRouter = router({
       if (input?.month != null) {
         if (input?.fyStartYear != null) {
           const year = input.month >= 7 ? input.fyStartYear : input.fyStartYear + 1;
-          const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
-          const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          appendProjectDateRange(conditions, monthStart, monthEnd);
+          const range = monthDateRange(year, input.month);
+          appendProjectDateRange(conditions, range.from, range.to);
         } else {
-          const now = new Date();
-          const year = now.getFullYear();
-          const monthStart = new Date(Date.UTC(year, input.month - 1, 1));
-          const monthEnd = new Date(Date.UTC(year, input.month, 1));
-          appendProjectDateRange(conditions, monthStart, monthEnd);
+          const [year] = dateKeyInTimeZone(new Date()).split("-").map(Number);
+          const range = monthDateRange(year, input.month);
+          appendProjectDateRange(conditions, range.from, range.to);
         }
       }
       const where = and(...jobTenantConditions(ctx, ...conditions));
@@ -925,8 +1166,8 @@ export const constructionClientsRouter = router({
     const latest = result?.latest ? new Date(result.latest) : new Date();
 
     // Calculate the FY start year for earliest and latest
-    const earliestFy = earliest.getMonth() < 6 ? earliest.getFullYear() - 1 : earliest.getFullYear();
-    const latestFy = latest.getMonth() < 6 ? latest.getFullYear() - 1 : latest.getFullYear();
+    const earliestFy = fyStartYearForDate(earliest);
+    const latestFy = fyStartYearForDate(latest);
     const currentFy = currentFyStartYear();
 
     // Generate FY options from earliest to max(latest, current)
