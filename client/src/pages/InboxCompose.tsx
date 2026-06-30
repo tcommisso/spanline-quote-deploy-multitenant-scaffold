@@ -19,12 +19,34 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Send, MailPlus, X, Plus, Eye } from "lucide-react";
+import { ArrowLeft, Send, MailPlus, X, Plus, Eye, Mail, MessageSquare, Bell } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
-type ContactResult = { name: string; email: string; type: string };
+type ComposeChannel = "email" | "sms" | "push";
+type ContactResult = {
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  pushTarget?: string | null;
+  type: string;
+};
+type ComposeRecipient = {
+  value: string;
+  label: string;
+  name?: string;
+  email?: string | null;
+  phone?: string | null;
+  pushTarget?: string | null;
+  type?: string;
+};
+
+const CHANNEL_LABELS: Record<ComposeChannel, string> = {
+  email: "Email",
+  sms: "SMS",
+  push: "Push",
+};
 
 function useDebounce(value: string, delay: number) {
   const [debounced, setDebounced] = useState(value);
@@ -35,18 +57,55 @@ function useDebounce(value: string, delay: number) {
   return debounced;
 }
 
-/** Reusable contact search input with autocomplete dropdown */
+function contactValueForChannel(channel: ComposeChannel, contact: ContactResult) {
+  if (channel === "email") return contact.email?.trim().toLowerCase() || "";
+  if (channel === "sms") return contact.phone?.trim() || "";
+  return contact.pushTarget || "";
+}
+
+function contactLabelForChannel(channel: ComposeChannel, contact: ContactResult) {
+  if (channel === "email") return contact.email || "";
+  if (channel === "sms") return contact.phone || "";
+  return contact.name;
+}
+
+function manualRecipientForChannel(channel: ComposeChannel, rawValue: string): ComposeRecipient | null {
+  const value = rawValue.trim();
+  if (!value) return null;
+  if (channel === "email") {
+    const email = value.toLowerCase();
+    if (!email.includes("@") || !email.includes(".")) {
+      toast.error("Invalid email address");
+      return null;
+    }
+    return { value: email, label: email, email, name: email, type: "manual" };
+  }
+  if (channel === "sms") {
+    const digits = value.replace(/[^\d+]/g, "");
+    if (digits.replace(/[^\d]/g, "").length < 10) {
+      toast.error("Invalid phone number");
+      return null;
+    }
+    return { value: digits, label: digits, phone: digits, name: digits, type: "manual" };
+  }
+  toast.error("Search and select a push recipient");
+  return null;
+}
+
+/** Reusable recipient search input with autocomplete dropdown */
 function ContactSearchInput({
   label,
-  emails,
+  channel,
+  recipients,
   onAdd,
   onRemove,
-  placeholder = "Search contacts or type email...",
+  placeholder = "Search contacts...",
 }: {
   label: string;
-  emails: string[];
-  onAdd: (email: string, name?: string) => void;
-  onRemove: (email: string) => void;
+  channel: ComposeChannel;
+  recipients: ComposeRecipient[];
+  onAdd: (recipient: ComposeRecipient) => void;
+  onRemove: (value: string) => void;
   placeholder?: string;
 }) {
   const [query, setQuery] = useState("");
@@ -55,7 +114,7 @@ function ContactSearchInput({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const { data: contacts } = trpc.inbox.searchContacts.useQuery(
-    { query: debouncedQuery },
+    { query: debouncedQuery, channel },
     { enabled: debouncedQuery.length >= 2 }
   );
 
@@ -70,18 +129,13 @@ function ContactSearchInput({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  function addEmail(email: string, name?: string) {
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed) return;
-    if (emails.includes(trimmed)) {
+  function addRecipient(recipient: ComposeRecipient) {
+    if (!recipient.value) return;
+    if (recipients.some((item) => item.value === recipient.value)) {
       toast.error("Already added");
       return;
     }
-    if (!trimmed.includes("@") || !trimmed.includes(".")) {
-      toast.error("Invalid email address");
-      return;
-    }
-    onAdd(trimmed, name?.trim() || undefined);
+    onAdd(recipient);
     setQuery("");
     setShowDropdown(false);
   }
@@ -89,8 +143,9 @@ function ContactSearchInput({
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" || e.key === "," || e.key === "Tab") {
       e.preventDefault();
-      if (query.trim()) {
-        addEmail(query);
+      if (query.trim() && channel !== "push") {
+        const manual = manualRecipientForChannel(channel, query);
+        if (manual) addRecipient(manual);
       }
     }
   }
@@ -100,6 +155,9 @@ function ContactSearchInput({
     client: "bg-green-100 text-green-700",
     trade: "bg-orange-100 text-orange-700",
     supplier: "bg-purple-100 text-purple-700",
+    staff: "bg-slate-100 text-slate-700",
+    "client portal": "bg-green-100 text-green-700",
+    "trade portal": "bg-orange-100 text-orange-700",
   };
 
   return (
@@ -107,12 +165,12 @@ function ContactSearchInput({
       <Label className="w-16 text-sm text-muted-foreground shrink-0 pt-2">{label}</Label>
       <div className="flex-1 relative">
         {/* Email chips */}
-        {emails.length > 0 && (
+        {recipients.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-1.5">
-            {emails.map((email) => (
-              <Badge key={email} variant="secondary" className="text-xs gap-1 pr-1">
-                {email}
-                <button onClick={() => onRemove(email)} className="ml-0.5 hover:text-destructive">
+            {recipients.map((recipient) => (
+              <Badge key={recipient.value} variant="secondary" className="text-xs gap-1 pr-1">
+                {recipient.label}
+                <button onClick={() => onRemove(recipient.value)} className="ml-0.5 hover:text-destructive">
                   <X className="h-3 w-3" />
                 </button>
               </Badge>
@@ -136,13 +194,28 @@ function ContactSearchInput({
           <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-popover border rounded-md shadow-lg max-h-48 overflow-y-auto">
             {contacts.map((c: ContactResult, i: number) => (
               <button
-                key={`${c.email}-${i}`}
+                key={`${contactValueForChannel(channel, c) || c.name}-${i}`}
                 className="w-full text-left px-3 py-2 hover:bg-accent flex items-center justify-between gap-2 text-sm"
-                onClick={() => addEmail(c.email, c.name)}
+                onClick={() => {
+                  const value = contactValueForChannel(channel, c);
+                  const label = contactLabelForChannel(channel, c);
+                  if (!value || !label) return;
+                  addRecipient({
+                    value,
+                    label,
+                    name: c.name,
+                    email: c.email,
+                    phone: c.phone,
+                    pushTarget: c.pushTarget,
+                    type: c.type,
+                  });
+                }}
               >
                 <div className="min-w-0">
                   <span className="font-medium truncate block">{c.name}</span>
-                  <span className="text-xs text-muted-foreground truncate block">{c.email}</span>
+                  <span className="text-xs text-muted-foreground truncate block">
+                    {channel === "email" ? c.email : channel === "sms" ? c.phone : c.email || c.phone || c.pushTarget}
+                  </span>
                 </div>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${typeColors[c.type] || "bg-gray-100 text-gray-600"}`}>
                   {c.type}
@@ -160,8 +233,9 @@ export default function InboxCompose() {
   const [, setLocation] = useLocation();
   const fromAddressTouchedRef = useRef(false);
   const prefillAppliedRef = useRef(false);
-  const [toEmails, setToEmails] = useState<string[]>([]);
-  const [ccEmails, setCcEmails] = useState<string[]>([]);
+  const [sendChannel, setSendChannel] = useState<ComposeChannel>("email");
+  const [recipients, setRecipients] = useState<ComposeRecipient[]>([]);
+  const [ccRecipients, setCcRecipients] = useState<ComposeRecipient[]>([]);
   const [recipientNamesByEmail, setRecipientNamesByEmail] = useState<Record<string, string>>({});
   const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState("");
@@ -189,11 +263,11 @@ export default function InboxCompose() {
     return templates.filter((template) => (String(template.category || "General").trim() || "General") === emailTemplateCategory);
   }, [emailTemplates, emailTemplateCategory]);
   const composeMut = trpc.inbox.compose.useMutation({
-    onSuccess: () => {
-      toast.success("Email sent");
+    onSuccess: (result: any) => {
+      toast.success(`${CHANNEL_LABELS[(result?.channel || sendChannel) as ComposeChannel] || "Message"} sent`);
       setLocation("/inbox");
     },
-    onError: (err) => toast.error(`Failed to send email: ${err.message}`),
+    onError: (err) => toast.error(`Failed to send message: ${err.message}`),
   });
 
   useEffect(() => {
@@ -212,7 +286,10 @@ export default function InboxCompose() {
     const subjectParam = params.get("subject")?.trim();
     const bodyParam = params.get("body")?.trim();
     if (to) {
-      setToEmails((current) => current.includes(to) ? current : [...current, to]);
+      setRecipients((current) => current.some((recipient) => recipient.value === to) ? current : [
+        ...current,
+        { value: to, label: to, email: to, name: name || to, type: "manual" },
+      ]);
       if (name) {
         setRecipientNamesByEmail((current) => ({ ...current, [to]: name }));
       }
@@ -225,45 +302,71 @@ export default function InboxCompose() {
     }
   }, []);
 
+  function handleChannelChange(value: ComposeChannel) {
+    setSendChannel(value);
+    setRecipients([]);
+    setCcRecipients([]);
+    setShowCc(false);
+    if (value !== "email") {
+      setIncludeSignature(false);
+      setIncludeRateUs(false);
+    } else {
+      setIncludeSignature(true);
+    }
+  }
+
   function handleSend() {
-    if (toEmails.length === 0) {
+    if (recipients.length === 0) {
       toast.error("Please add at least one recipient");
       return;
     }
-    if (!subject.trim()) {
+    if (sendChannel !== "sms" && !subject.trim()) {
       toast.error("Please enter a subject");
       return;
     }
+    if (!body.trim()) {
+      toast.error("Please enter a message");
+      return;
+    }
+    const primary = recipients[0];
     composeMut.mutate({
-      toAddress: toEmails[0],
-      ccAddresses: [...toEmails.slice(1), ...ccEmails].length > 0 ? [...toEmails.slice(1), ...ccEmails] : undefined,
+      sendChannel,
+      toAddress: sendChannel === "email" ? primary.email || primary.value : undefined,
+      toPhone: sendChannel === "sms" ? primary.phone || primary.value : undefined,
+      toPushTarget: sendChannel === "push" ? primary.pushTarget || primary.value : undefined,
+      ccAddresses: sendChannel === "email"
+        ? [...recipients.slice(1), ...ccRecipients]
+          .map((recipient) => recipient.email || recipient.value)
+          .filter((value): value is string => Boolean(value))
+        : undefined,
       subject: subject.trim(),
       htmlBody: messageBodyToHtml(body),
       textBody: messageBodyToText(body),
-      includeSignature,
-      includeRateUs,
+      includeSignature: sendChannel === "email" ? includeSignature : false,
+      includeRateUs: sendChannel === "email" ? includeRateUs : false,
       fromAddressId: fromAddressId !== "default" ? parseInt(fromAddressId) : undefined,
     });
   }
 
-  function addRecipient(email: string, name?: string) {
-    setToEmails((prev) => [...prev, email]);
-    if (name) {
-      setRecipientNamesByEmail((prev) => ({ ...prev, [email]: name }));
+  function addRecipient(recipient: ComposeRecipient) {
+    setRecipients((prev) => [...prev, recipient]);
+    if (recipient.email && recipient.name) {
+      setRecipientNamesByEmail((prev) => ({ ...prev, [recipient.email!.toLowerCase()]: recipient.name! }));
     }
   }
 
-  function removeRecipient(email: string) {
-    setToEmails((prev) => prev.filter((item) => item !== email));
+  function removeRecipient(value: string) {
+    const removed = recipients.find((recipient) => recipient.value === value);
+    setRecipients((prev) => prev.filter((item) => item.value !== value));
     setRecipientNamesByEmail((prev) => {
       const next = { ...prev };
-      delete next[email];
+      if (removed?.email) delete next[removed.email.toLowerCase()];
       return next;
     });
   }
 
   function applyTemplateVariables(value: string) {
-    const primaryEmail = toEmails[0] || "";
+    const primaryEmail = recipients[0]?.email || "";
     const clientName = recipientNamesByEmail[primaryEmail] || "";
     return renderTemplateVariables(value, {
       ticketSubject: subject,
@@ -301,14 +404,34 @@ export default function InboxCompose() {
         </Button>
         <div className="flex items-center gap-2">
           <MailPlus className="h-5 w-5 text-primary" />
-          <h1 className="text-xl font-bold">Compose Email</h1>
+          <h1 className="text-xl font-bold">Compose Message</h1>
         </div>
       </div>
 
       <Card>
         <CardContent className="p-4 space-y-4">
+          <div className="flex items-center gap-3">
+            <Label className="w-16 text-sm text-muted-foreground shrink-0">Channel</Label>
+            <Select value={sendChannel} onValueChange={(value) => handleChannelChange(value as ComposeChannel)}>
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder="Select channel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="email">
+                  <span className="inline-flex items-center gap-2"><Mail className="h-3.5 w-3.5" /> Email</span>
+                </SelectItem>
+                <SelectItem value="sms">
+                  <span className="inline-flex items-center gap-2"><MessageSquare className="h-3.5 w-3.5" /> SMS</span>
+                </SelectItem>
+                <SelectItem value="push">
+                  <span className="inline-flex items-center gap-2"><Bell className="h-3.5 w-3.5" /> Push</span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* From */}
-          {addresses && addresses.length > 0 && (
+          {sendChannel === "email" && addresses && addresses.length > 0 && (
             <div className="flex items-center gap-3">
               <Label className="w-16 text-sm text-muted-foreground shrink-0">From</Label>
               <Select value={fromAddressId} onValueChange={(value) => { fromAddressTouchedRef.current = true; setFromAddressId(value); }}>
@@ -330,14 +453,21 @@ export default function InboxCompose() {
           {/* To — with contact search */}
           <ContactSearchInput
             label="To"
-            emails={toEmails}
+            channel={sendChannel}
+            recipients={recipients}
             onAdd={addRecipient}
             onRemove={removeRecipient}
-            placeholder="Search leads, clients, trades or type email..."
+            placeholder={
+              sendChannel === "email"
+                ? "Search leads, clients, trades or type email..."
+                : sendChannel === "sms"
+                ? "Search contacts or type phone number..."
+                : "Search staff, client portal, or trade portal..."
+            }
           />
 
           {/* CC toggle + field */}
-          {!showCc ? (
+          {sendChannel === "email" && (!showCc ? (
             <div className="flex items-center gap-3">
               <div className="w-16" />
               <button
@@ -350,22 +480,25 @@ export default function InboxCompose() {
           ) : (
             <ContactSearchInput
               label="CC"
-              emails={ccEmails}
-              onAdd={(email) => setCcEmails((prev) => [...prev, email])}
-              onRemove={(email) => setCcEmails((prev) => prev.filter((e) => e !== email))}
+              channel="email"
+              recipients={ccRecipients}
+              onAdd={(recipient) => setCcRecipients((prev) => [...prev, recipient])}
+              onRemove={(value) => setCcRecipients((prev) => prev.filter((recipient) => recipient.value !== value))}
               placeholder="Search contacts or type email..."
             />
-          )}
+          ))}
 
           {/* Subject */}
-          <div className="flex items-center gap-3">
-            <Label className="w-16 text-sm text-muted-foreground shrink-0">Subject</Label>
-            <Input
-              placeholder="Email subject"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-            />
-          </div>
+          {sendChannel !== "sms" && (
+            <div className="flex items-center gap-3">
+              <Label className="w-16 text-sm text-muted-foreground shrink-0">{sendChannel === "push" ? "Title" : "Subject"}</Label>
+              <Input
+                placeholder={sendChannel === "push" ? "Push notification title" : "Email subject"}
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+              />
+            </div>
+          )}
 
           {/* Body */}
           {replyTemplates.length > 0 && (
@@ -419,31 +552,35 @@ export default function InboxCompose() {
           )}
 
           <Textarea
-            placeholder="Write your message..."
+            placeholder={sendChannel === "sms" ? "Write your SMS..." : "Write your message..."}
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            className="min-h-[250px]"
+            className={sendChannel === "sms" ? "min-h-[160px]" : "min-h-[250px]"}
           />
 
           {/* Options */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t">
             <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="compose-sig"
-                  checked={includeSignature}
-                  onCheckedChange={setIncludeSignature}
-                />
-                <Label htmlFor="compose-sig" className="text-sm">Include Signature</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="compose-rateus"
-                  checked={includeRateUs}
-                  onCheckedChange={setIncludeRateUs}
-                />
-                <Label htmlFor="compose-rateus" className="text-sm">Include Rate Us</Label>
-              </div>
+              {sendChannel === "email" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="compose-sig"
+                      checked={includeSignature}
+                      onCheckedChange={setIncludeSignature}
+                    />
+                    <Label htmlFor="compose-sig" className="text-sm">Include Signature</Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="compose-rateus"
+                      checked={includeRateUs}
+                      onCheckedChange={setIncludeRateUs}
+                    />
+                    <Label htmlFor="compose-rateus" className="text-sm">Include Rate Us</Label>
+                  </div>
+                </>
+              )}
             </div>
             <Button onClick={handleSend} disabled={composeMut.isPending}>
               {composeMut.isPending ? "Sending..." : "Send"}
@@ -452,7 +589,7 @@ export default function InboxCompose() {
           </div>
 
           {/* Signature Preview */}
-          {includeSignature && (
+          {sendChannel === "email" && includeSignature && (
             <div className="pt-3 border-t">
               {defaultSig ? (
                 <>
@@ -468,24 +605,37 @@ export default function InboxCompose() {
             </div>
           )}
 
-          {/* Full Email Preview Dialog */}
+          {/* Full Message Preview Dialog */}
           <div className="pt-2">
             <Dialog>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="w-full">
-                  <Eye className="h-4 w-4 mr-2" /> Preview Email
+                  <Eye className="h-4 w-4 mr-2" /> Preview {CHANNEL_LABELS[sendChannel]}
                 </Button>
               </DialogTrigger>
               <DialogContent className="max-w-[700px] max-h-[80vh] overflow-y-auto">
                 <DialogHeader>
-                  <DialogTitle>Email Preview</DialogTitle>
+                  <DialogTitle>{CHANNEL_LABELS[sendChannel]} Preview</DialogTitle>
                 </DialogHeader>
                 <div className="border rounded-lg p-6 bg-white text-black">
                   {/* Email header */}
                   <div className="border-b pb-3 mb-4 space-y-1">
-                    <p className="text-sm"><span className="font-medium text-muted-foreground">To:</span> {toEmails.join(", ") || "(no recipients)"}</p>
-                    {ccEmails.length > 0 && <p className="text-sm"><span className="font-medium text-muted-foreground">Cc:</span> {ccEmails.join(", ")}</p>}
-                    <p className="text-sm"><span className="font-medium text-muted-foreground">Subject:</span> {subject || "(no subject)"}</p>
+                    <p className="text-sm">
+                      <span className="font-medium text-muted-foreground">To:</span>{" "}
+                      {recipients.map((recipient) => recipient.label).join(", ") || "(no recipients)"}
+                    </p>
+                    {sendChannel === "email" && ccRecipients.length > 0 && (
+                      <p className="text-sm">
+                        <span className="font-medium text-muted-foreground">Cc:</span>{" "}
+                        {ccRecipients.map((recipient) => recipient.label).join(", ")}
+                      </p>
+                    )}
+                    {sendChannel !== "sms" && (
+                      <p className="text-sm">
+                        <span className="font-medium text-muted-foreground">{sendChannel === "push" ? "Title:" : "Subject:"}</span>{" "}
+                        {subject || "(none)"}
+                      </p>
+                    )}
                   </div>
                   {/* Email body */}
                   {body ? (
@@ -499,7 +649,7 @@ export default function InboxCompose() {
                     </div>
                   )}
                   {/* Signature */}
-                  {includeSignature && defaultSig && (
+                  {sendChannel === "email" && includeSignature && defaultSig && (
                     <div className="mt-6 pt-4 border-t">
                       <div dangerouslySetInnerHTML={{ __html: defaultSig.htmlContent }} />
                     </div>

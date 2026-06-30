@@ -11,11 +11,22 @@ import { sendNotificationEmail } from "./email";
 import { sendUnifiedEmail } from "./email/send";
 import { sendTaskAssignmentNotification } from "./task-notifications";
 import { notifyOwner } from "./_core/notification";
+import { sendPushToPortalUser, sendPushToUser } from "./push";
 import { getDb } from "./db";
-import { crmLeads, constructionInstallers, suppliers } from "../drizzle/schema";
+import {
+  crmLeads,
+  constructionInstallers,
+  portalAccess,
+  smsMessages,
+  suppliers,
+  tenantMemberships,
+  tradePortalAccess,
+  users,
+} from "../drizzle/schema";
 import { and, eq, like, or, sql } from "drizzle-orm";
 import { getTenantEmailConfig } from "./tenant-integrations";
 import { appendInboxThreadMarkerHtml } from "./inbox-threading";
+import * as vocphone from "./vocphone";
 
 const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
 const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "waiting_internal", "customer_replied", "resolved", "closed", "spam"]);
@@ -23,6 +34,7 @@ const inboxTicketPrioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const inboxTicketChannelSchema = z.enum(["email", "phone", "web", "portal", "manual"]);
 const inboxTicketSlaStateSchema = z.enum(["breached", "warning", "due", "none"]);
 const inboxQueueSchema = z.enum(["sales", "construction", "approvals", "admin", "manufacturing", "support"]);
+const inboxComposeSendChannelSchema = z.enum(["email", "sms", "push"]);
 const SLA_HOUR_LIMITS = {
   firstResponse: 720,
   nextResponse: 720,
@@ -45,6 +57,31 @@ const ROLE_COMPOSE_LOCAL_PARTS: Record<string, string> = {
 
 function getLocalPart(address: string | null | undefined) {
   return String(address || "").split("@")[0]?.toLowerCase().trim() || "";
+}
+
+function normaliseAuPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  let cleaned = phone.replace(/[^\d+]/g, "");
+  if (cleaned.startsWith("+")) cleaned = cleaned.slice(1);
+  if (cleaned.startsWith("0")) cleaned = `61${cleaned.slice(1)}`;
+  if (cleaned.length < 10) return null;
+  return cleaned;
+}
+
+function textToSimpleHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\n/g, "<br/>");
+}
+
+function parsePushTarget(value: string | null | undefined) {
+  const [kind, rawId] = String(value || "").split(":");
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  if (kind !== "user" && kind !== "client" && kind !== "trade") return null;
+  return { kind, id } as const;
 }
 
 function findInboxAddressBySetting(addresses: InboxAddressOption[], settingValue: string | null | undefined) {
@@ -604,22 +641,36 @@ export const inboxRouter = router({
 
   // ─── Contact Search (for recipient autocomplete) ────────────────────────────
   searchContacts: protectedProcedure
-    .input(z.object({ query: z.string().min(1).max(100) }))
+    .input(z.object({
+      query: z.string().min(1).max(100),
+      channel: inboxComposeSendChannelSchema.optional(),
+    }))
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
       const q = `%${input.query}%`;
-      const results: Array<{ name: string; email: string; type: string }> = [];
+      const channel = input.channel || "email";
+      const results: Array<{
+        name: string;
+        type: string;
+        email?: string | null;
+        phone?: string | null;
+        pushTarget?: string | null;
+      }> = [];
+
       // Search CRM Leads
       const leads = await db.select({
+        id: crmLeads.id,
         name: sql<string>`CONCAT(COALESCE(${crmLeads.contactFirstName}, ''), ' ', COALESCE(${crmLeads.contactLastName}, ''))`,
         email: crmLeads.contactEmail,
+        phone: crmLeads.contactPhone,
         company: crmLeads.company,
       }).from(crmLeads).where(
         and(
           eq(crmLeads.tenantId, ctx.tenant!.id),
           or(
             like(crmLeads.contactEmail, q),
+            like(crmLeads.contactPhone, q),
             like(crmLeads.contactFirstName, q),
             like(crmLeads.contactLastName, q),
             like(crmLeads.company, q)
@@ -627,47 +678,148 @@ export const inboxRouter = router({
         )
       ).limit(10);
       for (const l of leads) {
-        if (l.email) results.push({ name: (l.name || "").trim() || l.company || "Lead", email: l.email, type: "lead" });
+        const name = (l.name || "").trim() || l.company || "Lead";
+        if (channel === "email" && l.email) results.push({ name, email: l.email, phone: l.phone, type: "lead" });
+        if (channel === "sms" && l.phone) results.push({ name, email: l.email, phone: l.phone, type: "lead" });
       }
+
       // Search Trades (constructionInstallers)
       const trades = await db.select({
+        id: constructionInstallers.id,
         name: constructionInstallers.name,
         email: constructionInstallers.email,
+        phone: constructionInstallers.phone,
       }).from(constructionInstallers).where(
         and(
           eq(constructionInstallers.tenantId, ctx.tenant!.id),
           or(
             like(constructionInstallers.email, q),
+            like(constructionInstallers.phone, q),
             like(constructionInstallers.name, q)
           )
         )
       ).limit(10);
       for (const t of trades) {
-        if (t.email) results.push({ name: t.name, email: t.email, type: "trade" });
+        if (channel === "email" && t.email) results.push({ name: t.name, email: t.email, phone: t.phone, type: "trade" });
+        if (channel === "sms" && t.phone) results.push({ name: t.name, email: t.email, phone: t.phone, type: "trade" });
       }
+
       // Search Suppliers
       const supps = await db.select({
+        id: suppliers.id,
         name: suppliers.name,
         contactName: suppliers.contactName,
         email: suppliers.email,
+        phone: suppliers.phone,
       }).from(suppliers).where(
         and(
           eq(suppliers.tenantId, ctx.tenant!.id),
           or(
             like(suppliers.email, q),
+            like(suppliers.phone, q),
             like(suppliers.name, q),
             like(suppliers.contactName, q)
           )
         )
       ).limit(10);
       for (const s of supps) {
-        if (s.email) results.push({ name: s.contactName || s.name, email: s.email, type: "supplier" });
+        const name = s.contactName || s.name;
+        if (channel === "email" && s.email) results.push({ name, email: s.email, phone: s.phone, type: "supplier" });
+        if (channel === "sms" && s.phone) results.push({ name, email: s.email, phone: s.phone, type: "supplier" });
       }
-      // Deduplicate by email
+
+      if (channel === "push") {
+        const staff = await db.select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+        })
+          .from(tenantMemberships)
+          .innerJoin(users, eq(users.id, tenantMemberships.userId))
+          .where(and(
+            eq(tenantMemberships.tenantId, ctx.tenant!.id),
+            or(
+              like(users.name, q),
+              like(users.email, q),
+            ),
+          ))
+          .limit(10);
+        for (const user of staff) {
+          results.push({
+            name: user.name || user.email || `User #${user.id}`,
+            email: user.email,
+            pushTarget: `user:${user.id}`,
+            type: "staff",
+          });
+        }
+
+        const clientPortals = await db.select({
+          id: portalAccess.id,
+          name: portalAccess.clientName,
+          email: portalAccess.clientEmail,
+          phone: portalAccess.clientPhone,
+        })
+          .from(portalAccess)
+          .where(and(
+            eq(portalAccess.tenantId, ctx.tenant!.id),
+            eq(portalAccess.isActive, true),
+            or(
+              like(portalAccess.clientName, q),
+              like(portalAccess.clientEmail, q),
+              like(portalAccess.clientPhone, q),
+            ),
+          ))
+          .limit(10);
+        for (const client of clientPortals) {
+          results.push({
+            name: client.name || client.email || `Client portal #${client.id}`,
+            email: client.email,
+            phone: client.phone,
+            pushTarget: `client:${client.id}`,
+            type: "client portal",
+          });
+        }
+
+        const tradePortals = await db.select({
+          id: tradePortalAccess.id,
+          email: tradePortalAccess.email,
+          installerName: constructionInstallers.name,
+          installerPhone: constructionInstallers.phone,
+        })
+          .from(tradePortalAccess)
+          .innerJoin(constructionInstallers, eq(constructionInstallers.id, tradePortalAccess.installerId))
+          .where(and(
+            eq(tradePortalAccess.tenantId, ctx.tenant!.id),
+            eq(tradePortalAccess.isActive, true),
+            or(
+              like(tradePortalAccess.email, q),
+              like(constructionInstallers.name, q),
+              like(constructionInstallers.phone, q),
+            ),
+          ))
+          .limit(10);
+        for (const trade of tradePortals) {
+          results.push({
+            name: trade.installerName || trade.email || `Trade portal #${trade.id}`,
+            email: trade.email,
+            phone: trade.installerPhone,
+            pushTarget: `trade:${trade.id}`,
+            type: "trade portal",
+          });
+        }
+      }
+
+      // Deduplicate by active channel value.
       const seen = new Set<string>();
       return results.filter(r => {
-        if (seen.has(r.email.toLowerCase())) return false;
-        seen.add(r.email.toLowerCase());
+        const key = channel === "email"
+          ? r.email?.toLowerCase()
+          : channel === "sms"
+          ? normaliseAuPhone(r.phone)
+          : r.pushTarget;
+        if (!key) return false;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return true;
       }).slice(0, 20);
     }),
@@ -809,9 +961,12 @@ export const inboxRouter = router({
 
   compose: protectedProcedure
     .input(z.object({
-      toAddress: z.string().email(),
+      sendChannel: inboxComposeSendChannelSchema.optional(),
+      toAddress: z.string().email().optional(),
+      toPhone: z.string().optional(),
+      toPushTarget: z.string().optional(),
       ccAddresses: z.array(z.string().email()).optional(),
-      subject: z.string(),
+      subject: z.string().optional(),
       htmlBody: z.string(),
       textBody: z.string().optional(),
       includeSignature: z.boolean().optional(),
@@ -822,11 +977,35 @@ export const inboxRouter = router({
       fromAddressId: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
+      const sendChannel = input.sendChannel || "email";
       let fullHtml = input.htmlBody;
       const tenantId = ctx.tenant!.id;
       const user = ctx.user!;
+      const userName = user.name || "Altaspan Team";
+      const messageText = input.textBody || String(input.htmlBody || "").replace(/<[^>]+>/g, "").trim();
+      const subject = input.subject?.trim() || "";
 
-      if (input.includeSignature) {
+      if (!messageText) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Message body is required" });
+      }
+
+      if (sendChannel === "email" && !input.toAddress) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Email recipient is required" });
+      }
+      if (sendChannel === "email" && !subject) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Email subject is required" });
+      }
+      if (sendChannel === "sms" && !input.toPhone) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SMS recipient is required" });
+      }
+      if (sendChannel === "push" && !input.toPushTarget) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Push recipient is required" });
+      }
+      if (sendChannel === "push" && !subject) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Push notification title is required" });
+      }
+
+      if (sendChannel === "email" && input.includeSignature) {
         let signature: any = null;
         if (input.signatureId) {
           const sigs = await inboxDb.getUserSignatures(user.id, tenantId);
@@ -841,7 +1020,7 @@ export const inboxRouter = router({
 
       // Rate Us placeholder - will be replaced with actual content before sending
       let includeRateUsInEmail = false;
-      if (input.includeRateUs) {
+      if (sendChannel === "email" && input.includeRateUs) {
         const rateUsEnabled = await inboxDb.getSetting("rate_us_enabled", tenantId);
         if (rateUsEnabled === "true") {
           includeRateUsInEmail = true;
@@ -849,7 +1028,6 @@ export const inboxRouter = router({
       }
 
       const fromDomain = await getTenantSenderDomain(tenantId);
-      const userName = user.name || "Altaspan Team";
       // For compose, use the selected from address, configured user default, role default, or fallback.
       let composeFromEmail = `onboarding@${fromDomain}`;
       const addresses = await inboxDb.listInboxAddresses(true, tenantId);
@@ -860,9 +1038,155 @@ export const inboxRouter = router({
         const resolved = await resolveComposeFromAddress(user, tenantId, addresses);
         if (resolved.address) composeFromEmail = resolved.address.address;
       }
+
+      if (sendChannel === "sms") {
+        const recipient = normaliseAuPhone(input.toPhone);
+        if (!recipient) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "SMS recipient phone number is invalid" });
+        }
+        const smsNumbers = await vocphone.getSmsNumbers(tenantId);
+        const senderNumber = normaliseAuPhone(smsNumbers.list?.[0]?.number) || normaliseAuPhone(process.env.VOCPHONE_SMS_SENDER) || "61480855750";
+        const sendResult = await vocphone.sendSms({
+          tenantId,
+          recipient,
+          sender: senderNumber,
+          body: messageText,
+        });
+        const vocphoneMessageId = (sendResult as any)?.id ? String((sendResult as any).id) : null;
+        await (await getDb())!.insert(smsMessages).values({
+          tenantId,
+          leadId: input.matchedLeadId || null,
+          direction: "outbound",
+          fromNumber: senderNumber,
+          toNumber: recipient,
+          body: messageText,
+          templateId: null,
+          status: "sent",
+          vocphoneMessageId,
+          sentBy: user.id,
+        });
+
+        const threadId = `thread-${crypto.randomUUID()}`;
+        const { id: msgId } = await inboxDb.createInboxMessage({
+          tenantId,
+          threadId,
+          direction: "outbound",
+          resendEmailId: null,
+          graphConversationId: null,
+          fromAddress: senderNumber,
+          fromName: userName,
+          toAddresses: JSON.stringify([recipient]),
+          receivedByAddress: senderNumber,
+          subject: subject || "SMS message",
+          htmlBody: textToSimpleHtml(messageText),
+          textBody: messageText,
+          matchedJobId: input.matchedJobId || null,
+          matchedLeadId: input.matchedLeadId || null,
+          matchedClientEmail: null,
+          status: "open",
+          isRead: true,
+          isStarred: false,
+          portalVisible: false,
+          autoReplySent: false,
+          assignedToId: user.id,
+          assignedToName: userName,
+          assignedAt: new Date(),
+          createdBy: user.id,
+          createdByName: userName,
+        });
+        await inboxDb.updateTicketMetadata(threadId, { channel: "phone" }, tenantId);
+        return { success: true, messageId: msgId, provider: "vocphone", channel: "sms" };
+      }
+
+      if (sendChannel === "push") {
+        const target = parsePushTarget(input.toPushTarget);
+        if (!target) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Push recipient is invalid" });
+        }
+
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+        let recipientLabel = input.toPushTarget!;
+        if (target.kind === "user") {
+          const [recipient] = await db.select({ id: users.id, name: users.name, email: users.email })
+            .from(tenantMemberships)
+            .innerJoin(users, eq(users.id, tenantMemberships.userId))
+            .where(and(eq(tenantMemberships.tenantId, tenantId), eq(users.id, target.id)))
+            .limit(1);
+          if (!recipient) throw new TRPCError({ code: "NOT_FOUND", message: "Push user not found" });
+          recipientLabel = recipient.name || recipient.email || `User #${recipient.id}`;
+          await sendPushToUser(target.id, {
+            title: subject,
+            body: messageText,
+            url: "/inbox",
+            tag: `inbox-compose-${Date.now()}`,
+          });
+        } else if (target.kind === "client") {
+          const [recipient] = await db.select({ id: portalAccess.id, name: portalAccess.clientName, email: portalAccess.clientEmail })
+            .from(portalAccess)
+            .where(and(eq(portalAccess.tenantId, tenantId), eq(portalAccess.id, target.id), eq(portalAccess.isActive, true)))
+            .limit(1);
+          if (!recipient) throw new TRPCError({ code: "NOT_FOUND", message: "Client portal recipient not found" });
+          recipientLabel = recipient.name || recipient.email || `Client portal #${recipient.id}`;
+          await sendPushToPortalUser("client", target.id, {
+            title: subject,
+            body: messageText,
+            url: "/portal",
+            tag: `inbox-compose-${Date.now()}`,
+          });
+        } else {
+          const [recipient] = await db.select({ id: tradePortalAccess.id, email: tradePortalAccess.email, installerName: constructionInstallers.name })
+            .from(tradePortalAccess)
+            .innerJoin(constructionInstallers, eq(constructionInstallers.id, tradePortalAccess.installerId))
+            .where(and(eq(tradePortalAccess.tenantId, tenantId), eq(tradePortalAccess.id, target.id), eq(tradePortalAccess.isActive, true)))
+            .limit(1);
+          if (!recipient) throw new TRPCError({ code: "NOT_FOUND", message: "Trade portal recipient not found" });
+          recipientLabel = recipient.installerName || recipient.email || `Trade portal #${recipient.id}`;
+          await sendPushToPortalUser("trade", target.id, {
+            title: subject,
+            body: messageText,
+            url: "/trade-portal",
+            tag: `inbox-compose-${Date.now()}`,
+          });
+        }
+
+        const threadId = `thread-${crypto.randomUUID()}`;
+        const { id: msgId } = await inboxDb.createInboxMessage({
+          tenantId,
+          threadId,
+          direction: "outbound",
+          resendEmailId: null,
+          graphConversationId: null,
+          fromAddress: user.email || `user:${user.id}`,
+          fromName: userName,
+          toAddresses: JSON.stringify([recipientLabel]),
+          receivedByAddress: null,
+          subject,
+          htmlBody: textToSimpleHtml(messageText),
+          textBody: messageText,
+          matchedJobId: input.matchedJobId || null,
+          matchedLeadId: input.matchedLeadId || null,
+          matchedClientEmail: null,
+          status: "open",
+          isRead: true,
+          isStarred: false,
+          portalVisible: false,
+          autoReplySent: false,
+          assignedToId: user.id,
+          assignedToName: userName,
+          assignedAt: new Date(),
+          createdBy: user.id,
+          createdByName: userName,
+        });
+        await inboxDb.updateTicketMetadata(threadId, { channel: "manual" }, tenantId);
+        return { success: true, messageId: msgId, provider: "webpush", channel: "push" };
+      }
+
       // First, create the DB record to get a message ID for the Rate Us link
       const threadId = `thread-${crypto.randomUUID()}`;
       const fromAddress = `${userName} <${composeFromEmail}>`;
+      const toAddress = input.toAddress!;
+      const ccAddresses = input.ccAddresses && input.ccAddresses.length > 0 ? input.ccAddresses : undefined;
       const { id: msgId } = await inboxDb.createInboxMessage({
         tenantId,
         threadId,
@@ -871,9 +1195,9 @@ export const inboxRouter = router({
         graphConversationId: null,
         fromAddress,
         fromName: userName,
-        toAddresses: JSON.stringify([input.toAddress, ...(input.ccAddresses || [])]),
+        toAddresses: JSON.stringify([toAddress, ...(ccAddresses || [])]),
         receivedByAddress: composeFromEmail,
-        subject: input.subject,
+        subject,
         htmlBody: fullHtml,
         textBody: input.textBody || null,
         matchedJobId: input.matchedJobId || null,
@@ -903,9 +1227,9 @@ export const inboxRouter = router({
       const sendResult = await sendUnifiedEmail({
         fromAddress: composeFromEmail,
         fromName: userName,
-        to: [input.toAddress],
-        cc: input.ccAddresses && input.ccAddresses.length > 0 ? input.ccAddresses : undefined,
-        subject: input.subject,
+        to: [toAddress],
+        cc: ccAddresses,
+        subject,
         htmlBody: fullHtml,
         textBody: input.textBody || undefined,
         tenantId,
