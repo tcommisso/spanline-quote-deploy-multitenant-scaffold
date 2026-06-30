@@ -1506,8 +1506,30 @@ export const tradePortalRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
+      const conditions = tradeJobConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, installerId));
 
-      let query = db
+      if (input?.startDate && input?.endDate) {
+        const rangeStart = new Date(input.startDate);
+        const rangeEnd = new Date(input.endDate);
+        conditions.push(and(
+          lte(constructionScheduleEvents.startTime, rangeEnd),
+          or(
+            gte(constructionScheduleEvents.endTime, rangeStart),
+            and(isNull(constructionScheduleEvents.endTime), gte(constructionScheduleEvents.startTime, rangeStart)),
+          )!,
+        ));
+      } else {
+        if (input?.startDate) {
+          const rangeStart = new Date(input.startDate);
+          conditions.push(or(
+            gte(constructionScheduleEvents.startTime, rangeStart),
+            gte(constructionScheduleEvents.endTime, rangeStart),
+          )!);
+        }
+        if (input?.endDate) conditions.push(lte(constructionScheduleEvents.startTime, new Date(input.endDate)));
+      }
+
+      return db
         .select({
           id: constructionScheduleEvents.id,
           title: constructionScheduleEvents.title,
@@ -1524,20 +1546,8 @@ export const tradePortalRouter = router({
         })
         .from(constructionScheduleEvents)
         .innerJoin(constructionJobs, eq(constructionScheduleEvents.jobId, constructionJobs.id))
-        .where(and(...tradeJobConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, installerId))))
-        .orderBy(asc(constructionScheduleEvents.startTime))
-        .$dynamic();
-
-      const results = await query;
-
-      // Filter by date range if provided
-      if (input?.startDate || input?.endDate) {
-        const start = input.startDate ? new Date(input.startDate) : new Date(0);
-        const end = input.endDate ? new Date(input.endDate) : new Date("2099-12-31");
-        return results.filter(e => e.startTime >= start && e.startTime <= end);
-      }
-
-      return results;
+        .where(and(...conditions))
+        .orderBy(asc(constructionScheduleEvents.startTime));
     }),
 
   // ─── Availabilities ─────────────────────────────────────────────────────────

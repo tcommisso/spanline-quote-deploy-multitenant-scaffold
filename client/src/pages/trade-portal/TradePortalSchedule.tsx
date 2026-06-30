@@ -49,6 +49,78 @@ function isSameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+function startOfDay(date: Date) {
+  const value = new Date(date);
+  value.setHours(0, 0, 0, 0);
+  return value;
+}
+
+function endOfDay(date: Date) {
+  const value = new Date(date);
+  value.setHours(23, 59, 59, 999);
+  return value;
+}
+
+function eventEndOrStart(event: { startTime: Date | string; endTime?: Date | string | null }) {
+  return event.endTime ? new Date(event.endTime) : new Date(event.startTime);
+}
+
+function eventOccursOnDate(event: { startTime: Date | string; endTime?: Date | string | null }, date: Date) {
+  const eventStart = new Date(event.startTime);
+  const eventEnd = eventEndOrStart(event);
+  return eventStart <= endOfDay(date) && eventEnd >= startOfDay(date);
+}
+
+function isMultiDayEvent(event: { startTime: Date | string; endTime?: Date | string | null }) {
+  if (!event.endTime) return false;
+  return !isSameDay(new Date(event.startTime), new Date(event.endTime));
+}
+
+function eventSortTimeForDate(event: { startTime: Date | string; endTime?: Date | string | null }, date: Date) {
+  const eventStart = new Date(event.startTime);
+  return isSameDay(eventStart, date) ? eventStart.getTime() : startOfDay(date).getTime();
+}
+
+function selectedDateForEvent(event: { startTime: Date | string; endTime?: Date | string | null }) {
+  const today = new Date();
+  if (eventOccursOnDate(event, today)) return today;
+  return new Date(event.startTime);
+}
+
+function formatEventTimeForDate(
+  event: { startTime: Date | string; endTime?: Date | string | null; allDay?: boolean | null },
+  date: Date,
+) {
+  if (event.allDay) return { primary: "All day", secondary: null as string | null };
+
+  const start = new Date(event.startTime);
+  const end = event.endTime ? new Date(event.endTime) : null;
+  const startTime = start.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+
+  if (!end) return { primary: startTime, secondary: null as string | null };
+
+  const endTime = end.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+  if (!isMultiDayEvent(event)) {
+    return { primary: startTime, secondary: `to ${endTime}` };
+  }
+
+  if (isSameDay(start, date)) {
+    return {
+      primary: startTime,
+      secondary: `continues to ${end.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}, ${endTime}`,
+    };
+  }
+
+  if (isSameDay(end, date)) {
+    return { primary: "Continuing", secondary: `until ${endTime}` };
+  }
+
+  return {
+    primary: "All day",
+    secondary: `continues until ${end.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}`,
+  };
+}
+
 function formatDayHeader(date: Date) {
   const today = new Date();
   const tomorrow = new Date(today);
@@ -110,10 +182,9 @@ export default function TradePortalSchedule() {
   // Events for the selected day (day view)
   const dayEvents = useMemo(() => {
     if (!events) return [];
-    return events.filter(e => {
-      const eDate = new Date(e.startTime);
-      return isSameDay(eDate, currentDate);
-    }).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    return events
+      .filter(e => eventOccursOnDate(e, currentDate))
+      .sort((a, b) => eventSortTimeForDate(a, currentDate) - eventSortTimeForDate(b, currentDate));
   }, [events, currentDate]);
 
   // Week days for the day-view week strip
@@ -140,10 +211,7 @@ export default function TradePortalSchedule() {
     const days: { date: Date; events: typeof events }[] = [];
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(year, month, d);
-      const dayEvts = events?.filter(e => {
-        const eDate = new Date(e.startTime);
-        return eDate.getFullYear() === year && eDate.getMonth() === month && eDate.getDate() === d;
-      }) || [];
+      const dayEvts = events?.filter(e => eventOccursOnDate(e, date)) || [];
       days.push({ date, events: dayEvts });
     }
     return days;
@@ -153,7 +221,9 @@ export default function TradePortalSchedule() {
   const upcomingEvents = useMemo(() => {
     if (!events) return [];
     const now = new Date();
-    return events.filter(e => new Date(e.startTime) >= now).slice(0, 20);
+    return events
+      .filter(e => eventEndOrStart(e) >= now)
+      .slice(0, 20);
   }, [events]);
 
   function prevDay() {
@@ -179,7 +249,7 @@ export default function TradePortalSchedule() {
   // Count events for a date (used in week strip)
   function eventCountForDate(date: Date) {
     if (!events) return 0;
-    return events.filter(e => isSameDay(new Date(e.startTime), date)).length;
+    return events.filter(e => eventOccursOnDate(e, date)).length;
   }
 
   if (isLoading) {
@@ -303,48 +373,54 @@ export default function TradePortalSchedule() {
           {/* Day's events */}
           {dayEvents.length > 0 ? (
             <div className="space-y-3">
-              {dayEvents.map((event) => (
-                <Card
-                  key={event.id}
-                  className={`border-l-4 ${eventTypeColors[event.eventType] || "border-l-gray-400"} overflow-hidden`}
-                >
-                  <CardContent className={`p-4 ${eventTypeBg[event.eventType] || "bg-white"}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <Badge variant="outline" className="text-[10px] shrink-0">
-                            {eventTypeLabels[event.eventType] || event.eventType}
-                          </Badge>
-                          <div className={`w-2 h-2 rounded-full shrink-0 ${statusColors[event.status] || "bg-gray-400"}`} title={event.status} />
-                          <span className="text-[10px] text-muted-foreground">{statusLabels[event.status] || event.status}</span>
+              {dayEvents.map((event) => {
+                const timeDisplay = formatEventTimeForDate(event, currentDate);
+                return (
+                  <Card
+                    key={event.id}
+                    className={`border-l-4 ${eventTypeColors[event.eventType] || "border-l-gray-400"} overflow-hidden`}
+                  >
+                    <CardContent className={`p-4 ${eventTypeBg[event.eventType] || "bg-white"}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <Badge variant="outline" className="text-[10px] shrink-0">
+                              {eventTypeLabels[event.eventType] || event.eventType}
+                            </Badge>
+                            <div className={`w-2 h-2 rounded-full shrink-0 ${statusColors[event.status] || "bg-gray-400"}`} title={event.status} />
+                            <span className="text-[10px] text-muted-foreground">{statusLabels[event.status] || event.status}</span>
+                            {isMultiDayEvent(event) && (
+                              <Badge variant="secondary" className="text-[10px] shrink-0">Multi-day</Badge>
+                            )}
+                          </div>
+                          <p className="font-semibold text-sm sm:text-base text-slate-800">{event.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">{event.clientName} — {event.quoteNumber}</p>
                         </div>
-                        <p className="font-semibold text-sm sm:text-base text-slate-800">{event.title}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{event.clientName} — {event.quoteNumber}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className="flex items-center gap-1 text-sm font-medium text-slate-700">
-                          <Clock className="w-3.5 h-3.5" />
-                          {new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                        <div className="text-right shrink-0">
+                          <div className="flex items-center gap-1 text-sm font-medium text-slate-700">
+                            <Clock className="w-3.5 h-3.5" />
+                            {timeDisplay.primary}
+                          </div>
+                          {timeDisplay.secondary && (
+                            <p className="text-[10px] text-muted-foreground mt-0.5 max-w-[140px]">
+                              {timeDisplay.secondary}
+                            </p>
+                          )}
                         </div>
-                        {event.endTime && (
-                          <p className="text-[10px] text-muted-foreground mt-0.5">
-                            to {new Date(event.endTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
-                          </p>
-                        )}
                       </div>
-                    </div>
-                    {event.siteAddress && (
-                      <div className="flex items-start gap-1.5 mt-2 pt-2 border-t border-slate-200/60">
-                        <MapPin className="w-3.5 h-3.5 text-muted-foreground mt-0.5 shrink-0" />
-                        <p className="text-xs text-muted-foreground leading-relaxed">{event.siteAddress}</p>
-                      </div>
-                    )}
-                    {event.description && (
-                      <p className="text-xs text-slate-600 mt-2 leading-relaxed">{event.description}</p>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
+                      {event.siteAddress && (
+                        <div className="flex items-start gap-1.5 mt-2 pt-2 border-t border-slate-200/60">
+                          <MapPin className="w-3.5 h-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                          <p className="text-xs text-muted-foreground leading-relaxed">{event.siteAddress}</p>
+                        </div>
+                      )}
+                      {event.description && (
+                        <p className="text-xs text-slate-600 mt-2 leading-relaxed">{event.description}</p>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           ) : (
             <Card>
@@ -416,9 +492,9 @@ export default function TradePortalSchedule() {
                       <div
                         key={ev.id}
                         className={`text-[10px] px-1 py-0.5 mb-0.5 rounded truncate border-l-2 ${eventTypeColors[ev.eventType] || "border-l-gray-400"} bg-slate-50`}
-                        title={`${ev.title} — ${ev.clientName}`}
+                        title={`${ev.title}${isMultiDayEvent(ev) ? " (multi-day)" : ""} — ${ev.clientName}`}
                       >
-                        {ev.title}
+                        {isMultiDayEvent(ev) ? `Multi-day ${ev.title}` : ev.title}
                       </div>
                     ))}
                     {dayEvts && dayEvts.length > 3 && (
@@ -448,7 +524,7 @@ export default function TradePortalSchedule() {
                   <div
                     key={event.id}
                     className={`flex items-start gap-3 p-3 rounded-lg border-l-4 ${eventTypeColors[event.eventType] || "border-l-gray-400"} ${eventTypeBg[event.eventType] || "bg-slate-50"} cursor-pointer hover:shadow-sm active:bg-slate-100 transition-all`}
-                    onClick={() => { setCurrentDate(new Date(event.startTime)); setView("day"); }}
+                    onClick={() => { setCurrentDate(selectedDateForEvent(event)); setView("day"); }}
                   >
                     <div className="text-center min-w-[40px] sm:min-w-[50px]">
                       <p className="text-[10px] sm:text-xs text-muted-foreground">
