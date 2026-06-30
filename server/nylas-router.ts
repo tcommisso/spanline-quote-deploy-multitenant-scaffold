@@ -20,6 +20,7 @@ import {
 } from "./nylas";
 import type { NylasEventInput } from "./nylas";
 import { buildTrustedAppUrl } from "./_core/url";
+import { APP_TIME_ZONE, zonedDateTimeToUnixSeconds } from "@shared/timezone";
 
 function getNylasRedirectUri(ctx: { req: any }, requestedRedirectUri?: string) {
   return buildTrustedAppUrl(ctx.req, "/api/nylas/callback", requestedRedirectUri);
@@ -337,7 +338,7 @@ export const nylasRouter = router({
         if (grant) {
           try {
             // Parse date and time to unix timestamp
-            const startTime = dateTimeToUnix(input.appointmentDate, input.appointmentTime);
+            const startTime = zonedDateTimeToUnixSeconds(input.appointmentDate, input.appointmentTime, APP_TIME_ZONE);
             const endTime = startTime + (input.duration * 60);
 
             const eventInput: NylasEventInput = {
@@ -347,8 +348,8 @@ export const nylasRouter = router({
               when: {
                 start_time: startTime,
                 end_time: endTime,
-                start_timezone: "Australia/Sydney",
-                end_timezone: "Australia/Sydney",
+                start_timezone: APP_TIME_ZONE,
+                end_timezone: APP_TIME_ZONE,
               },
               busy: true,
               metadata: {
@@ -436,15 +437,15 @@ export const nylasRouter = router({
             const dur = updates.duration || existing.duration || 60;
 
             if (date && time) {
-              const startTime = dateTimeToUnix(date, time);
+              const startTime = zonedDateTimeToUnixSeconds(date, time, APP_TIME_ZONE);
               const endTime = startTime + (dur * 60);
 
               await updateEvent(grant.grantId, existing.nylasEventId, {
                 when: {
                   start_time: startTime,
                   end_time: endTime,
-                  start_timezone: "Australia/Sydney",
-                  end_timezone: "Australia/Sydney",
+                  start_timezone: APP_TIME_ZONE,
+                  end_timezone: APP_TIME_ZONE,
                 },
                 location: updates.location || existing.location || undefined,
                 description: updates.notes || existing.notes || undefined,
@@ -512,18 +513,3 @@ export const nylasRouter = router({
     return { connected: valid };
   }),
 });
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Convert date string (YYYY-MM-DD) and time string (HH:mm) to Unix timestamp (seconds).
- * Assumes Australia/Sydney timezone.
- */
-function dateTimeToUnix(date: string, time: string): number {
-  // Create a date in local timezone
-  const dateTimeStr = `${date}T${time}:00`;
-  // Use a simple approach: parse as UTC then adjust for AEST (+10) or AEDT (+11)
-  // For simplicity, we'll use the Date constructor which handles this
-  const dt = new Date(dateTimeStr + "+10:00"); // Default to AEST
-  return Math.floor(dt.getTime() / 1000);
-}

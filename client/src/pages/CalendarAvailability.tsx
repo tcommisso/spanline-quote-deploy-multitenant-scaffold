@@ -22,6 +22,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ChevronLeft, ChevronRight, Calendar, Users, AlertCircle, GripVertical, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import {
+  addDaysToDateOnly,
+  APP_TIME_ZONE,
+  formatDateInTimeZone,
+  getDateTimePartsInTimeZone,
+  zonedDateTimeToUnixSeconds,
+} from "@shared/timezone";
 
 const VIEW_TYPES = [
   { value: "construction_team", label: "Construction Team" },
@@ -49,16 +56,14 @@ function addDays(date: Date, days: number): Date {
 }
 
 function formatDate(date: Date): string {
-  return date.toISOString().split("T")[0];
+  return formatDateInTimeZone(date, APP_TIME_ZONE);
 }
 
 function formatShortDate(date: Date): string {
-  return date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
+  return date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: APP_TIME_ZONE });
 }
 
-function timeToPercent(timestamp: number, dayStart: Date): number {
-  const dayStartMs = dayStart.getTime();
-  const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000;
+function timeToPercent(timestamp: number, dayStartMs: number, dayEndMs: number): number {
   const clamped = Math.max(dayStartMs, Math.min(dayEndMs, timestamp));
   return ((clamped - dayStartMs) / (dayEndMs - dayStartMs)) * 100;
 }
@@ -206,15 +211,15 @@ export default function CalendarAvailability() {
   ): EventBlock[] {
     const blocks: EventBlock[] = [];
     const dayStr = formatDate(day);
-    const dayStart = new Date(day);
-    dayStart.setHours(0, 0, 0, 0);
+    const nextDayStr = addDaysToDateOnly(dayStr, 1);
+    const dayStartMs = zonedDateTimeToUnixSeconds(dayStr, "00:00", APP_TIME_ZONE) * 1000;
+    const dayEndMs = zonedDateTimeToUnixSeconds(nextDayStr, "00:00", APP_TIME_ZONE) * 1000;
 
     for (const ev of member.calendarEvents) {
       if (!ev.start || !ev.end) continue;
-      const evStart = new Date(ev.start);
-      const evEnd = new Date(ev.end);
-      const dayEnd = addDays(dayStart, 1);
-      if (evEnd.getTime() <= dayStart.getTime() || evStart.getTime() >= dayEnd.getTime()) continue;
+      const evStartMs = Number(ev.start);
+      const evEndMs = Number(ev.end);
+      if (evEndMs <= dayStartMs || evStartMs >= dayEndMs) continue;
 
       if (ev.allDay) {
         blocks.push({
@@ -230,15 +235,19 @@ export default function CalendarAvailability() {
           originalEnd: ev.end,
         });
       } else {
-        const sp = timeToPercent(evStart.getTime(), dayStart);
-        const ep = timeToPercent(evEnd.getTime(), dayStart);
+        const startParts = getDateTimePartsInTimeZone(evStartMs, APP_TIME_ZONE);
+        const endParts = getDateTimePartsInTimeZone(evEndMs, APP_TIME_ZONE);
+        const startHour = startParts.date === dayStr ? startParts.hour + startParts.minute / 60 : 0;
+        const endHour = endParts.date === dayStr ? endParts.hour + endParts.minute / 60 : 24;
+        const sp = timeToPercent(evStartMs, dayStartMs, dayEndMs);
+        const ep = timeToPercent(evEndMs, dayStartMs, dayEndMs);
         blocks.push({
           type: "calendar_event",
           title: ev.title,
           startPercent: sp,
           widthPercent: Math.max(ep - sp, 2),
-          startHour: evStart.getHours() + evStart.getMinutes() / 60,
-          endHour: evEnd.getHours() + evEnd.getMinutes() / 60,
+          startHour,
+          endHour,
           eventId: ev.id,
           grantId: ev.grantId,
           originalStart: ev.start,
@@ -309,10 +318,12 @@ export default function CalendarAvailability() {
     if (block.type === "calendar_event" && block.eventId && block.grantId) {
       const duration = (block.originalEnd || 0) - (block.originalStart || 0);
       const durationMs = duration > 0 ? duration : 3600000;
-      const newStartDate = new Date(targetDay);
-      newStartDate.setHours(hour, 0, 0, 0);
-      const newStartTimeSec = Math.floor(newStartDate.getTime() / 1000);
-      const newEndTimeSec = Math.floor((newStartDate.getTime() + durationMs) / 1000);
+      const newStartTimeSec = zonedDateTimeToUnixSeconds(
+        targetDate,
+        `${hour.toString().padStart(2, "0")}:00`,
+        APP_TIME_ZONE
+      );
+      const newEndTimeSec = Math.floor(newStartTimeSec + durationMs / 1000);
 
       // Store original for undo
       const origStart = block.originalStart ? Math.floor(block.originalStart / 1000) : 0;
@@ -522,8 +533,8 @@ export default function CalendarAvailability() {
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <span className="text-sm font-medium min-w-[180px] text-center">
-            {weekStart.toLocaleDateString("en-AU", { day: "numeric", month: "short" })} –{" "}
-            {weekEnd.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })}
+            {weekStart.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: APP_TIME_ZONE })} –{" "}
+            {weekEnd.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: APP_TIME_ZONE })}
           </span>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleNextWeek}>
             <ChevronRight className="h-4 w-4" />
@@ -734,7 +745,7 @@ export default function CalendarAvailability() {
                         >
                           {day.toLocaleDateString("en-AU", { weekday: "short" })}
                           <br />
-                          {day.getDate()}
+                          {day.toLocaleDateString("en-AU", { day: "numeric", timeZone: APP_TIME_ZONE })}
                         </div>
                       );
                     })}
@@ -779,6 +790,10 @@ export default function CalendarAvailability() {
                                 dragBlock &&
                                 ((dragBlock.eventId && dragBlock.eventId === block.eventId) ||
                                   (dragBlock.jobId && dragBlock.jobId === block.jobId));
+                              const segmentStart = Math.max(block.startHour ?? hour, hour);
+                              const segmentEnd = Math.min(block.endHour ?? hour + 1, hour + 1);
+                              const topPercent = Math.max(0, (segmentStart - hour) * 100);
+                              const heightPercent = Math.min(100 - topPercent, Math.max(20, (segmentEnd - segmentStart) * 100));
                               return (
                                 <div
                                   key={idx}
@@ -788,9 +803,13 @@ export default function CalendarAvailability() {
                                     handleDragStart(e, block);
                                   }}
                                   onDragEnd={handleDragEnd}
-                                  className={`absolute inset-0 ${EVENT_COLORS[block.type]} text-[8px] text-white px-0.5 flex items-center overflow-hidden ${
+                                  className={`absolute left-0 right-0 ${EVENT_COLORS[block.type]} text-[8px] text-white px-0.5 flex items-center overflow-hidden ${
                                     draggable ? "cursor-grab active:cursor-grabbing" : ""
                                   } ${isBeingDragged ? "opacity-40" : ""}`}
+                                  style={{
+                                    top: `${topPercent}%`,
+                                    height: `${heightPercent}%`,
+                                  }}
                                   title={`${block.title}${draggable ? " (drag to reschedule)" : ""}`}
                                 >
                                   {draggable && (
@@ -834,6 +853,7 @@ export default function CalendarAvailability() {
                                 weekday: "short",
                                 hour: "numeric",
                                 minute: "2-digit",
+                                timeZone: APP_TIME_ZONE,
                               })}
                               {ev.end && (
                                 <>
@@ -841,6 +861,7 @@ export default function CalendarAvailability() {
                                   {new Date(ev.end).toLocaleString("en-AU", {
                                     hour: "numeric",
                                     minute: "2-digit",
+                                    timeZone: APP_TIME_ZONE,
                                   })}
                                 </>
                               )}

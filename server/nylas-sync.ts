@@ -7,6 +7,7 @@ import { nylasGrants, crmAppointments, crmLeads } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { createEvent, updateEvent, deleteEvent } from "./nylas";
 import type { NylasEventInput } from "./nylas";
+import { APP_TIME_ZONE, zonedDateTimeToUnixSeconds } from "@shared/timezone";
 
 type AppointmentParticipant = { name?: string; email: string };
 
@@ -58,7 +59,7 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
   const suburb = lead?.suburb ? ` - ${lead.suburb}` : "";
 
   // Convert date/time to unix timestamp
-  const startTime = dateTimeToUnix(input.date, input.time);
+  const startTime = zonedDateTimeToUnixSeconds(input.date, input.time, APP_TIME_ZONE);
   const endTime = startTime + (input.duration * 60);
 
   const eventInput: NylasEventInput = {
@@ -69,8 +70,8 @@ export async function syncAppointmentToCalendar(input: SyncAppointmentInput): Pr
     when: {
       start_time: startTime,
       end_time: endTime,
-      start_timezone: "Australia/Sydney",
-      end_timezone: "Australia/Sydney",
+      start_timezone: APP_TIME_ZONE,
+      end_timezone: APP_TIME_ZONE,
     },
     busy: true,
     metadata: {
@@ -150,13 +151,13 @@ export async function updateCalendarEvent(
     const eventUpdates: Partial<NylasEventInput> = {};
 
     if (date && time) {
-      const startTime = dateTimeToUnix(date, time);
+      const startTime = zonedDateTimeToUnixSeconds(date, time, APP_TIME_ZONE);
       const endTime = startTime + (dur * 60);
       eventUpdates.when = {
         start_time: startTime,
         end_time: endTime,
-        start_timezone: "Australia/Sydney",
-        end_timezone: "Australia/Sydney",
+        start_timezone: APP_TIME_ZONE,
+        end_timezone: APP_TIME_ZONE,
       };
     }
 
@@ -220,16 +221,4 @@ export async function deleteCalendarEvent(appointmentId: number, userId: number,
     console.error("[Nylas Sync] Failed to delete calendar event:", err.message);
     return false;
   }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Convert date string (YYYY-MM-DD) and time string (HH:mm) to Unix timestamp (seconds).
- * Assumes Australia/Sydney timezone (AEST +10:00).
- */
-function dateTimeToUnix(date: string, time: string): number {
-  const dateTimeStr = `${date}T${time}:00+10:00`;
-  const dt = new Date(dateTimeStr);
-  return Math.floor(dt.getTime() / 1000);
 }

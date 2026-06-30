@@ -18,6 +18,12 @@ import {
 } from "../drizzle/schema";
 import { eq, and, inArray, gte, lte, between } from "drizzle-orm";
 import { listEvents } from "./nylas";
+import {
+  addDaysToDateOnly,
+  APP_TIME_ZONE,
+  formatDateInTimeZone,
+  zonedDateTimeToUnixSeconds,
+} from "@shared/timezone";
 
 const VIEW_TYPES = ["construction_team", "trades", "delivery", "design_advisors", "admin_office"] as const;
 
@@ -150,8 +156,11 @@ export const calendarViewsRouter = router({
       if (members.length === 0) return [];
 
       const userIds = members.map(m => m.userId);
-      const startDate = new Date(input.startDate);
-      const endDate = new Date(input.endDate);
+      const rangeStartSeconds = zonedDateTimeToUnixSeconds(input.startDate, "00:00", APP_TIME_ZONE);
+      const rangeEndDate = addDaysToDateOnly(input.endDate, 1);
+      const rangeEndSeconds = zonedDateTimeToUnixSeconds(rangeEndDate, "00:00", APP_TIME_ZONE);
+      const rangeStart = new Date(rangeStartSeconds * 1000);
+      const rangeEndExclusive = new Date(rangeEndSeconds * 1000);
 
       // 1. Get Nylas calendar events for members with connected calendars
       const grants = await db
@@ -169,8 +178,8 @@ export const calendarViewsRouter = router({
         try {
           const events = await listEvents(grant.grantId, "primary", {
             tenantId: ctx.tenant!.id,
-            start: Math.floor(startDate.getTime() / 1000),
-            end: Math.floor(endDate.getTime() / 1000),
+            start: rangeStartSeconds,
+            end: rangeEndSeconds,
           });
           if (!nylasEvents[grant.userId]) nylasEvents[grant.userId] = [];
           nylasEvents[grant.userId].push(...(events || [])
@@ -182,6 +191,8 @@ export const calendarViewsRouter = router({
             title: "Busy",
             start: e.when?.start_time ? e.when.start_time * 1000 : null,
             end: e.when?.end_time ? e.when.end_time * 1000 : null,
+            startTimezone: e.when?.start_timezone || APP_TIME_ZONE,
+            endTimezone: e.when?.end_timezone || APP_TIME_ZONE,
             allDay: e.when?.object === "date",
             email: grant.email,
           })));
@@ -232,7 +243,7 @@ export const calendarViewsRouter = router({
           jobAssignments = jobAssignments.filter((j: any) => {
             if (!j.scheduledStart) return false;
             const d = new Date(j.scheduledStart);
-            return d >= startDate && d <= endDate;
+            return d >= rangeStart && d < rangeEndExclusive;
           });
         } catch (err) {
           // constructionAssignments may not have installerId matching userIds
@@ -263,7 +274,7 @@ export const calendarViewsRouter = router({
           .map((j: any) => ({
             jobId: j.jobId,
             assignmentId: j.id,
-            date: j.scheduledStart ? new Date(j.scheduledStart).toISOString().split("T")[0] : null,
+            date: j.scheduledStart ? formatDateInTimeZone(j.scheduledStart, APP_TIME_ZONE) : null,
             jobTitle: j.jobTitle || `Job #${j.jobId}`,
             jobStatus: j.jobStatus,
           })),
@@ -350,6 +361,8 @@ export const calendarViewsRouter = router({
         when: {
           start_time: input.newStartTime,
           end_time: input.newEndTime,
+          start_timezone: APP_TIME_ZONE,
+          end_timezone: APP_TIME_ZONE,
         },
       } as any, "primary", ctx.tenant!.id);
       return {
