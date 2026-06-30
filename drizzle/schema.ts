@@ -3289,7 +3289,10 @@ export const projectSubcontracts = mysqlTable("project_subcontracts", {
   downpipes: json("downpipes").$type<DownpipesChecklist>(),
   flashingBySubcontractor: varchar("flashingBySubcontractor", { length: 16 }).default("N/A"),
   // Status & signing
-  status: mysqlEnum("status", ["draft", "sent", "signed", "cancelled", "declined"]).default("draft").notNull(),
+  status: mysqlEnum("status", ["draft", "sent", "signed", "cancelled", "declined", "on_file"]).default("draft").notNull(),
+  contractSource: mysqlEnum("contractSource", ["generated", "manual_on_file"]).default("generated").notNull(),
+  onFileAt: timestamp("onFileAt"),
+  onFileNotes: text("onFileNotes"),
   signwellDocumentId: varchar("signwellDocumentId", { length: 128 }),
   sentAt: timestamp("sentAt"),
   signedAt: timestamp("signedAt"),

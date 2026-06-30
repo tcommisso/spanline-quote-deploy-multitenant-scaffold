@@ -143,6 +143,12 @@ const downpipesSchema = z.object({
   toExistingDP: z.string(),
   toStormwater: z.string(),
 });
+const subcontractStatusSchema = z.enum(["draft", "sent", "signed", "cancelled", "declined", "on_file"]);
+const contractSourceSchema = z.enum(["generated", "manual_on_file"]);
+
+function isExecutedSubcontract(sc: { status?: string | null; signedAt?: Date | null; pdfUrl?: string | null }) {
+  return sc.status === "signed" || sc.status === "on_file" || Boolean(sc.signedAt) || Boolean(sc.pdfUrl);
+}
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 export const subcontractRouter = router({
@@ -152,6 +158,8 @@ export const subcontractRouter = router({
       jobId: z.number(),
       installerId: z.number().optional(),
       sourceSubcontractId: z.number().optional(),
+      contractSource: contractSourceSchema.optional(),
+      onFileNotes: z.string().max(2000).nullable().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -206,6 +214,7 @@ export const subcontractRouter = router({
       const sourceClientName = nullableText(sourceSubcontract?.clientName);
       const sourceUsesStoredJobName = sourceClientName && sourceClientName === nullableText(job.clientName);
 
+      const isOnFile = input.contractSource === "manual_on_file";
       const [result] = await db.insert(projectSubcontracts).values({
         tenantId: ctx.tenant!.id,
         jobId: input.jobId,
@@ -229,7 +238,10 @@ export const subcontractRouter = router({
         electricalCabling: sourceSubcontract?.electricalCabling || DEFAULT_ELECTRICAL_CABLING,
         downpipes: sourceSubcontract?.downpipes || DEFAULT_DOWNPIPES,
         flashingBySubcontractor: sourceSubcontract?.flashingBySubcontractor || "Yes",
-        status: "draft",
+        status: isOnFile ? "on_file" : "draft",
+        contractSource: isOnFile ? "manual_on_file" : "generated",
+        onFileAt: isOnFile ? new Date() : null,
+        onFileNotes: isOnFile ? nullableText(input.onFileNotes) : null,
         createdBy: ctx.user.id,
       });
 
@@ -306,7 +318,9 @@ export const subcontractRouter = router({
       electricalCabling: electricalCablingSchema.optional(),
       downpipes: downpipesSchema.optional(),
       flashingBySubcontractor: z.string().optional(),
-      status: z.enum(["draft", "sent", "signed", "cancelled", "declined"]).optional(),
+      status: subcontractStatusSchema.optional(),
+      contractSource: contractSourceSchema.optional(),
+      onFileNotes: z.string().max(2000).nullable().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
@@ -324,6 +338,13 @@ export const subcontractRouter = router({
         updateData.estimatedCompletion = estimatedCompletion
           ? new Date(estimatedCompletion)
           : null;
+      }
+      if (updateData.onFileNotes !== undefined) {
+        updateData.onFileNotes = nullableText(updateData.onFileNotes);
+      }
+      if (updateData.status === "on_file") {
+        updateData.contractSource = "manual_on_file";
+        updateData.onFileAt = new Date();
       }
 
       await db
@@ -346,8 +367,8 @@ export const subcontractRouter = router({
         .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
       if (!sc) throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
-      if (sc.status === "signed" || sc.signedAt || sc.pdfUrl) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Signed subcontracts cannot be cancelled" });
+      if (isExecutedSubcontract(sc)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Executed or on-file subcontracts cannot be cancelled. Archive them instead." });
       }
       await db
         .update(projectSubcontracts)
@@ -392,8 +413,8 @@ export const subcontractRouter = router({
         .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
       if (!sc) throw new TRPCError({ code: "NOT_FOUND", message: "Subcontract not found" });
-      if (sc.status === "signed" || sc.signedAt || sc.pdfUrl) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "Signed subcontracts cannot be deleted. Archive them instead." });
+      if (isExecutedSubcontract(sc)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Executed or on-file subcontracts cannot be deleted. Archive them instead." });
       }
       if (sc.status === "sent") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Cancel the sent subcontract before deleting it." });

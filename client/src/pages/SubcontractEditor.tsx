@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { loadCompanyDetails } from "@/lib/proposalStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -84,6 +85,7 @@ const STATUS_COLORS: Record<string, string> = {
   draft: "bg-gray-100 text-gray-700",
   sent: "bg-blue-100 text-blue-700",
   signed: "bg-green-100 text-green-700",
+  on_file: "bg-emerald-100 text-emerald-700",
   cancelled: "bg-red-100 text-red-700",
   declined: "bg-red-100 text-red-700",
   archived: "bg-slate-100 text-slate-600",
@@ -141,6 +143,7 @@ function subcontractDisplayStatus(subcontract: any) {
 }
 
 function formatStatusLabel(status: string) {
+  if (status === "on_file") return "Contract on file";
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
@@ -191,6 +194,8 @@ export default function SubcontractEditor() {
   const [subcontractorPhone, setSubcontractorPhone] = useState("");
   const [siteAddress, setSiteAddress] = useState("");
   const [subcontractSum, setSubcontractSum] = useState("");
+  const [contractSource, setContractSource] = useState<"generated" | "manual_on_file">("generated");
+  const [onFileNotes, setOnFileNotes] = useState("");
   const [estimatedCommencement, setEstimatedCommencement] = useState("");
   const [estimatedCompletion, setEstimatedCompletion] = useState("");
   const [flashingBySubcontractor, setFlashingBySubcontractor] = useState("N/A");
@@ -239,6 +244,8 @@ export default function SubcontractEditor() {
       setSubcontractorPhone(subcontract.subcontractorPhone || "");
       setSiteAddress(subcontract.siteAddress || "");
       setSubcontractSum(subcontract.subcontractSum || "0.00");
+      setContractSource((subcontract.contractSource as "generated" | "manual_on_file") || (subcontract.status === "on_file" ? "manual_on_file" : "generated"));
+      setOnFileNotes(subcontract.onFileNotes || "");
       setFlashingBySubcontractor(subcontract.flashingBySubcontractor || "N/A");
       setMilestones((subcontract.paymentSchedule as PaymentMilestone[]) || []);
       setBuildingFile((subcontract.buildingFile as BuildingFileChecklist) || { plans: "N/A", materialsList: "N/A", approvals: "N/A" });
@@ -270,6 +277,8 @@ export default function SubcontractEditor() {
         subcontractorPhone,
         siteAddress,
         subcontractSum,
+        contractSource,
+        onFileNotes,
         paymentSchedule: milestones,
         estimatedCommencement: estimatedCommencement || null,
         estimatedCompletion: estimatedCompletion || null,
@@ -285,7 +294,7 @@ export default function SubcontractEditor() {
     } catch (err: any) {
       toast.error(err.message || "Failed to save");
     }
-  }, [subcontractId, installerId, jobNumber, clientName, clientAccountNumber, constructionManager, subcontractorName, subcontractorPhone, siteAddress, subcontractSum, milestones, estimatedCommencement, estimatedCompletion, buildingFile, inspections, otherContractors, electricalCabling, downpipes, flashingBySubcontractor]);
+  }, [subcontractId, installerId, jobNumber, clientName, clientAccountNumber, constructionManager, subcontractorName, subcontractorPhone, siteAddress, subcontractSum, contractSource, onFileNotes, milestones, estimatedCommencement, estimatedCompletion, buildingFile, inspections, otherContractors, electricalCabling, downpipes, flashingBySubcontractor]);
 
   const managerOptions = useMemo(
     () => [...(allUsers || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
@@ -418,7 +427,8 @@ export default function SubcontractEditor() {
   const totalPercent = milestones.reduce((sum, m) => sum + (m.usePercent ? (m.percentOfTotal || 0) : 0), 0);
   const displayStatus = subcontractDisplayStatus(subcontract);
   const isArchived = !!subcontract?.archivedAt;
-  const isSigned = subcontract?.status === "signed" || !!subcontract?.signedAt || !!subcontract?.pdfUrl;
+  const isOnFile = subcontract?.status === "on_file";
+  const isSigned = subcontract?.status === "signed" || isOnFile || !!subcontract?.signedAt || !!subcontract?.pdfUrl;
   const canSend = subcontract?.status === "draft" && !isArchived;
   const canCancel = subcontract?.status === "sent" && !isSigned && !isArchived;
   const canDelete = !!subcontract && !isSigned && subcontract.status !== "sent";
@@ -456,6 +466,24 @@ export default function SubcontractEditor() {
       toast.success("Subcontract cancelled");
     } catch (err: any) {
       toast.error(err.message || "Failed to cancel subcontract");
+    }
+  };
+
+  const handleMarkOnFile = async () => {
+    if (!subcontractId) return;
+    try {
+      await handleSave();
+      await updateMutation.mutateAsync({
+        id: subcontractId,
+        status: "on_file",
+        contractSource: "manual_on_file",
+        onFileNotes,
+      });
+      setContractSource("manual_on_file");
+      refreshSubcontract();
+      toast.success("Contract marked as on file");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to mark contract on file");
     }
   };
 
@@ -555,6 +583,16 @@ export default function SubcontractEditor() {
               disabled={lifecycleMutationPending}
             >
               Cancel contract
+            </Button>
+          )}
+          {!isSigned && !isArchived && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleMarkOnFile}
+              disabled={lifecycleMutationPending || updateMutation.isPending}
+            >
+              <CheckCircle2 className="h-4 w-4 mr-1" /> Mark on file
             </Button>
           )}
           {canDelete && (
@@ -740,6 +778,35 @@ export default function SubcontractEditor() {
                 className="h-8 text-sm max-w-48"
               />
             </div>
+          </div>
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Contract Source</Label>
+              <Select
+                value={contractSource}
+                onValueChange={(value) => setContractSource(value as "generated" | "manual_on_file")}
+              >
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="generated">Generated in app</SelectItem>
+                  <SelectItem value="manual_on_file">Manual contract on file</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(contractSource === "manual_on_file" || displayStatus === "on_file") && (
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">On-file Reference / Notes</Label>
+                <Textarea
+                  value={onFileNotes}
+                  onChange={(event) => setOnFileNotes(event.target.value)}
+                  rows={2}
+                  className="text-sm"
+                  placeholder="Manual contract reference, signed date, or file location"
+                />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

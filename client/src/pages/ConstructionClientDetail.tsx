@@ -2003,10 +2003,24 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
     }
   };
 
+  const handleCreateOnFile = async () => {
+    try {
+      const result = await createMutation.mutateAsync({
+        jobId,
+        contractSource: "manual_on_file",
+      });
+      utils.subcontract.listByJob.invalidate({ jobId });
+      navigate(`/subcontracts/${result.id}`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to record on-file contract");
+    }
+  };
+
   const statusColors: Record<string, string> = {
     draft: "bg-gray-100 text-gray-700",
     sent: "bg-blue-100 text-blue-700",
     signed: "bg-green-100 text-green-700",
+    on_file: "bg-emerald-100 text-emerald-700",
     cancelled: "bg-red-100 text-red-700",
     declined: "bg-red-100 text-red-700",
     archived: "bg-slate-100 text-slate-600",
@@ -2024,6 +2038,10 @@ function SubcontractsSection({ jobId }: { jobId: number }) {
         <div className="flex items-center gap-2">
           <Button size="sm" variant={showArchived ? "secondary" : "outline"} onClick={() => setShowArchived((value) => !value)}>
             {showArchived ? "Hide archived" : "Show archived"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={handleCreateOnFile} disabled={createMutation.isPending} className="gap-1.5">
+            {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+            Contract on file
           </Button>
           <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending} className="gap-1.5">
             {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -2128,7 +2146,9 @@ function SubcontractCard({ sc, statusColors, navigate }: { sc: any; statusColors
               <Download className="h-3.5 w-3.5" />
             </Button>
             <span className="text-sm font-semibold">${sc.subcontractSum || "0.00"}</span>
-            <Badge className={`text-[10px] ${statusColors[displayStatus] || ""}`}>{displayStatus}</Badge>
+            <Badge className={`text-[10px] ${statusColors[displayStatus] || ""}`}>
+              {displayStatus === "on_file" ? "on file" : displayStatus}
+            </Badge>
           </div>
         </div>
         {/* Milestone Payment Summary */}

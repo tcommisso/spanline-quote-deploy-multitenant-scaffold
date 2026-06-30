@@ -125,6 +125,25 @@ function canonicalClientFromRow(row: any) {
   });
 }
 
+function subcontractVisibleToTradeStatusCondition() {
+  return or(
+    eq(projectSubcontracts.status, "sent"),
+    eq(projectSubcontracts.status, "signed"),
+    eq(projectSubcontracts.status, "on_file"),
+  )!;
+}
+
+function subcontractClaimableStatusCondition() {
+  return or(
+    eq(projectSubcontracts.status, "signed"),
+    eq(projectSubcontracts.status, "on_file"),
+  )!;
+}
+
+function isSubcontractClaimableStatus(status?: string | null) {
+  return status === "signed" || status === "on_file";
+}
+
 function withCanonicalClientName<T extends { clientName?: string | null }>(row: T): T & { storedClientName?: string | null } {
   const canonicalClient = canonicalClientFromRow(row);
   if (!canonicalClient) return row;
@@ -496,7 +515,7 @@ async function requireVisibleTradeInstructionSource(
       eq(projectSubcontracts.jobId, input.jobId),
       eq(projectSubcontracts.installerId, ctx.tradeAccess.installerId),
       isNull(projectSubcontracts.archivedAt),
-      or(eq(projectSubcontracts.status, "sent"), eq(projectSubcontracts.status, "signed"))!,
+      subcontractVisibleToTradeStatusCondition(),
     ));
   const items = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
   const item = items.find((candidate) => visibleInstructionSourceMatches(candidate, input.sourceType, input.sourceId, input.sourceKey));
@@ -599,7 +618,7 @@ async function requireSubcontractAccess(db: any, ctx: any, subcontractId: number
   await requireTradeJobAccess(db, ctx, subcontract.jobId);
   if (
     subcontract.installerId !== ctx.tradeAccess.installerId &&
-    subcontract.status !== "signed"
+    !isSubcontractClaimableStatus(subcontract.status)
   ) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Subcontract is not available to this trade" });
   }
@@ -1538,7 +1557,7 @@ export const tradePortalRouter = router({
 
     // Get subcontract info for active jobs
     const activeJobIds = activeJobsList.map(j => j.jobId).filter(Boolean) as number[];
-    let subcontractMap: Record<number, { count: number; signedCount: number; totalValue: number }> = {};
+    let subcontractMap: Record<number, { count: number; readyCount: number; totalValue: number }> = {};
     if (activeJobIds.length > 0) {
       const subcontracts = await db.select({
         jobId: projectSubcontracts.jobId,
@@ -1553,12 +1572,13 @@ export const tradePortalRouter = router({
             eq(projectSubcontracts.status, "draft"),
             eq(projectSubcontracts.status, "sent"),
             eq(projectSubcontracts.status, "signed"),
+            eq(projectSubcontracts.status, "on_file"),
           )!,
         ));
       for (const sc of subcontracts) {
-        if (!subcontractMap[sc.jobId]) subcontractMap[sc.jobId] = { count: 0, signedCount: 0, totalValue: 0 };
+        if (!subcontractMap[sc.jobId]) subcontractMap[sc.jobId] = { count: 0, readyCount: 0, totalValue: 0 };
         subcontractMap[sc.jobId].count++;
-        if (sc.status === "signed") subcontractMap[sc.jobId].signedCount++;
+        if (isSubcontractClaimableStatus(sc.status)) subcontractMap[sc.jobId].readyCount++;
         subcontractMap[sc.jobId].totalValue += parseFloat(sc.subcontractSum || "0");
       }
     }
@@ -2379,7 +2399,7 @@ export const tradePortalRouter = router({
       .where(and(
         inArray(projectSubcontracts.jobId, visibleJobIds),
         eq(projectSubcontracts.installerId, installerId),
-        eq(projectSubcontracts.status, "signed"),
+        subcontractClaimableStatusCondition(),
         isNull(projectSubcontracts.archivedAt),
       ));
 
@@ -2657,15 +2677,15 @@ export const tradePortalRouter = router({
           eq(projectSubcontracts.jobId, input.jobId),
           eq(projectSubcontracts.installerId, installerId),
           isNull(projectSubcontracts.archivedAt),
-          or(eq(projectSubcontracts.status, "sent"), eq(projectSubcontracts.status, "signed"))!,
+          subcontractVisibleToTradeStatusCondition(),
         ));
 
-      // Also get subcontracts that are signed (available to all trades on the job)
+      // Also get executed/on-file subcontracts that are available to all trades on the job.
       const signedSubcontracts = await db.select()
         .from(projectSubcontracts)
         .where(and(
           eq(projectSubcontracts.jobId, input.jobId),
-          eq(projectSubcontracts.status, "signed"),
+          subcontractClaimableStatusCondition(),
           isNull(projectSubcontracts.archivedAt),
         ));
 
@@ -2714,7 +2734,7 @@ export const tradePortalRouter = router({
       }));
     }),
 
-  // Get signed contracts for this installer
+  // Get trade-visible contracts for this installer
   getContracts: protectedTradePortalProcedure
     .query(async ({ ctx }) => {
       const db = await requireDb();
@@ -2730,10 +2750,17 @@ export const tradePortalRouter = router({
         pdfUrl: projectSubcontracts.pdfUrl,
         signedAt: projectSubcontracts.signedAt,
         sentAt: projectSubcontracts.sentAt,
+        contractSource: projectSubcontracts.contractSource,
+        onFileAt: projectSubcontracts.onFileAt,
+        onFileNotes: projectSubcontracts.onFileNotes,
         createdAt: projectSubcontracts.createdAt,
       })
         .from(projectSubcontracts)
-        .where(eq(projectSubcontracts.installerId, installerId))
+        .where(and(
+          eq(projectSubcontracts.installerId, installerId),
+          isNull(projectSubcontracts.archivedAt),
+          subcontractVisibleToTradeStatusCondition(),
+        ))
         .orderBy(desc(projectSubcontracts.createdAt));
 
       // Get job details for each contract
@@ -2843,6 +2870,8 @@ export const tradePortalRouter = router({
         .where(and(
           eq(projectSubcontracts.jobId, input.jobId),
           eq(projectSubcontracts.installerId, installerId),
+          isNull(projectSubcontracts.archivedAt),
+          subcontractVisibleToTradeStatusCondition(),
         ));
 
       const jobInstructions = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);

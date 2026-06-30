@@ -7,6 +7,7 @@ import { FileSignature, Download, ExternalLink, Clock, CheckCircle, AlertCircle,
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: typeof CheckCircle }> = {
   signed: { label: "Signed", variant: "default", icon: CheckCircle },
+  on_file: { label: "Contract on file", variant: "default", icon: CheckCircle },
   sent: { label: "Awaiting Signature", variant: "secondary", icon: Clock },
   draft: { label: "Draft", variant: "outline", icon: AlertCircle },
   cancelled: { label: "Cancelled", variant: "destructive", icon: AlertCircle },
@@ -31,7 +32,7 @@ export default function TradePortalContracts() {
         <h1 className="text-xl font-bold">My Contracts</h1>
       </div>
       <p className="text-sm text-muted-foreground">
-        View and download your signed subcontracts for each job.
+        View your subcontracts for each job.
       </p>
 
       {!contracts || contracts.length === 0 ? (
@@ -100,6 +101,11 @@ export default function TradePortalContracts() {
                         Sent: {new Date(contract.sentAt).toLocaleDateString("en-AU")}
                       </span>
                     )}
+                    {contract.status === "on_file" && contract.onFileAt && (
+                      <span className="text-xs text-muted-foreground">
+                        On file: {new Date(contract.onFileAt).toLocaleDateString("en-AU")}
+                      </span>
+                    )}
                   </div>
 
                   {/* Actions */}
@@ -130,6 +136,11 @@ export default function TradePortalContracts() {
                   {!contract.pdfUrl && contract.status === "sent" && (
                     <p className="text-xs text-primary bg-primary/5 rounded p-2">
                       This contract is awaiting your signature. Check your email for the signing link.
+                    </p>
+                  )}
+                  {!contract.pdfUrl && contract.status === "on_file" && (
+                    <p className="text-xs text-emerald-700 bg-emerald-50 rounded p-2">
+                      Contract is recorded as already executed and on file.
                     </p>
                   )}
                 </CardContent>

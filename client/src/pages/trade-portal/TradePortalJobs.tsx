@@ -591,7 +591,7 @@ function JobDetailView({ jobId }: { jobId: number }) {
                 <div>
                   <p className="text-sm font-medium">{sc.tradeType || "Subcontract"}</p>
                   <p className="text-xs text-muted-foreground">
-                    {sc.status === "signed" ? "✅ Signed" : sc.status === "sent" ? "📤 Awaiting signature" : sc.status}
+                    {sc.status === "signed" ? "Signed" : sc.status === "on_file" ? "Contract on file" : sc.status === "sent" ? "Awaiting signature" : sc.status}
                   </p>
                 </div>
                 {sc.pdfUrl && (

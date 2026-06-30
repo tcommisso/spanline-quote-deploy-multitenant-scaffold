@@ -193,7 +193,7 @@ export default function TradePortalDashboard() {
                     )}
                     {job.subcontracts && (
                       <p className="text-xs mt-1 text-green-700">
-                        {job.subcontracts.signedCount}/{job.subcontracts.count} contract{job.subcontracts.count > 1 ? "s" : ""} signed
+                        {job.subcontracts.readyCount}/{job.subcontracts.count} contract{job.subcontracts.count > 1 ? "s" : ""} ready
                         {job.subcontracts.totalValue > 0 && (
                           <span className="ml-1 text-muted-foreground">
                             (${job.subcontracts.totalValue.toLocaleString("en-AU", { minimumFractionDigits: 0 })})
