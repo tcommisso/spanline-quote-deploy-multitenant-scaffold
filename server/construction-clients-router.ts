@@ -346,6 +346,23 @@ function appendProjectDateRange(conditions: any[], from: Date, to: Date) {
   conditions.push(sql`${jobDate} < ${to}`);
 }
 
+function appendConstructionClientDateRange(
+  conditions: any[],
+  ctx: any,
+  from: Date,
+  to: Date,
+  scheduledFilter?: "unscheduled" | "scheduled" | "overdue" | "today" | "next_7_days" | "future",
+) {
+  if (scheduledFilter && scheduledFilter !== "unscheduled") {
+    conditions.push(or(
+      scheduleEventExists(ctx, scheduleEventOverlap(from, to)),
+      legacyJobScheduleOverlap(from, to),
+    ));
+    return;
+  }
+  appendProjectDateRange(conditions, from, to);
+}
+
 function dateKeyInTimeZone(value: Date, timeZone = SCHEDULE_TIME_ZONE) {
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone,
@@ -830,7 +847,7 @@ export const constructionClientsRouter = router({
       // FY date filter on real project timing, not import/create timestamp.
       if (input?.fyStartYear != null) {
         const range = fyDateRange(input.fyStartYear);
-        appendProjectDateRange(conditions, range.from, range.to);
+        appendConstructionClientDateRange(conditions, ctx, range.from, range.to, input.scheduled);
       }
 
       // Month filter within the FY (or standalone)
@@ -840,12 +857,12 @@ export const constructionClientsRouter = router({
         if (input?.fyStartYear != null) {
           const year = input.month >= 7 ? input.fyStartYear : input.fyStartYear + 1;
           const range = monthDateRange(year, input.month);
-          appendProjectDateRange(conditions, range.from, range.to);
+          appendConstructionClientDateRange(conditions, ctx, range.from, range.to, input.scheduled);
         } else {
           // No FY set — filter by month in current calendar year
           const [year] = dateKeyInTimeZone(new Date()).split("-").map(Number);
           const range = monthDateRange(year, input.month);
-          appendProjectDateRange(conditions, range.from, range.to);
+          appendConstructionClientDateRange(conditions, ctx, range.from, range.to, input.scheduled);
         }
       }
 

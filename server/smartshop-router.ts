@@ -56,7 +56,7 @@ const catalogueProductFilterSchema = z.object({
 function catalogueProductConditions(ctx: any, input: z.infer<typeof catalogueProductFilterSchema>) {
   const conditions: any[] = componentCatalogueTenantConditions(ctx);
 
-  if (input.category && PRODUCT_CATEGORIES.includes(input.category)) {
+  if (input.category) {
     conditions.push(eq(componentCatalogueProducts.category, input.category));
   }
 
@@ -91,6 +91,17 @@ function catalogueProductConditions(ctx: any, input: z.infer<typeof cataloguePro
   }
 
   return and(...conditions);
+}
+
+async function listCatalogueCategories(ctx: any) {
+  const db = await getDb();
+  if (!db) return [...PRODUCT_CATEGORIES];
+  const rows = await db
+    .selectDistinct({ category: componentCatalogueProducts.category })
+    .from(componentCatalogueProducts)
+    .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.isActive, true)));
+  const merged = new Set([...PRODUCT_CATEGORIES, ...rows.map((row) => row.category).filter(Boolean)]);
+  return Array.from(merged).sort((a, b) => a.localeCompare(b));
 }
 
 function orderTemplateTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -332,8 +343,8 @@ function catalogueUploadChanged(row: ReturnType<typeof parseCatalogueUploadRows>
 
 export const smartshopRouter = router({
   /** List available product categories */
-  categories: protectedProcedure.query(() => {
-    return PRODUCT_CATEGORIES;
+  categories: protectedProcedure.query(async ({ ctx }) => {
+    return listCatalogueCategories(ctx);
   }),
 
   /** List all distinct sub-groups */
@@ -1548,14 +1559,7 @@ export const smartshopRouter = router({
   // ─── Dynamic Categories ──────────────────────────────────────────────────
   /** Returns default categories plus active catalogue categories */
   allCategories: protectedProcedure.query(async ({ ctx }) => {
-    const db = await getDb();
-    if (!db) return [...PRODUCT_CATEGORIES];
-    const rows = await db
-      .selectDistinct({ category: componentCatalogueProducts.category })
-      .from(componentCatalogueProducts)
-      .where(componentCatalogueWhere(ctx, eq(componentCatalogueProducts.isActive, true)));
-    const merged = new Set([...PRODUCT_CATEGORIES, ...rows.map((row) => row.category).filter(Boolean)]);
-    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+    return listCatalogueCategories(ctx);
   }),
 
   // ─── Order Templates (Kits) ──────────────────────────────────────────────
