@@ -23,10 +23,13 @@ import {
   xeroApiRequest,
   getValidAccessToken,
   getXeroContacts,
-  createXeroContact,
-  updateXeroContact,
   type XeroContact,
 } from "./xero-client";
+import {
+  createXeroContactReusingAccountNumber,
+  findXeroContactByAccountNumber,
+  updateXeroContactPreservingAccountNumber,
+} from "./xero-contact-account-number";
 import {
   getLegacyImportedCostTotal,
   rollupXeroAccountingTransactionsForMapping,
@@ -105,6 +108,27 @@ async function getOrCreateXeroContact(
   address?: string | null,
   accountNumber?: string | null,
 ): Promise<string> {
+  const routing = { connectionId: auth.xeroConnectionId };
+  const contactData: Partial<XeroContact> = {
+    Name: clientName,
+    IsCustomer: true,
+  };
+  if (accountNumber) contactData.AccountNumber = accountNumber;
+  if (email) contactData.EmailAddress = email;
+  if (phone) {
+    contactData.Phones = [{ PhoneType: "DEFAULT", PhoneNumber: phone }];
+  }
+  if (address) {
+    contactData.Addresses = [{ AddressType: "STREET", AddressLine1: address }];
+  }
+
+  if (accountNumber) {
+    const accountNumberContact = await findXeroContactByAccountNumber(accountNumber, routing).catch(() => null);
+    if (accountNumberContact?.ContactID) {
+      return accountNumberContact.ContactID;
+    }
+  }
+
   // Check if we already have a mapping
   const existingMapping = await db
     .select()
@@ -119,17 +143,27 @@ async function getOrCreateXeroContact(
 
   if (existingMapping.length > 0) {
     if (accountNumber) {
-      await updateXeroContact(existingMapping[0].xeroContactId, { AccountNumber: accountNumber }, { connectionId: auth.xeroConnectionId });
+      const result = await updateXeroContactPreservingAccountNumber(
+        existingMapping[0].xeroContactId,
+        { AccountNumber: accountNumber },
+        routing,
+      );
+      return result.contact.ContactID;
     }
     return existingMapping[0].xeroContactId;
   }
 
   // Search Xero for existing contact
   try {
-    const searchResult = await getXeroContacts({ where: `Name=="${clientName}"` }, { connectionId: auth.xeroConnectionId });
+    const searchResult = await getXeroContacts({ where: `Name=="${clientName}"` }, routing);
     if (searchResult.Contacts && searchResult.Contacts.length > 0) {
       if (accountNumber && searchResult.Contacts[0].AccountNumber !== accountNumber) {
-        await updateXeroContact(searchResult.Contacts[0].ContactID, { AccountNumber: accountNumber }, { connectionId: auth.xeroConnectionId });
+        const result = await updateXeroContactPreservingAccountNumber(
+          searchResult.Contacts[0].ContactID,
+          { AccountNumber: accountNumber },
+          routing,
+        );
+        return result.contact.ContactID;
       }
       return searchResult.Contacts[0].ContactID;
     }
@@ -137,22 +171,8 @@ async function getOrCreateXeroContact(
     // Search failed, create new
   }
 
-  // Create new contact in Xero
-  const contactData: Partial<XeroContact> = {
-    Name: clientName,
-    IsCustomer: true,
-  };
-  if (accountNumber) contactData.AccountNumber = accountNumber;
-  if (email) contactData.EmailAddress = email;
-  if (phone) {
-    contactData.Phones = [{ PhoneType: "DEFAULT", PhoneNumber: phone }];
-  }
-  if (address) {
-    contactData.Addresses = [{ AddressType: "STREET", AddressLine1: address }];
-  }
-
-  const result = await createXeroContact(contactData, { connectionId: auth.xeroConnectionId });
-  const xeroContactId = result.Contacts[0].ContactID;
+  const result = await createXeroContactReusingAccountNumber(contactData, routing);
+  const xeroContactId = result.contact.ContactID;
 
   return xeroContactId;
 }

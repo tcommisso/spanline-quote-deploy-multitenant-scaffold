@@ -43,6 +43,11 @@ import {
   XERO_ROUTING_FIELDS,
   XERO_ROUTING_OPERATORS,
 } from "./xero-routing-rules";
+import {
+  createXeroContactReusingAccountNumber,
+  findXeroContactByAccountNumber,
+  updateXeroContactPreservingAccountNumber,
+} from "./xero-contact-account-number";
 
 const orgCache = new Map<string, { data: any; ts: number }>();
 
@@ -731,21 +736,29 @@ export const xeroRouter = router({
 
       let xeroContactId: string;
       let xeroContactName: string;
+      const accountNumberContact = contactData.AccountNumber
+        ? await findXeroContactByAccountNumber(contactData.AccountNumber, routing).catch(() => null)
+        : null;
 
       if (existingMapping) {
-        // Update existing Xero contact
-        const result = await updateXeroContact(existingMapping.xeroContactId, contactData, routing);
-        xeroContactId = result.Contacts[0].ContactID;
-        xeroContactName = result.Contacts[0].Name;
+        // Prefer the Xero contact that already owns the local account number.
+        const result = await updateXeroContactPreservingAccountNumber(
+          accountNumberContact?.ContactID || existingMapping.xeroContactId,
+          contactData,
+          routing,
+        );
+        xeroContactId = result.contact.ContactID;
+        xeroContactName = result.contact.Name;
 
         await db.update(xeroContactMappings)
-          .set({ xeroContactName, lastSyncedAt: new Date() })
+          .set({ xeroContactId, xeroContactName, lastSyncedAt: new Date() })
           .where(eq(xeroContactMappings.id, existingMapping.id));
       } else {
-        // Create new Xero contact
-        const result = await createXeroContact(contactData, routing);
-        xeroContactId = result.Contacts[0].ContactID;
-        xeroContactName = result.Contacts[0].Name;
+        const result = accountNumberContact
+          ? await updateXeroContactPreservingAccountNumber(accountNumberContact.ContactID, contactData, routing)
+          : await createXeroContactReusingAccountNumber(contactData, routing);
+        xeroContactId = result.contact.ContactID;
+        xeroContactName = result.contact.Name;
 
         await db.insert(xeroContactMappings).values({
           xeroConnectionId: auth.xeroConnectionId,
