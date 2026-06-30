@@ -10,6 +10,7 @@ import { quotes, quoteComponents, constructionJobs, constructionProgress, checkM
 import { and, eq, inArray, sql, isNull, or } from "drizzle-orm";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { getTenantAppSetting } from "./tenant-settings-store";
+import { constructionStatusFromCrmStatus } from "./construction-status";
 
 async function assertLeadAccess(ctx: any, leadId: number) {
   const lead = await crmDb.getLead(leadId, tenantIdFromContext(ctx));
@@ -621,6 +622,28 @@ export const crmRouter = router({
       }
 
       await crmDb.updateLead(id, data as any, tenantId);
+
+      if (data.status) {
+        const db = await getDb();
+        if (db) {
+          const jobConditions = [eq(constructionJobs.leadId, id)];
+          appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
+          const existingJobs = await db.select({
+            id: constructionJobs.id,
+            status: constructionJobs.status,
+          }).from(constructionJobs).where(and(...jobConditions));
+          for (const job of existingJobs) {
+            const nextStatus = constructionStatusFromCrmStatus(data.status, job.status);
+            if (nextStatus && nextStatus !== job.status) {
+              const updateConditions = [eq(constructionJobs.id, job.id)];
+              appendTenantScope(updateConditions, constructionJobs.tenantId, tenantId);
+              await db.update(constructionJobs)
+                .set({ status: nextStatus })
+                .where(and(...updateConditions));
+            }
+          }
+        }
+      }
       return { success: true };
     }),
 

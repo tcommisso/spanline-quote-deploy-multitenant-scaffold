@@ -21,8 +21,8 @@ import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-re
 import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./canonical-client";
 import { storagePut } from "./storage";
 import { getTenantAppSetting } from "./tenant-settings-store";
+import { constructionLifecycleStatusSql } from "./construction-status";
 
-const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const constructionClientSortFieldSchema = z.enum([
   "clientName",
   "clientNumber",
@@ -570,7 +570,7 @@ function scheduleStartSortExpr(ctx: any) {
 function constructionClientSortExpr(ctx: any, sortField: ConstructionClientSortField) {
   if (sortField === "clientName") return canonicalClientNameSortExpr();
   if (sortField === "clientNumber") return sql<string>`COALESCE(NULLIF(TRIM(${crmLeads.clientNumber}), ''), '')`;
-  if (sortField === "status") return constructionJobs.status;
+  if (sortField === "status") return constructionLifecycleStatusSql();
   if (sortField === "scheduledStart") return scheduleStartSortExpr(ctx);
   if (sortField === "constructionManagerName") {
     return sql<string>`COALESCE(
@@ -814,14 +814,15 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      const lifecycleStatus = constructionLifecycleStatusSql();
       conditions.push(visibleConstructionClientCondition());
       if (input?.status === "not_completed") {
-        conditions.push(inArray(constructionJobs.status, [...ACTIVE_CONSTRUCTION_JOB_STATUSES]));
+        conditions.push(sql`${lifecycleStatus} IN ('scheduled', 'in_progress', 'on_hold')`);
       } else if (input?.status) {
-        conditions.push(eq(constructionJobs.status, input.status));
+        conditions.push(sql`${lifecycleStatus} = ${input.status}`);
       } else if (input?.excludeCompleted !== false) {
         // By default, exclude completed jobs when no specific status filter is set
-        conditions.push(sql`${constructionJobs.status} != 'completed'`);
+        conditions.push(sql`${lifecycleStatus} != 'completed'`);
       }
       if (input?.search) {
         conditions.push(
@@ -903,7 +904,7 @@ export const constructionClientsRouter = router({
         } else if (input.scheduled === "scheduled") {
           conditions.push(activeScheduleCondition(ctx));
         } else if (input.scheduled === "overdue") {
-          conditions.push(sql`${constructionJobs.status} != 'completed' AND (${or(
+          conditions.push(sql`${lifecycleStatus} != 'completed' AND (${or(
             scheduleEventExists(ctx, sql`${eventEnd} < ${todayRange.from}`),
             sql`${constructionJobs.scheduledStart} IS NOT NULL AND ${legacyJobEnd} < ${todayRange.from}`,
           )})`);
@@ -955,6 +956,7 @@ export const constructionClientsRouter = router({
       const [jobs, countResult] = await Promise.all([
         db.select({
           job: constructionJobs,
+          effectiveStatus: lifecycleStatus,
           clientNumber: crmLeads.clientNumber,
           leadId: crmLeads.id,
           leadFirstName: crmLeads.contactFirstName,
@@ -1006,6 +1008,8 @@ export const constructionClientsRouter = router({
 
         return {
           ...row.job,
+          storedConstructionStatus: row.job.status,
+          status: row.effectiveStatus || row.job.status,
           storedClientName: row.job.clientName,
           clientName: canonicalClient?.name || row.job.clientName,
           canonicalClient,
@@ -1214,6 +1218,7 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
 
       const conditions: any[] = [];
+      const lifecycleStatus = constructionLifecycleStatusSql();
       conditions.push(visibleConstructionClientCondition());
       if (input?.fyStartYear != null) {
         const range = fyDateRange(input.fyStartYear);
@@ -1234,12 +1239,12 @@ export const constructionClientsRouter = router({
       const where = and(...jobTenantConditions(ctx, ...conditions));
 
       const rows = await db.select({
-        status: constructionJobs.status,
+        status: lifecycleStatus,
         count: sql<number>`count(*)`
       }).from(constructionJobs)
         .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
         .where(where)
-        .groupBy(constructionJobs.status);
+        .groupBy(lifecycleStatus);
 
       const counts: Record<string, number> = { scheduled: 0, in_progress: 0, on_hold: 0, completed: 0, cancelled: 0 };
       let total = 0;

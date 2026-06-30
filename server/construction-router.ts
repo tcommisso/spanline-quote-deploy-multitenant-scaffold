@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import { getDb, createSmsDeliveryLog, getSmsDeliveryLogsByJob } from "./db";
-import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, portalPhotoComments, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages } from "../drizzle/schema";
+import { constructionJobs, constructionInstallers, constructionAssignments, constructionProgress, checkMeasureWorkbooks, xeroProjectMappings, cmVarianceItems, cmComponentOrders, cmWorkOrders, users, quoteItems, smsMessages, overdueAlertDismissals, constructionJobFinancials, tradeInvoices, poMilestones, jobCommunications, emailTemplates, smsTemplates, jobSharedFiles, portalPhotoComments, constructionPlans, constructionPlanAuditLog, manufacturingOrders, manufacturingTasks, inventoryMovements, inventoryStockItems, chatChannels, chatChannelMembers, tradeMessages, crmLeads } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { eq, desc, and, sql, gte, lt, notInArray, or, isNull, like, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
@@ -12,8 +12,12 @@ import { generateWorkOrderPdf } from "./construction-pdf";
 import { triggerPushDocumentUploaded, triggerPushSharedFileUploaded } from "./push-triggers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { getTradeReadinessMap, tradeReadinessKey } from "./construction-trade-readiness";
+import {
+  constructionLifecycleStatusSql,
+  constructionStatusFromCrmStatus,
+  crmStatusFromConstructionStatus,
+} from "./construction-status";
 
-const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const CLIENT_PORTAL_DOCUMENT_CATEGORIES = ["contract", "plans", "variation", "invoice", "photos", "other"] as const;
 
 // Auto-archive plans when job is completed
@@ -167,21 +171,31 @@ export const constructionRouter = router({
         const db = await getDb();
         if (!db) return [];
         const conditions: any[] = [];
+        const lifecycleStatus = constructionLifecycleStatusSql();
         const tenantId = tenantIdFromContext(ctx);
         appendTenantScope(conditions, constructionJobs.tenantId, tenantId);
         if (input?.status === "not_completed") {
-          conditions.push(inArray(constructionJobs.status, [...ACTIVE_CONSTRUCTION_JOB_STATUSES]));
+          conditions.push(sql`${lifecycleStatus} IN ('scheduled', 'in_progress', 'on_hold')`);
         } else if (input?.status) {
-          conditions.push(eq(constructionJobs.status, input.status));
+          conditions.push(sql`${lifecycleStatus} = ${input.status}`);
         } else if (input?.excludeCompleted !== false) {
           // By default, exclude completed jobs when no specific status filter is set
-          conditions.push(sql`${constructionJobs.status} != 'completed'`);
+          conditions.push(sql`${lifecycleStatus} != 'completed'`);
         }
         // FY date filter
         appendConstructionFyScope(conditions, input?.fyStartYear);
-        const jobs = await db.select().from(constructionJobs)
+        const rows = await db.select({
+          job: constructionJobs,
+          effectiveStatus: lifecycleStatus,
+        }).from(constructionJobs)
+          .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
           .where(conditions.length ? and(...conditions) : undefined)
           .orderBy(desc(constructionJobs.updatedAt));
+        const jobs = rows.map((row) => ({
+          ...row.job,
+          storedConstructionStatus: row.job.status,
+          status: row.effectiveStatus || row.job.status,
+        }));
         // Fetch xero project names for job number display
         const jobIds = jobs.map(j => j.id);
         let xeroNames: Record<number, string> = {};
@@ -227,7 +241,19 @@ export const constructionRouter = router({
         const tenantId = tenantIdFromContext(ctx);
         const jobConditions = [eq(constructionJobs.id, input.id)];
         appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
-        const [job] = await db.select().from(constructionJobs).where(and(...jobConditions));
+        const [jobRow] = await db.select({
+          job: constructionJobs,
+          leadStatus: crmLeads.status,
+        }).from(constructionJobs)
+          .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+          .where(and(...jobConditions));
+        const job = jobRow
+          ? {
+              ...jobRow.job,
+              storedConstructionStatus: jobRow.job.status,
+              status: constructionStatusFromCrmStatus(jobRow.leadStatus, jobRow.job.status) || jobRow.job.status,
+            }
+          : null;
         if (!job) throw new Error("Job not found");
 
         const assignments = await db.select({
@@ -324,11 +350,27 @@ export const constructionRouter = router({
           // Track status change for notification
           const hadStatusChange = updates.status !== undefined;
           let oldStatus: string | undefined;
+          let existingLeadId: number | null | undefined;
           if (hadStatusChange) {
-            const [existing] = await db.select({ status: constructionJobs.status })
-              .from(constructionJobs).where(and(...jobConditions));
+            const [existing] = await db.select({
+              status: constructionJobs.status,
+              leadId: constructionJobs.leadId,
+              leadStatus: crmLeads.status,
+            })
+              .from(constructionJobs)
+              .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+              .where(and(...jobConditions));
             if (!existing) throw new Error("Job not found");
-            oldStatus = existing?.status;
+            oldStatus = constructionStatusFromCrmStatus(existing.leadStatus, existing.status) || existing.status;
+            existingLeadId = existing.leadId;
+            const nextLeadStatus = crmStatusFromConstructionStatus(updates.status!, existing.leadStatus);
+            if (existingLeadId && nextLeadStatus && nextLeadStatus !== existing.leadStatus) {
+              const leadConditions = [eq(crmLeads.id, existingLeadId)];
+              appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
+              await db.update(crmLeads)
+                .set({ status: nextLeadStatus })
+                .where(and(...leadConditions));
+            }
           }
 
           await db.update(constructionJobs).set(setValues).where(and(...jobConditions));
@@ -369,10 +411,14 @@ export const constructionRouter = router({
       const db = await getDb();
       if (!db) return { total: 0, scheduled: 0, inProgress: 0, onHold: 0, completed: 0 };
       const conditions: any[] = [];
+      const lifecycleStatus = constructionLifecycleStatusSql();
       appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
       appendConstructionFyScope(conditions, input?.fyStartYear);
       const where = conditions.length ? and(...conditions) : undefined;
-      const allJobs = await db.select({ status: constructionJobs.status }).from(constructionJobs).where(where);
+      const allJobs = await db.select({ status: lifecycleStatus })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, eq(constructionJobs.leadId, crmLeads.id))
+        .where(where);
       const total = allJobs.length;
       const scheduled = allJobs.filter(j => j.status === "scheduled").length;
       const inProgress = allJobs.filter(j => j.status === "in_progress").length;
