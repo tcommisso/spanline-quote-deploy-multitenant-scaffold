@@ -79,9 +79,10 @@ export default function ConstructionDashboard() {
   // ─── FY Filter ──────────────────────────────────────────────────────────────
   const fysQuery = trpc.constructionClients.availableFYs.useQuery();
   const currentFy = fysQuery.data?.currentFy;
-  // Default to null (All Years) — show all non-complete jobs regardless of year
-  const [fyFilter, setFyFilter] = useState<number | null>(null);
-  const activeFy = fyFilter;
+  // Default to current FY so dashboard counts match Construction Clients.
+  const [fyFilter, setFyFilter] = useState<number | null | "unset">("unset");
+  const activeFy = fyFilter === "unset" ? (currentFy ?? null) : fyFilter;
+  const fyReady = fyFilter !== "unset" || currentFy != null;
   const fyOptions = fysQuery.data?.years || [];
 
   // FY date range for financial queries (ISO strings)
@@ -91,7 +92,7 @@ export default function ConstructionDashboard() {
   // ─── Queries ────────────────────────────────────────────────────────────────
   const statsQuery = trpc.construction.jobs.stats.useQuery(
     { fyStartYear: activeFy ?? undefined },
-    { enabled: true }
+    { enabled: fyReady }
   );
   const jobsQuery = trpc.construction.jobs.list.useQuery(
     {
@@ -99,7 +100,7 @@ export default function ConstructionDashboard() {
       fyStartYear: activeFy ?? undefined,
       excludeCompleted: statusFilter === "all_incl_completed" ? false : undefined,
     },
-    { enabled: true }
+    { enabled: fyReady }
   );
   const installersQuery = trpc.construction.installers.list.useQuery();
   const jobDetailQuery = trpc.construction.jobs.get.useQuery(
@@ -108,7 +109,7 @@ export default function ConstructionDashboard() {
   );
   const financialSummary = trpc.constructionFinancial.summary.useQuery(
     { fyStart, fyEnd },
-    { enabled: true }
+    { enabled: fyReady }
   );
   const healthSummary = trpc.constructionFinancial.healthSummary.useQuery();
 
@@ -116,11 +117,11 @@ export default function ConstructionDashboard() {
   const milestonesQuery = trpc.construction.dashboardAnalytics.upcomingMilestones.useQuery();
   const adviserBreakdownQuery = trpc.construction.dashboardAnalytics.adviserBreakdown.useQuery(
     { fyStartYear: activeFy ?? undefined },
-    { enabled: true }
+    { enabled: fyReady }
   );
   const tradePerformanceQuery = trpc.construction.dashboardAnalytics.tradePerformance.useQuery(
     { fyStartYear: activeFy ?? undefined },
-    { enabled: true }
+    { enabled: fyReady }
   );
   const [selectedTradeId, setSelectedTradeId] = useState<number | null>(null);
   const tradeDetailQuery = trpc.construction.dashboardAnalytics.tradeDetail.useQuery(
@@ -344,8 +345,8 @@ export default function ConstructionDashboard() {
       <div data-tour="overview-kpis" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           title="Active Jobs"
-          value={String((stats?.inProgress || 0) + (stats?.scheduled || 0))}
-          subtitle={`${stats?.inProgress || 0} in progress, ${stats?.scheduled || 0} scheduled`}
+          value={String((stats?.inProgress || 0) + (stats?.scheduled || 0) + (stats?.onHold || 0))}
+          subtitle={`${stats?.inProgress || 0} in progress, ${stats?.scheduled || 0} scheduled, ${stats?.onHold || 0} on hold`}
           icon={Wrench}
           accent={stats?.inProgress ? "text-amber-600" : undefined}
           onClick={() => navigate("/construction/jobs?status=in_progress")}
