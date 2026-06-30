@@ -24,6 +24,7 @@ import { generateSubcontractHtml } from "./subcontract-pdf";
 import { createDocument } from "./signwell";
 import { storagePut } from "./storage";
 import { buildTrustedAppUrl } from "./_core/url";
+import { getCompanyName } from "./company-name";
 
 function subcontractScope(id: number, tenantId: number) {
   return and(eq(projectSubcontracts.id, id), eq(projectSubcontracts.tenantId, tenantId));
@@ -35,6 +36,22 @@ function jobScope(id: number, tenantId: number) {
 
 function installerScope(id: number, tenantId: number) {
   return and(eq(constructionInstallers.id, id), eq(constructionInstallers.tenantId, tenantId));
+}
+
+function nullableText(value: unknown) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || null;
+}
+
+function canonicalClientNameFromLead(lead?: {
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
+  company?: string | null;
+} | null) {
+  if (!lead) return null;
+  const firstName = nullableText(lead.contactFirstName);
+  const lastName = nullableText(lead.contactLastName);
+  return [firstName, lastName].filter(Boolean).join(" ") || nullableText(lead.company);
 }
 
 // ─── Default Payment Milestones ──────────────────────────────────────────────
@@ -175,18 +192,28 @@ export const subcontractRouter = router({
 
       const selectedInstallerId = input.installerId ?? sourceSubcontract?.installerId ?? null;
       const [lead] = job.leadId
-        ? await db.select({ clientNumber: crmLeads.clientNumber })
+        ? await db.select({
+            contactFirstName: crmLeads.contactFirstName,
+            contactLastName: crmLeads.contactLastName,
+            company: crmLeads.company,
+            clientNumber: crmLeads.clientNumber,
+          })
             .from(crmLeads)
             .where(and(eq(crmLeads.id, job.leadId), eq(crmLeads.tenantId, ctx.tenant!.id)))
             .limit(1)
         : [];
+      const canonicalClientName = canonicalClientNameFromLead(lead);
+      const sourceClientName = nullableText(sourceSubcontract?.clientName);
+      const sourceUsesStoredJobName = sourceClientName && sourceClientName === nullableText(job.clientName);
 
       const [result] = await db.insert(projectSubcontracts).values({
         tenantId: ctx.tenant!.id,
         jobId: input.jobId,
         installerId: selectedInstallerId,
         jobNumber: sourceSubcontract?.jobNumber || job.quoteNumber || String(job.id),
-        clientName: sourceSubcontract?.clientName || job.clientName,
+        clientName: sourceUsesStoredJobName
+          ? canonicalClientName || sourceClientName
+          : sourceClientName || canonicalClientName || job.clientName,
         clientAccountNumber: sourceSubcontract?.clientAccountNumber || lead?.clientNumber || "",
         constructionManager: sourceSubcontract?.constructionManager || job.supervisorName || job.designAdviserName || "",
         subcontractorName: installer?.name || sourceSubcontract?.subcontractorName || "",
@@ -412,8 +439,11 @@ export const subcontractRouter = router({
         throw new TRPCError({ code: "BAD_REQUEST", message: "Only draft subcontracts can be sent. Create another subcontract for extra work or replacement documents." });
       }
 
+      const company = await getCompanyName(ctx.tenant!.id);
+
       // Generate HTML
       const html = generateSubcontractHtml({
+        companyName: company.companyName,
         jobNumber: sc.jobNumber || "",
         clientName: sc.clientName || "",
         clientAccountNumber: sc.clientAccountNumber || "",
@@ -491,7 +521,9 @@ export const subcontractRouter = router({
         .where(subcontractScope(input.id, ctx.tenant!.id))
         .limit(1);
       if (!sc) throw new Error("Subcontract not found");
+      const company = await getCompanyName(ctx.tenant!.id);
       const html = generateSubcontractHtml({
+        companyName: company.companyName,
         jobNumber: sc.jobNumber || "",
         clientName: sc.clientName || "",
         clientAccountNumber: sc.clientAccountNumber || "",

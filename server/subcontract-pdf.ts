@@ -4,6 +4,7 @@
  */
 
 interface SubcontractPdfData {
+  companyName: string;
   jobNumber: string;
   clientName: string;
   clientAccountNumber: string;
@@ -26,6 +27,15 @@ interface SubcontractPdfData {
   electricalCabling: { wall: string; roof: string; fan: string };
   downpipes: { toGround: string; toSpreader: string; toExistingDP: string; toStormwater: string };
   flashingBySubcontractor: string;
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function fmtDate(d: string | null): string {
@@ -51,6 +61,7 @@ function fmtPercent(v: number | null): string {
  * Generate HTML for the subcontract that can be rendered to PDF
  */
 export function generateSubcontractHtml(data: SubcontractPdfData): string {
+  const companyName = escapeHtml(data.companyName || "Commisso Group Pty Limited");
   const totalDollars = data.paymentSchedule
     .filter((m) => !m.usePercent)
     .reduce((sum, m) => sum + (m.amountDollars || 0), 0);
@@ -104,11 +115,11 @@ export function generateSubcontractHtml(data: SubcontractPdfData): string {
 <body>
   <div class="header-bar">
     <h1>Project Subcontract</h1>
-    <p style="font-size:9px;color:#555;">Commisso Group Pty Limited trading as Altaspan Home Additions</p>
+    <p style="font-size:9px;color:#555;">${companyName}</p>
   </div>
   
-  <p class="intro-text">The information identified in this document forms a specific separate Project Subcontract between Altaspan and the Subcontractor.</p>
-  <p class="intro-text">The Project Subcontract incorporates by reference the general conditions of the latest current version of the Master Subcontract that has been agreed between Altaspan and the Subcontractor.</p>
+  <p class="intro-text">The information identified in this document forms a specific separate Project Subcontract between ${companyName} and the Subcontractor.</p>
+  <p class="intro-text">The Project Subcontract incorporates by reference the general conditions of the latest current version of the Master Subcontract that has been agreed between ${companyName} and the Subcontractor.</p>
 
   <div style="margin-top:12px;">
     <div class="field-row">
@@ -205,10 +216,10 @@ export function generateSubcontractHtml(data: SubcontractPdfData): string {
   </div>
 
   <p class="terms-text" style="margin-top:12px;">
-    By working on the site listed you agree to the Build fee issued by Altaspan and will conduct work that is to the highest
+    By working on the site listed you agree to the Build fee issued by ${companyName} and will conduct work that is to the highest
     standard and working inline with all WHS requirements, the site will be keep clean and free of mess by the contractor
     while works are being carried out, any damage to materials caused by the contractor can be back charged to the
-    contractor at Altaspans discretion, a retention is kept for 15 days after the works have been completed by the contractor,
+    contractor at the discretion of ${companyName}, a retention is kept for 15 days after the works have been completed by the contractor,
     during this time any rectification will need to be completed before this 15 days has ended.
   </p>
 
@@ -223,7 +234,7 @@ export function generateSubcontractHtml(data: SubcontractPdfData): string {
     </div>
     <div class="sig-block">
       <p style="font-size:9px;font-weight:bold;text-align:center;margin-bottom:10px;">
-        Executed by Authorised Signatory for and on behalf of Commisso Group Pty Limited:
+        Executed by Authorised Signatory for and on behalf of ${companyName}:
       </p>
       <p style="font-size:10px;">Signature:</p><div class="sig-line"></div>
       <p style="font-size:10px;">Name:</p><div class="sig-line"></div>

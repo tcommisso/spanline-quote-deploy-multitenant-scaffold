@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { loadCompanyDetails } from "@/lib/proposalStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -107,8 +108,27 @@ function normalise(value: unknown) {
   return String(value || "").trim().toLowerCase();
 }
 
+function textOrEmpty(value: unknown) {
+  return String(value || "").trim();
+}
+
 function supplierTypeLabel(supplier: any) {
   return String(supplier?.category || supplier?.tradeType || "").trim();
+}
+
+function supplierTypeNames(supplier: any, categoryAssignments: Record<number, Array<{ name: string }>>) {
+  const names = new Set<string>();
+  for (const category of categoryAssignments[supplier.id] || []) {
+    const name = String(category.name || "").trim();
+    if (name) names.add(name);
+  }
+  const directType = supplierTypeLabel(supplier);
+  if (directType) names.add(directType);
+  return Array.from(names);
+}
+
+function supplierTypeDisplay(supplier: any, categoryAssignments: Record<number, Array<{ name: string }>>) {
+  return supplierTypeNames(supplier, categoryAssignments).join(", ");
 }
 
 function supplierOptionValue(supplier: any) {
@@ -144,11 +164,21 @@ export default function SubcontractEditor() {
   const utils = trpc.useUtils();
 
   // Fetch form option lists.
+  const { data: userSettings } = trpc.userSettings.get.useQuery();
   const { data: allUsers } = trpc.constructionClients.assignableUsers.useQuery();
   const { data: constructionSuppliers = [] } = trpc.suppliers.list.useQuery({
     activeOnly: true,
     supplierScope: "construction",
   });
+  const { data: supplierCategories = [] } = trpc.supplierCategories.list.useQuery();
+  const supplierIds = useMemo(
+    () => (constructionSuppliers as any[]).filter((supplier) => supplier.id > 0).map((supplier) => supplier.id),
+    [constructionSuppliers],
+  );
+  const { data: supplierCategoryAssignments = {} } = trpc.supplierCategories.getForSuppliers.useQuery(
+    { supplierIds },
+    { enabled: supplierIds.length > 0 },
+  );
 
   // Form state
   const [installerId, setInstallerId] = useState<number | null>(null);
@@ -268,20 +298,38 @@ export default function SubcontractEditor() {
     return match ? `user:${match.id}` : `saved:${constructionManager}`;
   }, [constructionManager, managerOptions]);
 
+  const selectedManagerUser = useMemo(() => {
+    const managerName = normalise(constructionManager);
+    if (!managerName) return null;
+    return managerOptions.find((user: any) =>
+      normalise(userDisplayName(user)) === managerName ||
+      normalise(user.name) === managerName ||
+      normalise(user.email) === managerName
+    ) || null;
+  }, [constructionManager, managerOptions]);
+
   const supplierTypes = useMemo(() => {
     const types = new Set<string>();
+    for (const category of supplierCategories as any[]) {
+      const name = String(category.name || "").trim();
+      if (name) types.add(name);
+    }
     for (const supplier of constructionSuppliers as any[]) {
-      const type = supplierTypeLabel(supplier);
-      if (type) types.add(type);
+      for (const type of supplierTypeNames(supplier, supplierCategoryAssignments as Record<number, Array<{ name: string }>>)) {
+        types.add(type);
+      }
     }
     return Array.from(types).sort((a, b) => a.localeCompare(b));
-  }, [constructionSuppliers]);
+  }, [constructionSuppliers, supplierCategories, supplierCategoryAssignments]);
 
   const filteredSuppliers = useMemo(() => {
     const rows = constructionSuppliers as any[];
     if (supplierTypeFilter === ALL_SUPPLIER_TYPES_VALUE) return rows;
-    return rows.filter((supplier) => supplierTypeLabel(supplier) === supplierTypeFilter);
-  }, [constructionSuppliers, supplierTypeFilter]);
+    return rows.filter((supplier) =>
+      supplierTypeNames(supplier, supplierCategoryAssignments as Record<number, Array<{ name: string }>>)
+        .some((type) => type === supplierTypeFilter)
+    );
+  }, [constructionSuppliers, supplierCategoryAssignments, supplierTypeFilter]);
 
   const selectedSupplier = useMemo(() => {
     const rows = constructionSuppliers as any[];
@@ -341,6 +389,15 @@ export default function SubcontractEditor() {
     setInstallerId(selected.installerId ? Number(selected.installerId) : null);
   };
 
+  const handleSendDialogOpenChange = (open: boolean) => {
+    if (open) {
+      setSubcontractorEmail(textOrEmpty(selectedSupplier?.email) || subcontractorEmail);
+      setSpanlineSignerName(textOrEmpty(constructionManager) || spanlineSignerName);
+      setSpanlineSignerEmail(textOrEmpty(selectedManagerUser?.email) || spanlineSignerEmail);
+    }
+    setSendDialogOpen(open);
+  };
+
   // Payment schedule helpers
   const updateMilestone = (index: number, field: keyof PaymentMilestone, value: any) => {
     const updated = [...milestones];
@@ -366,6 +423,11 @@ export default function SubcontractEditor() {
   const canCancel = subcontract?.status === "sent" && !isSigned && !isArchived;
   const canDelete = !!subcontract && !isSigned && subcontract.status !== "sent";
   const lifecycleMutationPending = createMutation.isPending || cancelMutation.isPending || archiveMutation.isPending || unarchiveMutation.isPending || deleteMutation.isPending;
+  const companyName = useMemo(() => {
+    const configured = textOrEmpty((userSettings?.companyDetails as any)?.companyName);
+    if (configured) return configured;
+    return textOrEmpty(loadCompanyDetails().companyName) || "Commisso Group Pty Limited";
+  }, [userSettings]);
 
   const refreshSubcontract = () => {
     if (subcontractId) utils.subcontract.get.invalidate({ id: subcontractId });
@@ -561,10 +623,10 @@ export default function SubcontractEditor() {
       <Card className="mb-4">
         <CardContent className="pt-4">
           <p className="text-sm text-muted-foreground">
-            The information identified in this document forms a specific separate Project Subcontract between Altaspan and the Subcontractor.
+            The information identified in this document forms a specific separate Project Subcontract between {companyName} and the Subcontractor.
           </p>
           <p className="text-sm text-muted-foreground mt-2">
-            The Project Subcontract incorporates by reference the general conditions of the latest current version of the Master Subcontract that has been agreed between Altaspan and the Subcontractor.
+            The Project Subcontract incorporates by reference the general conditions of the latest current version of the Master Subcontract that has been agreed between {companyName} and the Subcontractor.
           </p>
         </CardContent>
       </Card>
@@ -636,7 +698,7 @@ export default function SubcontractEditor() {
                     <SelectItem value="__no_suppliers" disabled>No suppliers for this type</SelectItem>
                   )}
                   {visibleSuppliers.map((supplier: any) => {
-                    const type = supplierTypeLabel(supplier);
+                    const type = supplierTypeDisplay(supplier, supplierCategoryAssignments as Record<number, Array<{ name: string }>>);
                     return (
                       <SelectItem key={supplierOptionValue(supplier)} value={supplierOptionValue(supplier)}>
                         {supplier.name}{type ? ` (${type})` : ""}
@@ -932,10 +994,10 @@ export default function SubcontractEditor() {
         </CardHeader>
         <CardContent>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            By working on the site listed you agree to the Build fee issued by Altaspan and will conduct work that is to the highest
+            By working on the site listed you agree to the Build fee issued by {companyName} and will conduct work that is to the highest
             standard and working inline with all WHS requirements, the site will be keep clean and free of mess by the contractor
             while works are being carried out, any damage to materials caused by the contractor can be back charged to the
-            contractor at Altaspan's discretion, a retention is kept for 15 days after the works have been completed by the contractor,
+            contractor at the discretion of {companyName}, a retention is kept for 15 days after the works have been completed by the contractor,
             during this time any rectification will need to be completed before this 15 days has ended.
           </p>
         </CardContent>
@@ -970,7 +1032,7 @@ export default function SubcontractEditor() {
             </div>
             <div className="border rounded-lg p-4 space-y-3">
               <p className="text-xs font-medium text-center">
-                Executed by Authorised Signatory for and on behalf of Commisso Group Pty Limited:
+                Executed by Authorised Signatory for and on behalf of {companyName}:
               </p>
               <Separator />
               <div className="space-y-2">
@@ -1025,7 +1087,7 @@ export default function SubcontractEditor() {
           <Button variant="outline" onClick={handleSave} disabled={updateMutation.isPending}>
             <Save className="h-4 w-4 mr-1" /> Save Draft
           </Button>
-          <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>
+          <Dialog open={sendDialogOpen} onOpenChange={handleSendDialogOpenChange}>
             <DialogTrigger asChild>
               <Button disabled={!canSend}>
                 <Send className="h-4 w-4 mr-1" /> Send for Signature
@@ -1035,7 +1097,7 @@ export default function SubcontractEditor() {
               <DialogHeader>
                 <DialogTitle>Send Subcontract for Signature</DialogTitle>
                 <DialogDescription>
-                  This will send the subcontract via SignWell for dual digital signatures — first the subcontractor, then the Altaspan authorised signatory.
+                  This will send the subcontract via SignWell for dual digital signatures — first the subcontractor, then the {companyName} authorised signatory.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-2">
@@ -1051,18 +1113,18 @@ export default function SubcontractEditor() {
                 </div>
                 <Separator />
                 <div className="space-y-1">
-                  <Label className="text-sm font-medium">Altaspan Authorised Signatory Name</Label>
+                  <Label className="text-sm font-medium">{companyName} Authorised Signatory Name</Label>
                   <Input
-                    placeholder="e.g. Tony Commisso"
+                    placeholder="Construction Manager"
                     value={spanlineSignerName}
                     onChange={(e) => setSpanlineSignerName(e.target.value)}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-sm font-medium">Altaspan Authorised Signatory Email</Label>
+                  <Label className="text-sm font-medium">{companyName} Authorised Signatory Email</Label>
                   <Input
                     type="email"
-                    placeholder="signer@altaspan.com"
+                    placeholder="construction.manager@example.com"
                     value={spanlineSignerEmail}
                     onChange={(e) => setSpanlineSignerEmail(e.target.value)}
                   />
