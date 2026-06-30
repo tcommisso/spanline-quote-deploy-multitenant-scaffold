@@ -44,6 +44,7 @@ After each meaningful pass, report:
 - Run the smallest meaningful test or check after changes.
 - If tests cannot be run, explain why and state the residual risk.
 - For UI work, verify visually where possible across desktop and mobile viewports.
+- When making UI changes, always cover both desktop and mobile layouts in the implementation and verification notes.
 
 ## Commit, Push, and Deploy
 - For completed implementation work, finish the pass by committing and pushing the reviewed changes unless the user explicitly asks not to.
