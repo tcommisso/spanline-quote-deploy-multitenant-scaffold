@@ -566,6 +566,10 @@ function addWrappedPdfText(doc: any, text: string, x: number, y: number, maxWidt
   return y + lines.length * lineHeight;
 }
 
+function pdfAlignFromTextAnchor(anchor: EndTreatmentAnnotation["textAnchor"]): "left" | "right" {
+  return anchor === "end" ? "right" : "left";
+}
+
 function drawProfilePdf(doc: any, geometry: Geometry, foldDetails: FoldDetails, x: number, y: number, width: number, height: number) {
   doc.setDrawColor(226, 232, 240);
   doc.setFillColor(248, 250, 252);
@@ -656,7 +660,7 @@ function drawProfilePdf(doc: any, geometry: Geometry, foldDetails: FoldDetails, 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(7);
     doc.setTextColor(146, 64, 14);
-    doc.text(annotation.label, labelPoint.x, labelPoint.y, { align: annotation.textAnchor });
+    doc.text(annotation.label, labelPoint.x, labelPoint.y, { align: pdfAlignFromTextAnchor(annotation.textAnchor) });
   });
 
   geometry.points.forEach((point, index) => {
