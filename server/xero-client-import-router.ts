@@ -5,7 +5,9 @@ import { tenantProcedure as protectedProcedure, router } from "./_core/trpc";
 import { getDb } from "./db";
 import {
   constructionJobs,
+  constructionProgress,
   crmLeads,
+  quotes,
   xeroProjectMappings,
   branches,
 } from "../drizzle/schema";
@@ -17,6 +19,7 @@ import {
 } from "./xero-client";
 import { deriveBranchFromProjectName } from "./xero-gl-helpers";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { constructionStatusFromCrmStatus } from "./construction-status";
 
 /**
  * Import Xero clients (orphan construction jobs with no leadId) into CRM Leads
@@ -28,6 +31,72 @@ const POST_SALE_LEAD_STATUSES = ["contract", "building_authority", "construction
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
 const NON_ACTIVE_CONSTRUCTION_JOB_STATUSES = ["completed", "cancelled"] as const;
 const CONSISTENCY_SAMPLE_LIMIT = 100;
+const DEFAULT_CONSTRUCTION_STAGES = [
+  "Site Prep",
+  "Footings & Concrete",
+  "Frame & Posts",
+  "Roof Installation",
+  "Electrical",
+  "Plumbing",
+  "Walls & Cladding",
+  "Final Inspection",
+] as const;
+
+type RepairableLead = typeof crmLeads.$inferSelect;
+
+function displayNameForLead(lead: Pick<RepairableLead, "contactFirstName" | "contactLastName" | "company" | "leadNumber">) {
+  return [
+    lead.contactFirstName,
+    lead.contactLastName,
+  ].filter(Boolean).join(" ").trim() || lead.company || lead.leadNumber || "Unknown client";
+}
+
+function hasPostSaleLeadStatus(status?: string | null) {
+  return POST_SALE_LEAD_STATUSES.includes(status as any);
+}
+
+async function createConstructionJobForLead(db: any, lead: RepairableLead, tenantId: number | null | undefined, createdBy?: number | null) {
+  const quoteConditions: any[] = [eq(quotes.clientId, lead.id)];
+  appendTenantScope(quoteConditions, quotes.tenantId, tenantId);
+  const linkedQuotes = await db.select({
+    id: quotes.id,
+    quoteNumber: quotes.quoteNumber,
+    siteAddress: quotes.siteAddress,
+    designAdvisor: quotes.designAdvisor,
+  })
+    .from(quotes)
+    .where(and(...quoteConditions))
+    .orderBy(desc(quotes.id))
+    .limit(1);
+  const latestQuote = linkedQuotes[0] || null;
+  const status = constructionStatusFromCrmStatus(lead.status, null) || "in_progress";
+  const clientName = displayNameForLead(lead);
+  const [jobResult] = await db.insert(constructionJobs).values({
+    tenantId,
+    leadId: lead.id,
+    quoteId: latestQuote?.id || null,
+    quoteNumber: latestQuote?.quoteNumber || lead.constructionJobNumber || lead.clientNumber || lead.leadNumber || null,
+    clientName,
+    siteAddress: lead.contactAddress || latestQuote?.siteAddress || null,
+    status,
+    priority: "normal",
+    designAdviserName: lead.designAdvisor || latestQuote?.designAdvisor || null,
+    createdBy: createdBy || null,
+  });
+
+  const jobId = Number(jobResult.insertId);
+  const progressStatus = status === "completed" ? "completed" : "pending";
+  for (const stage of DEFAULT_CONSTRUCTION_STAGES) {
+    await db.insert(constructionProgress).values({
+      tenantId,
+      jobId,
+      stage,
+      status: progressStatus,
+    });
+  }
+
+  return { jobId, status, clientName };
+}
 
 // ─── Helper: resolve branchId from branch name ──────────────────────────────
 async function resolveBranchId(db: any, branchName: string, tenantId?: number | null): Promise<number | undefined> {
@@ -266,6 +335,110 @@ export const xeroClientImportRouter = router({
       },
     };
   }),
+
+  createMissingConstructionJob: protectedProcedure
+    .input(z.object({ leadId: z.number().int().positive() }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const tenantId = tenantIdFromContext(ctx);
+
+      const leadConditions: any[] = [eq(crmLeads.id, input.leadId), eq(crmLeads.archived, false)];
+      appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
+      const [lead] = await db.select().from(crmLeads).where(and(...leadConditions)).limit(1);
+      if (!lead) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "CRM lead not found or is archived" });
+      }
+      if (!hasPostSaleLeadStatus(lead.status)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Only post-sale CRM leads can be repaired into construction jobs" });
+      }
+
+      const jobConditions: any[] = [eq(constructionJobs.leadId, lead.id)];
+      appendTenantScope(jobConditions, constructionJobs.tenantId, tenantId);
+      const [existingJob] = await db.select({ id: constructionJobs.id }).from(constructionJobs).where(and(...jobConditions)).limit(1);
+      if (existingJob) {
+        throw new TRPCError({ code: "CONFLICT", message: `This CRM lead already has construction job #${existingJob.id}` });
+      }
+
+      const created = await createConstructionJobForLead(db, lead, tenantId, ctx.user?.id);
+      return {
+        success: true,
+        leadId: lead.id,
+        jobId: created.jobId,
+        status: created.status,
+        message: `Created construction job #${created.jobId} for ${created.clientName}`,
+      };
+    }),
+
+  linkOrphanConstructionJobToLead: protectedProcedure
+    .input(z.object({
+      jobId: z.number().int().positive(),
+      leadId: z.number().int().positive(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new Error("Database not available");
+      const tenantId = tenantIdFromContext(ctx);
+
+      const jobTenantConditions: any[] = [];
+      appendTenantScope(jobTenantConditions, constructionJobs.tenantId, tenantId);
+      const leadTenantConditions: any[] = [];
+      appendTenantScope(leadTenantConditions, crmLeads.tenantId, tenantId);
+
+      const [jobRow] = await db.select({
+        job: constructionJobs,
+        linkedLeadId: crmLeads.id,
+      })
+        .from(constructionJobs)
+        .leftJoin(crmLeads, and(eq(constructionJobs.leadId, crmLeads.id), ...leadTenantConditions))
+        .where(and(eq(constructionJobs.id, input.jobId), ...jobTenantConditions))
+        .limit(1);
+      if (!jobRow?.job) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Construction job not found" });
+      }
+      if (jobRow.job.leadId && jobRow.linkedLeadId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This construction job already has a valid CRM lead" });
+      }
+
+      const leadConditions: any[] = [eq(crmLeads.id, input.leadId), eq(crmLeads.archived, false)];
+      appendTenantScope(leadConditions, crmLeads.tenantId, tenantId);
+      const [lead] = await db.select().from(crmLeads).where(and(...leadConditions)).limit(1);
+      if (!lead) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "CRM lead not found or is archived" });
+      }
+      if (!hasPostSaleLeadStatus(lead.status)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Only post-sale CRM leads can own construction jobs" });
+      }
+
+      const existingJobConditions: any[] = [eq(constructionJobs.leadId, lead.id)];
+      appendTenantScope(existingJobConditions, constructionJobs.tenantId, tenantId);
+      const [existingJob] = await db.select({ id: constructionJobs.id }).from(constructionJobs).where(and(...existingJobConditions)).limit(1);
+      if (existingJob && existingJob.id !== input.jobId) {
+        throw new TRPCError({ code: "CONFLICT", message: `CRM lead already owns construction job #${existingJob.id}` });
+      }
+
+      const status = constructionStatusFromCrmStatus(lead.status, jobRow.job.status) || jobRow.job.status;
+      const clientName = displayNameForLead(lead);
+      const updateConditions: any[] = [eq(constructionJobs.id, input.jobId)];
+      appendTenantScope(updateConditions, constructionJobs.tenantId, tenantId);
+      await db.update(constructionJobs)
+        .set({
+          leadId: lead.id,
+          status,
+          clientName: clientName || jobRow.job.clientName,
+          siteAddress: lead.contactAddress || jobRow.job.siteAddress,
+          quoteNumber: jobRow.job.quoteNumber || lead.constructionJobNumber || lead.clientNumber || lead.leadNumber || null,
+        })
+        .where(and(...updateConditions));
+
+      return {
+        success: true,
+        jobId: input.jobId,
+        leadId: lead.id,
+        status,
+        message: `Linked construction job #${input.jobId} to ${clientName}`,
+      };
+    }),
 
   /**
    * Get stats on how many orphan jobs exist (no leadId)

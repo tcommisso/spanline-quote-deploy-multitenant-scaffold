@@ -123,14 +123,19 @@ function ConsistencyIssueTable({
   count,
   rows,
   sampleLimit,
+  actionHeader,
+  renderAction,
 }: {
   title: string;
   description: string;
   count: number;
   rows: any[];
   sampleLimit: number;
+  actionHeader?: string;
+  renderAction?: (row: any) => React.ReactNode;
 }) {
   if (count <= 0) return null;
+  const columnCount = renderAction ? 5 : 4;
   return (
     <div className="border rounded-lg overflow-hidden">
       <div className="flex items-start justify-between gap-3 bg-muted/40 px-3 py-2">
@@ -148,6 +153,7 @@ function ConsistencyIssueTable({
               <th className="py-2 px-3">CRM</th>
               <th className="py-2 px-3">Job</th>
               <th className="py-2 px-3">Updated</th>
+              {renderAction && <th className="py-2 px-3 text-right">{actionHeader || "Action"}</th>}
             </tr>
           </thead>
           <tbody>
@@ -171,11 +177,16 @@ function ConsistencyIssueTable({
                 <td className="py-2 px-3 text-xs text-muted-foreground">
                   {formatShortDate(row.updatedAt || row.jobUpdatedAt)}
                 </td>
+                {renderAction && (
+                  <td className="py-2 px-3 text-right">
+                    {renderAction(row)}
+                  </td>
+                )}
               </tr>
             ))}
             {count > sampleLimit && (
               <tr>
-                <td colSpan={4} className="py-2 px-3 text-center text-xs text-muted-foreground">
+                <td colSpan={columnCount} className="py-2 px-3 text-center text-xs text-muted-foreground">
                   ...and {count - sampleLimit} more
                 </td>
               </tr>
@@ -201,6 +212,34 @@ function ConstructionClientConsistencyReport({
   const counts = report?.counts || {};
   const samples = report?.samples || {};
   const sampleLimit = report?.sampleLimit || 100;
+  const utils = trpc.useUtils();
+  const [linkLeadIdsByJob, setLinkLeadIdsByJob] = useState<Record<string, string>>({});
+  const refreshRepairData = async () => {
+    await Promise.all([
+      utils.xeroClientImport.getConstructionClientConsistencyReport.invalidate(),
+      utils.xeroClientImport.getOrphanStats.invalidate(),
+    ]);
+    onRefresh();
+  };
+  const createMissingJob = trpc.xeroClientImport.createMissingConstructionJob.useMutation({
+    onSuccess: (result) => {
+      toast.success(result.message || "Construction job created");
+      void refreshRepairData();
+    },
+    onError: (err) => toast.error(err.message || "Could not create construction job"),
+  });
+  const linkOrphanJob = trpc.xeroClientImport.linkOrphanConstructionJobToLead.useMutation({
+    onSuccess: (result) => {
+      toast.success(result.message || "Construction job linked");
+      setLinkLeadIdsByJob((current) => {
+        const next = { ...current };
+        delete next[String(result.jobId)];
+        return next;
+      });
+      void refreshRepairData();
+    },
+    onError: (err) => toast.error(err.message || "Could not link construction job"),
+  });
   const totalIssues =
     Number(counts.orphanConstructionJobs || 0) +
     Number(counts.activeJobsHiddenByCrm || 0) +
@@ -214,6 +253,7 @@ function ConstructionClientConsistencyReport({
           <h4 className="text-sm font-semibold">CRM / Construction Consistency Report</h4>
           <p className="text-xs text-muted-foreground mt-1">
             Finds linked-data gaps where CRM clients and construction job records have drifted apart.
+            Repair actions are limited to legacy missing-job and linking cases; normal status changes sync through CRM and Construction.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={onRefresh} disabled={isLoading}>
@@ -264,10 +304,40 @@ function ConstructionClientConsistencyReport({
               count={counts.orphanConstructionJobs || 0}
               rows={samples.orphanConstructionJobs || []}
               sampleLimit={sampleLimit}
+              actionHeader="Link to CRM"
+              renderAction={(row) => {
+                if (!row.jobId) return null;
+                const jobKey = String(row.jobId);
+                const leadIdValue = linkLeadIdsByJob[jobKey] || "";
+                const pending = linkOrphanJob.isPending && linkOrphanJob.variables?.jobId === row.jobId;
+                return (
+                  <div className="flex items-center justify-end gap-2">
+                    <Input
+                      className="h-8 w-24 text-xs"
+                      inputMode="numeric"
+                      placeholder="Lead ID"
+                      value={leadIdValue}
+                      onChange={(event) => setLinkLeadIdsByJob((current) => ({
+                        ...current,
+                        [jobKey]: event.target.value.replace(/[^\d]/g, ""),
+                      }))}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending || !Number(leadIdValue)}
+                      onClick={() => linkOrphanJob.mutate({ jobId: row.jobId, leadId: Number(leadIdValue) })}
+                    >
+                      {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
+                      <span className="sr-only">Link</span>
+                    </Button>
+                  </div>
+                );
+              }}
             />
             <ConsistencyIssueTable
               title="Active construction jobs hidden by CRM state"
-              description="Active jobs linked to missing or archived CRM leads."
+              description="Active jobs linked to missing or archived CRM leads. Review before changing CRM archive state."
               count={counts.activeJobsHiddenByCrm || 0}
               rows={samples.activeJobsHiddenByCrm || []}
               sampleLimit={sampleLimit}
@@ -278,10 +348,31 @@ function ConstructionClientConsistencyReport({
               count={counts.postSaleLeadsMissingConstructionJobs || 0}
               rows={samples.postSaleLeadsMissingConstructionJobs || []}
               sampleLimit={sampleLimit}
+              actionHeader="Repair"
+              renderAction={(row) => {
+                if (!row.leadId) return null;
+                const pending = createMissingJob.isPending && createMissingJob.variables?.leadId === row.leadId;
+                const historical = row.leadStatus === "completed";
+                return (
+                  <Button
+                    size="sm"
+                    variant={historical ? "outline" : "default"}
+                    disabled={pending}
+                    onClick={() => createMissingJob.mutate({ leadId: row.leadId })}
+                  >
+                    {pending ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    ) : (
+                      <Plus className="h-3.5 w-3.5 mr-1" />
+                    )}
+                    {historical ? "Create historical job" : "Create job"}
+                  </Button>
+                );
+              }}
             />
             <ConsistencyIssueTable
               title="Post-sale CRM clients linked to inactive jobs"
-              description="Post-sale CRM clients where the linked construction job is completed or cancelled."
+              description="Informational only. Normal CRM/Construction status updates now sync automatically; use this list to spot older duplicate or history records."
               count={counts.postSaleLeadsWithInactiveConstructionJobs || 0}
               rows={samples.postSaleLeadsWithInactiveConstructionJobs || []}
               sampleLimit={sampleLimit}
