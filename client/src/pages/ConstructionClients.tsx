@@ -45,6 +45,22 @@ import { formatCurrencyShort, formatCurrencyFull } from "@/lib/formatCurrency";
 const formatCurrency = formatCurrencyShort;
 
 const PAGE_SIZE = 50;
+const CONSTRUCTION_CLIENT_SORT_FIELDS = [
+  "clientName",
+  "clientNumber",
+  "status",
+  "scheduledStart",
+  "constructionManagerName",
+  "contractValue",
+  "progressPercent",
+  "priority",
+] as const;
+
+type ConstructionClientSortField = typeof CONSTRUCTION_CLIENT_SORT_FIELDS[number];
+
+function isConstructionClientSortField(value: string): value is ConstructionClientSortField {
+  return (CONSTRUCTION_CLIENT_SORT_FIELDS as readonly string[]).includes(value);
+}
 
 type ConstructionClientFilterSnapshot = {
   search: string;
@@ -57,7 +73,7 @@ type ConstructionClientFilterSnapshot = {
   suburbFilter: string;
   fyFilter: number | null | "unset";
   monthFilter: number | null;
-  sortField: string;
+  sortField: ConstructionClientSortField;
   sortDir: "asc" | "desc";
 };
 
@@ -93,6 +109,8 @@ export default function ConstructionClients() {
   const [installerFilter, setInstallerFilter] = useState<string>("all");
   const [branchFilter, setBranchFilter] = useState<string>("all");
   const [suburbFilter, setSuburbFilter] = useState<string>("all");
+  const [sortField, setSortField] = useState<ConstructionClientSortField>("clientName");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBaStatus, setBulkBaStatus] = useState<string>("");
@@ -130,6 +148,8 @@ export default function ConstructionClients() {
     baStatus: baFilter !== "all" ? baFilter as any : undefined,
     fyStartYear: activeFy ?? undefined,
     month: monthFilter ?? undefined,
+    sortField,
+    sortDir,
     limit: PAGE_SIZE,
     offset,
     excludeCompleted: statusFilter === "all_incl_completed" ? false : undefined,
@@ -154,7 +174,7 @@ export default function ConstructionClients() {
   useEffect(() => {
     setOffset(0);
     setAllClients([]);
-  }, [search, statusFilter, activeFy, monthFilter, paymentFilter, baFilter, scheduledFilter, installerFilter, branchFilter, suburbFilter]);
+  }, [search, statusFilter, activeFy, monthFilter, paymentFilter, baFilter, scheduledFilter, installerFilter, branchFilter, suburbFilter, sortField, sortDir]);
 
   const total = clientsQuery.data?.total || 0;
   const hasMore = allClients.length < total;
@@ -221,15 +241,12 @@ export default function ConstructionClients() {
   }, [displayClients, selectedIds]);
 
   // ─── Column Sorting ────────────────────────────────────────────────────────
-  const [sortField, setSortField] = useState<string>("clientName");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-
-  const toggleSort = (field: string) => {
+  const toggleSort = (field: ConstructionClientSortField) => {
     if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
     else { setSortField(field); setSortDir(field === "clientName" ? "asc" : "desc"); }
   };
 
-  const SortIcon = ({ field }: { field: string }) => {
+  const SortIcon = ({ field }: { field: ConstructionClientSortField }) => {
     if (sortField !== field) return <ArrowUpDown className="h-3 w-3 opacity-30" />;
     return sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />;
   };
@@ -341,8 +358,8 @@ export default function ConstructionClients() {
     setSuburbFilter(filters.suburbFilter || DEFAULT_FILTERS.suburbFilter);
     setFyFilter(filters.fyFilter === undefined ? DEFAULT_FILTERS.fyFilter : filters.fyFilter);
     setMonthFilter(filters.monthFilter ?? DEFAULT_FILTERS.monthFilter);
-    setSortField(filters.sortField || DEFAULT_FILTERS.sortField);
-    setSortDir(filters.sortDir || DEFAULT_FILTERS.sortDir);
+    setSortField(isConstructionClientSortField(filters.sortField) ? filters.sortField : DEFAULT_FILTERS.sortField);
+    setSortDir(filters.sortDir === "desc" ? "desc" : DEFAULT_FILTERS.sortDir);
     setSelectedIds(new Set());
     setSelectMode(false);
     setOffset(0);

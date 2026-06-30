@@ -23,6 +23,17 @@ import { storagePut } from "./storage";
 import { getTenantAppSetting } from "./tenant-settings-store";
 
 const ACTIVE_CONSTRUCTION_JOB_STATUSES = ["scheduled", "in_progress", "on_hold"] as const;
+const constructionClientSortFieldSchema = z.enum([
+  "clientName",
+  "clientNumber",
+  "status",
+  "scheduledStart",
+  "constructionManagerName",
+  "contractValue",
+  "progressPercent",
+  "priority",
+]);
+type ConstructionClientSortField = z.infer<typeof constructionClientSortFieldSchema>;
 const SCHEDULE_TIME_ZONE = "Australia/Sydney";
 const AU_STATE_TOKENS = new Set(["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]);
 const jobInstructionCategorySchema = z.enum([
@@ -535,6 +546,74 @@ function appendPaymentStatusFilter(conditions: any[], status: "paid" | "partial"
   }
 }
 
+function canonicalClientNameSortExpr() {
+  return sql<string>`COALESCE(
+    NULLIF(TRIM(CONCAT(COALESCE(${crmLeads.contactFirstName}, ''), ' ', COALESCE(${crmLeads.contactLastName}, ''))), ''),
+    NULLIF(TRIM(${crmLeads.company}), ''),
+    ${constructionJobs.clientName}
+  )`;
+}
+
+function scheduleStartSortExpr(ctx: any) {
+  return sql<Date>`COALESCE(
+    (
+      SELECT MIN(${constructionScheduleEvents.startTime})
+      FROM ${constructionScheduleEvents}
+      WHERE ${constructionScheduleEvents.jobId} = ${constructionJobs.id}
+        AND ${constructionScheduleEvents.status} != 'cancelled'
+        AND ${eventTenantPredicate(ctx)}
+    ),
+    ${constructionJobs.scheduledStart}
+  )`;
+}
+
+function constructionClientSortExpr(ctx: any, sortField: ConstructionClientSortField) {
+  if (sortField === "clientName") return canonicalClientNameSortExpr();
+  if (sortField === "clientNumber") return sql<string>`COALESCE(NULLIF(TRIM(${crmLeads.clientNumber}), ''), '')`;
+  if (sortField === "status") return constructionJobs.status;
+  if (sortField === "scheduledStart") return scheduleStartSortExpr(ctx);
+  if (sortField === "constructionManagerName") {
+    return sql<string>`COALESCE(
+      NULLIF(TRIM(${constructionJobFinancials.constructionManagerName}), ''),
+      NULLIF(TRIM(${constructionJobs.supervisorName}), ''),
+      ''
+    )`;
+  }
+  if (sortField === "contractValue") {
+    return financialAmountExpr(constructionJobFinancials.xeroContractValue, constructionJobFinancials.contractValue);
+  }
+  if (sortField === "progressPercent") {
+    const contractValue = financialAmountExpr(constructionJobFinancials.xeroContractValue, constructionJobFinancials.contractValue);
+    const paidAmount = financialAmountExpr(constructionJobFinancials.xeroPaidAmount, constructionJobFinancials.paidAmount);
+    return sql<number>`CASE WHEN ${contractValue} > 0 THEN (${paidAmount} / ${contractValue}) ELSE 0 END`;
+  }
+  return sql<number>`CASE ${constructionJobs.priority}
+    WHEN 'urgent' THEN 4
+    WHEN 'high' THEN 3
+    WHEN 'normal' THEN 1
+    WHEN 'low' THEN 0
+    ELSE 1
+  END`;
+}
+
+function buildConstructionClientOrderBy(
+  ctx: any,
+  sortField: ConstructionClientSortField = "clientName",
+  sortDir: "asc" | "desc" = "asc",
+) {
+  const primaryExpr = constructionClientSortExpr(ctx, sortField);
+  const primary = sortDir === "asc" ? asc(primaryExpr) : desc(primaryExpr);
+  if (sortField === "clientName") {
+    return [primary, desc(constructionJobs.updatedAt), desc(constructionJobs.id)];
+  }
+  return [
+    primary,
+    asc(canonicalClientNameSortExpr()),
+    desc(constructionJobs.updatedAt),
+    desc(constructionJobs.id),
+  ];
+}
+
 function appendApprovalStatusFilter(
   conditions: any[],
   status: "approved" | "pending" | "lodged" | "rejected" | "exempt" | "none" | "overdue",
@@ -725,6 +804,8 @@ export const constructionClientsRouter = router({
       baStatus: z.enum(["approved", "pending", "lodged", "rejected", "exempt", "none", "overdue"]).optional(),
       fyStartYear: z.number().optional(), // e.g. 2025 for FY 2025-26
       month: z.number().min(1).max(12).optional(), // 1-12, calendar month within the FY
+      sortField: constructionClientSortFieldSchema.optional(),
+      sortDir: z.enum(["asc", "desc"]).optional(),
       limit: z.number().optional(),
       offset: z.number().optional(),
       excludeCompleted: z.boolean().optional(), // default true when no status filter set
@@ -869,6 +950,7 @@ export const constructionClientsRouter = router({
       const where = and(...jobTenantConditions(ctx, ...conditions));
       const limit = input?.limit || 50;
       const offset = input?.offset || 0;
+      const orderBy = buildConstructionClientOrderBy(ctx, input?.sortField, input?.sortDir);
 
       const [jobs, countResult] = await Promise.all([
         db.select({
@@ -897,7 +979,7 @@ export const constructionClientsRouter = router({
           .leftJoin(branches, eq(crmLeads.branchId, branches.id))
           .leftJoin(quotes, eq(constructionJobs.quoteId, quotes.id))
           .where(where)
-          .orderBy(desc(constructionJobs.updatedAt))
+          .orderBy(...orderBy)
           .limit(limit)
           .offset(offset),
         db.select({ count: sql<number>`count(DISTINCT ${constructionJobs.id})` })
