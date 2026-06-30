@@ -14,7 +14,7 @@ import {
   tradeAvailabilities,
   users,
 } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray, isNull, or, asc } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, isNull, or, asc, sql } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
@@ -71,6 +71,41 @@ async function nullableExistingUserId(db: any, userId: unknown): Promise<number 
     .limit(1);
 
   return user?.id ?? null;
+}
+
+let holidayCalendarSchemaReady: Promise<void> | null = null;
+
+async function ensureHolidayCalendarSchema(db: any) {
+  holidayCalendarSchemaReady ??= db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS \`construction_holiday_calendar_days\` (
+      \`id\` int NOT NULL AUTO_INCREMENT,
+      \`tenantId\` int DEFAULT NULL,
+      \`dateKey\` varchar(10) NOT NULL,
+      \`name\` varchar(255) NOT NULL,
+      \`jurisdiction\` enum('NATIONAL','ACT','NSW','VIC','QLD','SA','WA','TAS','NT') NOT NULL DEFAULT 'NATIONAL',
+      \`year\` int NOT NULL,
+      \`source\` varchar(64) NOT NULL DEFAULT 'manual',
+      \`active\` boolean NOT NULL DEFAULT true,
+      \`createdBy\` int DEFAULT NULL,
+      \`createdAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      \`updatedAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`uniq_construction_holiday_tenant_day_jurisdiction_name\` (\`tenantId\`, \`dateKey\`, \`jurisdiction\`, \`name\`),
+      KEY \`idx_construction_holiday_tenant_date\` (\`tenantId\`, \`dateKey\`),
+      KEY \`idx_construction_holiday_tenant_year\` (\`tenantId\`, \`year\`),
+      CONSTRAINT \`construction_holiday_calendar_days_tenantId_tenants_id_fk\`
+        FOREIGN KEY (\`tenantId\`) REFERENCES \`tenants\` (\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+      CONSTRAINT \`construction_holiday_calendar_days_createdBy_users_id_fk\`
+        FOREIGN KEY (\`createdBy\`) REFERENCES \`users\` (\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION
+    )
+  `))
+    .then(() => undefined)
+    .catch((err: unknown) => {
+      holidayCalendarSchemaReady = null;
+      throw err;
+    });
+
+  return holidayCalendarSchemaReady;
 }
 
 function parseScheduleDateTime(value: string | null | undefined, fieldName: string, required = false) {
@@ -351,6 +386,7 @@ export const constructionScheduleRouter = router({
     }).optional())
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureHolidayCalendarSchema(db);
       const conditions: any[] = [];
       if (input?.year) conditions.push(eq(constructionHolidayCalendarDays.year, input.year));
       const { startKey, endKey } = dateKeyRange(input?.startDate, input?.endDate);
@@ -373,6 +409,7 @@ export const constructionScheduleRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access is required to import holiday calendar days" });
       }
       const db = await requireDb();
+      await ensureHolidayCalendarSchema(db);
       const tenantId = tenantIdFromContext(ctx);
       const jurisdictions = (input.jurisdictions?.length
         ? input.jurisdictions
@@ -443,6 +480,7 @@ export const constructionScheduleRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "Admin access is required to update holiday calendar days" });
       }
       const db = await requireDb();
+      await ensureHolidayCalendarSchema(db);
       await db.update(constructionHolidayCalendarDays)
         .set({ active: input.active })
         .where(and(...holidayTenantConditions(ctx, eq(constructionHolidayCalendarDays.id, input.id))));
@@ -457,6 +495,7 @@ export const constructionScheduleRouter = router({
     }))
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
+      await ensureHolidayCalendarSchema(db);
       const { startKey, endKey } = dateKeyRange(input.startDate, input.endDate);
       if (!startKey || !endKey) return [];
       if (input.installerId) await requireInstallerAccess(db, ctx, input.installerId);
