@@ -28,6 +28,18 @@ const TASK_STATUS_COLORS: Record<string, string> = {
   cancelled: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 };
 
+function formatAustralianDate(value?: string | Date | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Australia/Sydney",
+  }).format(date).replace(/\//g, "-");
+}
+
 export default function ManufacturingOrderDetail() {
   const [, params] = useRoute("/manufacturing/orders/:id");
   const orderId = Number(params?.id);
@@ -165,7 +177,7 @@ export default function ManufacturingOrderDetail() {
         </div>
         <div className="bg-card border rounded-lg p-3">
           <p className="text-xs text-muted-foreground">Target Date</p>
-          <p className="font-medium mt-1">{order.targetDate ? new Date(order.targetDate).toLocaleDateString() : "Not set"}</p>
+          <p className="font-medium mt-1">{order.targetDate ? formatAustralianDate(order.targetDate) : "Not set"}</p>
         </div>
         <div className="bg-card border rounded-lg p-3">
           <p className="text-xs text-muted-foreground">Tasks</p>
@@ -350,7 +362,7 @@ export default function ManufacturingOrderDetail() {
                 <tbody className="divide-y">
                   {order.schedule.map((s: any) => (
                     <tr key={s.id}>
-                      <td className="px-4 py-2 text-xs">{new Date(s.scheduledDate).toLocaleDateString()}</td>
+                      <td className="px-4 py-2 text-xs">{formatAustralianDate(s.scheduledDate)}</td>
                       <td className="px-4 py-2">{s.title}</td>
                       <td className="px-4 py-2 text-xs">{s.branchName}</td>
                       <td className="px-4 py-2 text-xs">{s.assignedTo || "—"}</td>
@@ -392,7 +404,7 @@ export default function ManufacturingOrderDetail() {
                         <Badge variant="secondary" className="text-xs">{po.status}</Badge>
                       </td>
                       <td className="px-4 py-2 text-right">{po.totalAmount ? `$${Number(po.totalAmount).toLocaleString()}` : "—"}</td>
-                      <td className="px-4 py-2 text-xs">{po.requiredByDate ? new Date(po.requiredByDate).toLocaleDateString() : "—"}</td>
+                      <td className="px-4 py-2 text-xs">{formatAustralianDate(po.requiredByDate)}</td>
                       <td className="px-4 py-2 text-xs">
                         {po.xeroPoId ? (
                           <Badge variant="outline" className="text-xs text-green-600">Synced</Badge>

@@ -17,6 +17,7 @@ import {
   checkMeasureWorkbooks,
   flashingOrders,
   branches,
+  suppliers,
 } from "../drizzle/schema";
 import { eq, desc, and, gte, lte, inArray, sql, asc, or, isNull, like } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
@@ -444,6 +445,69 @@ const transitionRowInput = z.object({
   rawData: z.record(z.string(), z.any()).optional(),
   notes: z.string().nullable().optional(),
 });
+
+const transitionSourceInput = z.object({
+  kind: z.enum(["manufacture", "procure", "branch", "supplier"]),
+  id: z.number().nullable().optional(),
+  label: z.string().nullable().optional(),
+  sourceType: z.enum(["manufacture", "procure"]).optional(),
+});
+
+async function normalizeTransitionSourceReference(db: any, ctx: any, input?: z.infer<typeof transitionSourceInput> | null) {
+  if (!input) return null;
+  if (input.kind === "branch") {
+    if (!input.id) throw new TRPCError({ code: "BAD_REQUEST", message: "Branch source requires a branch." });
+    const [branch] = await db.select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(and(...await branchTenantConditions(ctx, eq(branches.id, input.id), eq(branches.isActive, true))))
+      .limit(1);
+    if (!branch) throw new TRPCError({ code: "FORBIDDEN", message: "Selected branch source is outside this tenant." });
+    return {
+      kind: "branch" as const,
+      id: branch.id,
+      label: branch.name,
+      sourceType: "manufacture" as const,
+    };
+  }
+  if (input.kind === "supplier") {
+    if (!input.id) throw new TRPCError({ code: "BAD_REQUEST", message: "Supplier source requires a supplier." });
+    const conditions: any[] = [eq(suppliers.id, input.id), eq(suppliers.isActive, true)];
+    appendTenantScope(conditions, suppliers.tenantId, tenantIdFromContext(ctx));
+    const [supplier] = await db.select({ id: suppliers.id, name: suppliers.name })
+      .from(suppliers)
+      .where(and(...conditions))
+      .limit(1);
+    if (!supplier) throw new TRPCError({ code: "FORBIDDEN", message: "Selected supplier source is outside this tenant." });
+    return {
+      kind: "supplier" as const,
+      id: supplier.id,
+      label: supplier.name,
+      sourceType: "procure" as const,
+    };
+  }
+  if (input.kind === "procure") {
+    return {
+      kind: "procure" as const,
+      id: null,
+      label: input.label?.trim() || "External procurement",
+      sourceType: "procure" as const,
+    };
+  }
+  return {
+    kind: "manufacture" as const,
+    id: null,
+    label: input.label?.trim() || "Internal manufacturing",
+    sourceType: "manufacture" as const,
+  };
+}
+
+function transitionRawDataWithSource(rawData: unknown, source: Awaited<ReturnType<typeof normalizeTransitionSourceReference>> | null) {
+  if (!source) return rawData && typeof rawData === "object" && !Array.isArray(rawData) ? rawData as Record<string, any> : {};
+  return {
+    ...(rawData && typeof rawData === "object" && !Array.isArray(rawData) ? rawData as Record<string, any> : {}),
+    transitionSource: source,
+  };
+}
 
 async function requireJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select()
@@ -1090,6 +1154,7 @@ export const manufacturingRouter = router({
         rowId: z.number(),
         stockItemId: z.number().nullable(),
         sourceType: z.enum(["manufacture", "procure"]).optional(),
+        sourceReference: transitionSourceInput.optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const db = await requireDb();
@@ -1103,6 +1168,7 @@ export const manufacturingRouter = router({
             throw new TRPCError({ code: "FORBIDDEN", message: "Selected stock item is outside this tenant." });
           }
         }
+        const sourceReference = await normalizeTransitionSourceReference(db, ctx, input.sourceReference);
 
         const updated = {
           stockItemId: stockItem?.id ?? null,
@@ -1110,7 +1176,8 @@ export const manufacturingRouter = router({
           stockItemName: stockItem?.name ?? null,
           matchStatus: stockItem ? "manual" as const : "unmatched" as const,
           matchConfidence: stockItem ? "100" : "0",
-          sourceType: input.sourceType || row.sourceType,
+          sourceType: sourceReference?.sourceType || input.sourceType || row.sourceType,
+          rawData: sourceReference ? transitionRawDataWithSource(row.rawData, sourceReference) : row.rawData,
           updatedAt: new Date(),
         };
         await db.update(manufacturingTransitionImportRows)
@@ -1671,7 +1738,8 @@ export const manufacturingRouter = router({
 
     summary: protectedProcedure.query(async ({ ctx }) => {
       const db = await requireDb();
-      const [orderStats] = await db.select({
+      const tenantId = tenantIdOrThrow(ctx);
+      const [componentOrderStats] = await db.select({
         totalOrders: sql<number>`COUNT(*)`,
         inProduction: sql<number>`SUM(CASE WHEN ${manufacturingOrders.status} IN ('received','in_production','partially_complete') THEN 1 ELSE 0 END)`,
         completed: sql<number>`SUM(CASE WHEN ${manufacturingOrders.status} = 'completed' THEN 1 ELSE 0 END)`,
@@ -1679,6 +1747,28 @@ export const manufacturingRouter = router({
       }).from(manufacturingOrders)
         .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
         .where(and(...jobTenantConditions(ctx)));
+
+      const [flashingOrderStats] = await db.select({
+        totalOrders: sql<number>`COUNT(*)`,
+        inProduction: sql<number>`SUM(CASE WHEN ${flashingOrders.status} IN ('submitted','supplier_received','in_production','purchase_ordered') THEN 1 ELSE 0 END)`,
+        completed: sql<number>`SUM(CASE WHEN ${flashingOrders.status} = 'completed' THEN 1 ELSE 0 END)`,
+        overdue: sql<number>`SUM(CASE WHEN ${flashingOrders.status} IN ('submitted','supplier_received','in_production','purchase_ordered') AND ${flashingOrders.requestedDeliveryAt} < NOW() THEN 1 ELSE 0 END)`,
+      }).from(flashingOrders)
+        .where(and(
+          eq(flashingOrders.tenantId, tenantId),
+          sql`${flashingOrders.status} NOT IN ('draft', 'archived')`,
+        ));
+
+      const [transitionOrderStats] = await db.select({
+        totalOrders: sql<number>`COUNT(*)`,
+        inProduction: sql<number>`SUM(CASE WHEN ${manufacturingTransitionImports.status} IN ('imported','in_review') THEN 1 ELSE 0 END)`,
+        completed: sql<number>`SUM(CASE WHEN ${manufacturingTransitionImports.status} = 'accepted' THEN 1 ELSE 0 END)`,
+      }).from(manufacturingTransitionImports)
+        .where(and(
+          eq(manufacturingTransitionImports.tenantId, tenantId),
+          sql`${manufacturingTransitionImports.status} != 'archived'`,
+        ));
+
       const [taskStats] = await db.select({
         totalTasks: sql<number>`COUNT(*)`,
         pendingTasks: sql<number>`SUM(CASE WHEN ${manufacturingTasks.status} IN ('pending','scheduled','in_progress') THEN 1 ELSE 0 END)`,
@@ -1686,13 +1776,23 @@ export const manufacturingRouter = router({
         .innerJoin(manufacturingOrders, eq(manufacturingTasks.orderId, manufacturingOrders.id))
         .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
         .where(and(...jobTenantConditions(ctx)));
+      const componentOrders = Number(componentOrderStats?.totalOrders || 0);
+      const flashingOrderCount = Number(flashingOrderStats?.totalOrders || 0);
+      const transitionOrderCount = Number(transitionOrderStats?.totalOrders || 0);
       return {
-        totalOrders: orderStats?.totalOrders || 0,
-        inProduction: orderStats?.inProduction || 0,
-        completed: orderStats?.completed || 0,
-        overdue: orderStats?.overdue || 0,
-        totalTasks: taskStats?.totalTasks || 0,
-        pendingTasks: taskStats?.pendingTasks || 0,
+        totalOrders: componentOrders + flashingOrderCount + transitionOrderCount,
+        componentOrders,
+        flashingOrders: flashingOrderCount,
+        transitionOrders: transitionOrderCount,
+        inProduction: Number(componentOrderStats?.inProduction || 0)
+          + Number(flashingOrderStats?.inProduction || 0)
+          + Number(transitionOrderStats?.inProduction || 0),
+        completed: Number(componentOrderStats?.completed || 0)
+          + Number(flashingOrderStats?.completed || 0)
+          + Number(transitionOrderStats?.completed || 0),
+        overdue: Number(componentOrderStats?.overdue || 0) + Number(flashingOrderStats?.overdue || 0),
+        totalTasks: Number(taskStats?.totalTasks || 0),
+        pendingTasks: Number(taskStats?.pendingTasks || 0),
       };
     }),
   }),

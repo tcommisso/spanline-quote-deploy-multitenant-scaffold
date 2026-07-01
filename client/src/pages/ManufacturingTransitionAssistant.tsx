@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -17,8 +19,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AlertCircle, Building2, CheckCircle2, FileSpreadsheet, MapPin, RefreshCw, Save, Search, Trash2, UploadCloud } from "lucide-react";
+import { AlertCircle, Building2, Check, CheckCircle2, ChevronsUpDown, FileSpreadsheet, MapPin, RefreshCw, Save, Search, Trash2, UploadCloud } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 type TransitionRow = {
   id?: number;
@@ -53,6 +56,15 @@ type ConstructionClientLookupResult = {
   contactPhone?: string | null;
   contactEmail?: string | null;
   status?: string | null;
+};
+
+type RowSourceOption = {
+  value: string;
+  kind: "manufacture" | "procure" | "branch" | "supplier";
+  id?: number | null;
+  label: string;
+  description?: string | null;
+  sourceType: "manufacture" | "procure";
 };
 
 const MATCH_STYLES: Record<string, string> = {
@@ -92,25 +104,153 @@ function stockLabel(item: any) {
   return [item.code, item.name].filter(Boolean).join(" - ");
 }
 
+function stockSearchText(item: any) {
+  return [
+    item.code,
+    item.name,
+    item.description,
+    item.category,
+    item.subGroup,
+    item.supplier,
+    item.colour,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function sourceValueFor(option: Pick<RowSourceOption, "kind" | "id">) {
+  if (option.kind === "branch" || option.kind === "supplier") {
+    return `${option.kind}:${option.id ?? ""}`;
+  }
+  return `${option.kind}:default`;
+}
+
+function sourceReferenceFor(option: RowSourceOption) {
+  return {
+    kind: option.kind,
+    id: option.id ?? null,
+    label: option.label,
+    sourceType: option.sourceType,
+  };
+}
+
+function transitionSourceFromRawData(rawData: unknown): RowSourceOption | null {
+  if (!isRecord(rawData) || !isRecord(rawData.transitionSource)) return null;
+  const source = rawData.transitionSource;
+  const kind = source.kind;
+  if (!["manufacture", "procure", "branch", "supplier"].includes(kind)) return null;
+  const sourceType = source.sourceType === "procure" || kind === "procure" || kind === "supplier"
+    ? "procure"
+    : "manufacture";
+  const id = Number(source.id);
+  return {
+    value: sourceValueFor({ kind, id: Number.isFinite(id) ? id : null }),
+    kind,
+    id: Number.isFinite(id) ? id : null,
+    label: String(source.label || (sourceType === "procure" ? "External procurement" : "Internal manufacturing")),
+    description: source.description ? String(source.description) : null,
+    sourceType,
+  };
+}
+
+function rowSourceOption(row: TransitionRow, sourceOptions: RowSourceOption[]) {
+  const stored = transitionSourceFromRawData(row.rawData);
+  if (stored) {
+    return sourceOptions.find((option) => option.value === stored.value) || stored;
+  }
+  const fallbackValue = row.sourceType === "procure" ? "procure:default" : "manufacture:default";
+  return sourceOptions.find((option) => option.value === fallbackValue) || {
+    value: fallbackValue,
+    kind: row.sourceType === "procure" ? "procure" : "manufacture",
+    label: row.sourceType === "procure" ? "External procurement" : "Internal manufacturing",
+    sourceType: row.sourceType || "manufacture",
+  };
+}
+
+function mergeTransitionSource(row: TransitionRow, option: RowSourceOption) {
+  const rawData = isRecord(row.rawData) ? { ...row.rawData } : {};
+  rawData.transitionSource = sourceReferenceFor(option);
+  return rawData;
+}
+
 function RowSourceSelect({
+  row,
+  options,
   value,
   onChange,
   disabled,
 }: {
-  value: "manufacture" | "procure";
-  onChange: (value: "manufacture" | "procure") => void;
+  row: TransitionRow;
+  options: RowSourceOption[];
+  value: RowSourceOption;
+  onChange: (value: RowSourceOption) => void;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const selected = value || rowSourceOption(row, options);
+
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value as "manufacture" | "procure")}
-      disabled={disabled}
-      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <option value="manufacture">Manufacture</option>
-      <option value="procure">Procure</option>
-    </select>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="h-9 w-full justify-between px-3 text-left font-normal"
+        >
+          <span className="min-w-0 truncate">{selected.label}</span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search branches or suppliers..." />
+          <CommandList>
+            <CommandEmpty>No source found.</CommandEmpty>
+            <CommandGroup heading="Manufacture">
+              {options.filter((option) => option.sourceType === "manufacture").map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={`${option.value} ${option.label} ${option.description || ""}`}
+                  onSelect={() => {
+                    onChange(option);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("h-4 w-4", selected.value === option.value ? "opacity-100" : "opacity-0")} />
+                  <div className="min-w-0">
+                    <div className="truncate">{option.label}</div>
+                    {option.description && <div className="truncate text-xs text-muted-foreground">{option.description}</div>}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandGroup heading="Suppliers">
+              {options.filter((option) => option.sourceType === "procure").map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={`${option.value} ${option.label} ${option.description || ""}`}
+                  onSelect={() => {
+                    onChange(option);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("h-4 w-4", selected.value === option.value ? "opacity-100" : "opacity-0")} />
+                  <div className="min-w-0">
+                    <div className="truncate">{option.label}</div>
+                    {option.description && <div className="truncate text-xs text-muted-foreground">{option.description}</div>}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -125,23 +265,89 @@ function StockMatchSelect({
   onChange: (stockItemId: number | null) => void;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const selected = row.stockItemId ? stockItems.find((item) => item.id === row.stockItemId) : null;
-  const options = selected && !stockItems.some((item) => item.id === selected.id)
-    ? [selected, ...stockItems]
-    : stockItems;
+  const selectedLabel = selected
+    ? stockLabel(selected)
+    : row.stockItemId
+      ? [row.stockItemCode, row.stockItemName].filter(Boolean).join(" - ")
+      : "";
+  const options = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const filtered = (!search
+      ? stockItems
+      : stockItems.filter((item) => stockSearchText(item).includes(search))
+    ).slice(0, 80);
+    if (selected && !filtered.some((item) => item.id === selected.id)) {
+      return [selected, ...filtered];
+    }
+    return filtered;
+  }, [query, selected, stockItems]);
 
   return (
-    <select
-      value={row.stockItemId ? String(row.stockItemId) : ""}
-      onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
-      disabled={disabled}
-      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <option value="">No stock match</option>
-      {options.map((item) => (
-        <option key={item.id} value={item.id}>{stockLabel(item)}</option>
-      ))}
-    </select>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          disabled={disabled}
+          className="h-9 w-full justify-between px-3 text-left font-normal"
+        >
+          <span className={cn("min-w-0 truncate", !selectedLabel && "text-muted-foreground")}>
+            {selectedLabel || "No stock match"}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search code, product, category..."
+          />
+          <CommandList>
+            <CommandGroup>
+              <CommandItem
+                value="No stock match"
+                onSelect={() => {
+                  onChange(null);
+                  setOpen(false);
+                }}
+              >
+                <Check className={cn("h-4 w-4", !row.stockItemId ? "opacity-100" : "opacity-0")} />
+                No stock match
+              </CommandItem>
+            </CommandGroup>
+            <CommandGroup heading={options.length >= 80 ? "Stock items (showing first 80 matches)" : "Stock items"}>
+              {options.length === 0 ? (
+                <div className="px-2 py-3 text-sm text-muted-foreground">No matching stock items.</div>
+              ) : options.map((item) => (
+                <CommandItem
+                  key={item.id}
+                  value={`${stockLabel(item)} ${item.category || ""} ${item.supplier || ""}`}
+                  onSelect={() => {
+                    onChange(item.id);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={cn("h-4 w-4", row.stockItemId === item.id ? "opacity-100" : "opacity-0")} />
+                  <div className="min-w-0">
+                    <div className="truncate">{stockLabel(item)}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {[item.category, item.supplier, item.colour].filter(Boolean).join(" · ") || "Stock item"}
+                    </div>
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -159,6 +365,7 @@ function MatchBadge({ row }: { row: TransitionRow }) {
 function ImportRowsEditor({
   rows,
   stockItems,
+  sourceOptions,
   onStockChange,
   onSourceChange,
   onDeleteRow,
@@ -166,8 +373,9 @@ function ImportRowsEditor({
 }: {
   rows: TransitionRow[];
   stockItems: any[];
+  sourceOptions: RowSourceOption[];
   onStockChange: (row: TransitionRow, stockItemId: number | null) => void;
-  onSourceChange: (row: TransitionRow, sourceType: "manufacture" | "procure") => void;
+  onSourceChange: (row: TransitionRow, source: RowSourceOption) => void;
   onDeleteRow: (row: TransitionRow) => void;
   isSaving?: boolean;
 }) {
@@ -200,13 +408,19 @@ function ImportRowsEditor({
                 Qty
               </div>
               <div className="rounded-md bg-muted/40 p-2">
-                <div className="font-semibold text-foreground">{row.rawUnit || row.sourceType || "manufacture"}</div>
+                <div className="font-semibold text-foreground">{row.rawUnit || rowSourceOption(row, sourceOptions).label}</div>
                 Unit / source
               </div>
             </div>
             <div className="mt-3 space-y-2">
               <StockMatchSelect row={row} stockItems={stockItems} onChange={(id) => onStockChange(row, id)} disabled={isSaving} />
-              <RowSourceSelect value={row.sourceType || "manufacture"} onChange={(value) => onSourceChange(row, value)} disabled={isSaving} />
+              <RowSourceSelect
+                row={row}
+                options={sourceOptions}
+                value={rowSourceOption(row, sourceOptions)}
+                onChange={(value) => onSourceChange(row, value)}
+                disabled={isSaving}
+              />
               <Button
                 type="button"
                 variant="outline"
@@ -251,7 +465,13 @@ function ImportRowsEditor({
                   <StockMatchSelect row={row} stockItems={stockItems} onChange={(id) => onStockChange(row, id)} disabled={isSaving} />
                 </TableCell>
                 <TableCell>
-                  <RowSourceSelect value={row.sourceType || "manufacture"} onChange={(value) => onSourceChange(row, value)} disabled={isSaving} />
+                  <RowSourceSelect
+                    row={row}
+                    options={sourceOptions}
+                    value={rowSourceOption(row, sourceOptions)}
+                    onChange={(value) => onSourceChange(row, value)}
+                    disabled={isSaving}
+                  />
                 </TableCell>
                 <TableCell><MatchBadge row={row} /></TableCell>
                 <TableCell className="text-right">
@@ -352,6 +572,8 @@ export default function ManufacturingTransitionAssistant() {
   });
 
   const { data: stockItemsRaw = [] } = trpc.inventory.stockItems.list.useQuery({ activeOnly: true });
+  const { data: branches = [] } = trpc.manufacturing.branches.useQuery();
+  const { data: suppliers = [] } = trpc.suppliers.list.useQuery({ activeOnly: true });
   const { data: imports = [] } = trpc.manufacturing.transitionAssistant.listImports.useQuery({});
   const { data: constructionClientResults = [], isFetching: clientLookupFetching } =
     trpc.manufacturing.transitionAssistant.searchConstructionClients.useQuery(
@@ -369,13 +591,44 @@ export default function ManufacturingTransitionAssistant() {
   const stockItems = useMemo(() => {
     const search = stockSearch.trim().toLowerCase();
     const items = stockItemsRaw as any[];
-    const selectedIds = new Set(activeRows.map((row) => row.stockItemId).filter(Boolean));
-    const selected = items.filter((item) => selectedIds.has(item.id));
-    const filtered = (!search ? items : items.filter((item) => stockLabel(item).toLowerCase().includes(search)
-      || String(item.category || "").toLowerCase().includes(search)
-      || String(item.supplier || "").toLowerCase().includes(search))).slice(0, 250);
-    return [...selected, ...filtered.filter((item) => !selectedIds.has(item.id))];
-  }, [activeRows, stockItemsRaw, stockSearch]);
+    return !search ? items : items.filter((item) => stockSearchText(item).includes(search));
+  }, [stockItemsRaw, stockSearch]);
+  const sourceOptions = useMemo<RowSourceOption[]>(() => {
+    const branchOptions = (branches as any[]).map((branch) => ({
+      value: `branch:${branch.id}`,
+      kind: "branch" as const,
+      id: branch.id,
+      label: branch.name,
+      description: "Branch manufacturing",
+      sourceType: "manufacture" as const,
+    }));
+    const supplierOptions = (suppliers as any[]).map((supplier) => ({
+      value: `supplier:${supplier.id}`,
+      kind: "supplier" as const,
+      id: supplier.id,
+      label: supplier.name,
+      description: [supplier.category, supplier.supplierScope].filter(Boolean).join(" · ") || "Supplier",
+      sourceType: "procure" as const,
+    }));
+    return [
+      {
+        value: "manufacture:default",
+        kind: "manufacture" as const,
+        label: "Internal manufacturing",
+        description: "No branch specified",
+        sourceType: "manufacture" as const,
+      },
+      ...branchOptions,
+      {
+        value: "procure:default",
+        kind: "procure" as const,
+        label: "External procurement",
+        description: "No supplier specified",
+        sourceType: "procure" as const,
+      },
+      ...supplierOptions,
+    ];
+  }, [branches, suppliers]);
   const stockById = useMemo(() => new Map((stockItemsRaw as any[]).map((item) => [item.id, item])), [stockItemsRaw]);
   const matchedCount = activeRows.filter((row) => row.stockItemId).length;
   const matchPercent = activeRows.length ? Math.round((matchedCount / activeRows.length) * 100) : 0;
@@ -416,14 +669,16 @@ export default function ManufacturingTransitionAssistant() {
     });
   }
 
-  function handleSourceChange(row: TransitionRow, sourceType: "manufacture" | "procure") {
+  function handleSourceChange(row: TransitionRow, source: RowSourceOption) {
+    const rawData = mergeTransitionSource(row, source);
     if (preview) {
-      patchPreviewRow(row, { sourceType });
+      patchPreviewRow(row, { sourceType: source.sourceType, rawData });
     } else if (row.id) {
       updateRowMatch.mutate({
         rowId: row.id,
         stockItemId: row.stockItemId || null,
-        sourceType,
+        sourceType: source.sourceType,
+        sourceReference: sourceReferenceFor(source),
       });
     }
   }
@@ -571,6 +826,10 @@ export default function ManufacturingTransitionAssistant() {
                                 key={client.id}
                                 type="button"
                                 className="w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-accent"
+                                onMouseDown={(event) => {
+                                  event.preventDefault();
+                                  selectConstructionClient(client);
+                                }}
                                 onClick={() => selectConstructionClient(client)}
                               >
                                 <div className="flex min-w-0 items-start justify-between gap-2">
@@ -648,6 +907,7 @@ export default function ManufacturingTransitionAssistant() {
                 <ImportRowsEditor
                   rows={previewRows}
                   stockItems={stockItems}
+                  sourceOptions={sourceOptions}
                   onStockChange={handlePreviewStockChange}
                   onSourceChange={handleSourceChange}
                   onDeleteRow={handlePreviewRowDelete}
@@ -718,6 +978,7 @@ export default function ManufacturingTransitionAssistant() {
                 <ImportRowsEditor
                   rows={savedRows}
                   stockItems={stockItems}
+                  sourceOptions={sourceOptions}
                   onStockChange={handleSavedStockChange}
                   onSourceChange={handleSourceChange}
                   onDeleteRow={handleSavedRowDelete}

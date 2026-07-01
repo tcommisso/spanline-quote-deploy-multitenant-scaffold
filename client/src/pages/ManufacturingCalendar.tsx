@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,12 @@ const STATUS_BG: Record<string, string> = {
   completed: "bg-green-100 dark:bg-green-900/30 border-green-200 dark:border-green-800",
   cancelled: "bg-gray-100 dark:bg-gray-900/30 border-gray-200 dark:border-gray-800",
 };
+
+function formatAustralianDate(value?: string | null) {
+  if (!value) return "";
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}-${month}-${year}` : value;
+}
 
 export default function ManufacturingCalendar() {
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -151,7 +157,7 @@ export default function ManufacturingCalendar() {
     // Undo toast pattern
     let undone = false;
     const toastId = toast("Schedule entry moved", {
-      description: `"${dragItem.title}" moved to ${new Date(dateKey + "T00:00:00").toLocaleDateString("en-AU")}`,
+      description: `"${dragItem.title}" moved to ${formatAustralianDate(dateKey)}`,
       duration: 5000,
       action: {
         label: "Undo",
@@ -316,6 +322,18 @@ function CreateScheduleDialog({
   const [orderId, setOrderId] = useState("");
 
   const { data: orders } = trpc.manufacturing.orders.list.useQuery({ status: "all" });
+  const defaultBranchId = useMemo(() => {
+    const match = branches.find((branch) => branch.name.trim().toLowerCase() === "spanline act");
+    return match ? String(match.id) : "";
+  }, [branches]);
+
+  useEffect(() => {
+    if (open && !branchId && defaultBranchId) {
+      setBranchId(defaultBranchId);
+    } else if (!open && defaultBranchId && branchId !== defaultBranchId) {
+      setBranchId(defaultBranchId);
+    }
+  }, [open, branchId, defaultBranchId]);
 
   const handleSubmit = () => {
     if (!title || !branchId || !orderId) return;
@@ -328,7 +346,7 @@ function CreateScheduleDialog({
       title,
     });
     setTitle("");
-    setBranchId("");
+    setBranchId(defaultBranchId);
     setOrderId("");
   };
 
@@ -341,7 +359,7 @@ function CreateScheduleDialog({
         <div className="space-y-4">
           <div>
             <Label>Date</Label>
-            <Input value={selectedDate} disabled />
+            <Input value={formatAustralianDate(selectedDate)} disabled />
           </div>
           <div>
             <Label>Title</Label>

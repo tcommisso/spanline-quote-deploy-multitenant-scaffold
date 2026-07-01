@@ -62,7 +62,12 @@ function formatDate(value: string | Date | null | undefined) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString();
+  return new Intl.DateTimeFormat("en-AU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Australia/Sydney",
+  }).format(date).replace(/\//g, "-");
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
