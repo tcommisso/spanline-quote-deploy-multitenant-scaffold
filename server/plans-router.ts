@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb } from "./db";
-import { eq, and, desc, sql, lte } from "drizzle-orm";
-import { constructionPlans, constructionPlanComments, portalAccess, constructionJobs, constructionPlanAuditLog } from "../drizzle/schema";
+import { eq, and, desc, sql, lte, or } from "drizzle-orm";
+import { constructionPlans, constructionPlanComments, portalAccess, constructionJobs, constructionPlanAuditLog, jobSharedFiles, portalPhotoComments } from "../drizzle/schema";
 import { protectedProcedure, publicProcedure, router, middleware } from "./_core/trpc";
 import { storagePut } from "./storage";
 import { sendNotificationEmail } from "./email";
@@ -46,6 +46,97 @@ const requirePortalAccess = middleware(async ({ ctx, next }) => {
   return next({ ctx: { ...ctx, portalAccess: ctx.portalAccess } });
 });
 const protectedPortalProcedure = publicProcedure.use(requirePortalAccess);
+
+function tinyBool(value: unknown) {
+  return value === true || value === 1;
+}
+
+function linkedPlanDocumentCondition(plan: Pick<typeof constructionPlans.$inferSelect, "jobId" | "fileKey" | "fileUrl">) {
+  return and(
+    eq(jobSharedFiles.jobId, plan.jobId),
+    or(
+      eq(jobSharedFiles.fileKey, plan.fileKey),
+      eq(jobSharedFiles.fileUrl, plan.fileUrl),
+    ),
+  );
+}
+
+async function getLinkedPlanDocument(db: any, plan: Pick<typeof constructionPlans.$inferSelect, "jobId" | "fileKey" | "fileUrl">) {
+  const [file] = await db
+    .select()
+    .from(jobSharedFiles)
+    .where(linkedPlanDocumentCondition(plan))
+    .limit(1);
+  return file || null;
+}
+
+async function syncPlanDocument(
+  db: any,
+  plan: Pick<
+    typeof constructionPlans.$inferSelect,
+    "jobId" | "title" | "description" | "fileUrl" | "fileKey" | "fileName" | "fileType" | "uploadedBy"
+  >,
+  options: {
+    visibleToTradePortal?: boolean;
+    visibleToClientPortal?: boolean;
+  } = {},
+) {
+  const existing = await getLinkedPlanDocument(db, plan);
+  const updates: Record<string, any> = {
+    fileName: plan.fileName,
+    fileUrl: plan.fileUrl,
+    fileKey: plan.fileKey,
+    fileType: plan.fileType || null,
+    category: "plans",
+    description: plan.description || null,
+    clientPortalTitle: plan.title,
+    clientPortalCategory: "plans",
+  };
+  if (options.visibleToTradePortal !== undefined) {
+    updates.visible = options.visibleToTradePortal ? 1 : 0;
+    updates.visibleToTradePortal = options.visibleToTradePortal ? 1 : 0;
+  }
+  if (options.visibleToClientPortal !== undefined) {
+    updates.visibleToClientPortal = options.visibleToClientPortal ? 1 : 0;
+  }
+
+  if (existing) {
+    await db.update(jobSharedFiles).set(updates).where(eq(jobSharedFiles.id, existing.id));
+    return existing.id;
+  }
+
+  const [result] = await db.insert(jobSharedFiles).values({
+    jobId: plan.jobId,
+    fileName: plan.fileName,
+    fileUrl: plan.fileUrl,
+    fileKey: plan.fileKey,
+    fileType: plan.fileType || null,
+    fileSize: null,
+    category: "plans",
+    description: plan.description || null,
+    uploadedBy: plan.uploadedBy,
+    visible: options.visibleToTradePortal ? 1 : 0,
+    visibleToTradePortal: options.visibleToTradePortal ? 1 : 0,
+    visibleToClientPortal: options.visibleToClientPortal ? 1 : 0,
+    clientPortalTitle: plan.title,
+    clientPortalCategory: "plans",
+  });
+  return result.insertId;
+}
+
+async function deleteLinkedPlanDocuments(
+  db: any,
+  plan: Pick<typeof constructionPlans.$inferSelect, "jobId" | "fileKey" | "fileUrl">,
+) {
+  const files = await db
+    .select({ id: jobSharedFiles.id })
+    .from(jobSharedFiles)
+    .where(linkedPlanDocumentCondition(plan));
+  if (files.length === 0) return;
+  const fileIds = files.map((file: { id: number }) => file.id);
+  await db.delete(portalPhotoComments).where(inArray(portalPhotoComments.sharedFileId, fileIds));
+  await db.delete(jobSharedFiles).where(inArray(jobSharedFiles.id, fileIds));
+}
 
 export const plansRouter = router({
   // ─── Staff: List plans for a job ───────────────────────────────────────────
@@ -139,6 +230,20 @@ export const plansRouter = router({
         uploadedBy: ctx.user.id,
       });
 
+      await syncPlanDocument(db, {
+        jobId: input.jobId,
+        title: input.title,
+        description: input.description || null,
+        fileUrl: url,
+        fileKey: key,
+        fileName: input.fileName,
+        fileType: input.fileType || null,
+        uploadedBy: ctx.user.id,
+      }, {
+        visibleToTradePortal: false,
+        visibleToClientPortal: false,
+      });
+
       await logPlanAudit({
         planId: result.insertId,
         jobId: input.jobId,
@@ -223,6 +328,19 @@ export const plansRouter = router({
           status: "draft",
           uploadedBy: ctx.user.id,
         });
+        await syncPlanDocument(db, {
+          jobId: input.jobId,
+          title: file.title,
+          description: file.description || null,
+          fileUrl: url,
+          fileKey: key,
+          fileName: file.fileName,
+          fileType: file.fileType || null,
+          uploadedBy: ctx.user.id,
+        }, {
+          visibleToTradePortal: false,
+          visibleToClientPortal: false,
+        });
         results.push({ id: result.insertId, title: file.title, url });
       }
       return { uploaded: results.length, plans: results };
@@ -246,6 +364,7 @@ export const plansRouter = router({
         .from(constructionPlans)
         .where(eq(constructionPlans.id, input.parentPlanId));
       if (!parent) throw new TRPCError({ code: "NOT_FOUND", message: "Parent plan not found" });
+      const parentDocument = await getLinkedPlanDocument(db, parent);
 
       // Find the latest version number for this plan lineage
       const rootId = parent.parentPlanId || parent.id;
@@ -279,6 +398,20 @@ export const plansRouter = router({
         uploadedBy: ctx.user.id,
       });
 
+      await syncPlanDocument(db, {
+        jobId: parent.jobId,
+        title: parent.title,
+        description: input.description || parent.description || null,
+        fileUrl: url,
+        fileKey: key,
+        fileName: input.fileName,
+        fileType: input.fileType || null,
+        uploadedBy: ctx.user.id,
+      }, {
+        visibleToTradePortal: tinyBool(parentDocument?.visibleToTradePortal ?? parentDocument?.visible),
+        visibleToClientPortal: false,
+      });
+
       return { id: result.insertId, url, version: maxVersion + 1 };
     }),
 
@@ -302,6 +435,10 @@ export const plansRouter = router({
         .update(constructionPlans)
         .set({ status: "submitted_to_client", submittedAt: new Date(), rejectedAt: null })
         .where(eq(constructionPlans.id, input.planId));
+
+      await syncPlanDocument(db, plan, {
+        visibleToClientPortal: true,
+      });
 
       await logPlanAudit({
         planId: input.planId,
@@ -520,7 +657,14 @@ export const plansRouter = router({
     .mutation(async ({ input }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database unavailable" });
+      const [plan] = await db
+        .select()
+        .from(constructionPlans)
+        .where(eq(constructionPlans.id, input.planId));
       await db.delete(constructionPlanComments).where(eq(constructionPlanComments.planId, input.planId));
+      if (plan) {
+        await deleteLinkedPlanDocuments(db, plan);
+      }
       await db.delete(constructionPlans).where(eq(constructionPlans.id, input.planId));
       return { success: true };
     }),

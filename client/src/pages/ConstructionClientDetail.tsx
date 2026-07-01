@@ -347,7 +347,7 @@ export default function ConstructionClientDetail() {
     { value: "contacts", label: "Contacts", icon: Users },
     { value: "email-sms", label: "Email & SMS", icon: Mail },
     { value: "activity", label: "Activity", icon: MessageSquare },
-    { value: "shared-files", label: "Shared Files", icon: FolderOpen },
+    { value: "shared-files", label: "Documents", icon: FolderOpen },
     { value: "financials", label: "Financials", icon: DollarSign },
     { value: "progress", label: "Progress Invoices", icon: HardHat },
     { value: "variations", label: "Variations", icon: Shield },
@@ -883,7 +883,7 @@ export default function ConstructionClientDetail() {
 
 
 
-        {/* Shared Files Tab */}
+        {/* Documents Tab */}
         <TabsContent value="shared-files" className="space-y-4">
           <SharedFilesSection jobId={jobId} />
         </TabsContent>

@@ -2223,7 +2223,7 @@ export const constructionRouter = router({
       }),
   }),
 
-  // ─── Shared Files (admin shares docs with trades) ─────────────────────────
+  // ─── Job Documents (admin shares docs with portals) ───────────────────────
   sharedFiles: router({
     list: protectedProcedure
       .input(z.object({ jobId: z.number() }))

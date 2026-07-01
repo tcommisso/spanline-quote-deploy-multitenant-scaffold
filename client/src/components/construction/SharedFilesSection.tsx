@@ -303,7 +303,7 @@ export default function SharedFilesSection({ jobId }: SharedFilesSectionProps) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-lg">Job Documents</h3>
+        <h3 className="font-semibold text-lg">Documents</h3>
         <div className="flex items-center gap-2">
           <Button
             onClick={() => setShowUpload(!showUpload)}
@@ -316,8 +316,8 @@ export default function SharedFilesSection({ jobId }: SharedFilesSectionProps) {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        Upload each document once, then choose whether it shows in the Trade
-        Portal, Client Portal, or both.
+        Upload documents once, including plans, then choose whether they show
+        in the Trade Portal, Client Portal, or both.
       </p>
 
       {/* Upload Form */}
@@ -397,7 +397,7 @@ export default function SharedFilesSection({ jobId }: SharedFilesSectionProps) {
           <CardContent className="py-10 text-center">
             <FolderOpen className="w-10 h-10 text-muted-foreground mx-auto mb-2" />
             <p className="text-muted-foreground text-sm">
-              No files shared yet.
+              No documents uploaded yet.
             </p>
             <p className="text-xs text-muted-foreground mt-1">
               Upload files and choose the portal visibility.

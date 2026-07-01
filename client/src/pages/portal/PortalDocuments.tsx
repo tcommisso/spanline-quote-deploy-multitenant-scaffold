@@ -22,8 +22,8 @@ export default function PortalDocuments() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl sm:text-2xl font-bold">Documents & Photos</h1>
-        <p className="text-sm text-muted-foreground">Contracts, plans, project files, and progress photos</p>
+        <h1 className="text-xl sm:text-2xl font-bold">Documents</h1>
+        <p className="text-sm text-muted-foreground">Plans, contracts, project files, and progress photos</p>
       </div>
 
       {docsQuery.isLoading ? (
