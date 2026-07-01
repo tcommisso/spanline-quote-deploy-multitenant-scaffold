@@ -99,6 +99,9 @@ const SUMMARY_STATUS_CONFIG: Record<string, { label: string; badge: string; dot:
 };
 
 type JobDetailsForm = {
+  designAdviser: JobDetailsTeamRole;
+  constructionManager: JobDetailsTeamRole;
+  technicalDesigner: JobDetailsTeamRole;
   clientFirstName: string;
   clientLastName: string;
   company: string;
@@ -112,7 +115,27 @@ type JobDetailsForm = {
   notes: string;
 };
 
+type JobDetailsTeamRole = {
+  mode: string;
+  manualName: string;
+};
+
+type JobDetailsTeamRoleField = "designAdviser" | "constructionManager" | "technicalDesigner";
+type JobDetailsTextField = Exclude<keyof JobDetailsForm, JobDetailsTeamRoleField>;
+
+const JOB_DETAILS_ROLE_UNASSIGNED = "__unassigned";
+const JOB_DETAILS_ROLE_MANUAL = "__manual";
+const JOB_DETAILS_ROLE_USER_PREFIX = "user:";
+
+const EMPTY_JOB_DETAILS_TEAM_ROLE: JobDetailsTeamRole = {
+  mode: JOB_DETAILS_ROLE_UNASSIGNED,
+  manualName: "",
+};
+
 const EMPTY_JOB_DETAILS_FORM: JobDetailsForm = {
+  designAdviser: EMPTY_JOB_DETAILS_TEAM_ROLE,
+  constructionManager: EMPTY_JOB_DETAILS_TEAM_ROLE,
+  technicalDesigner: EMPTY_JOB_DETAILS_TEAM_ROLE,
   clientFirstName: "",
   clientLastName: "",
   company: "",
@@ -390,6 +413,17 @@ export default function ConstructionClientDetail() {
   const detailQuery = trpc.constructionClients.detail.useQuery({ jobId }, { enabled: !!jobId });
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false);
   const [jobDetailsForm, setJobDetailsForm] = useState<JobDetailsForm>(EMPTY_JOB_DETAILS_FORM);
+  const jobDetailsUsersQuery = trpc.constructionClients.assignableUsers.useQuery(undefined, {
+    enabled: jobDetailsOpen,
+  });
+  const jobDetailsAssignableUsers = useMemo(
+    () => [...(jobDetailsUsersQuery.data || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
+    [jobDetailsUsersQuery.data],
+  );
+  const jobDetailsAssignableUserById = useMemo(
+    () => new Map(jobDetailsAssignableUsers.map((user: any) => [Number(user.id), user])),
+    [jobDetailsAssignableUsers],
+  );
   const updateJobDetails = trpc.constructionClients.updateJobDetails.useMutation({
     onSuccess: () => {
       setJobDetailsOpen(false);
@@ -445,6 +479,9 @@ export default function ConstructionClientDetail() {
   const leadDisplayName = leadData?.displayName || [leadData?.firstName, leadData?.lastName].filter(Boolean).join(" ");
   const openJobDetailsEditor = () => {
     setJobDetailsForm({
+      designAdviser: jobDetailsRoleFromValues(job.designAdviserId, leadData?.designAdvisor || job.designAdviserName),
+      constructionManager: jobDetailsRoleFromValues(financials?.constructionManagerId, financials?.constructionManagerName || job.supervisorName),
+      technicalDesigner: jobDetailsRoleFromValues(financials?.technicalDesignerId, financials?.technicalDesignerName),
       clientFirstName: leadData?.firstName || "",
       clientLastName: leadData?.lastName || "",
       company: leadData?.company || (!leadData?.id ? job.clientName || "" : ""),
@@ -459,13 +496,56 @@ export default function ConstructionClientDetail() {
     });
     setJobDetailsOpen(true);
   };
-  const updateJobDetailsField = (field: keyof JobDetailsForm, value: string) => {
+  const updateJobDetailsField = (field: JobDetailsTextField, value: string) => {
     setJobDetailsForm((current) => ({ ...current, [field]: value }));
   };
+  const updateJobDetailsRoleMode = (field: JobDetailsTeamRoleField, mode: string) => {
+    setJobDetailsForm((current) => {
+      const selectedUserId = jobDetailsUserIdFromMode(mode);
+      const selectedUser = selectedUserId != null ? jobDetailsAssignableUserById.get(selectedUserId) : null;
+      return {
+        ...current,
+        [field]: {
+          mode,
+          manualName: mode === JOB_DETAILS_ROLE_UNASSIGNED
+            ? ""
+            : selectedUser
+              ? userDisplayName(selectedUser)
+              : current[field].manualName,
+        },
+      };
+    });
+  };
+  const updateJobDetailsRoleManualName = (field: JobDetailsTeamRoleField, manualName: string) => {
+    setJobDetailsForm((current) => ({
+      ...current,
+      [field]: { ...current[field], manualName },
+    }));
+  };
   const submitJobDetails = () => {
+    const designAdviser = jobDetailsRolePayload(jobDetailsForm.designAdviser, jobDetailsAssignableUserById);
+    const constructionManager = jobDetailsRolePayload(jobDetailsForm.constructionManager, jobDetailsAssignableUserById);
+    const technicalDesigner = jobDetailsRolePayload(jobDetailsForm.technicalDesigner, jobDetailsAssignableUserById);
+
     updateJobDetails.mutate({
       jobId,
-      ...jobDetailsForm,
+      clientFirstName: jobDetailsForm.clientFirstName,
+      clientLastName: jobDetailsForm.clientLastName,
+      company: jobDetailsForm.company,
+      phone: jobDetailsForm.phone,
+      email: jobDetailsForm.email,
+      siteAddress: jobDetailsForm.siteAddress,
+      scheduledStart: jobDetailsForm.scheduledStart,
+      scheduledEnd: jobDetailsForm.scheduledEnd,
+      actualStart: jobDetailsForm.actualStart,
+      actualEnd: jobDetailsForm.actualEnd,
+      notes: jobDetailsForm.notes,
+      designAdviserId: designAdviser.userId,
+      designAdviserName: designAdviser.name,
+      constructionManagerId: constructionManager.userId,
+      constructionManagerName: constructionManager.name,
+      technicalDesignerId: technicalDesigner.userId,
+      technicalDesignerName: technicalDesigner.name,
     });
   };
 
@@ -611,7 +691,7 @@ export default function ConstructionClientDetail() {
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Design Adviser</span>
-                  <span className="font-medium">{job.designAdviserName || "—"}</span>
+                  <span className="font-medium">{leadData?.designAdvisor || job.designAdviserName || "—"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Construction Manager</span>
@@ -926,7 +1006,7 @@ export default function ConstructionClientDetail() {
           <DialogHeader>
             <DialogTitle>Edit Job Details</DialogTitle>
             <DialogDescription>
-              Update job dates, notes, and the linked CRM client record.
+              Update project team, job dates, notes, and the linked CRM client record.
             </DialogDescription>
           </DialogHeader>
 
@@ -936,6 +1016,42 @@ export default function ConstructionClientDetail() {
                 No linked CRM lead. Client name changes will be stored on this construction job only.
               </div>
             )}
+
+            <div className="rounded-md border bg-muted/20 p-3 sm:p-4">
+              <div className="mb-3">
+                <p className="text-sm font-semibold">Project team</p>
+                <p className="text-xs text-muted-foreground">
+                  Design Adviser updates the linked CRM record where available. All three update this job overview.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <JobDetailsRolePicker
+                  label="Design Adviser"
+                  value={jobDetailsForm.designAdviser}
+                  users={jobDetailsAssignableUsers}
+                  loading={jobDetailsUsersQuery.isLoading}
+                  manualMaxLength={100}
+                  onModeChange={(value) => updateJobDetailsRoleMode("designAdviser", value)}
+                  onManualNameChange={(value) => updateJobDetailsRoleManualName("designAdviser", value)}
+                />
+                <JobDetailsRolePicker
+                  label="Construction Manager"
+                  value={jobDetailsForm.constructionManager}
+                  users={jobDetailsAssignableUsers}
+                  loading={jobDetailsUsersQuery.isLoading}
+                  onModeChange={(value) => updateJobDetailsRoleMode("constructionManager", value)}
+                  onManualNameChange={(value) => updateJobDetailsRoleManualName("constructionManager", value)}
+                />
+                <JobDetailsRolePicker
+                  label="Technical Designer"
+                  value={jobDetailsForm.technicalDesigner}
+                  users={jobDetailsAssignableUsers}
+                  loading={jobDetailsUsersQuery.isLoading}
+                  onModeChange={(value) => updateJobDetailsRoleMode("technicalDesigner", value)}
+                  onManualNameChange={(value) => updateJobDetailsRoleManualName("technicalDesigner", value)}
+                />
+              </div>
+            </div>
 
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
@@ -1038,11 +1154,11 @@ export default function ConstructionClientDetail() {
             </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={() => setJobDetailsOpen(false)} disabled={updateJobDetails.isPending}>
               Cancel
             </Button>
-            <Button onClick={submitJobDetails} disabled={updateJobDetails.isPending}>
+            <Button onClick={submitJobDetails} disabled={updateJobDetails.isPending || jobDetailsUsersQuery.isLoading}>
               {updateJobDetails.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
               Save Changes
             </Button>
@@ -1092,6 +1208,93 @@ function toDateInputValue(value?: string | Date | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toISOString().slice(0, 10);
+}
+
+function jobDetailsUserIdFromMode(mode?: string | null) {
+  if (!mode?.startsWith(JOB_DETAILS_ROLE_USER_PREFIX)) return null;
+  const userId = Number(mode.slice(JOB_DETAILS_ROLE_USER_PREFIX.length));
+  return Number.isFinite(userId) ? userId : null;
+}
+
+function jobDetailsRoleFromValues(userId?: number | null, name?: string | null): JobDetailsTeamRole {
+  const manualName = String(name || "").trim();
+  if (userId != null) {
+    return {
+      mode: `${JOB_DETAILS_ROLE_USER_PREFIX}${userId}`,
+      manualName,
+    };
+  }
+  if (manualName) {
+    return {
+      mode: JOB_DETAILS_ROLE_MANUAL,
+      manualName,
+    };
+  }
+  return { ...EMPTY_JOB_DETAILS_TEAM_ROLE };
+}
+
+function jobDetailsRolePayload(role: JobDetailsTeamRole, usersById: Map<number, any>) {
+  const selectedUserId = jobDetailsUserIdFromMode(role.mode);
+  if (selectedUserId != null) {
+    const selectedUser = usersById.get(selectedUserId);
+    return {
+      userId: selectedUserId,
+      name: role.manualName.trim() || userDisplayName(selectedUser),
+    };
+  }
+  if (role.mode === JOB_DETAILS_ROLE_MANUAL) {
+    return {
+      userId: null,
+      name: role.manualName.trim() || null,
+    };
+  }
+  return { userId: null, name: null };
+}
+
+function JobDetailsRolePicker({
+  label,
+  value,
+  users,
+  loading,
+  manualMaxLength = 255,
+  onModeChange,
+  onManualNameChange,
+}: {
+  label: string;
+  value: JobDetailsTeamRole;
+  users: any[];
+  loading?: boolean;
+  manualMaxLength?: number;
+  onModeChange: (value: string) => void;
+  onManualNameChange: (value: string) => void;
+}) {
+  return (
+    <div className="min-w-0 space-y-2">
+      <Label>{label}</Label>
+      <Select value={value.mode} onValueChange={onModeChange} disabled={loading}>
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={loading ? "Loading users..." : "Select user"} />
+        </SelectTrigger>
+        <SelectContent className="max-h-72">
+          <SelectItem value={JOB_DETAILS_ROLE_UNASSIGNED}>Unassigned</SelectItem>
+          <SelectItem value={JOB_DETAILS_ROLE_MANUAL}>Manual / non-user</SelectItem>
+          {users.map((user: any) => (
+            <SelectItem key={user.id} value={`${JOB_DETAILS_ROLE_USER_PREFIX}${user.id}`}>
+              {userDisplayName(user)}{user.role ? ` (${String(user.role).replace(/_/g, " ")})` : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {value.mode === JOB_DETAILS_ROLE_MANUAL && (
+        <Input
+          value={value.manualName}
+          onChange={(event) => onManualNameChange(event.target.value)}
+          placeholder={`Enter ${label.toLowerCase()}`}
+          maxLength={manualMaxLength}
+        />
+      )}
+    </div>
+  );
 }
 
 function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments: any[] }) {

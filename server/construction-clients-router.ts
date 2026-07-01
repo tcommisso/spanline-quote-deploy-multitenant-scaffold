@@ -1597,6 +1597,7 @@ export const constructionClientsRouter = router({
           email: crmLeads.contactEmail,
           address: crmLeads.contactAddress,
           clientNumber: crmLeads.clientNumber,
+          designAdvisor: crmLeads.designAdvisor,
           status: crmLeads.status,
           productType: crmLeads.productType,
         }).from(crmLeads).where(and(...leadConditions));
@@ -2299,6 +2300,12 @@ export const constructionClientsRouter = router({
       actualStart: z.string().nullable().optional(),
       actualEnd: z.string().nullable().optional(),
       notes: z.string().max(5000).nullable().optional(),
+      designAdviserId: z.number().nullable().optional(),
+      designAdviserName: z.string().max(100).nullable().optional(),
+      constructionManagerId: z.number().nullable().optional(),
+      constructionManagerName: z.string().max(255).nullable().optional(),
+      technicalDesignerId: z.number().nullable().optional(),
+      technicalDesignerName: z.string().max(255).nullable().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
@@ -2312,6 +2319,45 @@ export const constructionClientsRouter = router({
       if (input.actualEnd !== undefined) jobUpdates.actualEnd = parseJobDetailDate(input.actualEnd, "actual end");
       if (input.notes !== undefined) jobUpdates.notes = trimNullable(input.notes);
 
+      let financialTeamValues: Record<string, any> | null = null;
+
+      if ("designAdviserId" in input || "designAdviserName" in input) {
+        const designAdviser = await resolveProjectTeamRole(
+          db,
+          ctx,
+          input.designAdviserId,
+          input.designAdviserName,
+        );
+        jobUpdates.designAdviserId = designAdviser.userId;
+        jobUpdates.designAdviserName = designAdviser.name;
+      }
+
+      if (
+        "constructionManagerId" in input ||
+        "constructionManagerName" in input ||
+        "technicalDesignerId" in input ||
+        "technicalDesignerName" in input
+      ) {
+        const constructionManager = await resolveProjectTeamRole(
+          db,
+          ctx,
+          input.constructionManagerId,
+          input.constructionManagerName,
+        );
+        const technicalDesigner = await resolveProjectTeamRole(
+          db,
+          ctx,
+          input.technicalDesignerId,
+          input.technicalDesignerName,
+        );
+        financialTeamValues = {
+          constructionManagerId: constructionManager.userId,
+          constructionManagerName: constructionManager.name,
+          technicalDesignerId: technicalDesigner.userId,
+          technicalDesignerName: technicalDesigner.name,
+        };
+      }
+
       const leadUpdates: Record<string, any> = {};
       if (input.clientFirstName !== undefined) leadUpdates.contactFirstName = trimNullable(input.clientFirstName);
       if (input.clientLastName !== undefined) leadUpdates.contactLastName = trimNullable(input.clientLastName);
@@ -2319,6 +2365,9 @@ export const constructionClientsRouter = router({
       if (input.phone !== undefined) leadUpdates.contactPhone = trimNullable(input.phone);
       if (input.email !== undefined) leadUpdates.contactEmail = trimNullable(input.email);
       if (input.siteAddress !== undefined) leadUpdates.contactAddress = trimNullable(input.siteAddress);
+      if ("designAdviserId" in input || "designAdviserName" in input) {
+        leadUpdates.designAdvisor = jobUpdates.designAdviserName || null;
+      }
 
       if (Object.keys(leadUpdates).length > 0) {
         if (job.leadId) {
@@ -2340,6 +2389,21 @@ export const constructionClientsRouter = router({
         await db.update(constructionJobs)
           .set(jobUpdates)
           .where(and(...jobTenantConditions(ctx, eq(constructionJobs.id, input.jobId))));
+      }
+
+      if (financialTeamValues) {
+        const existingFinancials = await db.select({ id: constructionJobFinancials.id })
+          .from(constructionJobFinancials)
+          .where(eq(constructionJobFinancials.jobId, input.jobId))
+          .limit(1);
+
+        if (existingFinancials.length > 0) {
+          await db.update(constructionJobFinancials)
+            .set(financialTeamValues)
+            .where(eq(constructionJobFinancials.jobId, input.jobId));
+        } else {
+          await db.insert(constructionJobFinancials).values({ jobId: input.jobId, ...financialTeamValues });
+        }
       }
 
       return { success: true };
