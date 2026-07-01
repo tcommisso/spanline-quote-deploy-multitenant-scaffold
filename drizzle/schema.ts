@@ -213,6 +213,34 @@ export const saasAdminAuditLog = mysqlTable("saas_admin_audit_log", {
 export type SaasAdminAuditLog = typeof saasAdminAuditLog.$inferSelect;
 export type InsertSaasAdminAuditLog = typeof saasAdminAuditLog.$inferInsert;
 
+export const userActivityLog = mysqlTable("user_activity_log", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id, { onDelete: "set null" }),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
+  userName: varchar("userName", { length: 255 }),
+  userEmail: varchar("userEmail", { length: 320 }),
+  impersonatorUserId: int("impersonatorUserId").references(() => users.id, { onDelete: "set null" }),
+  impersonatorName: varchar("impersonatorName", { length: 255 }),
+  actorType: mysqlEnum("actorType", ["user", "client", "trade", "system"]).default("user").notNull(),
+  action: varchar("action", { length: 64 }).notNull(),
+  eventName: varchar("eventName", { length: 180 }).notNull(),
+  entityType: varchar("entityType", { length: 80 }),
+  entityId: varchar("entityId", { length: 120 }),
+  status: mysqlEnum("status", ["success", "failure"]).default("success").notNull(),
+  requestPath: varchar("requestPath", { length: 255 }),
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  userAgent: varchar("userAgent", { length: 512 }),
+  metadata: json("metadata").$type<Record<string, any>>(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  index("idx_user_activity_tenant_created").on(table.tenantId, table.createdAt),
+  index("idx_user_activity_tenant_user_created").on(table.tenantId, table.userId, table.createdAt),
+  index("idx_user_activity_tenant_action_created").on(table.tenantId, table.action, table.createdAt),
+  index("idx_user_activity_tenant_entity").on(table.tenantId, table.entityType, table.entityId),
+]);
+export type UserActivityLogEntry = typeof userActivityLog.$inferSelect;
+export type InsertUserActivityLogEntry = typeof userActivityLog.$inferInsert;
+
 export const permissionOverrides = mysqlTable("permission_overrides", {
   id: int("id").autoincrement().primaryKey(),
   tenantId: int("tenantId").references(() => tenants.id, { onDelete: "cascade" }),

@@ -7,6 +7,7 @@ import { ENV } from "./env";
 import { isMicrosoftAuthConfigured, registerMicrosoftAuthRoutes } from "./microsoft-auth";
 import { sdk } from "./sdk";
 import { buildTrustedAppUrl } from "./url";
+import { logUserLoginFromOpenId } from "../user-activity-log";
 
 function getQueryParam(req: Request, key: string): string | undefined {
   const value = req.query[key];
@@ -145,6 +146,9 @@ export function registerOAuthRoutes(app: Express) {
         role: "super_admin",
         lastSignedIn: new Date(),
       });
+      await logUserLoginFromOpenId(openId, req, {
+        loginMethod: "temporary_admin",
+      });
 
       const sessionToken = await sdk.createSessionToken(openId, {
         name,
@@ -185,6 +189,9 @@ export function registerOAuthRoutes(app: Express) {
         email: userInfo.email ?? null,
         loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
         lastSignedIn: new Date(),
+      });
+      await logUserLoginFromOpenId(userInfo.openId, req, {
+        loginMethod: userInfo.loginMethod ?? userInfo.platform ?? "oauth",
       });
 
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {

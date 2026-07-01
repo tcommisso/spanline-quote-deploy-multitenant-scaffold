@@ -8,6 +8,7 @@ import { ENV } from "./env";
 import { getSessionCookieOptions } from "./cookies";
 import { sdk } from "./sdk";
 import { buildTrustedAppUrl } from "./url";
+import { logUserLoginFromOpenId } from "../user-activity-log";
 
 const MICROSOFT_AUTH_SCOPE = "openid profile email User.Read";
 const MICROSOFT_AUTH_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -216,6 +217,10 @@ export function registerMicrosoftAuthRoutes(app: Express) {
         loginMethod: "microsoft_entra",
         role: roleForMicrosoftEmail(email),
         lastSignedIn: new Date(),
+      });
+      await logUserLoginFromOpenId(openId, req, {
+        loginMethod: "microsoft_entra",
+        microsoftTenantId: claims.tid,
       });
 
       const sessionToken = await sdk.createSessionToken(openId, {

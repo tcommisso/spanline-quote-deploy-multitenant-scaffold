@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { ENV } from "./env";
+import { logTrpcActivity } from "../user-activity-log";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -11,6 +12,21 @@ const t = initTRPC.context<TrpcContext>().create({
 export const router = t.router;
 export const publicProcedure = t.procedure;
 export const middleware = t.middleware;
+
+const activityLogMiddleware = t.middleware(async opts => {
+  const result = await opts.next();
+  const activityOpts = opts as typeof opts & {
+    path?: string;
+    type?: string;
+    rawInput?: unknown;
+  };
+
+  if (result.ok && activityOpts.path && activityOpts.type === "mutation") {
+    void logTrpcActivity(opts.ctx, activityOpts.path, activityOpts.type, activityOpts.rawInput);
+  }
+
+  return result;
+});
 
 const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;
@@ -28,7 +44,7 @@ const requireUser = t.middleware(async opts => {
   });
 });
 
-export const protectedProcedure = t.procedure.use(requireUser);
+export const protectedProcedure = t.procedure.use(requireUser).use(activityLogMiddleware);
 
 const TENANT_ADMIN_ROLES = ['owner', 'admin'];
 
@@ -56,7 +72,7 @@ export const adminProcedure = t.procedure.use(
       },
     });
   }),
-);
+).use(activityLogMiddleware);
 
 export const superAdminProcedure = t.procedure.use(
   t.middleware(async opts => {
@@ -74,7 +90,7 @@ export const superAdminProcedure = t.procedure.use(
       },
     });
   }),
-);
+).use(activityLogMiddleware);
 
 const requireTenant = t.middleware(async opts => {
   const { ctx, next } = opts;
@@ -103,7 +119,7 @@ const requireTenant = t.middleware(async opts => {
   });
 });
 
-export const tenantProcedure = t.procedure.use(requireTenant);
+export const tenantProcedure = t.procedure.use(requireTenant).use(activityLogMiddleware);
 
 export const tenantAdminProcedure = tenantProcedure.use(
   t.middleware(async opts => {
