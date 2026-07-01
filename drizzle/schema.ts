@@ -1534,7 +1534,7 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
   startTime: timestamp("startTime").notNull(),
   endTime: timestamp("endTime"),
   allDay: boolean("allDay").default(false).notNull(),
-  eventType: mysqlEnum("eventType", ["installation", "inspection", "meeting", "delivery", "other"]).default("installation").notNull(),
+  eventType: mysqlEnum("eventType", ["installation", "inspection", "meeting", "delivery", "maintenance", "other"]).default("installation").notNull(),
   assignedInstallerId: int("assignedInstallerId"),
   assignedUserId: int("assignedUserId").references(() => users.id, { onDelete: "set null" }),
   notifyClient: boolean("notifyClient").default(false).notNull(),

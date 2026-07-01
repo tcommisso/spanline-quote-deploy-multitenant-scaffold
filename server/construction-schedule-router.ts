@@ -826,7 +826,7 @@ export const constructionScheduleRouter = router({
       startTime: z.string(), // ISO string
       endTime: z.string().optional(),
       allDay: z.boolean().optional(),
-      eventType: z.enum(["installation", "inspection", "meeting", "delivery", "other"]).optional(),
+      eventType: z.enum(["installation", "inspection", "meeting", "delivery", "maintenance", "other"]).optional(),
       assignedInstallerId: z.number().optional(),
       assignedUserId: z.number().optional(),
       notifyClient: z.boolean().optional(),
@@ -892,7 +892,7 @@ export const constructionScheduleRouter = router({
       startTime: z.string().optional(),
       endTime: z.string().optional(),
       allDay: z.boolean().optional(),
-      eventType: z.enum(["installation", "inspection", "meeting", "delivery", "other"]).optional(),
+      eventType: z.enum(["installation", "inspection", "meeting", "delivery", "maintenance", "other"]).optional(),
       assignedInstallerId: z.number().nullable().optional(),
       assignedUserId: z.number().nullable().optional(),
       notifyClient: z.boolean().optional(),

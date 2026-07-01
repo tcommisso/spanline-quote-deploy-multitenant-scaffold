@@ -18,7 +18,7 @@ import {
   CalendarDays, Plus, ChevronLeft, ChevronRight, Clock, Wrench,
   ClipboardCheck, Truck, Users, Bell, BellOff, Trash2, Package,
   UserCircle, AlertTriangle, HelpCircle, CloudRain, ChevronsUpDown, Check,
-  Maximize2, Minimize2,
+  CheckCircle2, Maximize2, Minimize2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -34,6 +34,7 @@ const EVENT_TYPE_CONFIG: Record<string, { color: string; accent: string; icon: a
   inspection: { color: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100", accent: "border-l-emerald-500", icon: ClipboardCheck, label: "Inspection" },
   meeting: { color: "bg-violet-100 text-violet-900 dark:bg-violet-900/40 dark:text-violet-100", accent: "border-l-violet-500", icon: Users, label: "Meeting" },
   delivery: { color: "bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-100", accent: "border-l-orange-500", icon: Truck, label: "Delivery" },
+  maintenance: { color: "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100", accent: "border-l-rose-500", icon: Wrench, label: "Maintenance" },
   other: { color: "bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-200", accent: "border-l-slate-500", icon: Clock, label: "Other" },
 };
 
@@ -186,6 +187,19 @@ function scheduleReadinessWarnings(event: any) {
 
 function hasScheduleReadinessWarnings(event: any) {
   return scheduleReadinessWarnings(event).length > 0;
+}
+
+function ScheduleConfirmedTick({ confirmed, compact = false }: { confirmed: boolean; compact?: boolean }) {
+  if (!confirmed) return null;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center justify-center rounded-full border border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-400 dark:bg-emerald-950/40 dark:text-emerald-300 ${compact ? "h-3.5 w-3.5" : "h-4 w-4"}`}
+      title="Confirmed appointment"
+      aria-label="Confirmed appointment"
+    >
+      <CheckCircle2 className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} />
+    </span>
+  );
 }
 
 function eventAssigneeName(event: any) {
@@ -965,8 +979,9 @@ export default function ConstructionSchedule() {
                             <Icon className="h-4 w-4" />
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex min-w-0 items-center gap-1.5">
                               <h4 className="text-sm font-medium truncate">{primaryLine}</h4>
+                              <ScheduleConfirmedTick confirmed={event.status === "confirmed"} />
                               {isUnallocated && <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
                             </div>
                             <p className="text-xs text-muted-foreground truncate">{secondaryLine}</p>
@@ -1112,6 +1127,7 @@ export default function ConstructionSchedule() {
                           <span className="truncate">
                             {primaryLine}
                           </span>
+                          <ScheduleConfirmedTick confirmed={event.status === "confirmed"} compact />
                           {(isUnallocated || needsReview) && <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />}
                         </button>
                       );
@@ -1404,6 +1420,7 @@ function EventForm({
             <SelectItem value="inspection">Inspection</SelectItem>
             <SelectItem value="meeting">Meeting</SelectItem>
             <SelectItem value="delivery">Delivery</SelectItem>
+            <SelectItem value="maintenance">Maintenance</SelectItem>
             <SelectItem value="other">Other</SelectItem>
           </SelectContent>
         </Select>
@@ -1635,7 +1652,10 @@ function EventDetailView({
           <Icon className="h-5 w-5" />
         </div>
         <div className="flex-1">
-          <h3 className="font-semibold text-lg">{primaryLine}</h3>
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="font-semibold text-lg truncate">{primaryLine}</h3>
+            <ScheduleConfirmedTick confirmed={event.status === "confirmed"} />
+          </div>
           <p className="text-sm text-muted-foreground">
             {secondaryLine}{eventSpansMultipleDays(event) ? " · Multi-day" : ""}
           </p>

@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronLeft, ChevronRight, CalendarDays, MapPin, Clock, List, Calendar, Eye } from "lucide-react";
+import { ChevronLeft, ChevronRight, CalendarDays, MapPin, Clock, List, Calendar, Eye, CheckCircle2 } from "lucide-react";
 import { useIsMobile } from "@/hooks/useMobile";
 
 const statusColors: Record<string, string> = {
@@ -26,6 +26,7 @@ const eventTypeColors: Record<string, string> = {
   inspection: "border-l-blue-500",
   meeting: "border-l-purple-500",
   delivery: "border-l-green-500",
+  maintenance: "border-l-rose-500",
   other: "border-l-gray-400",
 };
 
@@ -34,6 +35,7 @@ const eventTypeBg: Record<string, string> = {
   inspection: "bg-blue-50",
   meeting: "bg-purple-50",
   delivery: "bg-green-50",
+  maintenance: "bg-rose-50",
   other: "bg-gray-50",
 };
 
@@ -42,8 +44,41 @@ const eventTypeLabels: Record<string, string> = {
   inspection: "Inspection",
   meeting: "Meeting",
   delivery: "Delivery",
+  maintenance: "Maintenance",
   other: "Other",
 };
+
+function eventAssigneeName(event: any) {
+  return event?.installerName || event?.tradeName || event?.assigneeName || "";
+}
+
+function scheduleEventPrimaryLine(event: any) {
+  const clientName = String(event?.clientName || event?.jobClientName || "").trim();
+  const assigneeName = String(eventAssigneeName(event) || "").trim();
+  if (clientName && assigneeName) return `${clientName} - ${assigneeName}`;
+  return clientName || assigneeName || String(event?.title || "Schedule event").trim();
+}
+
+function scheduleEventSecondaryLine(event: any) {
+  const title = String(event?.title || "").trim();
+  const primaryLine = scheduleEventPrimaryLine(event);
+  const quoteNumber = event?.quoteNumber ? ` - ${event.quoteNumber}` : "";
+  if (title && title !== primaryLine) return `${title}${quoteNumber}`;
+  return event?.siteAddress || eventTypeLabels[event?.eventType] || "Schedule event";
+}
+
+function ConfirmedAppointmentTick({ confirmed, compact = false }: { confirmed: boolean; compact?: boolean }) {
+  if (!confirmed) return null;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center justify-center rounded-full border border-emerald-500 bg-emerald-50 text-emerald-700 ${compact ? "h-3.5 w-3.5" : "h-4 w-4"}`}
+      title="Confirmed appointment"
+      aria-label="Confirmed appointment"
+    >
+      <CheckCircle2 className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} />
+    </span>
+  );
+}
 
 function isSameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -375,6 +410,8 @@ export default function TradePortalSchedule() {
             <div className="space-y-3">
               {dayEvents.map((event) => {
                 const timeDisplay = formatEventTimeForDate(event, currentDate);
+                const primaryLine = scheduleEventPrimaryLine(event);
+                const secondaryLine = scheduleEventSecondaryLine(event);
                 return (
                   <Card
                     key={event.id}
@@ -393,8 +430,11 @@ export default function TradePortalSchedule() {
                               <Badge variant="secondary" className="text-[10px] shrink-0">Multi-day</Badge>
                             )}
                           </div>
-                          <p className="font-semibold text-sm sm:text-base text-slate-800">{event.title}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">{event.clientName} — {event.quoteNumber}</p>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <p className="font-semibold text-sm sm:text-base text-slate-800 truncate">{primaryLine}</p>
+                            <ConfirmedAppointmentTick confirmed={event.status === "confirmed"} />
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5 truncate">{secondaryLine}</p>
                         </div>
                         <div className="text-right shrink-0">
                           <div className="flex items-center gap-1 text-sm font-medium text-slate-700">
@@ -478,7 +518,8 @@ export default function TradePortalSchedule() {
                           ev.eventType === "installation" ? "bg-primary/50" :
                           ev.eventType === "inspection" ? "bg-blue-500" :
                           ev.eventType === "meeting" ? "bg-purple-500" :
-                          ev.eventType === "delivery" ? "bg-green-500" : "bg-gray-400"
+                          ev.eventType === "delivery" ? "bg-green-500" :
+                          ev.eventType === "maintenance" ? "bg-rose-500" : "bg-gray-400"
                         }`}
                       />
                     ))}
@@ -491,10 +532,11 @@ export default function TradePortalSchedule() {
                     {dayEvts && dayEvts.slice(0, 3).map((ev) => (
                       <div
                         key={ev.id}
-                        className={`text-[10px] px-1 py-0.5 mb-0.5 rounded truncate border-l-2 ${eventTypeColors[ev.eventType] || "border-l-gray-400"} bg-slate-50`}
-                        title={`${ev.title}${isMultiDayEvent(ev) ? " (multi-day)" : ""} — ${ev.clientName}`}
+                        className={`flex items-center gap-1 text-[10px] px-1 py-0.5 mb-0.5 rounded truncate border-l-2 ${eventTypeColors[ev.eventType] || "border-l-gray-400"} bg-slate-50`}
+                        title={`${scheduleEventPrimaryLine(ev)}${isMultiDayEvent(ev) ? " (multi-day)" : ""}`}
                       >
-                        {isMultiDayEvent(ev) ? `Multi-day ${ev.title}` : ev.title}
+                        <span className="truncate">{isMultiDayEvent(ev) ? `Multi-day ${scheduleEventPrimaryLine(ev)}` : scheduleEventPrimaryLine(ev)}</span>
+                        <ConfirmedAppointmentTick confirmed={ev.status === "confirmed"} compact />
                       </div>
                     ))}
                     {dayEvts && dayEvts.length > 3 && (
@@ -520,43 +562,50 @@ export default function TradePortalSchedule() {
           <CardContent className="px-3 sm:px-6">
             {upcomingEvents.length > 0 ? (
               <div className="space-y-2 sm:space-y-3">
-                {upcomingEvents.map((event) => (
-                  <div
-                    key={event.id}
-                    className={`flex items-start gap-3 p-3 rounded-lg border-l-4 ${eventTypeColors[event.eventType] || "border-l-gray-400"} ${eventTypeBg[event.eventType] || "bg-slate-50"} cursor-pointer hover:shadow-sm active:bg-slate-100 transition-all`}
-                    onClick={() => { setCurrentDate(selectedDateForEvent(event)); setView("day"); }}
-                  >
-                    <div className="text-center min-w-[40px] sm:min-w-[50px]">
-                      <p className="text-[10px] sm:text-xs text-muted-foreground">
-                        {new Date(event.startTime).toLocaleDateString("en-AU", { weekday: "short" })}
-                      </p>
-                      <p className="text-base sm:text-lg font-bold">
-                        {new Date(event.startTime).getDate()}
-                      </p>
-                      <p className="text-[10px] sm:text-xs text-muted-foreground">
-                        {new Date(event.startTime).toLocaleDateString("en-AU", { month: "short" })}
-                      </p>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{event.title}</p>
-                      <p className="text-xs text-muted-foreground truncate">{event.clientName} — {event.quoteNumber}</p>
-                      {event.siteAddress && (
-                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                          <MapPin className="w-3 h-3 shrink-0" />
-                          <span className="truncate">{event.siteAddress}</span>
+                {upcomingEvents.map((event) => {
+                  const primaryLine = scheduleEventPrimaryLine(event);
+                  const secondaryLine = scheduleEventSecondaryLine(event);
+                  return (
+                    <div
+                      key={event.id}
+                      className={`flex items-start gap-3 p-3 rounded-lg border-l-4 ${eventTypeColors[event.eventType] || "border-l-gray-400"} ${eventTypeBg[event.eventType] || "bg-slate-50"} cursor-pointer hover:shadow-sm active:bg-slate-100 transition-all`}
+                      onClick={() => { setCurrentDate(selectedDateForEvent(event)); setView("day"); }}
+                    >
+                      <div className="text-center min-w-[40px] sm:min-w-[50px]">
+                        <p className="text-[10px] sm:text-xs text-muted-foreground">
+                          {new Date(event.startTime).toLocaleDateString("en-AU", { weekday: "short" })}
                         </p>
-                      )}
+                        <p className="text-base sm:text-lg font-bold">
+                          {new Date(event.startTime).getDate()}
+                        </p>
+                        <p className="text-[10px] sm:text-xs text-muted-foreground">
+                          {new Date(event.startTime).toLocaleDateString("en-AU", { month: "short" })}
+                        </p>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p className="font-medium text-sm truncate">{primaryLine}</p>
+                          <ConfirmedAppointmentTick confirmed={event.status === "confirmed"} />
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate">{secondaryLine}</p>
+                        {event.siteAddress && (
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                            <MapPin className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{event.siteAddress}</span>
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <Badge variant="outline" className="text-[10px] sm:text-xs">{eventTypeLabels[event.eventType] || event.eventType}</Badge>
+                        <div className={`w-2 h-2 rounded-full ${statusColors[event.status] || "bg-gray-400"}`} title={event.status} />
+                        <span className="text-[10px] sm:text-xs text-muted-foreground flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex flex-col items-end gap-1 shrink-0">
-                      <Badge variant="outline" className="text-[10px] sm:text-xs">{eventTypeLabels[event.eventType] || event.eventType}</Badge>
-                      <div className={`w-2 h-2 rounded-full ${statusColors[event.status] || "bg-gray-400"}`} title={event.status} />
-                      <span className="text-[10px] sm:text-xs text-muted-foreground flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-6 sm:py-8">No upcoming events</p>

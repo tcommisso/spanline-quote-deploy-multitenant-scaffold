@@ -1667,6 +1667,13 @@ export const tradePortalRouter = router({
       const db = await requireDb();
       const installerId = ctx.tradeAccess.installerId;
       const conditions = tradeJobConditions(ctx, eq(constructionScheduleEvents.assignedInstallerId, installerId));
+      const [installer] = await db.select({
+        name: constructionInstallers.name,
+        tradeType: constructionInstallers.tradeType,
+      })
+        .from(constructionInstallers)
+        .where(and(...tradeInstallerConditions(ctx, eq(constructionInstallers.id, installerId))))
+        .limit(1);
 
       if (input?.startDate && input?.endDate) {
         const rangeStart = new Date(input.startDate);
@@ -1714,7 +1721,14 @@ export const tradePortalRouter = router({
         .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
         .where(and(...conditions))
         .orderBy(asc(constructionScheduleEvents.startTime));
-      return rows.map((row: any) => withCanonicalClientName(row));
+      return rows.map((row: any) => ({
+        ...withCanonicalClientName(row),
+        assignedInstallerId: installerId,
+        installerName: installer?.name || null,
+        tradeName: installer?.name || null,
+        installerTradeType: installer?.tradeType || null,
+        assigneeName: installer?.name || null,
+      }));
     }),
 
   // ─── Availabilities ─────────────────────────────────────────────────────────
