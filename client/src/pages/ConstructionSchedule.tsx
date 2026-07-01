@@ -77,7 +77,7 @@ function ScheduleDialogContent({
 
   return (
     <DialogContent
-      className={`flex flex-col gap-0 overflow-hidden p-0 sm:min-h-[420px] sm:min-w-[min(520px,calc(100vw-2rem))] sm:resize ${SCHEDULE_DIALOG_SIZE_CLASSES[size]}`}
+      className={`!flex !flex-col !gap-0 !overflow-hidden !p-0 sm:min-h-[420px] sm:min-w-[min(520px,calc(100vw-2rem))] sm:resize ${SCHEDULE_DIALOG_SIZE_CLASSES[size]}`}
     >
       <DialogHeader className="border-b px-4 py-3 pr-12 sm:px-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
