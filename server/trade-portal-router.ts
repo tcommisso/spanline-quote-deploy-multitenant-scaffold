@@ -33,6 +33,7 @@ import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from 
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { sendNotificationEmail } from "./email";
 import { invokeLLM, type MessageContent } from "./_core/llm";
+import { createOperationalInboxTicket, flashingOrderNotificationText } from "./order-notification-tickets";
 import * as inboxDb from "./inbox-db";
 import {
   addTradeRemittanceDedupeKeys,
@@ -1612,6 +1613,27 @@ export const tradePortalRouter = router({
         notes: input.notes || "Submitted from Trade Portal for construction review.",
         changedByUserId: null,
         changedByName: `${supplier.name} (Trade Portal)`,
+      });
+
+      await createOperationalInboxTicket({
+        tenantId,
+        queue: "construction",
+        sourceType: "flashing-order-review",
+        sourceId: input.id,
+        subject: `Trade portal flashing order pending review: ${order.orderNumber}`,
+        content: flashingOrderNotificationText(
+          {
+            ...order,
+            supplierName: supplier.name || order.supplierName,
+            lineCount: Number(lineCountRow.total || order.lineCount || 0),
+          },
+          "A trade portal flashing order has been submitted and needs construction review.",
+        ),
+        fromName: supplier.name || "Trade Portal",
+        fromAddress: ctx.tradeAccess.email || null,
+        matchedJobId: order.jobId || null,
+        channel: "portal",
+        priority: order.priority || "normal",
       });
 
       await notifyOwner({

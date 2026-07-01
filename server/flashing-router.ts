@@ -12,6 +12,7 @@ import {
 import { router, tenantProcedure } from "./_core/trpc.js";
 import { tenantIdFromContext } from "./_core/tenant-scope";
 import { getDb } from "./db.js";
+import { createOperationalInboxTicket, flashingOrderNotificationText } from "./order-notification-tickets.js";
 import { storagePut } from "./storage.js";
 
 const orderStatuses = [
@@ -809,6 +810,28 @@ export const flashingRouter = router({
         changedByUserId: ctx.user.id,
         changedByName: ctx.user.name || ctx.user.email || "Unknown",
       });
+
+      if (input.status === "submitted" && order.status !== "submitted") {
+        await createOperationalInboxTicket({
+          tenantId,
+          queue: "manufacturing",
+          sourceType: "flashing-order-manufacturing",
+          sourceId: input.id,
+          subject: `New flashing order submitted: ${order.orderNumber}`,
+          content: flashingOrderNotificationText(
+            order,
+            "A construction flashing order has been submitted and needs manufacturing review.",
+          ),
+          fromName: ctx.user.name || ctx.user.email || "Construction",
+          fromAddress: ctx.user.email || null,
+          matchedJobId: order.jobId || null,
+          createdBy: ctx.user.id,
+          createdByName: ctx.user.name || ctx.user.email || "Construction",
+          channel: "web",
+          priority: order.priority || "normal",
+        });
+      }
+
       return { success: true };
     }),
 

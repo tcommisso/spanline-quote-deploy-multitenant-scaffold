@@ -21,6 +21,7 @@ import { generateComponentOrderPdf } from "./smartshop-pdf.js";
 import { logNotification } from "./notification-gateway";
 import { sendNotificationEmail } from "./email";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { componentOrderNotificationText, createOperationalInboxTicket } from "./order-notification-tickets";
 import {
   componentCatalogueTenantConditions,
   componentCatalogueWhere,
@@ -748,6 +749,30 @@ export const smartshopRouter = router({
           }))
         );
       }
+
+      await createOperationalInboxTicket({
+        tenantId: ctx.tenant?.id ?? tenantIdFromContext(ctx) ?? null,
+        queue: "manufacturing",
+        sourceType: "component-order-manufacturing",
+        sourceId: Number(orderId),
+        subject: `New component order submitted: #${nextOrderNumber}`,
+        content: componentOrderNotificationText({
+          orderNumber: nextOrderNumber,
+          requestedBy: input.requestedBy,
+          jobNumber: input.jobNumber,
+          locationRequired: input.locationRequired,
+          dateRequired: input.dateRequired,
+          lineCount: input.lines.length,
+          totalExGst,
+          notes: input.notes,
+        }),
+        fromName: input.requestedBy || ctx.user.name || "Construction",
+        fromAddress: input.email || ctx.user.email || null,
+        createdBy: ctx.user.id,
+        createdByName: ctx.user.name || input.requestedBy || "Construction",
+        channel: "web",
+        priority: "normal",
+      });
 
       // Send email confirmation with PDF attachment (fire-and-forget)
       try {
