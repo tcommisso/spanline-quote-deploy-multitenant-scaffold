@@ -29,12 +29,12 @@ import { isAdminRole, ROLE_LABELS } from "@shared/const";
 type ResourceView = "all" | "staff" | "trades" | "unallocated" | "equipment";
 type ScheduleDialogSize = "compact" | "wide" | "full";
 
-const EVENT_TYPE_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
-  installation: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Wrench, label: "Installation" },
-  inspection: { color: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300", icon: ClipboardCheck, label: "Inspection" },
-  meeting: { color: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300", icon: Users, label: "Meeting" },
-  delivery: { color: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300", icon: Truck, label: "Delivery" },
-  other: { color: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300", icon: Clock, label: "Other" },
+const EVENT_TYPE_CONFIG: Record<string, { color: string; accent: string; icon: any; label: string }> = {
+  installation: { color: "bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100", accent: "border-l-sky-500", icon: Wrench, label: "Installation" },
+  inspection: { color: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100", accent: "border-l-emerald-500", icon: ClipboardCheck, label: "Inspection" },
+  meeting: { color: "bg-violet-100 text-violet-900 dark:bg-violet-900/40 dark:text-violet-100", accent: "border-l-violet-500", icon: Users, label: "Meeting" },
+  delivery: { color: "bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-100", accent: "border-l-orange-500", icon: Truck, label: "Delivery" },
+  other: { color: "bg-slate-100 text-slate-800 dark:bg-slate-900/40 dark:text-slate-200", accent: "border-l-slate-500", icon: Clock, label: "Other" },
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -190,6 +190,20 @@ function hasScheduleReadinessWarnings(event: any) {
 
 function eventAssigneeName(event: any) {
   return event?.assignedUserName || event?.installerName || event?.assigneeName || "";
+}
+
+function scheduleEventPrimaryLine(event: any) {
+  const clientName = String(event?.jobClientName || event?.clientName || "").trim();
+  const assigneeName = String(eventAssigneeName(event) || "").trim();
+  if (clientName && assigneeName) return `${clientName} - ${assigneeName}`;
+  return clientName || assigneeName || String(event?.title || "Schedule event").trim();
+}
+
+function scheduleEventSecondaryLine(event: any) {
+  const title = String(event?.title || "").trim();
+  const primaryLine = scheduleEventPrimaryLine(event);
+  if (title && title !== primaryLine) return title;
+  return event?.jobSiteAddress || EVENT_TYPE_CONFIG[event?.eventType]?.label || EVENT_TYPE_CONFIG.other.label;
 }
 
 function eventIsUnallocated(event: any) {
@@ -934,13 +948,15 @@ export default function ConstructionSchedule() {
                   const isUnallocated = eventIsUnallocated(event);
                   const readinessWarnings = scheduleReadinessWarnings(event);
                   const assigneeName = eventAssigneeName(event);
+                  const primaryLine = scheduleEventPrimaryLine(event);
+                  const secondaryLine = scheduleEventSecondaryLine(event);
                   const startTime = event.allDay ? "All day" : new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
                   const endTime = event.endTime && !event.allDay ? new Date(event.endTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" }) : null;
 
                   return (
                     <Card
                       key={`ev-${event.id}`}
-                      className={`cursor-pointer hover:shadow-md transition-shadow ${readinessWarnings.length ? "border-amber-300 dark:border-amber-700" : ""}`}
+                      className={`cursor-pointer border-l-4 hover:shadow-md transition-shadow ${config.accent} ${readinessWarnings.length ? "ring-1 ring-amber-300 dark:ring-amber-700" : ""}`}
                       onClick={() => setSelectedEvent(event)}
                     >
                       <CardContent className="py-3 px-4">
@@ -950,10 +966,10 @@ export default function ConstructionSchedule() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <h4 className="text-sm font-medium truncate">{event.title}</h4>
+                              <h4 className="text-sm font-medium truncate">{primaryLine}</h4>
                               {isUnallocated && <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
                             </div>
-                            <p className="text-xs text-muted-foreground truncate">{event.jobClientName}</p>
+                            <p className="text-xs text-muted-foreground truncate">{secondaryLine}</p>
                             <div className="flex items-center gap-2 mt-1">
                               <span className="text-xs text-muted-foreground">
                                 <Clock className="h-3 w-3 inline mr-0.5" />
@@ -1080,6 +1096,8 @@ export default function ConstructionSchedule() {
                       const Icon = config.icon;
                       const isUnallocated = eventIsUnallocated(event);
                       const needsReview = hasScheduleReadinessWarnings(event);
+                      const primaryLine = scheduleEventPrimaryLine(event);
+                      const secondaryLine = scheduleEventSecondaryLine(event);
                       return (
                         <button
                           key={`ev-${event.id}`}
@@ -1087,11 +1105,12 @@ export default function ConstructionSchedule() {
                             e.stopPropagation();
                             setSelectedEvent(event);
                           }}
-                          className={`w-full text-left text-[10px] leading-tight px-1.5 py-0.5 rounded truncate flex items-center gap-1 ${config.color} ${isUnallocated ? "border border-dashed border-current" : ""} ${needsReview ? "border border-amber-500" : ""}`}
+                          className={`w-full text-left text-[10px] leading-tight px-1.5 py-0.5 rounded truncate border-l-2 flex items-center gap-1 ${config.color} ${config.accent} ${isUnallocated ? "border border-dashed border-current" : ""} ${needsReview ? "ring-1 ring-amber-500" : ""}`}
+                          title={`${primaryLine}${secondaryLine ? ` - ${secondaryLine}` : ""}`}
                         >
                           <Icon className="h-2.5 w-2.5 flex-shrink-0" />
                           <span className="truncate">
-                            {event.title}
+                            {primaryLine}
                           </span>
                           {(isUnallocated || needsReview) && <AlertTriangle className="h-2.5 w-2.5 flex-shrink-0" />}
                         </button>
@@ -1606,6 +1625,8 @@ function EventDetailView({
   const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
   const Icon = config.icon;
   const readinessWarnings = scheduleReadinessWarnings(event);
+  const primaryLine = scheduleEventPrimaryLine(event);
+  const secondaryLine = scheduleEventSecondaryLine(event);
 
   return (
     <div className="space-y-4">
@@ -1614,9 +1635,9 @@ function EventDetailView({
           <Icon className="h-5 w-5" />
         </div>
         <div className="flex-1">
-          <h3 className="font-semibold text-lg">{event.title}</h3>
+          <h3 className="font-semibold text-lg">{primaryLine}</h3>
           <p className="text-sm text-muted-foreground">
-            {event.jobClientName}{eventSpansMultipleDays(event) ? " · Multi-day" : ""}
+            {secondaryLine}{eventSpansMultipleDays(event) ? " · Multi-day" : ""}
           </p>
         </div>
         <Badge className={STATUS_COLORS[event.status] || ""} variant="secondary">

@@ -58,6 +58,23 @@ const priorityColors: Record<string, string> = {
   urgent: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
 };
 
+function scheduleEventAssigneeName(event: any) {
+  return event?.assignedUserName || event?.installerName || event?.assigneeName || "";
+}
+
+function scheduleEventPrimaryLine(event: any) {
+  const clientName = String(event?.jobClientName || event?.clientName || "").trim();
+  const assigneeName = String(scheduleEventAssigneeName(event) || "").trim();
+  if (clientName && assigneeName) return `${clientName} - ${assigneeName}`;
+  return clientName || assigneeName || String(event?.title || "Schedule event").trim();
+}
+
+function scheduleEventSecondaryLine(event: any) {
+  const title = String(event?.title || "").trim();
+  const primaryLine = scheduleEventPrimaryLine(event);
+  return title && title !== primaryLine ? title : "";
+}
+
 const stageStatusIcons: Record<string, React.ReactNode> = {
   pending: <Clock className="h-4 w-4 text-muted-foreground" />,
   in_progress: <AlertTriangle className="h-4 w-4 text-amber-500" />,
@@ -242,8 +259,8 @@ export default function ConstructionDashboard() {
       items.push({
         id: `event-${event.id}`,
         type: isToday ? "event_today" : "event_upcoming",
-        title: event.title,
-        subtitle: `${event.jobClientName} — ${eventDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}`,
+        title: scheduleEventPrimaryLine(event),
+        subtitle: `${scheduleEventSecondaryLine(event) || "Scheduled event"} — ${eventDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}`,
         time: eventDate,
         icon: isToday ? "alert" : "event",
       });
@@ -612,13 +629,8 @@ export default function ConstructionDashboard() {
                           {eventDate.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" })}
                         </span>
                       </div>
-                      <p className="font-medium text-sm mt-0.5 truncate">{event.title}</p>
-                      <p className="text-xs text-muted-foreground truncate">{event.jobClientName}</p>
-                      {event.installerName && (
-                        <p className="text-xs text-muted-foreground/70 mt-0.5">
-                          <Users className="h-3 w-3 inline mr-1" />{event.installerName}
-                        </p>
-                      )}
+                      <p className="font-medium text-sm mt-0.5 truncate">{scheduleEventPrimaryLine(event)}</p>
+                      <p className="text-xs text-muted-foreground truncate">{scheduleEventSecondaryLine(event) || event.jobClientName}</p>
                     </div>
                   );
                 })}
