@@ -9,6 +9,7 @@ import { and, eq } from "drizzle-orm";
 import { ENV } from "./_core/env";
 import { findTenantByVocphoneNumber } from "./tenant-integrations";
 import { findLeadByPhone } from "./phone-match";
+import { isSmsStopRequest, markMarketingUnsubscribed } from "./marketing-unsubscribe";
 
 async function resolveWebhookTenant(serviceNumber?: string | null) {
   if (serviceNumber) {
@@ -51,6 +52,16 @@ export function registerVocphoneWebhooks(app: Express) {
       const tenant = await resolveWebhookTenant(to);
       // Try to match to a lead
       const leadId = await findLeadByPhone(from, tenant?.id);
+      if (tenant?.id && isSmsStopRequest(body)) {
+        await markMarketingUnsubscribed({
+          tenantId: tenant.id,
+          channel: "sms",
+          contact: from,
+          leadId,
+          reason: "sms_stop",
+          source: "vocphone_webhook",
+        });
+      }
       const db = (await getDb())!;
       await db.insert(smsMessages).values({
         tenantId: tenant?.id ?? null,

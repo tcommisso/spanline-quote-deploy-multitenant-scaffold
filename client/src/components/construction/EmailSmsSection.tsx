@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import RichTextEditor from "@/components/RichTextEditor";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -50,6 +51,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState("");
+  const [isMarketing, setIsMarketing] = useState(false);
 
   const commsQuery = trpc.construction.jobComms.list.useQuery({ jobId });
   const utils = trpc.useUtils();
@@ -87,6 +89,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
     setSelectedRecipient("");
     setSelectedTemplate("");
     setRecipientMode("client");
+    setIsMarketing(false);
   }
 
   // Merge field replacement for templates
@@ -137,6 +140,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
         type: composeType,
         subject: composeType === "email" ? subject : undefined,
         body,
+        isMarketing,
         recipients,
       });
     } else if (recipientMode === "client") {
@@ -152,6 +156,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
         recipientContact: contact,
         subject: composeType === "email" ? subject : undefined,
         body,
+        isMarketing,
       });
     } else {
       // single-trade
@@ -169,6 +174,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
         recipientContact: contact,
         subject: composeType === "email" ? subject : undefined,
         body,
+        isMarketing,
       });
     }
   }
@@ -238,7 +244,7 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
 
         {/* Compose Dialog */}
         <Dialog open={showCompose} onOpenChange={(open) => { if (!open) resetForm(); else setShowCompose(true); }}>
-          <DialogContent className={composeType === "email" ? "sm:max-w-2xl" : "sm:max-w-lg"}>
+          <DialogContent className={`${composeType === "email" ? "sm:max-w-2xl" : "sm:max-w-lg"} max-h-[90vh] max-w-[calc(100vw-2rem)] overflow-y-auto`}>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 {composeType === "sms" ? <MessageSquare className="h-5 w-5" /> : <Mail className="h-5 w-5" />}
@@ -329,6 +335,20 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
                 </div>
               )}
 
+              <div className="space-y-1 rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="jobcomms-marketing"
+                    checked={isMarketing}
+                    onCheckedChange={setIsMarketing}
+                  />
+                  <Label htmlFor="jobcomms-marketing" className="text-sm">Marketing message</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Adds unsubscribe wording and suppresses opted-out recipients. Leave off for job, safety, appointment or invoice messages.
+                </p>
+              </div>
+
               {/* Body */}
               <div className="space-y-2">
                 <Label>Message</Label>
@@ -346,16 +366,20 @@ export default function EmailSmsSection({ jobId, assignments, clientName, client
                       placeholder="Type your SMS message..."
                       rows={5}
                     />
-                    <p className="text-xs text-muted-foreground">{body.length} / 160 characters {body.length > 160 ? `(${Math.ceil(body.length / 160)} SMS parts)` : ""}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {body.length} / 160 characters {body.length > 160 ? `(${Math.ceil(body.length / 160)} SMS parts)` : ""}
+                      {isMarketing ? " · STOP wording will be appended" : ""}
+                    </p>
                   </>
                 )}
               </div>
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={resetForm}>Cancel</Button>
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button variant="outline" onClick={resetForm} className="w-full sm:w-auto">Cancel</Button>
               <Button
                 onClick={handleSend}
                 disabled={!canSend || isSending}
+                className="w-full sm:w-auto"
               >
                 {isSending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Send className="h-4 w-4 mr-1" />}
                 Send

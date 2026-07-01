@@ -8,7 +8,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import {
@@ -150,6 +152,7 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
   const [body, setBody] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [senderNumber, setSenderNumber] = useState<string>("");
+  const [isMarketing, setIsMarketing] = useState(false);
 
   // Auto-select first sender number
   useEffect(() => {
@@ -170,6 +173,7 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
       toast.success("SMS sent");
       setBody("");
       setSelectedTemplate("");
+      setIsMarketing(false);
       utils.vocphone.getLeadMessages.invalidate({ leadId });
       utils.vocphone.getLeadTimeline.invalidate({ leadId });
     },
@@ -219,6 +223,7 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
       sender: senderNumber,
       body: body.trim(),
       templateId: selectedTemplate ? Number(selectedTemplate) : undefined,
+      isMarketing,
     });
   }
 
@@ -257,10 +262,10 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
 
           {/* Compose Area */}
           <div className="border-t pt-3 space-y-2">
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               {/* Template picker */}
               <Select value={selectedTemplate} onValueChange={applyTemplate}>
-                <SelectTrigger className="w-[200px]">
+                <SelectTrigger className="w-full sm:w-[200px]">
                   <SelectValue placeholder="Use template..." />
                 </SelectTrigger>
                 <SelectContent>
@@ -273,7 +278,7 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
               {/* Sender number */}
               {(smsNumbers as any)?.list?.length > 1 && (
                 <Select value={senderNumber} onValueChange={setSenderNumber}>
-                  <SelectTrigger className="w-[160px]">
+                  <SelectTrigger className="w-full sm:w-[160px]">
                     <SelectValue placeholder="From..." />
                   </SelectTrigger>
                   <SelectContent>
@@ -285,7 +290,21 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
               )}
             </div>
 
-            <div className="flex gap-2">
+            <div className="space-y-1 rounded-md border bg-muted/30 p-3">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="lead-sms-marketing"
+                  checked={isMarketing}
+                  onCheckedChange={setIsMarketing}
+                />
+                <Label htmlFor="lead-sms-marketing" className="text-sm">Marketing message</Label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Adds STOP wording and blocks SMS to contacts who opted out.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Textarea
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
@@ -302,12 +321,14 @@ function SmsView({ leadId, leadPhone, leadName, branchId }: { leadId: number; le
               <Button
                 onClick={handleSend}
                 disabled={sendMut.isPending || !body.trim()}
-                className="self-end"
+                className="w-full sm:w-auto sm:self-end"
               >
                 <Send className="h-4 w-4" />
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Press Ctrl+Enter to send · {body.length}/160 chars</p>
+            <p className="text-xs text-muted-foreground">
+              Press Ctrl+Enter to send · {body.length}/160 chars{isMarketing ? " · STOP wording will be appended" : ""}
+            </p>
           </div>
         </CardContent>
       </Card>

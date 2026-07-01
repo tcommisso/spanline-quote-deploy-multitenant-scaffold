@@ -4,11 +4,13 @@
  */
 import { z } from "zod";
 import { router, tenantAdminProcedure as adminProcedure, tenantProcedure as protectedProcedure } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
 import { getDb } from "./db";
 import { smsMessages, callLogs, smsTemplates, crmLeads, crmActivities, globalSettings, vocphoneExtensions } from "../drizzle/schema";
 import { eq, desc, or, and, sql, like, gte, lte, count, sum, avg, inArray } from "drizzle-orm";
 import * as vocphone from "./vocphone";
 import { findLeadByPhone, phoneSearchCondition } from "./phone-match";
+import { buildMarketingSmsBody, isMarketingUnsubscribed } from "./marketing-unsubscribe";
 
 export const vocphoneRouter = router({
   // ─── SMS Numbers ──────────────────────────────────────────────────────────
@@ -28,13 +30,27 @@ export const vocphoneRouter = router({
       sender: z.string(),
       body: z.string(),
       templateId: z.number().optional(),
+      isMarketing: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
+      let body = input.body;
+      if (input.isMarketing) {
+        if (await isMarketingUnsubscribed({ tenantId: ctx.tenant!.id, channel: "sms", contact: input.recipient })) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This recipient has unsubscribed from SMS marketing." });
+        }
+        body = await buildMarketingSmsBody({
+          tenantId: ctx.tenant!.id,
+          contact: input.recipient,
+          body: input.body,
+          leadId: input.leadId || null,
+          source: "crm_sms",
+        });
+      }
       const result = await vocphone.sendSms({
         tenantId: ctx.tenant!.id,
         recipient: input.recipient,
         sender: input.sender,
-        body: input.body,
+        body,
       });
 
       // Extract message ID from Vocphone response for delivery tracking
@@ -48,7 +64,7 @@ export const vocphoneRouter = router({
         direction: "outbound",
         fromNumber: input.sender,
         toNumber: input.recipient,
-        body: input.body,
+        body,
         templateId: input.templateId || null,
         status: "sent",
         vocphoneMessageId,

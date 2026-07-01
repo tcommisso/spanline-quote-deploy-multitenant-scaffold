@@ -1223,6 +1223,28 @@ export const smsMessages = mysqlTable("sms_messages", {
 export type SmsMessage = typeof smsMessages.$inferSelect;
 export type InsertSmsMessage = typeof smsMessages.$inferInsert;
 
+// ─── Marketing Consent / Unsubscribe Preferences ───────────────────────────
+export const marketingContactPreferences = mysqlTable("marketing_contact_preferences", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  channel: mysqlEnum("channel", ["email", "sms"]).notNull(),
+  contactValue: varchar("contactValue", { length: 320 }).notNull(),
+  unsubscribeToken: varchar("unsubscribeToken", { length: 96 }).notNull(),
+  leadId: int("leadId").references(() => crmLeads.id, { onDelete: "set null" }),
+  source: varchar("source", { length: 64 }),
+  unsubscribedAt: timestamp("unsubscribedAt"),
+  unsubscribeReason: varchar("unsubscribeReason", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_marketing_pref_contact").on(table.tenantId, table.channel, table.contactValue),
+  uniqueIndex("uq_marketing_pref_token").on(table.unsubscribeToken),
+  index("idx_marketing_pref_tenant_channel").on(table.tenantId, table.channel),
+  index("idx_marketing_pref_tenant_lead").on(table.tenantId, table.leadId),
+]);
+export type MarketingContactPreference = typeof marketingContactPreferences.$inferSelect;
+export type InsertMarketingContactPreference = typeof marketingContactPreferences.$inferInsert;
+
 // ─── Vocphone: Call Logs ────────────────────────────────────────────────────
 export const callLogs = mysqlTable("call_logs", {
   id: int("id").autoincrement().primaryKey(),

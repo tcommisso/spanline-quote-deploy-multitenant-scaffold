@@ -243,6 +243,7 @@ export default function InboxCompose() {
   const [fromAddressId, setFromAddressId] = useState<string>("default");
   const [includeSignature, setIncludeSignature] = useState(true);
   const [includeRateUs, setIncludeRateUs] = useState(false);
+  const [isMarketing, setIsMarketing] = useState(false);
   const [emailTemplateCategory, setEmailTemplateCategory] = useState("all");
   const { data: addresses } = trpc.inbox.addresses.list.useQuery();
   const { data: composeDefaults } = trpc.inbox.composeDefaults.useQuery();
@@ -313,6 +314,9 @@ export default function InboxCompose() {
     } else {
       setIncludeSignature(true);
     }
+    if (value === "push") {
+      setIsMarketing(false);
+    }
   }
 
   function handleSend() {
@@ -326,6 +330,10 @@ export default function InboxCompose() {
     }
     if (!body.trim()) {
       toast.error("Please enter a message");
+      return;
+    }
+    if (sendChannel === "email" && isMarketing && recipients.length + ccRecipients.length > 1) {
+      toast.error("Marketing email must be sent to one recipient at a time so the unsubscribe link is recipient-specific");
       return;
     }
     const primary = recipients[0];
@@ -344,6 +352,7 @@ export default function InboxCompose() {
       textBody: messageBodyToText(body),
       includeSignature: sendChannel === "email" ? includeSignature : false,
       includeRateUs: sendChannel === "email" ? includeRateUs : false,
+      isMarketing: sendChannel !== "push" ? isMarketing : false,
       fromAddressId: fromAddressId !== "default" ? parseInt(fromAddressId) : undefined,
     });
   }
@@ -559,8 +568,23 @@ export default function InboxCompose() {
           />
 
           {/* Options */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t">
-            <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-col gap-3 pt-2 border-t sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-stretch gap-3 sm:items-center">
+              {sendChannel !== "push" && (
+                <div className="flex min-w-full flex-col gap-1 rounded-md border bg-muted/30 p-3 sm:min-w-[260px] sm:max-w-[340px]">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="compose-marketing"
+                      checked={isMarketing}
+                      onCheckedChange={setIsMarketing}
+                    />
+                    <Label htmlFor="compose-marketing" className="text-sm">Marketing message</Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Adds unsubscribe wording and blocks contacts who opted out.
+                  </p>
+                </div>
+              )}
               {sendChannel === "email" && (
                 <>
                   <div className="flex items-center gap-2">
@@ -582,7 +606,7 @@ export default function InboxCompose() {
                 </>
               )}
             </div>
-            <Button onClick={handleSend} disabled={composeMut.isPending}>
+            <Button onClick={handleSend} disabled={composeMut.isPending} className="w-full sm:w-auto">
               {composeMut.isPending ? "Sending..." : "Send"}
               <Send className="h-4 w-4 ml-2" />
             </Button>
@@ -653,6 +677,11 @@ export default function InboxCompose() {
                     <div className="mt-6 pt-4 border-t">
                       <div dangerouslySetInnerHTML={{ __html: defaultSig.htmlContent }} />
                     </div>
+                  )}
+                  {sendChannel !== "push" && isMarketing && (
+                    <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+                      Unsubscribe wording will be appended when sent.
+                    </p>
                   )}
                 </div>
               </DialogContent>

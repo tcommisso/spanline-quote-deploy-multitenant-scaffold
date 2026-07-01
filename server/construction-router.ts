@@ -17,6 +17,11 @@ import {
   constructionStatusFromCrmStatus,
   crmStatusFromConstructionStatus,
 } from "./construction-status";
+import {
+  buildMarketingEmailBodies,
+  buildMarketingSmsBody,
+  isMarketingUnsubscribed,
+} from "./marketing-unsubscribe";
 
 const CLIENT_PORTAL_DOCUMENT_CATEGORIES = ["contract", "plans", "variation", "invoice", "photos", "other"] as const;
 
@@ -1836,6 +1841,7 @@ export const constructionRouter = router({
         body: z.string().min(1),
         templateId: z.number().optional(),
         templateName: z.string().optional(),
+        isMarketing: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
         const db = await getDb();
@@ -1843,23 +1849,57 @@ export const constructionRouter = router({
         await assertJobAccess(db, ctx, input.jobId);
         // Actually send the message
         let sendFailed: string | null = null;
+        let loggedBody = input.body;
+        const tenantId = tenantIdFromContext(ctx);
+        if (input.isMarketing && !tenantId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Tenant context is required for marketing messages." });
+        }
         if (input.type === "sms") {
           try {
             const senderNumber = process.env.VOCPHONE_SMS_SENDER || "61480855750";
             let phone = input.recipientContact.replace(/[\s\-()]/g, "");
             if (phone.startsWith("+")) phone = phone.slice(1);
             if (phone.startsWith("0")) phone = "61" + phone.slice(1);
-            await vocphone.sendSms({ recipient: phone, sender: senderNumber, body: input.body });
+            if (input.isMarketing && tenantId) {
+              if (await isMarketingUnsubscribed({ tenantId, channel: "sms", contact: phone })) {
+                throw new Error("Recipient has unsubscribed from SMS marketing");
+              }
+              loggedBody = await buildMarketingSmsBody({
+                tenantId,
+                contact: phone,
+                body: input.body,
+                source: "construction_job_comms",
+              });
+            }
+            await vocphone.sendSms({ tenantId, recipient: phone, sender: senderNumber, body: loggedBody });
           } catch (err: any) {
             console.error("[JobComms] SMS send failed:", err);
             sendFailed = err.message || "SMS send failed";
           }
         } else {
           try {
+            let htmlBody = `<p>${input.body.replace(/\n/g, "<br>")}</p>`;
+            if (input.isMarketing && tenantId) {
+              if (await isMarketingUnsubscribed({ tenantId, channel: "email", contact: input.recipientContact })) {
+                throw new Error("Recipient has unsubscribed from email marketing");
+              }
+              const bodies = await buildMarketingEmailBodies({
+                tenantId,
+                contact: input.recipientContact,
+                htmlBody,
+                textBody: input.body,
+                origin: ctx.req?.headers?.origin || "",
+                source: "construction_job_comms",
+              });
+              htmlBody = bodies.htmlBody;
+              loggedBody = bodies.textBody;
+            }
             await sendNotificationEmail({
+              tenantId,
               to: input.recipientContact,
               subject: input.subject || "Message from Altaspan",
-              htmlBody: `<p>${input.body.replace(/\n/g, "<br>")}</p>`,
+              htmlBody,
+              module: "construction",
             });
           } catch (err: any) {
             console.error("[JobComms] Email send failed:", err);
@@ -1875,7 +1915,7 @@ export const constructionRouter = router({
           recipientName: input.recipientName,
           recipientContact: input.recipientContact,
           subject: input.subject || null,
-          body: input.body,
+          body: loggedBody,
           templateId: input.templateId || null,
           templateName: input.templateName || null,
           status: deliveryStatus,
@@ -1892,6 +1932,7 @@ export const constructionRouter = router({
         type: z.enum(["email", "sms"]),
         subject: z.string().optional(),
         body: z.string().min(1),
+        isMarketing: z.boolean().optional(),
         recipients: z.array(z.object({
           name: z.string(),
           contact: z.string(),
@@ -1902,20 +1943,54 @@ export const constructionRouter = router({
         if (!db) throw new Error("Database unavailable");
         await assertJobAccess(db, ctx, input.jobId);
         let sent = 0;
+        const tenantId = tenantIdFromContext(ctx);
+        if (input.isMarketing && !tenantId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Tenant context is required for marketing messages." });
+        }
         for (const r of input.recipients) {
           let bulkFailed: string | null = null;
+          let loggedBody = input.body;
           try {
             if (input.type === "sms") {
               const senderNumber = process.env.VOCPHONE_SMS_SENDER || "61480855750";
               let phone = r.contact.replace(/[\s\-()]/g, "");
               if (phone.startsWith("+")) phone = phone.slice(1);
               if (phone.startsWith("0")) phone = "61" + phone.slice(1);
-              await vocphone.sendSms({ recipient: phone, sender: senderNumber, body: input.body });
+              if (input.isMarketing && tenantId) {
+                if (await isMarketingUnsubscribed({ tenantId, channel: "sms", contact: phone })) {
+                  throw new Error("Recipient has unsubscribed from SMS marketing");
+                }
+                loggedBody = await buildMarketingSmsBody({
+                  tenantId,
+                  contact: phone,
+                  body: input.body,
+                  source: "construction_job_comms",
+                });
+              }
+              await vocphone.sendSms({ tenantId, recipient: phone, sender: senderNumber, body: loggedBody });
             } else {
+              let htmlBody = `<p>${input.body.replace(/\n/g, "<br>")}</p>`;
+              if (input.isMarketing && tenantId) {
+                if (await isMarketingUnsubscribed({ tenantId, channel: "email", contact: r.contact })) {
+                  throw new Error("Recipient has unsubscribed from email marketing");
+                }
+                const bodies = await buildMarketingEmailBodies({
+                  tenantId,
+                  contact: r.contact,
+                  htmlBody,
+                  textBody: input.body,
+                  origin: ctx.req?.headers?.origin || "",
+                  source: "construction_job_comms",
+                });
+                htmlBody = bodies.htmlBody;
+                loggedBody = bodies.textBody;
+              }
               await sendNotificationEmail({
+                tenantId,
                 to: r.contact,
                 subject: input.subject || "Message from Altaspan",
-                htmlBody: `<p>${input.body.replace(/\n/g, "<br>")}</p>`,
+                htmlBody,
+                module: "construction",
               });
             }
             sent++;
@@ -1931,7 +2006,7 @@ export const constructionRouter = router({
             recipientName: r.name,
             recipientContact: r.contact,
             subject: input.subject || null,
-            body: input.body,
+            body: loggedBody,
             status: bulkFailed ? "failed" : (input.type === "email" ? "delivered" : "sent"),
             deliveredAt: !bulkFailed ? new Date() : null,
             failedReason: bulkFailed || null,

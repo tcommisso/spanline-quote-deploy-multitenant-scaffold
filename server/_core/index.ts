@@ -40,6 +40,7 @@ import { registerNylasCallbackRoutes } from "../nylas-callback-routes";
 import { registerVocphoneRecordingRoutes } from "../vocphone-recordings";
 import { registerHealthRoutes } from "./health";
 import { bootstrapO365MailboxesFromEnv } from "../o365-bootstrap";
+import { registerMarketingUnsubscribeRoutes } from "../marketing-unsubscribe";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -129,6 +130,8 @@ async function startServer() {
   registerScheduledVocphoneSync(app);
   // Scheduled missed calls digest (daily 8am AEST / 22:00 UTC)
   registerScheduledMissedCallsDigest(app);
+  // Public marketing email unsubscribe page
+  registerMarketingUnsubscribeRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",

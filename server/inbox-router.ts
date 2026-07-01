@@ -27,6 +27,11 @@ import { and, eq, like, or, sql } from "drizzle-orm";
 import { getTenantEmailConfig } from "./tenant-integrations";
 import { appendInboxThreadMarkerHtml } from "./inbox-threading";
 import * as vocphone from "./vocphone";
+import {
+  buildMarketingEmailBodies,
+  buildMarketingSmsBody,
+  isMarketingUnsubscribed,
+} from "./marketing-unsubscribe";
 
 const inboxStatusSchema = z.enum(["new", "open", "replied", "closed", "spam"]);
 const inboxTicketStatusSchema = z.enum(["new", "open", "waiting_customer", "waiting_internal", "customer_replied", "resolved", "closed", "spam"]);
@@ -972,6 +977,7 @@ export const inboxRouter = router({
       includeSignature: z.boolean().optional(),
       signatureId: z.number().optional(),
       includeRateUs: z.boolean().optional(),
+      isMarketing: z.boolean().optional(),
       matchedJobId: z.number().optional(),
       matchedLeadId: z.number().optional(),
       fromAddressId: z.number().optional(),
@@ -1044,13 +1050,26 @@ export const inboxRouter = router({
         if (!recipient) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "SMS recipient phone number is invalid" });
         }
+        let smsBody = messageText;
+        if (input.isMarketing) {
+          if (await isMarketingUnsubscribed({ tenantId, channel: "sms", contact: recipient })) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "This recipient has unsubscribed from SMS marketing." });
+          }
+          smsBody = await buildMarketingSmsBody({
+            tenantId,
+            contact: recipient,
+            body: messageText,
+            leadId: input.matchedLeadId || null,
+            source: "inbox_compose",
+          });
+        }
         const smsNumbers = await vocphone.getSmsNumbers(tenantId);
         const senderNumber = normaliseAuPhone(smsNumbers.list?.[0]?.number) || normaliseAuPhone(process.env.VOCPHONE_SMS_SENDER) || "61480855750";
         const sendResult = await vocphone.sendSms({
           tenantId,
           recipient,
           sender: senderNumber,
-          body: messageText,
+          body: smsBody,
         });
         const vocphoneMessageId = (sendResult as any)?.id ? String((sendResult as any).id) : null;
         await (await getDb())!.insert(smsMessages).values({
@@ -1059,7 +1078,7 @@ export const inboxRouter = router({
           direction: "outbound",
           fromNumber: senderNumber,
           toNumber: recipient,
-          body: messageText,
+          body: smsBody,
           templateId: null,
           status: "sent",
           vocphoneMessageId,
@@ -1078,8 +1097,8 @@ export const inboxRouter = router({
           toAddresses: JSON.stringify([recipient]),
           receivedByAddress: senderNumber,
           subject: subject || "SMS message",
-          htmlBody: textToSimpleHtml(messageText),
-          textBody: messageText,
+          htmlBody: textToSimpleHtml(smsBody),
+          textBody: smsBody,
           matchedJobId: input.matchedJobId || null,
           matchedLeadId: input.matchedLeadId || null,
           matchedClientEmail: null,
@@ -1187,6 +1206,14 @@ export const inboxRouter = router({
       const fromAddress = `${userName} <${composeFromEmail}>`;
       const toAddress = input.toAddress!;
       const ccAddresses = input.ccAddresses && input.ccAddresses.length > 0 ? input.ccAddresses : undefined;
+      if (input.isMarketing) {
+        if (ccAddresses?.length) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Marketing email must be sent to one recipient at a time so the unsubscribe link is recipient-specific." });
+        }
+        if (await isMarketingUnsubscribed({ tenantId, channel: "email", contact: toAddress })) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This recipient has unsubscribed from email marketing." });
+        }
+      }
       const { id: msgId } = await inboxDb.createInboxMessage({
         tenantId,
         threadId,
@@ -1221,6 +1248,20 @@ export const inboxRouter = router({
         const feedbackHtml = buildRateUsHtml(baseUrl, msgId, rateUsPrompt);
         fullHtml += feedbackHtml;
       }
+      let finalTextBody = input.textBody || undefined;
+      if (input.isMarketing) {
+        const marketingBodies = await buildMarketingEmailBodies({
+          tenantId,
+          contact: toAddress,
+          htmlBody: fullHtml,
+          textBody: input.textBody || null,
+          origin: ctx.req.headers.origin || "",
+          leadId: input.matchedLeadId || null,
+          source: "inbox_compose",
+        });
+        fullHtml = marketingBodies.htmlBody;
+        finalTextBody = marketingBodies.textBody;
+      }
       fullHtml = appendInboxThreadMarkerHtml(fullHtml, threadId);
 
       // Send via unified O365 email service.
@@ -1231,7 +1272,7 @@ export const inboxRouter = router({
         cc: ccAddresses,
         subject,
         htmlBody: fullHtml,
-        textBody: input.textBody || undefined,
+        textBody: finalTextBody,
         tenantId,
       });
 
