@@ -9,6 +9,7 @@ import type { InsertQuoteRevision, InsertSmsDeliveryLog } from "../drizzle/schem
 import type { InsertQuote, InsertQuoteComponent, InsertSkyluxEntry, InsertEclipseEntry, InsertMasterData, InsertSkyluxMatrix, InsertProduct, InsertColourGroup, InsertColourGroupMember } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { appendTenantScope, isMultiTenancyMode, tenantScoped } from "./_core/tenant-scope";
+import { canonicalClientFromLead } from "./canonical-client";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -1540,9 +1541,12 @@ export async function cleanupOrphanedColourGroupMembers(tenantId?: TenantScope):
 // ─── Global Search ──────────────────────────────────────────────────────────
 export async function globalSearch(query: string, tenantId?: number | null) {
   const db = await getDb();
-  if (!db) return { quotes: [], deckQuotes: [], eclipseQuotes: [], leads: [] };
-  if (!tenantId) return { quotes: [], deckQuotes: [], eclipseQuotes: [], leads: [] };
-  const pattern = `%${query}%`;
+  const empty = { quotes: [], deckQuotes: [], eclipseQuotes: [], constructionJobs: [], leads: [] };
+  if (!db) return empty;
+  if (!tenantId) return empty;
+  const trimmedQuery = query.trim();
+  if (trimmedQuery.length < 2) return empty;
+  const pattern = `%${trimmedQuery}%`;
 
   // Search structure quotes
   const structureResults = await db.select({
@@ -1553,7 +1557,7 @@ export async function globalSearch(query: string, tenantId?: number | null) {
     siteAddress: quotes.siteAddress,
   }).from(quotes).where(
     and(
-      eq(quotes.tenantId, tenantId),
+      tenantScoped(quotes.tenantId, tenantId),
       or(
         like(quotes.clientName, pattern),
         like(quotes.quoteNumber, pattern),
@@ -1573,7 +1577,7 @@ export async function globalSearch(query: string, tenantId?: number | null) {
     siteAddress: deckQuotes.siteAddress,
   }).from(deckQuotes).where(
     and(
-      eq(deckQuotes.tenantId, tenantId),
+      tenantScoped(deckQuotes.tenantId, tenantId),
       or(
         like(deckQuotes.clientName, pattern),
         like(deckQuotes.quoteNumber, pattern),
@@ -1593,7 +1597,7 @@ export async function globalSearch(query: string, tenantId?: number | null) {
     clientAddress: eclipseQuotes.clientAddress,
   }).from(eclipseQuotes).where(
     and(
-      eq(eclipseQuotes.tenantId, tenantId),
+      tenantScoped(eclipseQuotes.tenantId, tenantId),
       or(
         like(eclipseQuotes.clientName, pattern),
         like(eclipseQuotes.quoteNumber, pattern),
@@ -1604,24 +1608,97 @@ export async function globalSearch(query: string, tenantId?: number | null) {
     )
   ).orderBy(desc(eclipseQuotes.updatedAt)).limit(10);
 
+  // Search construction jobs / clients. Prefer canonical CRM client data when linked.
+  const constructionRows = await db.select({
+    id: constructionJobs.id,
+    quoteNumber: constructionJobs.quoteNumber,
+    storedClientName: constructionJobs.clientName,
+    status: constructionJobs.status,
+    siteAddress: constructionJobs.siteAddress,
+    updatedAt: constructionJobs.updatedAt,
+    leadId: crmLeads.id,
+    leadFirstName: crmLeads.contactFirstName,
+    leadLastName: crmLeads.contactLastName,
+    leadCompany: crmLeads.company,
+    leadPhone: crmLeads.contactPhone,
+    leadEmail: crmLeads.contactEmail,
+    leadAddress: crmLeads.contactAddress,
+    leadClientNumber: crmLeads.clientNumber,
+    leadStatus: crmLeads.status,
+  }).from(constructionJobs)
+    .leftJoin(crmLeads, and(
+      eq(constructionJobs.leadId, crmLeads.id),
+      tenantScoped(crmLeads.tenantId, tenantId),
+    ))
+    .where(
+      and(
+        tenantScoped(constructionJobs.tenantId, tenantId),
+        or(
+          like(constructionJobs.clientName, pattern),
+          like(constructionJobs.quoteNumber, pattern),
+          like(constructionJobs.siteAddress, pattern),
+          like(crmLeads.clientNumber, pattern),
+          like(crmLeads.contactFirstName, pattern),
+          like(crmLeads.contactLastName, pattern),
+          like(crmLeads.company, pattern),
+          like(crmLeads.contactEmail, pattern),
+          like(crmLeads.contactPhone, pattern),
+          like(crmLeads.contactAddress, pattern),
+        ),
+      )
+    )
+    .orderBy(desc(constructionJobs.updatedAt))
+    .limit(10);
+
+  const constructionResults = constructionRows.map((row) => {
+    const canonicalClient = canonicalClientFromLead({
+      id: row.leadId,
+      contactFirstName: row.leadFirstName,
+      contactLastName: row.leadLastName,
+      company: row.leadCompany,
+      contactPhone: row.leadPhone,
+      contactEmail: row.leadEmail,
+      contactAddress: row.leadAddress,
+      clientNumber: row.leadClientNumber,
+      status: row.leadStatus,
+    });
+
+    return {
+      id: row.id,
+      quoteNumber: row.quoteNumber,
+      clientName: canonicalClient?.name || row.storedClientName,
+      storedClientName: row.storedClientName,
+      status: row.status,
+      siteAddress: row.siteAddress || canonicalClient?.address || null,
+      clientNumber: canonicalClient?.clientNumber || null,
+      contactEmail: canonicalClient?.email || null,
+      contactPhone: canonicalClient?.phone || null,
+    };
+  });
+
   // Search CRM leads
   const leadResults = await db.select({
     id: crmLeads.id,
     leadNumber: crmLeads.leadNumber,
+    clientNumber: crmLeads.clientNumber,
     contactFirstName: crmLeads.contactFirstName,
     contactLastName: crmLeads.contactLastName,
+    company: crmLeads.company,
     contactPhone: crmLeads.contactPhone,
     contactEmail: crmLeads.contactEmail,
+    contactAddress: crmLeads.contactAddress,
     status: crmLeads.status,
   }).from(crmLeads).where(
     and(
-      eq(crmLeads.tenantId, tenantId),
+      tenantScoped(crmLeads.tenantId, tenantId),
       or(
         like(crmLeads.contactFirstName, pattern),
         like(crmLeads.contactLastName, pattern),
         like(crmLeads.contactEmail, pattern),
         like(crmLeads.contactPhone, pattern),
+        like(crmLeads.contactAddress, pattern),
         like(crmLeads.company, pattern),
+        like(crmLeads.clientNumber, pattern),
         like(crmLeads.leadNumber, pattern),
       ),
     )
@@ -1631,6 +1708,7 @@ export async function globalSearch(query: string, tenantId?: number | null) {
     quotes: structureResults,
     deckQuotes: deckResults,
     eclipseQuotes: eclipseResults,
+    constructionJobs: constructionResults,
     leads: leadResults,
   };
 }

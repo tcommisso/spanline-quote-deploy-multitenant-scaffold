@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
-import { Search, FileText, Users, X, Loader2 } from "lucide-react";
+import { Search, FileText, Users, X, Loader2, HardHat } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -41,7 +41,7 @@ export function GlobalSearch() {
   }, [setLocation]);
 
   const totalResults = data
-    ? data.quotes.length + data.deckQuotes.length + data.eclipseQuotes.length + data.leads.length
+    ? data.quotes.length + data.deckQuotes.length + data.eclipseQuotes.length + data.constructionJobs.length + data.leads.length
     : 0;
 
   return (
@@ -52,7 +52,7 @@ export function GlobalSearch() {
         className="flex items-center gap-2 px-3 py-1.5 text-sm text-muted-foreground bg-muted/50 border border-border rounded-lg hover:bg-muted transition-colors w-full sm:w-64"
       >
         <Search className="h-4 w-4 shrink-0" />
-        <span className="truncate">Search quotes, leads...</span>
+        <span className="truncate">Search quotes, jobs, leads...</span>
         <kbd className="hidden sm:inline-flex ml-auto text-[10px] font-mono bg-background border border-border rounded px-1.5 py-0.5">
           ⌘K
         </kbd>
@@ -60,7 +60,7 @@ export function GlobalSearch() {
 
       {/* Search dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg p-0 gap-0 overflow-hidden [&>button]:hidden">
+        <DialogContent className="w-[calc(100vw-1.5rem)] sm:max-w-lg p-0 gap-0 overflow-hidden [&>button]:hidden">
           <DialogTitle className="sr-only">Search</DialogTitle>
           {/* Search input */}
           <div className="flex items-center gap-3 px-4 py-3 border-b">
@@ -177,6 +177,33 @@ export function GlobalSearch() {
                   </div>
                 )}
 
+                {/* Construction Jobs */}
+                {data.constructionJobs.length > 0 && (
+                  <div>
+                    <div className="px-4 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Construction Jobs
+                    </div>
+                    {data.constructionJobs.map((j) => (
+                      <button
+                        key={`job-${j.id}`}
+                        onClick={() => navigate(`/construction/clients/${j.id}`)}
+                        className="w-full flex items-center gap-3 px-4 py-2 hover:bg-muted/50 text-left transition-colors"
+                      >
+                        <HardHat className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{j.clientName}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {[j.quoteNumber || `Job #${j.id}`, j.clientNumber, j.siteAddress].filter(Boolean).join(" · ")}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] shrink-0">
+                          {j.status}
+                        </Badge>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {/* CRM Leads */}
                 {data.leads.length > 0 && (
                   <div>
@@ -192,10 +219,10 @@ export function GlobalSearch() {
                         <Users className="h-4 w-4 text-muted-foreground shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">
-                            {l.contactFirstName} {l.contactLastName}
+                            {[l.contactFirstName, l.contactLastName].filter(Boolean).join(" ") || l.company || "Unnamed lead"}
                           </p>
                           <p className="text-xs text-muted-foreground truncate">
-                            {l.leadNumber} · {l.contactEmail || l.contactPhone || ""}
+                            {[l.leadNumber, l.clientNumber, l.contactEmail || l.contactPhone || l.contactAddress].filter(Boolean).join(" · ")}
                           </p>
                         </div>
                         <Badge variant="outline" className="text-[10px] shrink-0">
@@ -211,7 +238,7 @@ export function GlobalSearch() {
 
           {/* Footer hint */}
           <div className="px-4 py-2 border-t bg-muted/30 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>Search across all quotes and leads</span>
+            <span>Search across quotes, jobs and leads</span>
             <span>ESC to close</span>
           </div>
         </DialogContent>
