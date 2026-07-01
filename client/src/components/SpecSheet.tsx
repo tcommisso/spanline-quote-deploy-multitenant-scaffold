@@ -38,6 +38,7 @@ import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
 import { calculateRakedGeometry, type RakedEdge } from "../../../shared/rakedGeometry";
+import { validateBeamMountedPostLoads } from "../../../shared/beamSizeValidator";
 import {
   calculateStairs,
   DEFAULT_STAIR_INPUTS,
@@ -1090,7 +1091,29 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
   const flashingsColourLookupValue = form.specFlashingsType || beamColourLookupValue;
   const bracketInfillColourLookupValue = form.specBracketInfillType || "";
   const beamPositionList = useMemo(() => (form.specBeamPositions || "").split(";").filter(Boolean), [form.specBeamPositions]);
+  const postPositionList = useMemo(() => (form.specPostPositions || "").split(",").filter(Boolean), [form.specPostPositions]);
   const houseWallList = useMemo(() => (form.specHouseWalls || "").split(",").filter(Boolean), [form.specHouseWalls]);
+  const beamMountedPostLoadSummary = useMemo(() => (
+    validateBeamMountedPostLoads({
+      structureWidthMm: ((parseFloat(form.specWidth || "0") || 0) * 1000),
+      structureLengthMm: ((parseFloat(form.specLength || "0") || 0) * 1000),
+      postPositions: postPositionList,
+      beamPositions: beamPositionList,
+      beamEntries,
+      fallbackBeamSize: form.specBeamSize || "",
+      windCat: form.specWindCat || "",
+      cpn: form.specCpn || "",
+    })
+  ), [
+    form.specWidth,
+    form.specLength,
+    form.specBeamSize,
+    form.specWindCat,
+    form.specCpn,
+    postPositionList,
+    beamPositionList,
+    beamEntries,
+  ]);
   const bracketInfillOptions = bracketInfillProductNames.length > 0 ? bracketInfillProductNames : BRACKET_INFILL_FALLBACK_OPTIONS;
   const totalElecLights = useMemo(
     () => elecLightTypes.reduce((sum, row) => sum + (Number(row.qty) || 0), 0),
@@ -2255,7 +2278,7 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                 <PostPositionDiagram
                   width={form.specWidth || ""}
                   length={form.specLength || ""}
-                  postPositions={(form.specPostPositions || "").split(",").filter(Boolean)}
+                  postPositions={postPositionList}
                   houseWalls={form.specHouseWalls ? form.specHouseWalls.split(",").filter(Boolean) : []}
                   onPostPositionsChange={(positions) => update("specPostPositions", positions.join(","))}
                   fallDirection={form.specFallDirection || ""}
@@ -2263,6 +2286,82 @@ export default function SpecSheet({ quoteId }: { quoteId: number }) {
                   beamEntries={beamEntries}
                 />
                 <p className="text-[10px] text-muted-foreground mt-1">Click on an edge to place a post (green). Click a beam line (indigo dashed) to mount a post on the beam (creates eave). Click an existing post to remove it. Hover for distance info.</p>
+                {beamMountedPostLoadSummary.checks.length > 0 && (() => {
+                  const tone = beamMountedPostLoadSummary.status === "fail"
+                    ? {
+                        wrap: "border-red-200 bg-red-50 text-red-900",
+                        badge: "bg-red-100 text-red-800 border-red-200",
+                        icon: <AlertCircle className="h-4 w-4 text-red-600" />,
+                      }
+                    : beamMountedPostLoadSummary.status === "warning"
+                      ? {
+                          wrap: "border-amber-200 bg-amber-50 text-amber-900",
+                          badge: "bg-amber-100 text-amber-800 border-amber-200",
+                          icon: <AlertCircle className="h-4 w-4 text-amber-600" />,
+                        }
+                      : {
+                          wrap: "border-emerald-200 bg-emerald-50 text-emerald-900",
+                          badge: "bg-emerald-100 text-emerald-800 border-emerald-200",
+                          icon: <CheckCircle2 className="h-4 w-4 text-emerald-600" />,
+                        };
+                  return (
+                    <div className={`mt-3 rounded-md border p-3 ${tone.wrap}`}>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <span className="mt-0.5 shrink-0">{tone.icon}</span>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">Beam-mounted post load distribution</p>
+                            <p className="mt-0.5 text-xs leading-relaxed">{beamMountedPostLoadSummary.message}</p>
+                            <p className="mt-1 text-[10px] leading-relaxed opacity-80">
+                              Estimated from RB100 span-table capacity and tributary roof area. Engineering review is still required for final certification.
+                            </p>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className={`w-fit shrink-0 ${tone.badge}`}>
+                          {beamMountedPostLoadSummary.label}
+                          {beamMountedPostLoadSummary.worstUtilisation !== null ? ` ${beamMountedPostLoadSummary.worstUtilisation}%` : ""}
+                        </Badge>
+                      </div>
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                        {beamMountedPostLoadSummary.checks.map((check) => (
+                          <div
+                            key={check.marker}
+                            title={check.tooltip}
+                            className="rounded-md border border-black/10 bg-white/80 p-2 text-xs text-foreground shadow-sm"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-semibold">Beam {check.beamIndex + 1} at {check.positionPct}%</p>
+                                <p className="truncate text-muted-foreground">{check.beamSize}</p>
+                              </div>
+                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                check.status === "fail"
+                                  ? "border-red-200 bg-red-50 text-red-700"
+                                  : check.status === "warning" || check.status === "unknown"
+                                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              }`}>
+                                {check.label}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+                              <span className="text-muted-foreground">Load</span>
+                              <span className="text-right font-medium">{check.estimatedLoadKn.toFixed(1)}kN</span>
+                              <span className="text-muted-foreground">Capacity</span>
+                              <span className="text-right font-medium">
+                                {check.pointLoadCapacityKn === null ? "Check" : `${check.pointLoadCapacityKn.toFixed(1)}kN`}
+                              </span>
+                              <span className="text-muted-foreground">Tributary</span>
+                              <span className="text-right font-medium">
+                                {(check.tributaryLengthMm / 1000).toFixed(2)}m x {(check.tributaryDepthMm / 1000).toFixed(2)}m
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Plan View Diagram with Annotations */}

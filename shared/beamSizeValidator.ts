@@ -34,6 +34,41 @@ export interface BeamValidationResult {
   suggestion?: string;
 }
 
+export interface BeamMountedPostLoadInput {
+  structureWidthMm: number;
+  structureLengthMm: number;
+  postPositions: string[];
+  beamPositions: string[];
+  beamEntries?: Array<{ size?: string | null }>;
+  fallbackBeamSize?: string | null;
+  windCat: string;
+  cpn?: string | number | null;
+}
+
+export interface BeamMountedPostLoadCheck {
+  marker: string;
+  beamIndex: number;
+  beamSize: string;
+  positionPct: number;
+  status: BeamValidationStatus;
+  label: string;
+  estimatedLoadKn: number;
+  pointLoadCapacityKn: number | null;
+  utilisation: number | null;
+  tributaryLengthMm: number;
+  tributaryDepthMm: number;
+  beamSpanMm: number;
+  tooltip: string;
+}
+
+export interface BeamMountedPostLoadSummary {
+  status: BeamValidationStatus;
+  label: string;
+  message: string;
+  checks: BeamMountedPostLoadCheck[];
+  worstUtilisation: number | null;
+}
+
 // ─── Beam Span Tables (from RB100) ─────────────────────────────────────────
 // Simplified lookup: maps beam size → wind category → max beam span (mm)
 // Uses the most conservative Cp'n = 1.2 (worst case) for quick validation.
@@ -55,7 +90,10 @@ type SpecBeamSize = "75x50" | "100x50" | "125x50" | "150x50" | "175x50" | "200x5
 // The spec sheet uses WxD format where W is the beam depth and D is the flange width
 // RB100 uses: 140x50 (≈ 150x50 in spec), 150x60 (≈ 175x50 or 200x50), 200x60 (≈ 250x50 or 300x50)
 function mapSpecBeamToRB100(specBeam: string): "140x50" | "150x60" | "200x60" | null {
-  const depth = parseInt(specBeam.split("x")[0]);
+  const normalised = specBeam.replace(/×/g, "x").toLowerCase();
+  const match = normalised.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
+  const depth = parseInt(match?.[1] || normalised.split("x")[0], 10);
+  if (!Number.isFinite(depth)) return null;
   if (depth <= 150) return "140x50";
   if (depth <= 200) return "150x60";
   if (depth <= 300) return "200x60";
@@ -112,6 +150,48 @@ function getWindKey(windCat: string): "N1" | "N2" | "N3" | "N4" | null {
   }
 }
 
+const WIND_PRESSURES_KPA: Record<string, number> = {
+  N1: 0.44,
+  N2: 0.65,
+  N3: 1.01,
+  N4: 1.5,
+  C1: 1.01,
+  C2: 1.5,
+  C3: 2.16,
+  C4: 2.88,
+};
+
+function parseCpn(cpn: BeamMountedPostLoadInput["cpn"]): number {
+  if (typeof cpn === "number" && Number.isFinite(cpn) && cpn > 0) return cpn;
+  const match = String(cpn || "").match(/\d+(?:\.\d+)?/);
+  const parsed = match ? Number(match[0]) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1.2;
+}
+
+function parseBeamPosition(pos: string): { idx: number; pct: number; orientation: "H" | "V" } | null {
+  const parts = pos.split(":");
+  const idx = Number.parseInt(parts[0] || "", 10);
+  const pct = Number.parseFloat(parts[1] || "");
+  if (!Number.isFinite(idx) || !Number.isFinite(pct)) return null;
+  return {
+    idx,
+    pct: Math.max(0, Math.min(100, pct)),
+    orientation: parts[2] === "V" ? "V" : "H",
+  };
+}
+
+function parseBeamMountedPost(marker: string): { beamIndex: number; pct: number } | null {
+  const parts = marker.split(":");
+  if (parts[0] !== "beam") return null;
+  const beamIndex = Number.parseInt(parts[1] || "", 10);
+  const pct = Number.parseFloat(parts[2] || "");
+  if (!Number.isFinite(beamIndex) || !Number.isFinite(pct)) return null;
+  return {
+    beamIndex,
+    pct: Math.max(0, Math.min(100, pct)),
+  };
+}
+
 /**
  * Find the max allowable beam span for a given beam size, projection, and wind category.
  * Uses linear interpolation between table entries for projections between rows.
@@ -152,6 +232,212 @@ function lookupMaxSpan(
   }
 
   return null;
+}
+
+function estimatePointLoadCapacityKn({
+  rb100Beam,
+  beamSpanMm,
+  tributaryDepthMm,
+  windCat,
+  cpn,
+}: {
+  rb100Beam: "140x50" | "150x60" | "200x60";
+  beamSpanMm: number;
+  tributaryDepthMm: number;
+  windCat: string;
+  cpn: number;
+}): number | null {
+  const windKey = getWindKey(windCat);
+  if (!windKey || beamSpanMm <= 0 || tributaryDepthMm <= 0) return null;
+
+  const maxSpan = lookupMaxSpan(rb100Beam, tributaryDepthMm, windKey);
+  if (maxSpan === null) return null;
+
+  const pressure = WIND_PRESSURES_KPA[windCat] || WIND_PRESSURES_KPA[windKey] || 1;
+  const designPressureKpa = 0.35 + (pressure * cpn * 0.5);
+  const lineLoadKnPerM = designPressureKpa * (tributaryDepthMm / 1000);
+  const currentSpanM = beamSpanMm / 1000;
+  const maxSpanM = maxSpan / 1000;
+
+  // Equivalent centre point load from the RB100 span-table UDL capacity:
+  // M_udl = wL^2/8 and M_point = PL/4, so P = wL_table^2/(2L_current).
+  return (lineLoadKnPerM * maxSpanM * maxSpanM) / (2 * currentSpanM);
+}
+
+/**
+ * Estimate whether posts mounted on beam lines exceed the receiving beam point-load capacity.
+ *
+ * The app's RB100 tables validate beam span under distributed roof load. Beam-mounted posts
+ * introduce concentrated point loads, so this helper derives a conservative point-load limit
+ * from the same span tables and compares it with the post's estimated tributary roof load.
+ */
+export function validateBeamMountedPostLoads(input: BeamMountedPostLoadInput): BeamMountedPostLoadSummary {
+  const mountedPosts = input.postPositions
+    .map(marker => ({ marker, parsed: parseBeamMountedPost(marker) }))
+    .filter((row): row is { marker: string; parsed: { beamIndex: number; pct: number } } => !!row.parsed);
+
+  if (mountedPosts.length === 0) {
+    return {
+      status: "unknown",
+      label: "N/A",
+      message: "No beam-mounted posts to validate.",
+      checks: [],
+      worstUtilisation: null,
+    };
+  }
+
+  const widthMm = Number(input.structureWidthMm) || 0;
+  const lengthMm = Number(input.structureLengthMm) || 0;
+  const cpn = parseCpn(input.cpn);
+  const pressure = WIND_PRESSURES_KPA[input.windCat] || 1;
+  const designPressureKpa = 0.35 + (pressure * cpn * 0.5);
+  const parsedBeamPositions = input.beamPositions.map(parseBeamPosition).filter(Boolean) as Array<{
+    idx: number;
+    pct: number;
+    orientation: "H" | "V";
+  }>;
+
+  const checks: BeamMountedPostLoadCheck[] = mountedPosts.map(({ marker, parsed }) => {
+    const beam = parsedBeamPositions.find(position => position.idx === parsed.beamIndex);
+    const orientation = beam?.orientation || "H";
+    const beamAxisPct = beam?.pct ?? 50;
+    const beamSpanMm = orientation === "H" ? widthMm : lengthMm;
+    const perpendicularMm = orientation === "H" ? lengthMm : widthMm;
+    const beamSize = input.beamEntries?.[parsed.beamIndex]?.size || input.fallbackBeamSize || "";
+    const rb100Beam = beamSize ? mapSpecBeamToRB100(beamSize) : null;
+
+    const sameBeamPcts = mountedPosts
+      .map(row => row.parsed)
+      .filter(post => post.beamIndex === parsed.beamIndex)
+      .map(post => post.pct)
+      .sort((a, b) => a - b);
+    const idx = sameBeamPcts.findIndex(pct => pct === parsed.pct);
+    const prevPct = idx > 0 ? sameBeamPcts[idx - 1] : 0;
+    const nextPct = idx >= 0 && idx < sameBeamPcts.length - 1 ? sameBeamPcts[idx + 1] : 100;
+    const tributaryPct = Math.max(5, ((parsed.pct - prevPct) + (nextPct - parsed.pct)) / 2);
+    const tributaryLengthMm = beamSpanMm * (tributaryPct / 100);
+    const tributaryDepthMm = Math.max(600, perpendicularMm * Math.max(beamAxisPct / 100, 1 - beamAxisPct / 100));
+    const tributaryAreaSqm = (tributaryLengthMm / 1000) * (tributaryDepthMm / 1000);
+    const estimatedLoadKn = tributaryAreaSqm * designPressureKpa;
+    const pointLoadCapacityKn = rb100Beam
+      ? estimatePointLoadCapacityKn({
+          rb100Beam,
+          beamSpanMm,
+          tributaryDepthMm,
+          windCat: input.windCat,
+          cpn,
+        })
+      : null;
+
+    if (!beamSize || !rb100Beam || pointLoadCapacityKn === null || beamSpanMm <= 0 || perpendicularMm <= 0) {
+      return {
+        marker,
+        beamIndex: parsed.beamIndex,
+        beamSize: beamSize || "Unknown",
+        positionPct: parsed.pct,
+        status: "unknown",
+        label: "CHECK",
+        estimatedLoadKn,
+        pointLoadCapacityKn,
+        utilisation: null,
+        tributaryLengthMm,
+        tributaryDepthMm,
+        beamSpanMm,
+        tooltip: "Insufficient beam size, dimension, wind, or RB100 data to estimate this beam-mounted post point load.",
+      };
+    }
+
+    const utilisation = Math.round((estimatedLoadKn / pointLoadCapacityKn) * 100);
+    if (estimatedLoadKn > pointLoadCapacityKn) {
+      return {
+        marker,
+        beamIndex: parsed.beamIndex,
+        beamSize,
+        positionPct: parsed.pct,
+        status: "fail",
+        label: "OVER",
+        estimatedLoadKn,
+        pointLoadCapacityKn,
+        utilisation,
+        tributaryLengthMm,
+        tributaryDepthMm,
+        beamSpanMm,
+        tooltip: `Estimated point load ${estimatedLoadKn.toFixed(1)}kN exceeds ${beamSize} beam point-load capacity ${pointLoadCapacityKn.toFixed(1)}kN. Add support, reduce tributary area, or upgrade the receiving beam.`,
+      };
+    }
+
+    if (estimatedLoadKn > pointLoadCapacityKn * 0.8) {
+      return {
+        marker,
+        beamIndex: parsed.beamIndex,
+        beamSize,
+        positionPct: parsed.pct,
+        status: "warning",
+        label: "NEAR",
+        estimatedLoadKn,
+        pointLoadCapacityKn,
+        utilisation,
+        tributaryLengthMm,
+        tributaryDepthMm,
+        beamSpanMm,
+        tooltip: `Estimated point load ${estimatedLoadKn.toFixed(1)}kN is ${utilisation}% of ${beamSize} beam point-load capacity ${pointLoadCapacityKn.toFixed(1)}kN. Consider extra support or engineering review.`,
+      };
+    }
+
+    return {
+      marker,
+      beamIndex: parsed.beamIndex,
+      beamSize,
+      positionPct: parsed.pct,
+      status: "pass",
+      label: "OK",
+      estimatedLoadKn,
+      pointLoadCapacityKn,
+      utilisation,
+      tributaryLengthMm,
+      tributaryDepthMm,
+      beamSpanMm,
+      tooltip: `Estimated point load ${estimatedLoadKn.toFixed(1)}kN is within ${beamSize} beam point-load capacity ${pointLoadCapacityKn.toFixed(1)}kN (${utilisation}% utilisation).`,
+    };
+  });
+
+  const failed = checks.filter(check => check.status === "fail").length;
+  const warned = checks.filter(check => check.status === "warning").length;
+  const unknown = checks.filter(check => check.status === "unknown").length;
+  const worstUtilisation = checks.reduce<number | null>((worst, check) => {
+    if (check.utilisation === null) return worst;
+    return worst === null ? check.utilisation : Math.max(worst, check.utilisation);
+  }, null);
+
+  if (failed > 0) {
+    return {
+      status: "fail",
+      label: "POINT LOAD OVER",
+      message: `${failed} beam-mounted post${failed === 1 ? "" : "s"} exceed estimated receiving-beam point-load capacity.`,
+      checks,
+      worstUtilisation,
+    };
+  }
+
+  if (warned > 0 || unknown > 0) {
+    return {
+      status: "warning",
+      label: warned > 0 ? "POINT LOAD NEAR" : "POINT LOAD CHECK",
+      message: warned > 0
+        ? `${warned} beam-mounted post${warned === 1 ? "" : "s"} are near estimated receiving-beam point-load capacity.`
+        : "Some beam-mounted posts need beam size, dimension, or wind data before point-load capacity can be estimated.",
+      checks,
+      worstUtilisation,
+    };
+  }
+
+  return {
+    status: "pass",
+    label: "POINT LOAD OK",
+    message: "Beam-mounted post point loads are within the estimated receiving-beam capacity.",
+    checks,
+    worstUtilisation,
+  };
 }
 
 /**
