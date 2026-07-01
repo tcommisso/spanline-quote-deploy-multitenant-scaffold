@@ -627,7 +627,7 @@ export default function ConstructionClientDetail() {
               <ChevronDown className="h-5 w-5 shrink-0 opacity-90" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="max-h-[min(72vh,720px)] w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto p-3">
+          <DropdownMenuContent className="h-[min(68vh,560px)] min-h-[260px] w-[var(--radix-dropdown-menu-trigger-width)] max-h-[calc(100vh-8rem)] max-w-[calc(100vw-2rem)] overflow-auto p-3 sm:h-[min(58vh,560px)] sm:min-h-[320px] sm:min-w-[520px] sm:resize">
             {TAB_GROUPS.map((group, groupIndex) => {
               const groupIsActive = group.values.includes(activeTab as (typeof TAB_VALUES)[number]);
               return (
