@@ -3,6 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -58,6 +59,7 @@ import ClientActivityTab from "@/components/ClientActivityTab";
 import SitePlanDiagram from "@/components/SitePlanDiagram";
 import SitePlanPrintPage from "@/components/SitePlanPrintPage";
 import ProjectTeamFields, { type ProjectTeamPayload } from "@/components/construction/ProjectTeamFields";
+import type { ConstructionChecklistResponseType } from "@shared/construction-checklist-templates";
 
 const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   scheduled: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Clock, label: "Scheduled" },
@@ -1405,6 +1407,56 @@ function isFinalInspectionInstruction(instruction: any) {
   return instruction.category === "inspection" && (trigger.includes("final inspection") || title.includes("final"));
 }
 
+const FINAL_INSPECTION_RESPONSE_LABELS: Record<ConstructionChecklistResponseType, string> = {
+  check: "Checklist tick",
+  yes_no: "Yes / No",
+  dropdown: "Dropdown",
+  multi_select: "Multi-select",
+  short_text: "Short text",
+  long_text: "Long text",
+  number: "Number",
+  date: "Date",
+  image_upload: "Image upload",
+  file_upload: "File upload",
+};
+
+type InstructionResponseFile = {
+  url: string;
+  fileName: string;
+  mimeType?: string | null;
+  size?: number;
+  uploadedAt?: string;
+  uploadedBy?: string | null;
+};
+
+function responseStringOptions(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function responseFiles(value: unknown): InstructionResponseFile[] {
+  if (!value || typeof value !== "object") return [];
+  const files = (value as { files?: unknown }).files;
+  if (!Array.isArray(files)) return [];
+  return files.filter((file): file is InstructionResponseFile => Boolean(file && typeof file === "object" && typeof (file as any).url === "string"));
+}
+
+function dateResponseValue(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value.slice(0, 10);
+}
+
+function readFileBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",")[1] : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function FinalInspectionSection({ jobId }: { jobId: number }) {
   const utils = trpc.useUtils();
   const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
@@ -1414,7 +1466,12 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
     onSuccess: () => utils.constructionClients.jobInstructions.invalidate({ jobId }),
     onError: (err) => toast.error(err.message || "Failed to update inspection item"),
   });
+  const uploadInstructionResponseFile = trpc.constructionClients.uploadJobInstructionResponseFile.useMutation({
+    onSuccess: () => utils.constructionClients.jobInstructions.invalidate({ jobId }),
+    onError: (err) => toast.error(err.message || "Failed to upload inspection file"),
+  });
   const [customTitle, setCustomTitle] = useState("");
+  const [uploadingInstructionId, setUploadingInstructionId] = useState<number | null>(null);
 
   const instructions = instructionsQuery.data || [];
   const finalItems = instructions.filter(isFinalInspectionInstruction);
@@ -1447,6 +1504,11 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
         dueAt: null,
         triggerLabel: "Final Inspection",
         sortOrder: 500 + (Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index),
+        responseType: item.responseType || "check",
+        responseOptions: Array.isArray(item.responseOptions) ? item.responseOptions : [],
+        responseRequired: Boolean(item.responseRequired),
+        responseHelpText: item.responseHelpText || null,
+        responseValue: null,
       })));
       await utils.constructionClients.jobInstructions.invalidate({ jobId });
       toast.success("Final inspection checklist loaded");
@@ -1475,6 +1537,11 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
         dueAt: null,
         triggerLabel: "Final Inspection",
         sortOrder: 600 + finalItems.length,
+        responseType: "check",
+        responseOptions: [],
+        responseRequired: false,
+        responseHelpText: null,
+        responseValue: null,
       });
       setCustomTitle("");
       await utils.constructionClients.jobInstructions.invalidate({ jobId });
@@ -1482,6 +1549,186 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
     } catch (err: any) {
       toast.error(err.message || "Failed to add inspection item");
     }
+  };
+
+  const saveResponseValue = (item: any, responseValue: unknown) => {
+    updateInstruction.mutate({ id: item.id, responseValue: responseValue as any });
+  };
+
+  const uploadResponseFile = async (item: any, fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error(`${file.name} is over 25MB`);
+      return;
+    }
+    const responseType = String(item.responseType || "check");
+    if (responseType === "image_upload" && !file.type.startsWith("image/")) {
+      toast.error("Please upload an image for this checklist item");
+      return;
+    }
+    setUploadingInstructionId(item.id);
+    try {
+      const fileBase64 = await readFileBase64(file);
+      await uploadInstructionResponseFile.mutateAsync({
+        instructionId: item.id,
+        fileName: file.name,
+        fileMimeType: file.type || "application/octet-stream",
+        fileBase64,
+      });
+      toast.success("Inspection file uploaded");
+    } catch {
+      toast.error("Failed to read inspection file");
+    } finally {
+      setUploadingInstructionId(null);
+    }
+  };
+
+  const renderResponseControl = (item: any) => {
+    const responseType = String(item.responseType || "check") as ConstructionChecklistResponseType;
+    const options = responseStringOptions(item.responseOptions);
+    const files = responseFiles(item.responseValue);
+
+    if (responseType === "check") return null;
+
+    if (responseType === "yes_no") {
+      return (
+        <Select
+          value={typeof item.responseValue === "string" ? item.responseValue : ""}
+          onValueChange={(value) => saveResponseValue(item, value)}
+          disabled={updateInstruction.isPending}
+        >
+          <SelectTrigger className="w-full sm:w-40"><SelectValue placeholder="Select..." /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="yes">Yes</SelectItem>
+            <SelectItem value="no">No</SelectItem>
+          </SelectContent>
+        </Select>
+      );
+    }
+
+    if (responseType === "dropdown") {
+      return (
+        <Select
+          value={typeof item.responseValue === "string" ? item.responseValue : ""}
+          onValueChange={(value) => saveResponseValue(item, value)}
+          disabled={updateInstruction.isPending || options.length === 0}
+        >
+          <SelectTrigger className="w-full sm:w-56"><SelectValue placeholder={options.length ? "Select..." : "No options configured"} /></SelectTrigger>
+          <SelectContent>
+            {options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      );
+    }
+
+    if (responseType === "multi_select") {
+      const selected = responseStringOptions(item.responseValue);
+      return (
+        <div className="grid gap-2 rounded-md border p-2 sm:min-w-56">
+          {options.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No options configured.</p>
+          ) : options.map((option) => {
+            const checked = selected.includes(option);
+            return (
+              <label key={option} className="flex min-h-8 items-center gap-2 text-sm">
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={(nextChecked) => {
+                    const next = nextChecked ? [...selected, option] : selected.filter((value) => value !== option);
+                    saveResponseValue(item, next);
+                  }}
+                  disabled={updateInstruction.isPending}
+                />
+                <span>{option}</span>
+              </label>
+            );
+          })}
+        </div>
+      );
+    }
+
+    if (responseType === "short_text") {
+      return (
+        <Input
+          defaultValue={typeof item.responseValue === "string" ? item.responseValue : ""}
+          placeholder="Enter response..."
+          onBlur={(event) => saveResponseValue(item, event.currentTarget.value.trim() || null)}
+          className="w-full sm:w-64"
+        />
+      );
+    }
+
+    if (responseType === "long_text") {
+      return (
+        <Textarea
+          defaultValue={typeof item.responseValue === "string" ? item.responseValue : ""}
+          placeholder="Enter response..."
+          onBlur={(event) => saveResponseValue(item, event.currentTarget.value.trim() || null)}
+          rows={3}
+          className="w-full sm:w-80"
+        />
+      );
+    }
+
+    if (responseType === "number") {
+      return (
+        <Input
+          type="number"
+          defaultValue={typeof item.responseValue === "number" ? String(item.responseValue) : ""}
+          placeholder="0"
+          onBlur={(event) => {
+            const value = event.currentTarget.value.trim();
+            saveResponseValue(item, value ? Number(value) : null);
+          }}
+          className="w-full sm:w-40"
+        />
+      );
+    }
+
+    if (responseType === "date") {
+      return (
+        <Input
+          type="date"
+          defaultValue={dateResponseValue(item.responseValue)}
+          onBlur={(event) => saveResponseValue(item, event.currentTarget.value || null)}
+          className="w-full sm:w-44"
+        />
+      );
+    }
+
+    if (responseType === "image_upload" || responseType === "file_upload") {
+      const uploadingThisItem = uploadingInstructionId === item.id && uploadInstructionResponseFile.isPending;
+      return (
+        <div className="w-full space-y-2 sm:w-80">
+          <Input
+            type="file"
+            accept={responseType === "image_upload" ? "image/*" : undefined}
+            onChange={(event) => uploadResponseFile(item, event.currentTarget.files)}
+            disabled={uploadingThisItem}
+          />
+          {uploadingThisItem && <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Uploading...</p>}
+          {files.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {files.map((file) => (
+                <a
+                  key={`${file.url}-${file.fileName}`}
+                  href={file.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
+                >
+                  <FileText className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{file.fileName || "Uploaded file"}</span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return null;
   };
 
   return (
@@ -1522,17 +1769,29 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
           ) : (
             <div className="space-y-2">
               {finalItems.map((item: any) => (
-                <div key={item.id} className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
+                <div key={item.id} className="grid gap-3 rounded-md border p-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,auto)_176px] lg:items-start">
+                  <div className="min-w-0 space-y-1">
                     <p className="font-medium">{item.title}</p>
                     {item.description && <p className="text-sm text-muted-foreground">{item.description}</p>}
+                    {item.responseHelpText && <p className="text-xs text-muted-foreground">{item.responseHelpText}</p>}
+                    <div className="flex flex-wrap gap-1.5">
+                      {item.responseType && item.responseType !== "check" && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {FINAL_INSPECTION_RESPONSE_LABELS[item.responseType as ConstructionChecklistResponseType] || "Response"}
+                        </Badge>
+                      )}
+                      {item.responseRequired && <Badge variant="secondary" className="text-[10px]">Required</Badge>}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    {renderResponseControl(item)}
                   </div>
                   <Select
                     value={item.status || "open"}
                     onValueChange={(status) => updateInstruction.mutate({ id: item.id, status: status as any })}
                     disabled={updateInstruction.isPending}
                   >
-                    <SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="w-full lg:w-44"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {JOB_INSTRUCTION_STATUSES.map((option) => (
                         <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>

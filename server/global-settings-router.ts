@@ -14,6 +14,7 @@ import {
 } from "../shared/navigation-config";
 import {
   CONSTRUCTION_CHECKLIST_PRIORITIES,
+  CONSTRUCTION_CHECKLIST_RESPONSE_TYPES,
   CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY,
   normalizeConstructionChecklistTemplates,
 } from "../shared/construction-checklist-templates";
@@ -26,6 +27,10 @@ const constructionChecklistTemplateItemSchema = z.object({
   priority: z.enum(CONSTRUCTION_CHECKLIST_PRIORITIES),
   isBlocking: z.boolean(),
   visibleToTrade: z.boolean(),
+  responseType: z.enum(CONSTRUCTION_CHECKLIST_RESPONSE_TYPES).default("check"),
+  responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
+  responseRequired: z.boolean().default(false),
+  responseHelpText: z.string().trim().max(500).nullable().optional(),
   sortOrder: z.number().int().min(0).max(10000),
 });
 

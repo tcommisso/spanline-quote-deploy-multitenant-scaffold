@@ -8,9 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DEFAULT_FINAL_INSPECTION_TEMPLATE_ITEMS,
   type ConstructionChecklistPriority,
+  type ConstructionChecklistResponseType,
   type ConstructionChecklistTemplateItem,
 } from "@shared/construction-checklist-templates";
 
@@ -23,6 +25,21 @@ const PRIORITY_OPTIONS: Array<{ value: ConstructionChecklistPriority; label: str
   { value: "important", label: "Important" },
   { value: "urgent", label: "Urgent" },
 ];
+
+const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; label: string }> = [
+  { value: "check", label: "Checklist tick" },
+  { value: "yes_no", label: "Yes / No" },
+  { value: "dropdown", label: "Dropdown" },
+  { value: "multi_select", label: "Multi-select" },
+  { value: "short_text", label: "Short text" },
+  { value: "long_text", label: "Long text" },
+  { value: "number", label: "Number" },
+  { value: "date", label: "Date" },
+  { value: "image_upload", label: "Image upload" },
+  { value: "file_upload", label: "File upload" },
+];
+
+const RESPONSE_TYPES_WITH_OPTIONS = new Set<ConstructionChecklistResponseType>(["dropdown", "multi_select"]);
 
 function makeDraftItem(item: ConstructionChecklistTemplateItem, index: number): DraftItem {
   return {
@@ -43,12 +60,34 @@ function newDraftItem(sortOrder: number): DraftItem {
     priority: "normal",
     isBlocking: false,
     visibleToTrade: false,
+    responseType: "check",
+    responseOptions: [],
+    responseRequired: false,
+    responseHelpText: null,
     sortOrder,
   };
 }
 
 function normalizeDraftItems(items: DraftItem[]): DraftItem[] {
   return items.map((item, index) => ({ ...item, sortOrder: index }));
+}
+
+function optionsText(options: string[] = []) {
+  return options.join("\n");
+}
+
+function parseOptionsText(value: string) {
+  const seen = new Set<string>();
+  const options: string[] = [];
+  for (const rawOption of value.split(/\r?\n|,/)) {
+    const option = rawOption.trim();
+    const key = option.toLowerCase();
+    if (!option || seen.has(key)) continue;
+    seen.add(key);
+    options.push(option.slice(0, 120));
+    if (options.length >= 30) break;
+  }
+  return options;
 }
 
 export default function ConstructionChecklistTemplates() {
@@ -107,12 +146,21 @@ export default function ConstructionChecklistTemplates() {
         priority: item.priority,
         isBlocking: item.isBlocking,
         visibleToTrade: item.visibleToTrade,
+        responseType: item.responseType || "check",
+        responseOptions: RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) ? item.responseOptions : [],
+        responseRequired: Boolean(item.responseRequired),
+        responseHelpText: item.responseHelpText?.trim() || null,
         sortOrder: item.sortOrder,
       }))
       .filter((item) => item.title.length > 0);
 
     if (payloadItems.length === 0) {
       toast.error("Add at least one final inspection checklist item before saving.");
+      return;
+    }
+    const itemMissingOptions = payloadItems.find((item) => RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && item.responseOptions.length === 0);
+    if (itemMissingOptions) {
+      toast.error(`Add at least one option for "${itemMissingOptions.title}".`);
       return;
     }
 
@@ -160,7 +208,7 @@ export default function ConstructionChecklistTemplates() {
           <div className="space-y-2">
             {items.map((item, index) => (
               <div key={item.localId} className="rounded-md border p-3">
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(240px,1fr)_150px_120px_130px_120px] lg:items-end">
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_150px] lg:items-end">
                   <div className="space-y-1">
                     <Label className="text-xs">Checklist item</Label>
                     <Input
@@ -168,6 +216,25 @@ export default function ConstructionChecklistTemplates() {
                       onChange={(event) => updateItem(item.localId, { title: event.target.value })}
                       placeholder="Checklist item..."
                     />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Question type</Label>
+                    <Select
+                      value={item.responseType || "check"}
+                      onValueChange={(responseType) => updateItem(item.localId, {
+                        responseType: responseType as ConstructionChecklistResponseType,
+                        responseOptions: RESPONSE_TYPES_WITH_OPTIONS.has(responseType as ConstructionChecklistResponseType) ? item.responseOptions : [],
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {RESPONSE_TYPE_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">Priority</Label>
@@ -185,15 +252,23 @@ export default function ConstructionChecklistTemplates() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <Label className="text-xs">Blocking</Label>
-                    <Switch checked={item.isBlocking} onCheckedChange={(checked) => updateItem(item.localId, { isBlocking: checked })} />
+                </div>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-xs">Required</Label>
+                      <Switch checked={item.responseRequired} onCheckedChange={(checked) => updateItem(item.localId, { responseRequired: checked })} />
+                    </div>
+                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-xs">Blocking</Label>
+                      <Switch checked={item.isBlocking} onCheckedChange={(checked) => updateItem(item.localId, { isBlocking: checked })} />
+                    </div>
+                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-xs">Trade visible</Label>
+                      <Switch checked={item.visibleToTrade} onCheckedChange={(checked) => updateItem(item.localId, { visibleToTrade: checked })} />
+                    </div>
                   </div>
-                  <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <Label className="text-xs">Trade visible</Label>
-                    <Switch checked={item.visibleToTrade} onCheckedChange={(checked) => updateItem(item.localId, { visibleToTrade: checked })} />
-                  </div>
-                  <div className="flex items-center justify-end gap-1">
+                  <div className="flex items-center justify-end gap-1 sm:ml-auto">
                     <Button type="button" variant="outline" size="icon" onClick={() => moveItem(item.localId, -1)} disabled={index === 0}>
                       <ArrowUp className="h-4 w-4" />
                     </Button>
@@ -203,6 +278,28 @@ export default function ConstructionChecklistTemplates() {
                     <Button type="button" variant="outline" size="icon" onClick={() => removeItem(item.localId)} disabled={items.length <= 1}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Options</Label>
+                      <Textarea
+                        value={optionsText(item.responseOptions)}
+                        onChange={(event) => updateItem(item.localId, { responseOptions: parseOptionsText(event.target.value) })}
+                        placeholder="One option per line..."
+                        rows={3}
+                      />
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <Label className="text-xs">Help text</Label>
+                    <Textarea
+                      value={item.responseHelpText || ""}
+                      onChange={(event) => updateItem(item.localId, { responseHelpText: event.target.value })}
+                      placeholder="Optional guidance shown on the job checklist..."
+                      rows={3}
+                    />
                   </div>
                 </div>
               </div>

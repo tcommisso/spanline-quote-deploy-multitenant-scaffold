@@ -22,6 +22,7 @@ import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./can
 import { storagePut } from "./storage";
 import { getTenantAppSetting } from "./tenant-settings-store";
 import { constructionLifecycleStatusSql } from "./construction-status";
+import { CONSTRUCTION_CHECKLIST_RESPONSE_TYPES } from "../shared/construction-checklist-templates";
 
 const constructionClientSortFieldSchema = z.enum([
   "clientName",
@@ -48,6 +49,24 @@ const jobInstructionCategorySchema = z.enum([
 ]);
 const jobInstructionStatusSchema = z.enum(["open", "acknowledged", "done", "blocked", "not_applicable"]);
 const jobInstructionPrioritySchema = z.enum(["normal", "important", "urgent"]);
+const jobInstructionResponseTypeSchema = z.enum(CONSTRUCTION_CHECKLIST_RESPONSE_TYPES);
+const jobInstructionResponseFileSchema = z.object({
+  url: z.string().url(),
+  key: z.string().optional(),
+  fileName: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().max(128).nullable().optional(),
+  size: z.number().int().min(0).max(25 * 1024 * 1024),
+  uploadedAt: z.string(),
+  uploadedBy: z.string().nullable().optional(),
+});
+const jobInstructionResponseValueSchema = z.union([
+  z.string().max(5000),
+  z.number(),
+  z.boolean(),
+  z.array(z.string().max(240)).max(50),
+  z.object({ files: z.array(jobInstructionResponseFileSchema).max(50) }),
+  z.null(),
+]);
 const postBuildClassificationSchema = z.enum(["unclassified", "warranty", "workmanship", "chargeable"]);
 const maintenanceRequestSourceSchema = z.enum(["portal", "phone", "email", "internal"]);
 const maintenanceAttachmentSchema = z.object({
@@ -1858,6 +1877,11 @@ export const constructionClientsRouter = router({
         dueAt: constructionJobInstructions.dueAt,
         triggerLabel: constructionJobInstructions.triggerLabel,
         sortOrder: constructionJobInstructions.sortOrder,
+        responseType: constructionJobInstructions.responseType,
+        responseOptions: constructionJobInstructions.responseOptions,
+        responseRequired: constructionJobInstructions.responseRequired,
+        responseHelpText: constructionJobInstructions.responseHelpText,
+        responseValue: constructionJobInstructions.responseValue,
         createdByName: constructionJobInstructions.createdByName,
         updatedByName: constructionJobInstructions.updatedByName,
         createdAt: constructionJobInstructions.createdAt,
@@ -1886,6 +1910,11 @@ export const constructionClientsRouter = router({
       dueAt: z.string().nullable().optional(),
       triggerLabel: z.string().max(255).nullable().optional(),
       sortOrder: z.number().int().optional(),
+      responseType: jobInstructionResponseTypeSchema.default("check"),
+      responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
+      responseRequired: z.boolean().default(false),
+      responseHelpText: z.string().max(500).nullable().optional(),
+      responseValue: jobInstructionResponseValueSchema.optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
@@ -1909,6 +1938,11 @@ export const constructionClientsRouter = router({
         triggerLabel: trimNullable(input.triggerLabel),
         sourceType: "manual",
         sortOrder: input.sortOrder ?? 0,
+        responseType: input.responseType,
+        responseOptions: input.responseOptions,
+        responseRequired: input.responseRequired,
+        responseHelpText: trimNullable(input.responseHelpText),
+        responseValue: input.responseValue ?? null,
         createdByUserId: ctx.user?.id ?? null,
         createdByName: actorName(ctx),
         updatedByUserId: ctx.user?.id ?? null,
@@ -1932,6 +1966,11 @@ export const constructionClientsRouter = router({
       dueAt: z.string().nullable().optional(),
       triggerLabel: z.string().max(255).nullable().optional(),
       sortOrder: z.number().int().optional(),
+      responseType: jobInstructionResponseTypeSchema.optional(),
+      responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).optional(),
+      responseRequired: z.boolean().optional(),
+      responseHelpText: z.string().max(500).nullable().optional(),
+      responseValue: jobInstructionResponseValueSchema.optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const db = await requireDb();
@@ -1955,12 +1994,72 @@ export const constructionClientsRouter = router({
       if (input.dueAt !== undefined) updates.dueAt = parseInstructionDate(input.dueAt);
       if (input.triggerLabel !== undefined) updates.triggerLabel = trimNullable(input.triggerLabel);
       if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+      if (input.responseType !== undefined) updates.responseType = input.responseType;
+      if (input.responseOptions !== undefined) updates.responseOptions = input.responseOptions;
+      if (input.responseRequired !== undefined) updates.responseRequired = input.responseRequired;
+      if (input.responseHelpText !== undefined) updates.responseHelpText = trimNullable(input.responseHelpText);
+      if (input.responseValue !== undefined) updates.responseValue = input.responseValue;
 
       await db.update(constructionJobInstructions)
         .set(updates)
         .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, input.id))));
 
       return { success: true };
+    }),
+
+  uploadJobInstructionResponseFile: protectedProcedure
+    .input(z.object({
+      instructionId: z.number(),
+      fileName: z.string().trim().min(1).max(255),
+      fileMimeType: z.string().trim().min(1).max(128),
+      fileBase64: z.string().min(1),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const instruction = await requireInstructionAccess(db, ctx, input.instructionId);
+      const responseType = String(instruction.responseType || "check");
+      if (responseType !== "image_upload" && responseType !== "file_upload") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This checklist item does not accept file uploads" });
+      }
+      if (responseType === "image_upload" && !input.fileMimeType.startsWith("image/")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Please upload an image for this checklist item" });
+      }
+
+      const buffer = Buffer.from(input.fileBase64, "base64");
+      if (buffer.byteLength > 25 * 1024 * 1024) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Checklist upload must be under 25MB" });
+      }
+
+      const tenantId = tenantIdFromContext(ctx);
+      const tenantSegment = tenantId ? String(tenantId) : "single";
+      const suffix = crypto.randomBytes(6).toString("hex");
+      const safeName = safeUploadFilename(input.fileName);
+      const fileKey = `job-instruction-responses/${tenantSegment}/jobs/${instruction.jobId}/instruction-${instruction.id}/${Date.now()}-${suffix}-${safeName}`;
+      const result = await storagePut(fileKey, buffer, input.fileMimeType);
+      const existingValue = instruction.responseValue && typeof instruction.responseValue === "object" ? instruction.responseValue as any : {};
+      const existingFiles = Array.isArray(existingValue.files) ? existingValue.files : [];
+      const fileRecord = {
+        url: result.url,
+        key: result.key,
+        fileName: input.fileName,
+        mimeType: input.fileMimeType,
+        size: buffer.byteLength,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: actorName(ctx),
+      };
+      const responseValue = {
+        files: [...existingFiles, fileRecord],
+      };
+
+      await db.update(constructionJobInstructions)
+        .set({
+          responseValue,
+          updatedByUserId: ctx.user?.id ?? null,
+          updatedByName: actorName(ctx),
+        })
+        .where(and(...instructionTenantConditions(ctx, eq(constructionJobInstructions.id, input.instructionId))));
+
+      return { success: true, file: fileRecord, responseValue };
     }),
 
   deleteJobInstruction: protectedProcedure

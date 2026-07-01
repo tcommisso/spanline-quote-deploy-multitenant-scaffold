@@ -1,14 +1,31 @@
 export const CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY = "constructionChecklistTemplates";
 
 export const CONSTRUCTION_CHECKLIST_PRIORITIES = ["normal", "important", "urgent"] as const;
+export const CONSTRUCTION_CHECKLIST_RESPONSE_TYPES = [
+  "check",
+  "yes_no",
+  "dropdown",
+  "multi_select",
+  "short_text",
+  "long_text",
+  "number",
+  "date",
+  "image_upload",
+  "file_upload",
+] as const;
 
 export type ConstructionChecklistPriority = (typeof CONSTRUCTION_CHECKLIST_PRIORITIES)[number];
+export type ConstructionChecklistResponseType = (typeof CONSTRUCTION_CHECKLIST_RESPONSE_TYPES)[number];
 
 export type ConstructionChecklistTemplateItem = {
   title: string;
   priority: ConstructionChecklistPriority;
   isBlocking: boolean;
   visibleToTrade: boolean;
+  responseType: ConstructionChecklistResponseType;
+  responseOptions: string[];
+  responseRequired: boolean;
+  responseHelpText: string | null;
   sortOrder: number;
 };
 
@@ -18,15 +35,36 @@ export type ConstructionChecklistTemplates = {
   };
 };
 
+function checklistItem(
+  title: string,
+  priority: ConstructionChecklistPriority,
+  isBlocking: boolean,
+  visibleToTrade: boolean,
+  sortOrder: number,
+  responseType: ConstructionChecklistResponseType = "check",
+): ConstructionChecklistTemplateItem {
+  return {
+    title,
+    priority,
+    isBlocking,
+    visibleToTrade,
+    responseType,
+    responseOptions: [],
+    responseRequired: false,
+    responseHelpText: null,
+    sortOrder,
+  };
+}
+
 export const DEFAULT_FINAL_INSPECTION_TEMPLATE_ITEMS: ConstructionChecklistTemplateItem[] = [
-  { title: "Final inspection booked", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 0 },
-  { title: "Structure checked against approved specification", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 1 },
-  { title: "Fixings and finishes inspected", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 2 },
-  { title: "Drainage and downpipes checked", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 3 },
-  { title: "Site cleaned and made safe", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 4 },
-  { title: "Client walkthrough completed", priority: "normal", isBlocking: false, visibleToTrade: false, sortOrder: 5 },
-  { title: "Final photos uploaded", priority: "important", isBlocking: false, visibleToTrade: false, sortOrder: 6 },
-  { title: "Final inspection report uploaded", priority: "important", isBlocking: true, visibleToTrade: false, sortOrder: 7 },
+  checklistItem("Final inspection booked", "normal", false, false, 0),
+  checklistItem("Structure checked against approved specification", "normal", false, false, 1),
+  checklistItem("Fixings and finishes inspected", "normal", false, false, 2),
+  checklistItem("Drainage and downpipes checked", "normal", false, false, 3),
+  checklistItem("Site cleaned and made safe", "normal", false, false, 4),
+  checklistItem("Client walkthrough completed", "normal", false, false, 5, "yes_no"),
+  checklistItem("Final photos uploaded", "important", false, false, 6, "image_upload"),
+  checklistItem("Final inspection report uploaded", "important", true, false, 7, "file_upload"),
 ];
 
 function cloneItem(item: ConstructionChecklistTemplateItem): ConstructionChecklistTemplateItem {
@@ -35,6 +73,10 @@ function cloneItem(item: ConstructionChecklistTemplateItem): ConstructionCheckli
     priority: item.priority,
     isBlocking: item.isBlocking,
     visibleToTrade: item.visibleToTrade,
+    responseType: item.responseType,
+    responseOptions: [...item.responseOptions],
+    responseRequired: item.responseRequired,
+    responseHelpText: item.responseHelpText,
     sortOrder: item.sortOrder,
   };
 }
@@ -51,18 +93,42 @@ function isPriority(value: unknown): value is ConstructionChecklistPriority {
   return CONSTRUCTION_CHECKLIST_PRIORITIES.includes(value as ConstructionChecklistPriority);
 }
 
+function isResponseType(value: unknown): value is ConstructionChecklistResponseType {
+  return CONSTRUCTION_CHECKLIST_RESPONSE_TYPES.includes(value as ConstructionChecklistResponseType);
+}
+
+function normalizeOptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const options: string[] = [];
+  for (const rawOption of value) {
+    const option = String(rawOption ?? "").trim().slice(0, 120);
+    const key = option.toLowerCase();
+    if (!option || seen.has(key)) continue;
+    seen.add(key);
+    options.push(option);
+    if (options.length >= 30) break;
+  }
+  return options;
+}
+
 function normalizeItem(value: unknown, index: number): ConstructionChecklistTemplateItem | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
   const title = String(item.title ?? "").trim();
   if (!title) return null;
   const priority = isPriority(item.priority) ? item.priority : "normal";
+  const responseType = isResponseType(item.responseType) ? item.responseType : "check";
   const sortOrder = Number(item.sortOrder);
   return {
     title,
     priority,
     isBlocking: Boolean(item.isBlocking),
     visibleToTrade: Boolean(item.visibleToTrade),
+    responseType,
+    responseOptions: normalizeOptions(item.responseOptions),
+    responseRequired: Boolean(item.responseRequired),
+    responseHelpText: String(item.responseHelpText ?? "").trim().slice(0, 500) || null,
     sortOrder: Number.isFinite(sortOrder) ? sortOrder : index,
   };
 }
