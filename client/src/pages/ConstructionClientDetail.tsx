@@ -15,6 +15,7 @@ import { useLocation, useParams } from "wouter";
 import ContactsSection from "@/components/construction/ContactsSection";
 import EmailSmsSection from "@/components/construction/EmailSmsSection";
 import ProcurementSection from "@/components/construction/ProcurementSection";
+import { parcelSourceLabel } from "@/lib/parcelSource";
 
 import SharedFilesSection from "@/components/construction/SharedFilesSection";
 import { PlanAnnotation } from "@/components/PlanAnnotation";
@@ -6023,7 +6024,7 @@ function SitePlanTab({ jobId, quoteId }: { jobId: number; quoteId?: number | nul
               )}
               {parcelData?.source && (
                 <Badge variant="outline" className="text-xs">
-                  Source: {parcelData.source === "actmapi" ? "ACTmapi" : "NSW Cadastre"}
+                  Source: {parcelSourceLabel(parcelData.source)}
                 </Badge>
               )}
             </div>

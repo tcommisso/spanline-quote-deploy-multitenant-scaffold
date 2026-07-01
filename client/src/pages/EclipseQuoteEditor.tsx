@@ -20,6 +20,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { toast } from "sonner";
 import { type UnitInput, type ProjectResult, type AdditionalCosts, type ValidationError, defaultUnit, defaultAdditionalCosts, totalAdditionalCosts, calculateFootingsCost, calculateBracketCost, additionalCostsToArray, validateAllUnits, COLOURBOND_COLOURS, ECLIPSE_LIMITS } from "../../../shared/eclipseCalculations";
 import { generateEclipseQuotePDF, generateEclipseManagementPDF, type ProposalImageData } from "@/lib/eclipsePdfExport";
+import { parcelSourceLabel } from "@/lib/parcelSource";
 import ClientPicker from "@/components/ClientPicker";
 import AddressAutocomplete from "@/components/AddressAutocomplete";
 import RegionSelect from "@/components/RegionSelect";
@@ -1040,7 +1041,7 @@ export default function EclipseQuoteEditor({ id }: { id: number }) {
   const lookupParcelMutation = trpc.quotes.lookupParcel.useMutation({
     onSuccess: (data) => {
       setParcelData(data);
-      toast.success(`Property boundary found: ${data.lotId} (${data.source === "actmapi" ? "ACTmapi" : "NSW Cadastre"})`);
+      toast.success(`Property boundary found: ${data.lotId} (${parcelSourceLabel(data.source)})`);
     },
     onError: (err: any) => toast.error(err.message),
     onSettled: () => setParcelLoading(false),

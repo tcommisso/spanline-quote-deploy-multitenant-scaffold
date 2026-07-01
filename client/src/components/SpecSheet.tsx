@@ -37,6 +37,7 @@ import SitePlanPreviewDialog from "@/components/SitePlanPreviewDialog";
 import SideElevationDiagram from "@/components/SideElevationDiagram";
 import DiagramAnnotation, { type Annotation } from "@/components/DiagramAnnotation";
 import { generateBatchDiagramPdf, type BatchDiagramData } from "@/lib/batchDiagramPdf";
+import { parcelSourceLabel } from "@/lib/parcelSource";
 import { calculateRakedGeometry, type RakedEdge } from "../../../shared/rakedGeometry";
 import { validateBeamMountedPostLoads } from "../../../shared/beamSizeValidator";
 import {
@@ -5399,7 +5400,7 @@ function SitePlanElevationSection({ form, quoteId, siteAddress, onUpdate }: { fo
       setParcelData(data);
       // Cache parcel data to the quote record
       spUpdateMutation.mutate({ id: quoteId, data: { parcelDataJson: JSON.stringify(data) } });
-      toast.success(`Property boundary found: ${data.lotId} (${data.source === "actmapi" ? "ACTmapi" : "NSW Cadastre"})`);
+      toast.success(`Property boundary found: ${data.lotId} (${parcelSourceLabel(data.source)})`);
     },
     onError: (err: any) => toast.error(err.message),
     onSettled: () => setIsLoading(false),
@@ -5589,7 +5590,7 @@ function SitePlanElevationSection({ form, quoteId, siteAddress, onUpdate }: { fo
         </span>
         {parcelData && (
           <span className="text-xs text-green-600 font-medium">
-            ✓ {parcelData.lotId} • {parcelData.areaSqm.toFixed(0)} m² • Source: {parcelData.source === "actmapi" ? "ACTmapi" : "NSW Cadastre"}
+            ✓ {parcelData.lotId} • {parcelData.areaSqm.toFixed(0)} m² • Source: {parcelSourceLabel(parcelData.source)}
           </span>
         )}
       </div>
@@ -5768,7 +5769,7 @@ function SitePlanElevationSection({ form, quoteId, siteAddress, onUpdate }: { fo
       />
       {/* Info note */}
       <p className="text-xs text-muted-foreground italic">
-        Diagrams are auto-generated from spec sheet dimensions. Click "Fetch Site Data" to pull property boundary from ACTmapi (ACT) or NSW Cadastre (NSW) based on the site address.
+        Diagrams are auto-generated from spec sheet dimensions. Click "Fetch Site Data" to pull property boundary from the supported ACT, NSW, QLD, or VIC cadastre service based on the site address.
       </p>
 
       {/* PDF Site Plan Preview Dialog */}

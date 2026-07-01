@@ -15,6 +15,8 @@ type ApiKey =
   | "act_blocks"
   | "nsw_planning"
   | "nsw_six_maps"
+  | "qld_cadastre"
+  | "vic_cadastre"
   | "open_meteo"
   | "osm_tiles"
   | "locationiq"
@@ -35,6 +37,8 @@ const apiKeySchema = z.enum([
   "act_blocks",
   "nsw_planning",
   "nsw_six_maps",
+  "qld_cadastre",
+  "vic_cadastre",
   "open_meteo",
   "osm_tiles",
   "locationiq",
@@ -67,6 +71,8 @@ const API_CHECKS: ApiCheck[] = [
   { key: "act_blocks", name: "ACT Blocks", category: "Government", baseUrl: "https://services1.arcgis.com/E5n4f1VY84i0xSjy/arcgis/rest/services/ACTGOV_BLOCKS/FeatureServer/0/query", configured: true, schedule: "On demand parcel lookup" },
   { key: "nsw_planning", name: "NSW Planning Portal", category: "Government", baseUrl: "https://api.apps1.nsw.gov.au/eplanning/data/v0/DAApplicationTracker", configured: true, schedule: "Daily" },
   { key: "nsw_six_maps", name: "NSW SIX Maps Cadastre", category: "Government", baseUrl: "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Cadastre/MapServer/9/query", configured: true, schedule: "On demand parcel lookup" },
+  { key: "qld_cadastre", name: "QLD DCDB Cadastre", category: "Government", baseUrl: "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/PlanningCadastre/LandParcelPropertyFramework/MapServer/4/query", configured: true, schedule: "On demand parcel lookup" },
+  { key: "vic_cadastre", name: "VIC VicPlan Cadastre", category: "Government", baseUrl: "https://plan-gis.mapshare.vic.gov.au/arcgis/rest/services/Planning/VicPlan_PropertyAndParcel/MapServer/4/query", configured: true, schedule: "On demand parcel lookup" },
   { key: "open_meteo", name: "Open-Meteo", category: "Weather", baseUrl: "https://api.open-meteo.com/v1/forecast", configured: true, schedule: "Daily 6am AEST" },
   { key: "osm_tiles", name: "OpenStreetMap Tiles", category: "Maps", baseUrl: "https://tile.openstreetmap.org", configured: true, schedule: "Browser tile fetch" },
   { key: "locationiq", name: "LocationIQ", category: "Maps", baseUrl: "https://api.locationiq.com", configured: !!ENV.locationIqApiKey, schedule: "On demand geocoding" },

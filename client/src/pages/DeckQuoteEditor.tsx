@@ -19,6 +19,7 @@ import CommunicationsTab from "@/components/CommunicationsTab";
 import { QuoteAIRender } from "@/components/QuoteAIRender";
 import { generateProposalPDF } from "@/lib/pdfProposal";
 import { adaptDeckQuoteToProposal, validateDeckQuoteForProposal } from "@/lib/deckProposalAdapter";
+import { parcelSourceLabel } from "@/lib/parcelSource";
 import { calculateSubfloor, computeDesignArea, computeDesignPerimeter, DEFAULT_INPUTS, type SubfloorInputs, type PricingOverrides } from "../../../shared/subfloor-calc";
 import { generateDeckBomCsv, downloadCsv } from "../../../shared/deckBomCsv";
 import { generateDeckManagementPDF } from "@/lib/deckManagementPdf";
@@ -328,7 +329,7 @@ export default function DeckQuoteEditor() {
   const lookupParcelMutation = trpc.quotes.lookupParcel.useMutation({
     onSuccess: (data) => {
       setParcelData(data);
-      toast.success(`Property boundary found: ${data.lotId} (${data.source === "actmapi" ? "ACTmapi" : "NSW Cadastre"})`);
+      toast.success(`Property boundary found: ${data.lotId} (${parcelSourceLabel(data.source)})`);
     },
     onError: (err: any) => toast.error(err.message),
     onSettled: () => setParcelLoading(false),
