@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, type PointerEvent } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,7 +60,10 @@ import ClientActivityTab from "@/components/ClientActivityTab";
 import SitePlanDiagram from "@/components/SitePlanDiagram";
 import SitePlanPrintPage from "@/components/SitePlanPrintPage";
 import ProjectTeamFields, { type ProjectTeamPayload } from "@/components/construction/ProjectTeamFields";
-import type { ConstructionChecklistResponseType } from "@shared/construction-checklist-templates";
+import {
+  isConstructionChecklistDisplayResponseType,
+  type ConstructionChecklistResponseType,
+} from "@shared/construction-checklist-templates";
 
 const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   scheduled: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Clock, label: "Scheduled" },
@@ -1451,6 +1454,8 @@ function isFinalInspectionInstruction(instruction: any) {
 }
 
 const FINAL_INSPECTION_RESPONSE_LABELS: Record<ConstructionChecklistResponseType, string> = {
+  section_header: "Section header",
+  divider: "Divider line",
   check: "Checklist tick",
   yes_no: "Yes / No",
   dropdown: "Dropdown",
@@ -1459,6 +1464,7 @@ const FINAL_INSPECTION_RESPONSE_LABELS: Record<ConstructionChecklistResponseType
   long_text: "Long text",
   number: "Number",
   date: "Date",
+  signature: "Signature",
   image_upload: "Image upload",
   file_upload: "File upload",
   client_lookup: "Client / job lookup",
@@ -1482,6 +1488,12 @@ type InstructionResponseFile = {
   uploadedBy?: string | null;
 };
 
+type SignatureResponseValue = {
+  signatureDataUrl: string;
+  signedName?: string | null;
+  signedAt: string;
+};
+
 function responseStringOptions(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
@@ -1491,6 +1503,18 @@ function responseFiles(value: unknown): InstructionResponseFile[] {
   const files = (value as { files?: unknown }).files;
   if (!Array.isArray(files)) return [];
   return files.filter((file): file is InstructionResponseFile => Boolean(file && typeof file === "object" && typeof (file as any).url === "string"));
+}
+
+function signatureResponseValue(value: unknown): SignatureResponseValue | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<SignatureResponseValue>;
+  if (typeof record.signatureDataUrl !== "string" || !record.signatureDataUrl.startsWith("data:image/")) return null;
+  if (typeof record.signedAt !== "string") return null;
+  return {
+    signatureDataUrl: record.signatureDataUrl,
+    signedName: typeof record.signedName === "string" ? record.signedName : null,
+    signedAt: record.signedAt,
+  };
 }
 
 function dateResponseValue(value: unknown) {
@@ -1515,6 +1539,17 @@ function responseLookupValue(value: unknown) {
   return "";
 }
 
+function isChecklistDisplayInstruction(item: any) {
+  return isConstructionChecklistDisplayResponseType(String(item?.responseType || "check"));
+}
+
+function checklistTemplateKey(item: any, fallbackIndex = 0) {
+  const responseType = String(item?.responseType || "check");
+  const title = String(item?.title || "").trim().toLowerCase();
+  const sortOrder = Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : fallbackIndex;
+  return responseType === "divider" ? `${responseType}:${title}:${sortOrder}` : `${responseType}:${title}`;
+}
+
 function readFileBase64(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -1525,6 +1560,173 @@ function readFileBase64(file: File) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function SignatureCapture({
+  value,
+  disabled,
+  onSave,
+  onClear,
+}: {
+  value: SignatureResponseValue | null;
+  disabled?: boolean;
+  onSave: (value: SignatureResponseValue) => void;
+  onClear: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+  const [signedName, setSignedName] = useState(value?.signedName || "");
+  const [hasInk, setHasInk] = useState(Boolean(value?.signatureDataUrl));
+
+  const prepareCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return null;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.lineWidth = 3;
+    context.strokeStyle = "#0f172a";
+    return { canvas, context };
+  }, []);
+
+  const clearCanvas = useCallback(() => {
+    const prepared = prepareCanvas();
+    if (!prepared) return;
+    prepared.context.fillStyle = "#ffffff";
+    prepared.context.fillRect(0, 0, prepared.canvas.width, prepared.canvas.height);
+  }, [prepareCanvas]);
+
+  useEffect(() => {
+    setSignedName(value?.signedName || "");
+  }, [value?.signedName, value?.signedAt]);
+
+  useEffect(() => {
+    clearCanvas();
+    if (!value?.signatureDataUrl) {
+      setHasInk(false);
+      return;
+    }
+
+    const prepared = prepareCanvas();
+    if (!prepared) return;
+    const image = new Image();
+    image.onload = () => {
+      clearCanvas();
+      prepared.context.drawImage(image, 0, 0, prepared.canvas.width, prepared.canvas.height);
+      setHasInk(true);
+    };
+    image.src = value.signatureDataUrl;
+  }, [clearCanvas, prepareCanvas, value?.signatureDataUrl]);
+
+  const pointFromEvent = (event: PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / rect.width),
+      y: (event.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  };
+
+  const beginDrawing = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (disabled) return;
+    const prepared = prepareCanvas();
+    const point = pointFromEvent(event);
+    if (!prepared || !point) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drawingRef.current = true;
+    prepared.context.beginPath();
+    prepared.context.moveTo(point.x, point.y);
+  };
+
+  const continueDrawing = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (disabled || !drawingRef.current) return;
+    const prepared = prepareCanvas();
+    const point = pointFromEvent(event);
+    if (!prepared || !point) return;
+    event.preventDefault();
+    prepared.context.lineTo(point.x, point.y);
+    prepared.context.stroke();
+    setHasInk(true);
+  };
+
+  const endDrawing = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    event.preventDefault();
+    drawingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const saveSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasInk) {
+      toast.error("Draw a signature before saving");
+      return;
+    }
+    onSave({
+      signatureDataUrl: canvas.toDataURL("image/png"),
+      signedName: signedName.trim() || null,
+      signedAt: new Date().toISOString(),
+    });
+  };
+
+  const clearSignature = () => {
+    clearCanvas();
+    setHasInk(false);
+    if (value?.signatureDataUrl) onClear();
+  };
+
+  const signedAtLabel = value?.signedAt
+    ? new Date(value.signedAt).toLocaleString("en-AU", { dateStyle: "medium", timeStyle: "short" })
+    : null;
+
+  return (
+    <div className="w-full space-y-2 sm:w-[28rem]">
+      <div className="rounded-md border bg-muted/30 p-2">
+        <canvas
+          ref={canvasRef}
+          width={700}
+          height={220}
+          className="h-36 w-full touch-none rounded border bg-white"
+          aria-label="Draw signature"
+          onPointerDown={beginDrawing}
+          onPointerMove={continueDrawing}
+          onPointerUp={endDrawing}
+          onPointerCancel={endDrawing}
+          onPointerLeave={endDrawing}
+        />
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <div className="space-y-1">
+          <Label className="text-xs">Signer name</Label>
+          <Input
+            value={signedName}
+            onChange={(event) => setSignedName(event.target.value)}
+            placeholder="Optional"
+            disabled={disabled}
+          />
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button type="button" variant="outline" size="sm" onClick={clearSignature} disabled={disabled}>
+            <Trash2 className="mr-1.5 h-4 w-4" />
+            Clear
+          </Button>
+          <Button type="button" size="sm" onClick={saveSignature} disabled={disabled}>
+            <Save className="mr-1.5 h-4 w-4" />
+            Save signature
+          </Button>
+        </div>
+      </div>
+      {signedAtLabel && (
+        <p className="text-xs text-muted-foreground">
+          Signed{value?.signedName ? ` by ${value.signedName}` : ""} on {signedAtLabel}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: number; assignments: any[] }) {
@@ -1546,8 +1748,9 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
 
   const instructions = instructionsQuery.data || [];
   const finalItems = instructions.filter(isFinalInspectionInstruction);
-  const completedCount = finalItems.filter((item: any) => item.status === "done" || item.status === "not_applicable").length;
-  const progress = finalItems.length > 0 ? Math.round((completedCount / finalItems.length) * 100) : 0;
+  const actionableFinalItems = finalItems.filter((item: any) => !isChecklistDisplayInstruction(item));
+  const completedCount = actionableFinalItems.filter((item: any) => item.status === "done" || item.status === "not_applicable").length;
+  const progress = actionableFinalItems.length > 0 ? Math.round((completedCount / actionableFinalItems.length) * 100) : 0;
   const assignableUsers = useMemo(
     () => [...(usersQuery.data || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
     [usersQuery.data],
@@ -1581,34 +1784,41 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
       toast.error("No final inspection checklist template items are configured");
       return;
     }
-    const existingTitles = new Set(finalItems.map((item: any) => String(item.title || "").toLowerCase()));
-    const missing = templateItems.filter((item: any) => !existingTitles.has(String(item.title || "").toLowerCase()));
+    const existingKeys = new Set(finalItems.map((item: any) => checklistTemplateKey({
+      ...item,
+      sortOrder: Number(item.sortOrder) >= 500 ? Number(item.sortOrder) - 500 : Number(item.sortOrder),
+    })));
+    const missing = templateItems.filter((item: any, index: number) => !existingKeys.has(checklistTemplateKey(item, index)));
     if (missing.length === 0) {
       toast.info("Final inspection checklist is already loaded");
       return;
     }
     try {
-      await Promise.all(missing.map((item: any, index) => createInstruction.mutateAsync({
+      await Promise.all(missing.map((item: any, index) => {
+        const responseType = String(item.responseType || "check") as ConstructionChecklistResponseType;
+        const isDisplayOnly = isConstructionChecklistDisplayResponseType(responseType);
+        return createInstruction.mutateAsync({
         jobId,
-        title: String(item.title || "").trim(),
+        title: String(item.title || "").trim() || (responseType === "divider" ? "Divider" : ""),
         description: null,
         category: "inspection",
-        status: "open",
+        status: isDisplayOnly ? "not_applicable" : "open",
         priority: item.priority || "normal",
         visibleToTrade: Boolean(item.visibleToTrade),
         visibleToClient: Boolean(item.visibleToClient),
         assignedInstallerId: null,
-        sendToUserId: item.sendToUserId ?? null,
-        isBlocking: Boolean(item.isBlocking),
+        sendToUserId: isDisplayOnly ? null : item.sendToUserId ?? null,
+        isBlocking: isDisplayOnly ? false : Boolean(item.isBlocking),
         dueAt: null,
         triggerLabel: "Final Inspection",
         sortOrder: 500 + (Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index),
-        responseType: item.responseType || "check",
-        responseOptions: Array.isArray(item.responseOptions) ? item.responseOptions : [],
-        responseRequired: Boolean(item.responseRequired),
-        responseHelpText: item.responseHelpText || null,
+        responseType,
+        responseOptions: isDisplayOnly ? [] : Array.isArray(item.responseOptions) ? item.responseOptions : [],
+        responseRequired: isDisplayOnly ? false : Boolean(item.responseRequired),
+        responseHelpText: responseType === "divider" ? null : item.responseHelpText || null,
         responseValue: initialResponseValueForTemplate(item),
-      })));
+        });
+      }));
       await utils.constructionClients.jobInstructions.invalidate({ jobId });
       toast.success("Final inspection checklist loaded");
     } catch (err: any) {
@@ -1657,29 +1867,32 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
   };
 
   const uploadResponseFile = async (item: any, fileList: FileList | null) => {
-    const file = fileList?.[0];
-    if (!file) return;
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error(`${file.name} is over 25MB`);
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    const responseType = String(item.responseType || "check");
+    const oversized = files.find((file) => file.size > 25 * 1024 * 1024);
+    if (oversized) {
+      toast.error(`${oversized.name} is over 25MB`);
       return;
     }
-    const responseType = String(item.responseType || "check");
-    if (responseType === "image_upload" && !file.type.startsWith("image/")) {
+    if (responseType === "image_upload" && files.some((file) => !file.type.startsWith("image/"))) {
       toast.error("Please upload an image for this checklist item");
       return;
     }
     setUploadingInstructionId(item.id);
     try {
-      const fileBase64 = await readFileBase64(file);
-      await uploadInstructionResponseFile.mutateAsync({
-        instructionId: item.id,
-        fileName: file.name,
-        fileMimeType: file.type || "application/octet-stream",
-        fileBase64,
-      });
-      toast.success("Inspection file uploaded");
+      for (const file of files) {
+        const fileBase64 = await readFileBase64(file);
+        await uploadInstructionResponseFile.mutateAsync({
+          instructionId: item.id,
+          fileName: file.name,
+          fileMimeType: file.type || "application/octet-stream",
+          fileBase64,
+        });
+      }
+      toast.success(files.length === 1 ? "Inspection file uploaded" : `${files.length} inspection files uploaded`);
     } catch {
-      toast.error("Failed to read inspection file");
+      toast.error("Failed to upload inspection file");
     } finally {
       setUploadingInstructionId(null);
     }
@@ -1690,7 +1903,7 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
     const options = responseStringOptions(item.responseOptions);
     const files = responseFiles(item.responseValue);
 
-    if (responseType === "check") return null;
+    if (responseType === "check" || isConstructionChecklistDisplayResponseType(responseType)) return null;
 
     if (responseType === "yes_no") {
       return (
@@ -1858,6 +2071,17 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
       );
     }
 
+    if (responseType === "signature") {
+      return (
+        <SignatureCapture
+          value={signatureResponseValue(item.responseValue)}
+          disabled={updateInstruction.isPending}
+          onSave={(signatureValue) => saveResponseValue(item, signatureValue)}
+          onClear={() => saveResponseValue(item, null)}
+        />
+      );
+    }
+
     if (responseType === "image_upload" || responseType === "file_upload") {
       const uploadingThisItem = uploadingInstructionId === item.id && uploadInstructionResponseFile.isPending;
       return (
@@ -1865,9 +2089,16 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
           <Input
             type="file"
             accept={responseType === "image_upload" ? "image/*" : undefined}
-            onChange={(event) => uploadResponseFile(item, event.currentTarget.files)}
+            multiple={responseType === "image_upload"}
+            onChange={(event) => {
+              const input = event.currentTarget;
+              uploadResponseFile(item, input.files).finally(() => {
+                input.value = "";
+              });
+            }}
             disabled={uploadingThisItem}
           />
+          {responseType === "image_upload" && <p className="text-xs text-muted-foreground">You can select multiple images at once.</p>}
           {uploadingThisItem && <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Uploading...</p>}
           {files.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
@@ -1914,7 +2145,7 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
           <div className="rounded-md border p-3">
             <div className="mb-2 flex items-center justify-between gap-3">
               <span className="text-sm font-medium">Inspection Progress</span>
-              <span className="text-sm text-muted-foreground">{completedCount}/{finalItems.length} complete</span>
+              <span className="text-sm text-muted-foreground">{completedCount}/{actionableFinalItems.length} complete</span>
             </div>
             <Progress value={progress} className="h-2" />
           </div>
@@ -1929,7 +2160,24 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
             </div>
           ) : (
             <div className="space-y-2">
-              {finalItems.map((item: any) => (
+              {finalItems.map((item: any) => {
+                const responseType = String(item.responseType || "check") as ConstructionChecklistResponseType;
+                if (responseType === "divider") {
+                  return (
+                    <div key={item.id} className="py-2">
+                      <div className="border-t" />
+                    </div>
+                  );
+                }
+                if (responseType === "section_header") {
+                  return (
+                    <div key={item.id} className="rounded-md border bg-muted/40 px-3 py-2">
+                      <p className="text-sm font-semibold">{item.title}</p>
+                      {item.responseHelpText && <p className="mt-0.5 text-xs text-muted-foreground">{item.responseHelpText}</p>}
+                    </div>
+                  );
+                }
+                return (
                 <div key={item.id} className="grid gap-3 rounded-md border p-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,auto)_176px] lg:items-start">
                   <div className="min-w-0 space-y-1">
                     <p className="font-medium">{item.title}</p>
@@ -1967,7 +2215,8 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
                     </SelectContent>
                   </Select>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

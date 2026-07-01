@@ -1,7 +1,10 @@
 export const CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY = "constructionChecklistTemplates";
 
 export const CONSTRUCTION_CHECKLIST_PRIORITIES = ["normal", "important", "urgent"] as const;
+export const CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH = 5000;
 export const CONSTRUCTION_CHECKLIST_RESPONSE_TYPES = [
+  "section_header",
+  "divider",
   "check",
   "yes_no",
   "dropdown",
@@ -10,12 +13,14 @@ export const CONSTRUCTION_CHECKLIST_RESPONSE_TYPES = [
   "long_text",
   "number",
   "date",
+  "signature",
   "image_upload",
   "file_upload",
   "client_lookup",
   "trade_user_lookup",
   "user_lookup",
 ] as const;
+export const CONSTRUCTION_CHECKLIST_DISPLAY_RESPONSE_TYPES = ["section_header", "divider"] as const;
 
 export type ConstructionChecklistPriority = (typeof CONSTRUCTION_CHECKLIST_PRIORITIES)[number];
 export type ConstructionChecklistResponseType = (typeof CONSTRUCTION_CHECKLIST_RESPONSE_TYPES)[number];
@@ -106,6 +111,10 @@ function isResponseType(value: unknown): value is ConstructionChecklistResponseT
   return CONSTRUCTION_CHECKLIST_RESPONSE_TYPES.includes(value as ConstructionChecklistResponseType);
 }
 
+export function isConstructionChecklistDisplayResponseType(value: unknown): value is (typeof CONSTRUCTION_CHECKLIST_DISPLAY_RESPONSE_TYPES)[number] {
+  return CONSTRUCTION_CHECKLIST_DISPLAY_RESPONSE_TYPES.includes(value as (typeof CONSTRUCTION_CHECKLIST_DISPLAY_RESPONSE_TYPES)[number]);
+}
+
 function normalizeOptions(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -124,23 +133,24 @@ function normalizeOptions(value: unknown): string[] {
 function normalizeItem(value: unknown, index: number): ConstructionChecklistTemplateItem | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
-  const title = String(item.title ?? "").trim();
-  if (!title) return null;
   const priority = isPriority(item.priority) ? item.priority : "normal";
   const responseType = isResponseType(item.responseType) ? item.responseType : "check";
+  const title = String(item.title ?? "").trim() || (responseType === "divider" ? "Divider" : "");
+  if (!title) return null;
   const sortOrder = Number(item.sortOrder);
   const sendToUserId = Number(item.sendToUserId);
+  const isDisplayOnly = isConstructionChecklistDisplayResponseType(responseType);
   return {
     title,
     priority,
-    isBlocking: Boolean(item.isBlocking),
+    isBlocking: isDisplayOnly ? false : Boolean(item.isBlocking),
     visibleToTrade: Boolean(item.visibleToTrade),
     visibleToClient: Boolean(item.visibleToClient),
-    sendToUserId: Number.isInteger(sendToUserId) && sendToUserId > 0 ? sendToUserId : null,
+    sendToUserId: isDisplayOnly ? null : Number.isInteger(sendToUserId) && sendToUserId > 0 ? sendToUserId : null,
     responseType,
-    responseOptions: normalizeOptions(item.responseOptions),
-    responseRequired: Boolean(item.responseRequired),
-    responseHelpText: String(item.responseHelpText ?? "").trim().slice(0, 500) || null,
+    responseOptions: isDisplayOnly ? [] : normalizeOptions(item.responseOptions),
+    responseRequired: isDisplayOnly ? false : Boolean(item.responseRequired),
+    responseHelpText: responseType === "divider" ? null : String(item.responseHelpText ?? "").trim().slice(0, CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH) || null,
     sortOrder: Number.isFinite(sortOrder) ? sortOrder : index,
   };
 }

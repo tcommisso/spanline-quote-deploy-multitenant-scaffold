@@ -13,6 +13,7 @@ import {
   normalizeNavigationSettings,
 } from "../shared/navigation-config";
 import {
+  CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH,
   CONSTRUCTION_CHECKLIST_PRIORITIES,
   CONSTRUCTION_CHECKLIST_RESPONSE_TYPES,
   CONSTRUCTION_CHECKLIST_TEMPLATES_SETTINGS_KEY,
@@ -32,7 +33,7 @@ const constructionChecklistTemplateItemSchema = z.object({
   responseType: z.enum(CONSTRUCTION_CHECKLIST_RESPONSE_TYPES).default("check"),
   responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
   responseRequired: z.boolean().default(false),
-  responseHelpText: z.string().trim().max(500).nullable().optional(),
+  responseHelpText: z.string().trim().max(CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH).nullable().optional(),
   sortOrder: z.number().int().min(0).max(10000),
 });
 

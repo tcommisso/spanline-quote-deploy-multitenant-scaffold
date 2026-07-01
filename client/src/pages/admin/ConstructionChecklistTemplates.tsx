@@ -10,7 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH,
   DEFAULT_FINAL_INSPECTION_TEMPLATE_ITEMS,
+  isConstructionChecklistDisplayResponseType,
   type ConstructionChecklistPriority,
   type ConstructionChecklistResponseType,
   type ConstructionChecklistTemplateItem,
@@ -27,6 +29,8 @@ const PRIORITY_OPTIONS: Array<{ value: ConstructionChecklistPriority; label: str
 ];
 
 const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; label: string }> = [
+  { value: "section_header", label: "Section header" },
+  { value: "divider", label: "Divider line" },
   { value: "check", label: "Checklist tick" },
   { value: "yes_no", label: "Yes / No" },
   { value: "dropdown", label: "Dropdown" },
@@ -35,6 +39,7 @@ const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; l
   { value: "long_text", label: "Long text" },
   { value: "number", label: "Number" },
   { value: "date", label: "Date" },
+  { value: "signature", label: "Signature" },
   { value: "image_upload", label: "Image upload" },
   { value: "file_upload", label: "File upload" },
   { value: "client_lookup", label: "Client / job lookup" },
@@ -62,14 +67,14 @@ function makeDraftItems(items: ConstructionChecklistTemplateItem[]): DraftItem[]
   return items.map(makeDraftItem);
 }
 
-function newDraftItem(sortOrder: number): DraftItem {
+function newDraftItem(sortOrder: number, responseType: ConstructionChecklistResponseType = "check"): DraftItem {
   return {
     localId: `new-${Date.now()}-${sortOrder}`,
-    title: "",
+    title: responseType === "section_header" ? "New section" : responseType === "divider" ? "Divider" : "",
     priority: "normal",
     isBlocking: false,
     visibleToTrade: false,
-    responseType: "check",
+    responseType,
     responseOptions: [],
     responseRequired: false,
     visibleToClient: false,
@@ -81,6 +86,15 @@ function newDraftItem(sortOrder: number): DraftItem {
 
 function normalizeDraftItems(items: DraftItem[]): DraftItem[] {
   return items.map((item, index) => ({ ...item, sortOrder: index }));
+}
+
+function isDisplayOnlyItem(item: Pick<ConstructionChecklistTemplateItem, "responseType">) {
+  return isConstructionChecklistDisplayResponseType(item.responseType);
+}
+
+function titleForSave(item: DraftItem) {
+  const title = item.title.trim();
+  return item.responseType === "divider" ? title || "Divider" : title;
 }
 
 function optionsText(options: string[] = []) {
@@ -122,7 +136,7 @@ export default function ConstructionChecklistTemplates() {
     }
   }, [data]);
 
-  const activeCount = useMemo(() => items.filter((item) => item.title.trim()).length, [items]);
+  const activeCount = useMemo(() => items.filter((item) => titleForSave(item)).length, [items]);
   const sendToUsers = useMemo(() => {
     return [...(usersQuery.data || [])].sort((a: any, b: any) =>
       String(a.name || a.email || "").localeCompare(String(b.name || b.email || ""))
@@ -133,8 +147,8 @@ export default function ConstructionChecklistTemplates() {
     setItems((current) => current.map((item) => item.localId === localId ? { ...item, ...changes } : item));
   };
 
-  const addItem = () => {
-    setItems((current) => [...current, newDraftItem(current.length)]);
+  const addItem = (responseType: ConstructionChecklistResponseType = "check") => {
+    setItems((current) => [...current, newDraftItem(current.length, responseType)]);
   };
 
   const removeItem = (localId: string) => {
@@ -158,21 +172,27 @@ export default function ConstructionChecklistTemplates() {
 
   const save = () => {
     const payloadItems = normalizeDraftItems(items)
-      .map((item) => ({
-        title: item.title.trim(),
-        priority: item.priority,
-        isBlocking: item.isBlocking,
-        visibleToTrade: item.visibleToTrade,
-        visibleToClient: item.visibleToClient,
-        sendToUserId: item.sendToUserId ?? null,
-        responseType: item.responseType || "check",
-        responseOptions: item.responseType === "client_lookup"
-          ? [item.responseOptions?.[0] || "client_name"]
-          : RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) ? item.responseOptions : [],
-        responseRequired: Boolean(item.responseRequired),
-        responseHelpText: item.responseHelpText?.trim() || null,
-        sortOrder: item.sortOrder,
-      }))
+      .map((item) => {
+        const responseType = item.responseType || "check";
+        const isDisplayOnly = isConstructionChecklistDisplayResponseType(responseType);
+        return {
+          title: titleForSave(item),
+          priority: item.priority,
+          isBlocking: isDisplayOnly ? false : item.isBlocking,
+          visibleToTrade: item.visibleToTrade,
+          visibleToClient: item.visibleToClient,
+          sendToUserId: isDisplayOnly ? null : item.sendToUserId ?? null,
+          responseType,
+          responseOptions: isDisplayOnly ? [] : responseType === "client_lookup"
+            ? [item.responseOptions?.[0] || "client_name"]
+            : RESPONSE_TYPES_WITH_OPTIONS.has(responseType) ? item.responseOptions : [],
+          responseRequired: isDisplayOnly ? false : Boolean(item.responseRequired),
+          responseHelpText: responseType === "divider"
+            ? null
+            : item.responseHelpText?.trim().slice(0, CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH) || null,
+          sortOrder: item.sortOrder,
+        };
+      })
       .filter((item) => item.title.length > 0);
 
     if (payloadItems.length === 0) {
@@ -228,14 +248,14 @@ export default function ConstructionChecklistTemplates() {
         <CardContent className="space-y-3">
           <div className="space-y-2">
             {items.map((item, index) => (
-              <div key={item.localId} className="rounded-md border p-3">
+              <div key={item.localId} className={`rounded-md border p-3 ${item.responseType === "section_header" ? "bg-muted/30" : item.responseType === "divider" ? "bg-background" : ""}`}>
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_150px] lg:items-end">
                   <div className="space-y-1">
-                    <Label className="text-xs">Checklist item</Label>
+                    <Label className="text-xs">{item.responseType === "section_header" ? "Section header" : item.responseType === "divider" ? "Divider label" : "Checklist item"}</Label>
                     <Input
                       value={item.title}
                       onChange={(event) => updateItem(item.localId, { title: event.target.value })}
-                      placeholder="Checklist item..."
+                      placeholder={item.responseType === "section_header" ? "e.g. Site completion" : item.responseType === "divider" ? "Divider" : "Checklist item..."}
                     />
                   </div>
                   <div className="space-y-1">
@@ -244,11 +264,16 @@ export default function ConstructionChecklistTemplates() {
                       value={item.responseType || "check"}
                       onValueChange={(responseType) => {
                         const nextType = responseType as ConstructionChecklistResponseType;
+                        const isDisplayOnly = isConstructionChecklistDisplayResponseType(nextType);
                         updateItem(item.localId, {
                           responseType: nextType,
+                          title: nextType === "divider" && !item.title.trim() ? "Divider" : item.title,
+                          isBlocking: isDisplayOnly ? false : item.isBlocking,
+                          responseRequired: isDisplayOnly ? false : item.responseRequired,
+                          sendToUserId: isDisplayOnly ? null : item.sendToUserId,
                           responseOptions: nextType === "client_lookup"
                             ? [item.responseOptions?.[0] || "client_name"]
-                            : RESPONSE_TYPES_WITH_OPTIONS.has(nextType) ? item.responseOptions : [],
+                            : isDisplayOnly ? [] : RESPONSE_TYPES_WITH_OPTIONS.has(nextType) ? item.responseOptions : [],
                         });
                       }}
                     >
@@ -262,7 +287,7 @@ export default function ConstructionChecklistTemplates() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1">
+                  <div className={isDisplayOnlyItem(item) ? "hidden" : "space-y-1"}>
                     <Label className="text-xs">Priority</Label>
                     <Select
                       value={item.priority}
@@ -281,14 +306,18 @@ export default function ConstructionChecklistTemplates() {
                 </div>
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
-                      <Label className="text-xs">Required</Label>
-                      <Switch checked={item.responseRequired} onCheckedChange={(checked) => updateItem(item.localId, { responseRequired: checked })} />
-                    </div>
-                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
-                      <Label className="text-xs">Blocking</Label>
-                      <Switch checked={item.isBlocking} onCheckedChange={(checked) => updateItem(item.localId, { isBlocking: checked })} />
-                    </div>
+                    {!isDisplayOnlyItem(item) && (
+                      <>
+                        <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                          <Label className="text-xs">Required</Label>
+                          <Switch checked={item.responseRequired} onCheckedChange={(checked) => updateItem(item.localId, { responseRequired: checked })} />
+                        </div>
+                        <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                          <Label className="text-xs">Blocking</Label>
+                          <Switch checked={item.isBlocking} onCheckedChange={(checked) => updateItem(item.localId, { isBlocking: checked })} />
+                        </div>
+                      </>
+                    )}
                     <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
                       <Label className="text-xs">Trade visible</Label>
                       <Switch checked={item.visibleToTrade} onCheckedChange={(checked) => updateItem(item.localId, { visibleToTrade: checked })} />
@@ -311,7 +340,7 @@ export default function ConstructionChecklistTemplates() {
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {item.responseType === "client_lookup" && (
+                  {!isDisplayOnlyItem(item) && item.responseType === "client_lookup" && (
                     <div className="space-y-1">
                       <Label className="text-xs">Client lookup value</Label>
                       <Select
@@ -329,6 +358,7 @@ export default function ConstructionChecklistTemplates() {
                       </Select>
                     </div>
                   )}
+                  {!isDisplayOnlyItem(item) && (
                   <div className="space-y-1">
                     <Label className="text-xs">Send to</Label>
                     <Select
@@ -350,7 +380,8 @@ export default function ConstructionChecklistTemplates() {
                       </SelectContent>
                     </Select>
                   </div>
-                  {RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && (
+                  )}
+                  {!isDisplayOnlyItem(item) && RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && (
                     <div className="space-y-1">
                       <Label className="text-xs">Options</Label>
                       <Textarea
@@ -361,6 +392,7 @@ export default function ConstructionChecklistTemplates() {
                       />
                     </div>
                   )}
+                  {item.responseType !== "divider" && (
                   <div className="space-y-1">
                     <Label className="text-xs">Help text</Label>
                     <Textarea
@@ -370,6 +402,7 @@ export default function ConstructionChecklistTemplates() {
                       rows={3}
                     />
                   </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -377,9 +410,17 @@ export default function ConstructionChecklistTemplates() {
 
           <div className="flex flex-col gap-2 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" onClick={addItem}>
+              <Button type="button" variant="outline" onClick={() => addItem()}>
                 <Plus className="mr-1.5 h-4 w-4" />
                 Add item
+              </Button>
+              <Button type="button" variant="outline" onClick={() => addItem("section_header")}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                Add section
+              </Button>
+              <Button type="button" variant="outline" onClick={() => addItem("divider")}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                Add divider
               </Button>
               <Button type="button" variant="outline" onClick={resetRecommendedDefaults}>
                 <RotateCcw className="mr-1.5 h-4 w-4" />

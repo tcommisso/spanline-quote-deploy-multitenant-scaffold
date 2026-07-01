@@ -12,6 +12,7 @@ import {
 import { OnboardingTour, TourHelpButton, isTourCompleted } from "@/components/OnboardingTour";
 import { clientPortalTour, TOUR_IDS } from "@/lib/tours";
 import PortalApprovalTimeline from "@/components/portal/PortalApprovalTimeline";
+import { isConstructionChecklistDisplayResponseType } from "@shared/construction-checklist-templates";
 
 export default function PortalDashboard() {
   const { user, isLoading: authLoading } = usePortal();
@@ -24,6 +25,8 @@ export default function PortalDashboard() {
     retry: false,
   });
   const [tourActive, setTourActive] = useState(!isTourCompleted(TOUR_IDS.clientPortal));
+  const checklistItems = checklistQuery.data || [];
+  const checklistActionCount = checklistItems.filter((item: any) => !isConstructionChecklistDisplayResponseType(String(item.responseType || "check"))).length;
 
   // Show loading skeleton while auth is resolving
   if (authLoading) {
@@ -114,7 +117,7 @@ export default function PortalDashboard() {
       {/* Approval Timeline */}
       <PortalApprovalTimeline />
 
-      {checklistQuery.data && checklistQuery.data.length > 0 && (
+      {checklistItems.length > 0 && (
         <Card>
           <CardContent className="pt-6">
             <div className="mb-3 flex items-center justify-between gap-3">
@@ -122,19 +125,32 @@ export default function PortalDashboard() {
                 <p className="text-sm font-medium">Project Checklist</p>
                 <p className="text-xs text-muted-foreground">Items shared by your construction team</p>
               </div>
-              <Badge variant="secondary">{checklistQuery.data.length}</Badge>
+              <Badge variant="secondary">{checklistActionCount}</Badge>
             </div>
             <div className="space-y-2">
-              {checklistQuery.data.slice(0, 5).map((item: any) => (
-                <div key={item.id} className="flex items-start gap-2 rounded-md border p-3">
-                  <CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === "done" ? "text-green-600" : "text-muted-foreground"}`} />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">{item.title}</p>
-                    {item.description && <p className="line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}
-                    <p className="mt-1 text-xs text-muted-foreground">{String(item.status || "open").replace(/_/g, " ")}</p>
+              {checklistItems.slice(0, 7).map((item: any) => {
+                const responseType = String(item.responseType || "check");
+                if (responseType === "divider") {
+                  return <div key={item.id} className="border-t" />;
+                }
+                if (responseType === "section_header") {
+                  return (
+                    <div key={item.id} className="rounded-md bg-muted/50 px-3 py-2">
+                      <p className="text-sm font-semibold">{item.title}</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={item.id} className="flex items-start gap-2 rounded-md border p-3">
+                    <CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === "done" ? "text-green-600" : "text-muted-foreground"}`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{item.title}</p>
+                      {item.description && <p className="line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}
+                      <p className="mt-1 text-xs text-muted-foreground">{String(item.status || "open").replace(/_/g, " ")}</p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

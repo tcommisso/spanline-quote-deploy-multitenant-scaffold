@@ -22,7 +22,10 @@ import { canonicalClientFromLead, crmLeadDisplayName, nullableName } from "./can
 import { storagePut } from "./storage";
 import { getTenantAppSetting } from "./tenant-settings-store";
 import { constructionLifecycleStatusSql } from "./construction-status";
-import { CONSTRUCTION_CHECKLIST_RESPONSE_TYPES } from "../shared/construction-checklist-templates";
+import {
+  CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH,
+  CONSTRUCTION_CHECKLIST_RESPONSE_TYPES,
+} from "../shared/construction-checklist-templates";
 
 const constructionClientSortFieldSchema = z.enum([
   "clientName",
@@ -59,12 +62,18 @@ const jobInstructionResponseFileSchema = z.object({
   uploadedAt: z.string(),
   uploadedBy: z.string().nullable().optional(),
 });
+const jobInstructionSignatureResponseSchema = z.object({
+  signatureDataUrl: z.string().max(500_000).regex(/^data:image\/(png|jpeg|webp);base64,/),
+  signedName: z.string().trim().max(255).nullable().optional(),
+  signedAt: z.string().datetime(),
+});
 const jobInstructionResponseValueSchema = z.union([
   z.string().max(5000),
   z.number(),
   z.boolean(),
   z.array(z.string().max(240)).max(50),
   z.object({ files: z.array(jobInstructionResponseFileSchema).max(50) }),
+  jobInstructionSignatureResponseSchema,
   z.null(),
 ]);
 const postBuildClassificationSchema = z.enum(["unclassified", "warranty", "workmanship", "chargeable"]);
@@ -1917,7 +1926,7 @@ export const constructionClientsRouter = router({
       responseType: jobInstructionResponseTypeSchema.default("check"),
       responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
       responseRequired: z.boolean().default(false),
-      responseHelpText: z.string().max(500).nullable().optional(),
+      responseHelpText: z.string().max(CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH).nullable().optional(),
       responseValue: jobInstructionResponseValueSchema.optional(),
     }))
     .mutation(async ({ ctx, input }) => {
@@ -1980,7 +1989,7 @@ export const constructionClientsRouter = router({
       responseType: jobInstructionResponseTypeSchema.optional(),
       responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).optional(),
       responseRequired: z.boolean().optional(),
-      responseHelpText: z.string().max(500).nullable().optional(),
+      responseHelpText: z.string().max(CONSTRUCTION_CHECKLIST_HELP_TEXT_MAX_LENGTH).nullable().optional(),
       responseValue: jobInstructionResponseValueSchema.optional(),
     }))
     .mutation(async ({ ctx, input }) => {
