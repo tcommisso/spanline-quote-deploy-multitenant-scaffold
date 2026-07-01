@@ -22,11 +22,12 @@ import {
   tradeAvailabilities,
   users,
 } from "../drizzle/schema";
-import { eq, and, gte, lte, lt, gt, inArray, isNull, or, asc, sql, isNotNull } from "drizzle-orm";
+import { eq, and, gte, lte, lt, gt, inArray, notInArray, isNull, or, asc, sql, isNotNull } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 import { isAdminRole } from "@shared/const";
+import { getTenantAppSetting, setTenantAppSetting } from "./tenant-settings-store";
 import { sendPushToUser } from "./push";
 import { getTradeReadinessMap, tradeReadinessKey, type TradeReadiness } from "./construction-trade-readiness";
 import { ENV } from "./_core/env";
@@ -47,6 +48,20 @@ import {
   getDateTimePartsInTimeZone,
   zonedDateTimeToUnixSeconds,
 } from "@shared/timezone";
+
+const HOLIDAY_JURISDICTIONS_SETTING_KEY = "constructionHolidayJurisdictions";
+const DEFAULT_HOLIDAY_JURISDICTIONS: AuHolidayJurisdiction[] = ["NATIONAL", "ACT", "NSW"];
+const HOLIDAY_JURISDICTION_LABELS: Record<AuHolidayJurisdiction, string> = {
+  NATIONAL: "National",
+  ACT: "Australian Capital Territory",
+  NSW: "New South Wales",
+  VIC: "Victoria",
+  QLD: "Queensland",
+  SA: "South Australia",
+  WA: "Western Australia",
+  TAS: "Tasmania",
+  NT: "Northern Territory",
+};
 
 async function requireDb() {
   const db = await getDb();
@@ -90,6 +105,33 @@ function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
 
 function holidayIdentityKey(value: { dateKey: string; jurisdiction: string; name: string }) {
   return `${value.dateKey}|${value.jurisdiction}|${value.name.trim().toLowerCase()}`;
+}
+
+function normalizeHolidayJurisdictions(value: unknown): AuHolidayJurisdiction[] {
+  const allowed = new Set<AuHolidayJurisdiction>(AU_HOLIDAY_JURISDICTIONS);
+  const source = Array.isArray(value) && value.length > 0 ? value : DEFAULT_HOLIDAY_JURISDICTIONS;
+  const normalized: AuHolidayJurisdiction[] = [];
+
+  for (const item of source) {
+    if (!allowed.has(item as AuHolidayJurisdiction)) continue;
+    const jurisdiction = item as AuHolidayJurisdiction;
+    if (!normalized.includes(jurisdiction)) normalized.push(jurisdiction);
+  }
+
+  if (!normalized.includes("NATIONAL")) normalized.unshift("NATIONAL");
+  return normalized.length > 0 ? normalized : DEFAULT_HOLIDAY_JURISDICTIONS;
+}
+
+async function getTenantHolidayJurisdictions(ctx: any) {
+  const stored = await getTenantAppSetting<unknown>(tenantIdFromContext(ctx), HOLIDAY_JURISDICTIONS_SETTING_KEY);
+  return normalizeHolidayJurisdictions(stored);
+}
+
+function holidayJurisdictionOptions() {
+  return AU_HOLIDAY_JURISDICTIONS.map((value) => ({
+    value,
+    label: HOLIDAY_JURISDICTION_LABELS[value],
+  }));
 }
 
 function rowsFromExecuteResult(result: any): any[] {
@@ -880,6 +922,30 @@ export const constructionScheduleRouter = router({
         .orderBy(asc(constructionHolidayCalendarDays.dateKey), asc(constructionHolidayCalendarDays.jurisdiction), asc(constructionHolidayCalendarDays.name));
     }),
 
+  holidayJurisdictionSettings: protectedProcedure
+    .query(async ({ ctx }) => {
+      return {
+        jurisdictions: await getTenantHolidayJurisdictions(ctx),
+        options: holidayJurisdictionOptions(),
+      };
+    }),
+
+  setHolidayJurisdictions: protectedProcedure
+    .input(z.object({
+      jurisdictions: z.array(z.enum(AU_HOLIDAY_JURISDICTIONS)).min(1),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isAdminRole(ctx.user?.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Admin access is required to update holiday calendar settings" });
+      }
+      const jurisdictions = normalizeHolidayJurisdictions(input.jurisdictions);
+      await setTenantAppSetting(tenantIdFromContext(ctx), HOLIDAY_JURISDICTIONS_SETTING_KEY, jurisdictions);
+      return {
+        jurisdictions,
+        options: holidayJurisdictionOptions(),
+      };
+    }),
+
   seedAustralianHolidays: protectedProcedure
     .input(z.object({
       year: z.number().min(2020).max(2050),
@@ -892,9 +958,10 @@ export const constructionScheduleRouter = router({
       const db = await requireDb();
       await ensureHolidayCalendarSchema(db);
       const tenantId = tenantIdFromContext(ctx);
-      const jurisdictions = (input.jurisdictions?.length
+      const jurisdictions = normalizeHolidayJurisdictions(input.jurisdictions?.length
         ? input.jurisdictions
-        : ["NATIONAL", "ACT", "NSW"]) as AuHolidayJurisdiction[];
+        : await getTenantHolidayJurisdictions(ctx));
+      await setTenantAppSetting(tenantId, HOLIDAY_JURISDICTIONS_SETTING_KEY, jurisdictions);
       const holidaysByKey = new Map<string, ReturnType<typeof generateAustralianHolidays>[number]>();
       for (const holiday of generateAustralianHolidays(input.year, jurisdictions).filter((holiday) => isValidDateKey(holiday.dateKey))) {
         holidaysByKey.set(holidayIdentityKey(holiday), holiday);
@@ -928,6 +995,15 @@ export const constructionScheduleRouter = router({
           active: true,
           createdBy,
         }));
+
+        await db.update(constructionHolidayCalendarDays)
+          .set({ active: false, updatedAt: new Date() })
+          .where(and(...holidayTenantConditions(
+            ctx,
+            eq(constructionHolidayCalendarDays.year, input.year),
+            eq(constructionHolidayCalendarDays.source, "built_in"),
+            notInArray(constructionHolidayCalendarDays.jurisdiction, jurisdictions),
+          )));
 
         await db.insert(constructionHolidayCalendarDays)
           .values(rows)

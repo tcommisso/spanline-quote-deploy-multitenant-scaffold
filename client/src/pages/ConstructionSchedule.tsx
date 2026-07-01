@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { OnboardingTour, TourHelpButton } from "@/components/OnboardingTour";
 import { HelpLink } from "@/components/HelpLink";
 import { workScheduleTour, TOUR_IDS } from "@/lib/tours";
@@ -14,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   CalendarDays, Plus, ChevronLeft, ChevronRight, Clock, Wrench,
   ClipboardCheck, Truck, Users, Bell, BellOff, Trash2, Package,
@@ -28,6 +29,20 @@ import { isAdminRole, ROLE_LABELS } from "@shared/const";
 
 type ResourceView = "all" | "staff" | "trades" | "unallocated" | "equipment";
 type ScheduleDialogSize = "compact" | "wide" | "full";
+type HolidayJurisdiction = "NATIONAL" | "ACT" | "NSW" | "VIC" | "QLD" | "SA" | "WA" | "TAS" | "NT";
+
+const DEFAULT_HOLIDAY_JURISDICTIONS: HolidayJurisdiction[] = ["NATIONAL", "ACT", "NSW"];
+const DEFAULT_HOLIDAY_JURISDICTION_OPTIONS: Array<{ value: HolidayJurisdiction; label: string }> = [
+  { value: "NATIONAL", label: "National" },
+  { value: "ACT", label: "Australian Capital Territory" },
+  { value: "NSW", label: "New South Wales" },
+  { value: "VIC", label: "Victoria" },
+  { value: "QLD", label: "Queensland" },
+  { value: "SA", label: "South Australia" },
+  { value: "WA", label: "Western Australia" },
+  { value: "TAS", label: "Tasmania" },
+  { value: "NT", label: "Northern Territory" },
+];
 
 const EVENT_TYPE_CONFIG: Record<string, { color: string; accent: string; icon: any; label: string }> = {
   installation: { color: "bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-100", accent: "border-l-sky-500", icon: Wrench, label: "Installation" },
@@ -197,6 +212,28 @@ function formatDateKeyLabel(dateKey: string) {
   const date = new Date(`${dateKey}T12:00:00`);
   if (Number.isNaN(date.getTime())) return dateKey;
   return date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
+function normalizeHolidayJurisdictions(value: unknown): HolidayJurisdiction[] {
+  const allowed = new Set(DEFAULT_HOLIDAY_JURISDICTION_OPTIONS.map((option) => option.value));
+  const source = Array.isArray(value) && value.length > 0 ? value : DEFAULT_HOLIDAY_JURISDICTIONS;
+  const next: HolidayJurisdiction[] = [];
+  for (const item of source) {
+    if (!allowed.has(item as HolidayJurisdiction)) continue;
+    const jurisdiction = item as HolidayJurisdiction;
+    if (!next.includes(jurisdiction)) next.push(jurisdiction);
+  }
+  if (!next.includes("NATIONAL")) next.unshift("NATIONAL");
+  return next.length > 0 ? next : DEFAULT_HOLIDAY_JURISDICTIONS;
+}
+
+function holidayJurisdictionSummary(jurisdictions: HolidayJurisdiction[]) {
+  const selectedStates = jurisdictions.filter((jurisdiction) => jurisdiction !== "NATIONAL");
+  if (selectedStates.length === 0) return "National";
+  if (selectedStates.length <= 2) {
+    return selectedStates.map((jurisdiction) => jurisdiction).join(" + ");
+  }
+  return `${selectedStates.length} states`;
 }
 
 function scheduleReadinessWarnings(event: any) {
@@ -389,6 +426,7 @@ function JobCombobox({
 export default function ConstructionSchedule() {
   const { user } = useAuth();
   const isMobile = useIsMobile();
+  const canManageHolidayCalendar = isAdminRole(user?.role);
   const [viewMode, setViewMode] = useState<"day" | "week" | "month">("week");
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [showCreateEvent, setShowCreateEvent] = useState(false);
@@ -403,6 +441,7 @@ export default function ConstructionSchedule() {
   const [filterStaffBranchId, setFilterStaffBranchId] = useState<string>("all");
   const [filterStaffCategory, setFilterStaffCategory] = useState<string>("all");
   const [resourceView, setResourceView] = useState<ResourceView>("all");
+  const [selectedHolidayJurisdictions, setSelectedHolidayJurisdictions] = useState<HolidayJurisdiction[]>(DEFAULT_HOLIDAY_JURISDICTIONS);
 
   const mobileContainerRef = useRef<HTMLDivElement>(null);
 
@@ -443,6 +482,9 @@ export default function ConstructionSchedule() {
     endDate: dateRange.end,
     ...(resourceView === "trades" && filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
     ...(resourceView === "staff" && filterStaffUserId !== "all" ? { assignedUserId: Number(filterStaffUserId) } : {}),
+  });
+  const holidayJurisdictionSettingsQuery = trpc.constructionSchedule.holidayJurisdictionSettings.useQuery(undefined, {
+    enabled: canManageHolidayCalendar,
   });
   const jobsQuery = trpc.construction.jobs.list.useQuery();
   const installersQuery = trpc.construction.installers.list.useQuery();
@@ -496,6 +538,11 @@ export default function ConstructionSchedule() {
     ...(resourceView === "trades" && filterInstallerId !== "all" ? { installerId: Number(filterInstallerId) } : {}),
   }, { enabled: Boolean(dateRange.startKey && dateRange.endKey) });
 
+  useEffect(() => {
+    if (!holidayJurisdictionSettingsQuery.data?.jurisdictions) return;
+    setSelectedHolidayJurisdictions(normalizeHolidayJurisdictions(holidayJurisdictionSettingsQuery.data.jurisdictions));
+  }, [holidayJurisdictionSettingsQuery.data?.jurisdictions]);
+
   const createEvent = trpc.constructionSchedule.create.useMutation({
     onSuccess: () => {
       eventsQuery.refetch();
@@ -547,9 +594,18 @@ export default function ConstructionSchedule() {
       toast.success("Booking removed");
     },
   });
+  const saveHolidayJurisdictions = trpc.constructionSchedule.setHolidayJurisdictions.useMutation({
+    onSuccess: (result) => {
+      setSelectedHolidayJurisdictions(normalizeHolidayJurisdictions(result.jurisdictions));
+      holidayJurisdictionSettingsQuery.refetch();
+      toast.success("Holiday jurisdiction default saved");
+    },
+    onError: (err) => toast.error(err.message),
+  });
   const seedHolidays = trpc.constructionSchedule.seedAustralianHolidays.useMutation({
     onSuccess: (result) => {
       availabilityBlocksQuery.refetch();
+      holidayJurisdictionSettingsQuery.refetch();
       toast.success(`Imported ${result.total} holiday calendar days (${result.inserted} new, ${result.updated} refreshed)`);
     },
     onError: (err) => toast.error(err.message),
@@ -721,6 +777,21 @@ export default function ConstructionSchedule() {
   const tradeCount = allEvents.filter((e: any) => e.assignedInstallerId != null).length;
   const unallocatedCount = allEvents.filter((e: any) => eventIsUnallocated(e)).length;
   const eqBookingCount = (equipmentBookingsQuery.data || []).length;
+  const holidayJurisdictionOptions = (holidayJurisdictionSettingsQuery.data?.options || DEFAULT_HOLIDAY_JURISDICTION_OPTIONS) as Array<{ value: HolidayJurisdiction; label: string }>;
+  const selectedHolidayJurisdictionSet = new Set(selectedHolidayJurisdictions);
+  const holidaySummary = holidayJurisdictionSummary(selectedHolidayJurisdictions);
+
+  const toggleHolidayJurisdiction = (jurisdiction: HolidayJurisdiction, checked: boolean) => {
+    if (jurisdiction === "NATIONAL") return;
+    const next = new Set(selectedHolidayJurisdictions);
+    if (checked) {
+      next.add(jurisdiction);
+    } else {
+      next.delete(jurisdiction);
+    }
+    next.add("NATIONAL");
+    setSelectedHolidayJurisdictions(normalizeHolidayJurisdictions(Array.from(next)));
+  };
 
   // Current day key for day view
   const currentDayKey = toLocalDateKey(currentDate);
@@ -748,7 +819,7 @@ export default function ConstructionSchedule() {
             </>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Dialog open={showBookEquipment} onOpenChange={setShowBookEquipment}>
             <DialogTrigger asChild>
               <Button variant="outline" size="sm" className="h-8">
@@ -769,17 +840,65 @@ export default function ConstructionSchedule() {
               />
             </DialogContent>
           </Dialog>
-          {isAdminRole(user?.role) && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8"
-              onClick={() => seedHolidays.mutate({ year: currentDate.getFullYear(), jurisdictions: ["NATIONAL", "ACT", "NSW"] })}
-              disabled={seedHolidays.isPending}
-            >
-              <CalendarDays className="h-4 w-4 md:mr-2" />
-              <span className="hidden md:inline">{seedHolidays.isPending ? "Importing..." : "Import Holidays"}</span>
-            </Button>
+          {canManageHolidayCalendar && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 max-w-[180px] justify-start"
+                  >
+                    <CalendarDays className="h-4 w-4 md:mr-2" />
+                    <span className="hidden min-w-0 truncate md:inline">Holidays: {holidaySummary}</span>
+                    <span className="md:hidden">States</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[min(340px,calc(100vw-2rem))] p-3">
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-sm font-medium">Holiday jurisdictions</p>
+                      <p className="text-xs text-muted-foreground">National holidays are always included. Choose the tenant state or territory coverage.</p>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {holidayJurisdictionOptions.map((option) => (
+                        <label
+                          key={option.value}
+                          className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
+                        >
+                          <Checkbox
+                            checked={selectedHolidayJurisdictionSet.has(option.value)}
+                            disabled={option.value === "NATIONAL"}
+                            onCheckedChange={(checked) => toggleHolidayJurisdiction(option.value, checked === true)}
+                          />
+                          <span className="min-w-0 truncate">{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => saveHolidayJurisdictions.mutate({ jurisdictions: selectedHolidayJurisdictions })}
+                      disabled={saveHolidayJurisdictions.isPending}
+                    >
+                      {saveHolidayJurisdictions.isPending ? "Saving..." : "Save Default"}
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => seedHolidays.mutate({ year: currentDate.getFullYear(), jurisdictions: selectedHolidayJurisdictions })}
+                disabled={seedHolidays.isPending || selectedHolidayJurisdictions.length === 0}
+              >
+                <CalendarDays className="h-4 w-4 md:mr-2" />
+                <span className="hidden md:inline">{seedHolidays.isPending ? "Importing..." : "Import Holidays"}</span>
+              </Button>
+            </div>
           )}
           <Dialog open={showCreateEvent} onOpenChange={setShowCreateEvent}>
             <DialogTrigger asChild>
