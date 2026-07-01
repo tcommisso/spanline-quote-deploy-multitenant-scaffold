@@ -534,6 +534,7 @@ const PATH_PERMISSION_RULES: Array<{ prefix: string; permission: PermissionKey }
   { prefix: '/calendar-availability', permission: 'construction_calendar_availability' },
   { prefix: '/plan-converter', permission: 'construction_plan_converter' },
   { prefix: '/manufacturing/flashing-orders', permission: 'manufacturing_orders' },
+  { prefix: '/manufacturing/transition-assistant', permission: 'manufacturing_orders' },
   { prefix: '/manufacturing/orders', permission: 'manufacturing_orders' },
   { prefix: '/manufacturing/calendar', permission: 'manufacturing_calendar' },
   { prefix: '/manufacturing/reports', permission: 'manufacturing_reports' },

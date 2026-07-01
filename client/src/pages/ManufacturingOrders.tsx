@@ -5,13 +5,16 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, ClipboardList, ExternalLink } from "lucide-react";
+import { Search, ClipboardList, ExternalLink, UploadCloud } from "lucide-react";
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All Statuses" },
   { value: "received", label: "Received" },
   { value: "submitted", label: "Flashing Submitted" },
   { value: "supplier_received", label: "Trade Portal Pending Review" },
+  { value: "imported", label: "Uploaded" },
+  { value: "in_review", label: "Upload Review" },
+  { value: "accepted", label: "Upload Accepted" },
   { value: "in_production", label: "In Production" },
   { value: "partially_complete", label: "Partially Complete" },
   { value: "purchase_ordered", label: "Purchase Ordered" },
@@ -21,6 +24,7 @@ const STATUS_OPTIONS = [
   { value: "completed", label: "Completed" },
   { value: "on_hold", label: "On Hold" },
   { value: "cancelled", label: "Cancelled" },
+  { value: "archived", label: "Archived" },
 ];
 
 const STATUS_LABELS = Object.fromEntries(STATUS_OPTIONS.map((option) => [option.value, option.label]));
@@ -38,11 +42,16 @@ const STATUS_COLORS: Record<string, string> = {
   completed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
   on_hold: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300",
   cancelled: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  imported: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  in_review: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  accepted: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
+  archived: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
 };
 
 const SOURCE_COLORS: Record<string, string> = {
   component: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
   flashing: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
+  transition: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
 };
 
 function formatStatus(status: string) {
@@ -79,6 +88,12 @@ export default function ManufacturingOrders() {
           </h1>
           <p className="text-muted-foreground text-sm mt-1">Component and flashing orders received for manufacturing</p>
         </div>
+        <Link href="/manufacturing/transition-assistant">
+          <Button variant="outline" className="w-full sm:w-auto">
+            <UploadCloud className="mr-2 h-4 w-4" />
+            Upload legacy order
+          </Button>
+        </Link>
       </div>
 
       {/* Filters */}
@@ -132,6 +147,11 @@ export default function ManufacturingOrders() {
                   {order.sourceType === "flashing" && (
                     <span className="text-sm text-muted-foreground">
                       {order.lineCount || 0} lines · {Number(order.totalLinealMetres || 0).toFixed(2)} LM
+                    </span>
+                  )}
+                  {order.sourceType === "transition" && (
+                    <span className="text-sm text-muted-foreground">
+                      {order.matchedLineCount || 0}/{order.lineCount || 0} matched
                     </span>
                   )}
                 </div>
@@ -195,6 +215,11 @@ export default function ManufacturingOrders() {
                       {order.sourceType === "flashing" && (
                         <div className="text-xs text-muted-foreground">
                           {order.lineCount || 0} lines · {Number(order.totalLinealMetres || 0).toFixed(2)} LM
+                        </div>
+                      )}
+                      {order.sourceType === "transition" && (
+                        <div className="text-xs text-muted-foreground">
+                          {order.matchedLineCount || 0}/{order.lineCount || 0} matched
                         </div>
                       )}
                     </td>

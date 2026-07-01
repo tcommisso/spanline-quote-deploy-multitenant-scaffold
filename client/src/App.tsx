@@ -170,6 +170,7 @@ const ApprovalsAllInspections = lazy(() => import("./pages/ApprovalsAllInspectio
 // Manufacturing pages (lazy)
 const ManufacturingDashboard = lazy(() => import("./pages/ManufacturingDashboard"));
 const ManufacturingOrders = lazy(() => import("./pages/ManufacturingOrders"));
+const ManufacturingTransitionAssistant = lazy(() => import("./pages/ManufacturingTransitionAssistant"));
 const ManufacturingOrderDetail = lazy(() => import("./pages/ManufacturingOrderDetail"));
 const ManufacturingCalendar = lazy(() => import("./pages/ManufacturingCalendar"));
 const ManufacturingReports = lazy(() => import("./pages/ManufacturingReports"));
@@ -464,6 +465,7 @@ function MainRouter() {
         <Route path="/construction/smartshop">{() => <Redirect to="/construction/component-orders" />}</Route>
         <Route path="/construction" component={ConstructionDashboard} />
         <Route path="/manufacturing/flashing-orders/:id">{() => <FlashingOrderDetail returnPath="/manufacturing/orders" />}</Route>
+        <Route path="/manufacturing/transition-assistant" component={ManufacturingTransitionAssistant} />
         <Route path="/manufacturing/orders/:id" component={ManufacturingOrderDetail} />
         <Route path="/manufacturing/orders" component={ManufacturingOrders} />
         <Route path="/manufacturing/calendar" component={ManufacturingCalendar} />

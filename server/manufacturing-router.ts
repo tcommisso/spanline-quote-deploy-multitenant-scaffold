@@ -1,11 +1,16 @@
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { z } from "zod";
 import { getDb } from "./db";
+import * as XLSX from "xlsx";
 import {
   manufacturingOrders,
   manufacturingTasks,
   manufacturingSchedule,
   manufacturingPurchaseOrders,
+  manufacturingTransitionImports,
+  manufacturingTransitionImportRows,
+  manufacturingProductMatchMappings,
+  inventoryStockItems,
   constructionJobs,
   cmComponentOrders,
   checkMeasureWorkbooks,
@@ -47,10 +52,36 @@ const flashingOrderStatuses = new Set([
   "archived",
 ]);
 
+const transitionOrderStatuses = new Set([
+  "imported",
+  "in_review",
+  "accepted",
+  "cancelled",
+  "archived",
+]);
+
+const HEADER_ALIASES: Record<string, string[]> = {
+  productCode: ["code", "item code", "product code", "sku", "part", "part no", "part number"],
+  productName: ["item", "product", "product name", "description", "item description", "material", "profile"],
+  description: ["notes", "note", "details", "description", "scope"],
+  category: ["category", "type", "group", "product group"],
+  colour: ["colour", "color", "finish"],
+  quantity: ["qty", "quantity", "count", "order qty", "required qty"],
+  unit: ["unit", "uom", "measure", "unit of measure"],
+  length: ["length", "length mm", "length (mm)", "size", "actual size"],
+  width: ["width", "width mm", "width (mm)"],
+};
+
 function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
   return conditions;
+}
+
+function tenantIdOrThrow(ctx: any) {
+  const tenantId = tenantIdFromContext(ctx);
+  if (!tenantId) throw new TRPCError({ code: "FORBIDDEN", message: "A valid tenant context is required." });
+  return tenantId;
 }
 
 async function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
@@ -69,6 +100,348 @@ function purchaseOrderTenantConditions(ctx: any, ...baseConditions: any[]) {
   }
   return conditions;
 }
+
+function stockItemTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, inventoryStockItems.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function transitionImportTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  conditions.push(eq(manufacturingTransitionImports.tenantId, tenantIdOrThrow(ctx)));
+  return conditions;
+}
+
+function normalizeText(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rawProductKey(input: { productCode?: string | null; productName?: string | null; description?: string | null }) {
+  const code = normalizeText(input.productCode);
+  const name = normalizeText(input.productName);
+  const description = normalizeText(input.description);
+  return (code || name || description).slice(0, 255);
+}
+
+function excelCellText(value: unknown) {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).trim();
+}
+
+function parseNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const cleaned = String(value ?? "").replace(/,/g, "").replace(/[^\d.-]/g, "");
+  if (!cleaned) return null;
+  const parsed = Number.parseFloat(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function headerKey(value: unknown) {
+  return normalizeText(value);
+}
+
+function findHeaderRow(rawRows: unknown[][]) {
+  let bestIndex = 0;
+  let bestScore = -1;
+  rawRows.slice(0, 25).forEach((row, index) => {
+    const headers = row.map(headerKey);
+    const score = Object.values(HEADER_ALIASES).reduce((total, aliases) => (
+      total + (headers.some((header) => aliases.includes(header)) ? 1 : 0)
+    ), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+  return bestScore >= 2 ? bestIndex : 0;
+}
+
+function columnFor(headers: string[], field: keyof typeof HEADER_ALIASES) {
+  const aliases = HEADER_ALIASES[field];
+  const exactIndex = headers.findIndex((header) => aliases.includes(header));
+  if (exactIndex >= 0) return exactIndex;
+  return headers.findIndex((header) => aliases.some((alias) => header.includes(alias)));
+}
+
+function parseTransitionWorkbook(params: { buffer: Buffer; filename: string }) {
+  let workbook: XLSX.WorkBook;
+  try {
+    workbook = XLSX.read(params.buffer, { type: "buffer", cellDates: true });
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Could not read the workbook. Upload a valid .xlsm, .xlsx, or .xls file." });
+  }
+
+  const worksheetName = workbook.SheetNames[0];
+  if (!worksheetName) throw new TRPCError({ code: "BAD_REQUEST", message: "Workbook does not contain any worksheets." });
+
+  const worksheet = workbook.Sheets[worksheetName];
+  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: "", blankrows: false });
+  if (rawRows.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "The first worksheet is empty." });
+
+  const headerIndex = findHeaderRow(rawRows);
+  const headers = (rawRows[headerIndex] || []).map(headerKey);
+  const columnMap = {
+    productCode: columnFor(headers, "productCode"),
+    productName: columnFor(headers, "productName"),
+    description: columnFor(headers, "description"),
+    category: columnFor(headers, "category"),
+    colour: columnFor(headers, "colour"),
+    quantity: columnFor(headers, "quantity"),
+    unit: columnFor(headers, "unit"),
+    length: columnFor(headers, "length"),
+    width: columnFor(headers, "width"),
+  };
+
+  const rows = rawRows.slice(headerIndex + 1).map((row, index) => {
+    const get = (column: number) => column >= 0 ? row[column] : "";
+    const fallbackName = excelCellText(row.find((cell) => excelCellText(cell)));
+    const productCode = excelCellText(get(columnMap.productCode));
+    const productName = excelCellText(get(columnMap.productName)) || fallbackName;
+    const description = excelCellText(get(columnMap.description));
+    const quantity = parseNumber(get(columnMap.quantity)) ?? 1;
+    const length = parseNumber(get(columnMap.length));
+    const width = parseNumber(get(columnMap.width));
+    const rawData = Object.fromEntries((rawRows[headerIndex] || []).map((header, colIndex) => [
+      excelCellText(header) || `Column ${colIndex + 1}`,
+      excelCellText(row[colIndex]),
+    ]));
+    return {
+      rowNumber: headerIndex + index + 2,
+      rawProductCode: productCode || null,
+      rawProductName: productName,
+      rawDescription: description || null,
+      rawCategory: excelCellText(get(columnMap.category)) || null,
+      rawColour: excelCellText(get(columnMap.colour)) || null,
+      rawUnit: excelCellText(get(columnMap.unit)) || null,
+      quantity: Math.max(quantity, 0),
+      length,
+      width,
+      rawData,
+      rawProductKey: rawProductKey({ productCode, productName, description }),
+    };
+  }).filter((row) => row.rawProductName && row.rawProductKey);
+
+  if (rows.length === 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "No product rows were found on the first worksheet." });
+  }
+
+  return { worksheetName, headerRow: headerIndex + 1, rows };
+}
+
+function tokenScore(left: string, right: string) {
+  const a = new Set(normalizeText(left).split(" ").filter(Boolean));
+  const b = new Set(normalizeText(right).split(" ").filter(Boolean));
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  a.forEach((token) => {
+    if (b.has(token)) intersection += 1;
+  });
+  const union = new Set<string>();
+  a.forEach((token) => union.add(token));
+  b.forEach((token) => union.add(token));
+  return intersection / union.size;
+}
+
+function findBestStockMatch(row: { rawProductCode?: string | null; rawProductName: string; rawDescription?: string | null }, stockItems: any[]) {
+  const code = normalizeText(row.rawProductCode);
+  const rowText = [row.rawProductCode, row.rawProductName, row.rawDescription].filter(Boolean).join(" ");
+  let best: { item: any; confidence: number } | null = null;
+  for (const item of stockItems) {
+    const itemCode = normalizeText(item.code);
+    const itemText = [item.code, item.name, item.category, item.description, item.supplier].filter(Boolean).join(" ");
+    let confidence = Math.round(tokenScore(rowText, itemText) * 100);
+    if (code && itemCode && code === itemCode) confidence = 100;
+    else if (code && itemCode && (code.includes(itemCode) || itemCode.includes(code))) confidence = Math.max(confidence, 92);
+    if (!best || confidence > best.confidence) best = { item, confidence };
+  }
+  return best && best.confidence >= 55 ? best : null;
+}
+
+async function matchTransitionRows(db: any, ctx: any, parsedRows: any[]) {
+  const tenantId = tenantIdOrThrow(ctx);
+  const [stockItems, mappings] = await Promise.all([
+    db.select({
+      id: inventoryStockItems.id,
+      code: inventoryStockItems.code,
+      name: inventoryStockItems.name,
+      category: inventoryStockItems.category,
+      unit: inventoryStockItems.unit,
+      unitType: inventoryStockItems.unitType,
+      supplier: inventoryStockItems.supplier,
+      description: inventoryStockItems.description,
+    }).from(inventoryStockItems)
+      .where(and(...stockItemTenantConditions(ctx, eq(inventoryStockItems.isActive, true))))
+      .orderBy(inventoryStockItems.category, inventoryStockItems.name),
+    parsedRows.length
+      ? db.select().from(manufacturingProductMatchMappings)
+        .where(and(
+          eq(manufacturingProductMatchMappings.tenantId, tenantId),
+          inArray(manufacturingProductMatchMappings.rawProductKey, parsedRows.map((row) => row.rawProductKey)),
+        ))
+      : [],
+  ]);
+  const mappingByKey = new Map<string, any>((mappings as any[]).map((mapping: any) => [mapping.rawProductKey, mapping]));
+
+  return parsedRows.map((row) => {
+    const learned = mappingByKey.get(row.rawProductKey);
+    if (learned?.stockItemId) {
+      return {
+        ...row,
+        stockItemId: learned.stockItemId,
+        stockItemCode: learned.stockItemCode,
+        stockItemName: learned.stockItemName,
+        matchStatus: "learned" as const,
+        matchConfidence: Number(learned.confidence || 100),
+      };
+    }
+
+    const best = findBestStockMatch(row, stockItems);
+    return {
+      ...row,
+      stockItemId: best?.item?.id ?? null,
+      stockItemCode: best?.item?.code ?? null,
+      stockItemName: best?.item?.name ?? null,
+      matchStatus: best ? "fuzzy" as const : "unmatched" as const,
+      matchConfidence: best?.confidence ?? 0,
+    };
+  });
+}
+
+async function nextTransitionImportNumber(db: any, tenantId: number) {
+  const [row] = await db.select({
+    count: sql<number>`COUNT(*)`,
+  }).from(manufacturingTransitionImports)
+    .where(eq(manufacturingTransitionImports.tenantId, tenantId));
+  return `MFG-UP-${String(Number(row?.count || 0) + 1).padStart(5, "0")}`;
+}
+
+async function stockItemsById(db: any, ctx: any, ids: number[]) {
+  if (ids.length === 0) return new Map<number, any>();
+  const rows = await db.select({
+    id: inventoryStockItems.id,
+    code: inventoryStockItems.code,
+    name: inventoryStockItems.name,
+    category: inventoryStockItems.category,
+    unit: inventoryStockItems.unit,
+    unitType: inventoryStockItems.unitType,
+  }).from(inventoryStockItems)
+    .where(and(...stockItemTenantConditions(ctx, inArray(inventoryStockItems.id, ids))));
+  return new Map(rows.map((row: any) => [row.id, row]));
+}
+
+async function rememberProductMappings(db: any, ctx: any, rows: any[]) {
+  const tenantId = tenantIdOrThrow(ctx);
+  const matchedRows = rows.filter((row) => row.rawProductKey && row.stockItemId && (
+    row.matchStatus === "manual" ||
+    row.matchStatus === "learned" ||
+    Number(row.matchConfidence || 0) >= 85
+  ));
+  for (const row of matchedRows) {
+    await db.insert(manufacturingProductMatchMappings).values({
+      tenantId,
+      rawProductKey: row.rawProductKey,
+      rawProductName: row.rawProductName,
+      stockItemId: row.stockItemId,
+      stockItemCode: row.stockItemCode || null,
+      stockItemName: row.stockItemName || null,
+      timesUsed: 1,
+      confidence: String(row.matchStatus === "manual" ? 100 : Math.max(Number(row.matchConfidence || 0), 80)),
+      lastUsedAt: new Date(),
+      createdBy: ctx.user.id,
+      createdByName: ctx.user.name || ctx.user.email || "Unknown",
+    }).onDuplicateKeyUpdate({
+      set: {
+        stockItemId: row.stockItemId,
+        stockItemCode: row.stockItemCode || null,
+        stockItemName: row.stockItemName || null,
+        rawProductName: row.rawProductName,
+        timesUsed: sql`${manufacturingProductMatchMappings.timesUsed} + 1`,
+        confidence: String(row.matchStatus === "manual" ? 100 : Math.max(Number(row.matchConfidence || 0), 80)),
+        lastUsedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+  }
+}
+
+async function requireTransitionImportAccess(db: any, ctx: any, importId: number) {
+  const [row] = await db.select()
+    .from(manufacturingTransitionImports)
+    .where(and(...transitionImportTenantConditions(ctx, eq(manufacturingTransitionImports.id, importId))))
+    .limit(1);
+  if (!row) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Uploaded manufacturing order not found" });
+  }
+  return row;
+}
+
+async function requireTransitionRowAccess(db: any, ctx: any, rowId: number) {
+  const [row] = await db.select({
+    import: manufacturingTransitionImports,
+    importRow: manufacturingTransitionImportRows,
+  })
+    .from(manufacturingTransitionImportRows)
+    .innerJoin(manufacturingTransitionImports, eq(manufacturingTransitionImportRows.importId, manufacturingTransitionImports.id))
+    .where(and(
+      eq(manufacturingTransitionImportRows.id, rowId),
+      ...transitionImportTenantConditions(ctx),
+    ))
+    .limit(1);
+  if (!row?.importRow || !row.import) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Uploaded manufacturing order row not found" });
+  }
+  return row;
+}
+
+async function refreshTransitionImportCounts(db: any, tenantId: number, importId: number) {
+  const [counts] = await db.select({
+    lineCount: sql<number>`COUNT(*)`,
+    matchedLineCount: sql<number>`SUM(CASE WHEN ${manufacturingTransitionImportRows.stockItemId} IS NOT NULL THEN 1 ELSE 0 END)`,
+  }).from(manufacturingTransitionImportRows)
+    .where(and(
+      eq(manufacturingTransitionImportRows.tenantId, tenantId),
+      eq(manufacturingTransitionImportRows.importId, importId),
+    ));
+  await db.update(manufacturingTransitionImports)
+    .set({
+      lineCount: Number(counts?.lineCount || 0),
+      matchedLineCount: Number(counts?.matchedLineCount || 0),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(manufacturingTransitionImports.tenantId, tenantId),
+      eq(manufacturingTransitionImports.id, importId),
+    ));
+}
+
+const transitionRowInput = z.object({
+  rowNumber: z.number(),
+  rawProductKey: z.string().nullable().optional(),
+  rawProductCode: z.string().nullable().optional(),
+  rawProductName: z.string().min(1),
+  rawDescription: z.string().nullable().optional(),
+  rawCategory: z.string().nullable().optional(),
+  rawColour: z.string().nullable().optional(),
+  rawUnit: z.string().nullable().optional(),
+  quantity: z.number().optional().default(1),
+  length: z.number().nullable().optional(),
+  width: z.number().nullable().optional(),
+  stockItemId: z.number().nullable().optional(),
+  stockItemCode: z.string().nullable().optional(),
+  stockItemName: z.string().nullable().optional(),
+  matchStatus: z.enum(["learned", "fuzzy", "manual", "unmatched"]).optional().default("unmatched"),
+  matchConfidence: z.number().optional().default(0),
+  sourceType: z.enum(["manufacture", "procure"]).optional().default("manufacture"),
+  rawData: z.record(z.string(), z.any()).optional(),
+  notes: z.string().nullable().optional(),
+});
 
 async function requireJobAccess(db: any, ctx: any, jobId: number) {
   const [job] = await db.select()
@@ -178,6 +551,7 @@ export const manufacturingRouter = router({
         }
         const includeComponentOrders = !statusFilter || manufacturingOrderStatuses.has(statusFilter);
         const includeFlashingOrders = !statusFilter || flashingOrderStatuses.has(statusFilter);
+        const includeTransitionOrders = !statusFilter || transitionOrderStatuses.has(statusFilter);
 
         const componentOrderRows = includeComponentOrders
           ? await db.select({
@@ -244,6 +618,44 @@ export const manufacturingRouter = router({
               .orderBy(desc(flashingOrders.updatedAt))
           : [];
 
+        const transitionConditions: any[] = [eq(manufacturingTransitionImports.tenantId, tenantId)];
+        if (statusFilter) {
+          transitionConditions.push(eq(manufacturingTransitionImports.status, statusFilter as any));
+        } else {
+          transitionConditions.push(sql`${manufacturingTransitionImports.status} NOT IN ('archived')`);
+        }
+        if (search) {
+          const pattern = `%${search.toLowerCase()}%`;
+          transitionConditions.push(or(
+            like(sql`LOWER(${manufacturingTransitionImports.importNumber})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.sourceFileName})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.clientName})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.siteAddress})`, pattern),
+          )!);
+        }
+
+        const transitionOrderRows = includeTransitionOrders
+          ? await db.select({
+              id: manufacturingTransitionImports.id,
+              orderNumber: manufacturingTransitionImports.importNumber,
+              clientName: manufacturingTransitionImports.clientName,
+              siteAddress: manufacturingTransitionImports.siteAddress,
+              status: manufacturingTransitionImports.status,
+              priority: manufacturingTransitionImports.priority,
+              targetDate: sql<Date | null>`NULL`,
+              completedAt: sql<Date | null>`NULL`,
+              notes: manufacturingTransitionImports.notes,
+              receivedByName: manufacturingTransitionImports.createdByName,
+              receivedAt: sql<Date>`COALESCE(${manufacturingTransitionImports.updatedAt}, ${manufacturingTransitionImports.createdAt})`,
+              createdAt: manufacturingTransitionImports.createdAt,
+              lineCount: manufacturingTransitionImports.lineCount,
+              matchedLineCount: manufacturingTransitionImports.matchedLineCount,
+              sourceFileName: manufacturingTransitionImports.sourceFileName,
+            }).from(manufacturingTransitionImports)
+              .where(and(...transitionConditions))
+              .orderBy(desc(manufacturingTransitionImports.updatedAt))
+          : [];
+
         let orders = [
           ...componentOrderRows.map((order: any) => ({
             ...order,
@@ -261,6 +673,17 @@ export const manufacturingRouter = router({
             sourceType: "flashing" as const,
             sourceLabel: "Flashing order",
             sourceHref: `/manufacturing/flashing-orders/${order.id}`,
+          })),
+          ...transitionOrderRows.map((order: any) => ({
+            ...order,
+            componentOrderId: null,
+            jobId: null,
+            clientName: order.clientName || order.sourceFileName || "Uploaded manufacturing order",
+            sourceType: "transition" as const,
+            sourceLabel: "Uploaded order",
+            sourceHref: `/manufacturing/transition-assistant?importId=${order.id}`,
+            totalLinealMetres: null,
+            totalExGst: null,
           })),
         ];
 
@@ -409,6 +832,245 @@ export const manufacturingRouter = router({
           await db.insert(manufacturingTasks).values(taskValues);
         }
         return { id: orderId, orderNumber: orderNum, tasksCreated: lineItems.length };
+      }),
+  }),
+
+  // ─── Transition Assistant ─────────────────────────────────────────────────
+  transitionAssistant: router({
+    previewUpload: protectedProcedure
+      .input(z.object({
+        filename: z.string().min(1),
+        base64: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const extension = input.filename.split(".").pop()?.toLowerCase();
+        if (!extension || !["xlsm", "xlsx", "xls"].includes(extension)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Upload an Excel workbook: .xlsm, .xlsx, or .xls." });
+        }
+        const encoded = input.base64.includes(",") ? input.base64.split(",").pop() || "" : input.base64;
+        const buffer = Buffer.from(encoded, "base64");
+        if (!buffer.length) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Uploaded workbook is empty." });
+        }
+        if (buffer.length > 15 * 1024 * 1024) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Workbook is too large. Keep transition uploads under 15 MB." });
+        }
+
+        const parsed = parseTransitionWorkbook({ buffer, filename: input.filename });
+        const rows = await matchTransitionRows(db, ctx, parsed.rows);
+        return {
+          filename: input.filename,
+          worksheetName: parsed.worksheetName,
+          headerRow: parsed.headerRow,
+          rows,
+          summary: {
+            totalRows: rows.length,
+            matchedRows: rows.filter((row: any) => row.stockItemId).length,
+            learnedRows: rows.filter((row: any) => row.matchStatus === "learned").length,
+            unmatchedRows: rows.filter((row: any) => !row.stockItemId).length,
+          },
+        };
+      }),
+
+    listImports: protectedProcedure
+      .input(z.object({
+        status: z.string().optional(),
+        search: z.string().optional(),
+      }).optional())
+      .query(async ({ ctx, input }) => {
+        const conditions = transitionImportTenantConditions(ctx);
+        if (input?.status && input.status !== "all") {
+          conditions.push(eq(manufacturingTransitionImports.status, input.status as any));
+        }
+        if (input?.search?.trim()) {
+          const pattern = `%${input.search.trim().toLowerCase()}%`;
+          conditions.push(or(
+            like(sql`LOWER(${manufacturingTransitionImports.importNumber})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.sourceFileName})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.clientName})`, pattern),
+            like(sql`LOWER(${manufacturingTransitionImports.siteAddress})`, pattern),
+          )!);
+        }
+        const db = await requireDb();
+        return db.select().from(manufacturingTransitionImports)
+          .where(and(...conditions))
+          .orderBy(desc(manufacturingTransitionImports.updatedAt))
+          .limit(50);
+      }),
+
+    getImport: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const importRow = await requireTransitionImportAccess(db, ctx, input.id);
+        const rows = await db.select().from(manufacturingTransitionImportRows)
+          .where(and(
+            eq(manufacturingTransitionImportRows.importId, input.id),
+            eq(manufacturingTransitionImportRows.tenantId, importRow.tenantId),
+          ))
+          .orderBy(asc(manufacturingTransitionImportRows.rowNumber));
+        return { import: importRow, rows };
+      }),
+
+    commitImport: protectedProcedure
+      .input(z.object({
+        filename: z.string().min(1),
+        worksheetName: z.string().nullable().optional(),
+        clientName: z.string().nullable().optional(),
+        siteAddress: z.string().nullable().optional(),
+        priority: z.enum(["low", "normal", "high", "urgent"]).optional().default("normal"),
+        notes: z.string().nullable().optional(),
+        rows: z.array(transitionRowInput).min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdOrThrow(ctx);
+        const stockIds = input.rows.reduce<number[]>((ids, row) => {
+          if (row.stockItemId && !ids.includes(row.stockItemId)) ids.push(row.stockItemId);
+          return ids;
+        }, []);
+        const stockMap = await stockItemsById(db, ctx, stockIds);
+        if (stockMap.size !== stockIds.length) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "One or more selected stock items are outside this tenant." });
+        }
+
+        const importNumber = await nextTransitionImportNumber(db, tenantId);
+        const normalizedRows = input.rows.map((row) => {
+          const stockItem = row.stockItemId ? stockMap.get(row.stockItemId) : null;
+          const stockItemId = stockItem?.id ?? null;
+          const matchStatus: "learned" | "fuzzy" | "manual" | "unmatched" = stockItemId
+            ? (row.matchStatus === "manual" ? "manual" : row.matchStatus === "learned" ? "learned" : "fuzzy")
+            : "unmatched";
+          return {
+            ...row,
+            rawProductKey: row.rawProductKey || rawProductKey({
+              productCode: row.rawProductCode,
+              productName: row.rawProductName,
+              description: row.rawDescription,
+            }),
+            stockItemId,
+            stockItemCode: stockItem?.code ?? row.stockItemCode ?? null,
+            stockItemName: stockItem?.name ?? row.stockItemName ?? null,
+            matchStatus,
+            matchConfidence: stockItemId ? Math.max(Number(row.matchConfidence || 0), matchStatus === "manual" ? 100 : 80) : 0,
+          };
+        });
+
+        const [result] = await db.insert(manufacturingTransitionImports).values({
+          tenantId,
+          importNumber,
+          sourceFileName: input.filename,
+          worksheetName: input.worksheetName || null,
+          clientName: input.clientName?.trim() || null,
+          siteAddress: input.siteAddress?.trim() || null,
+          status: normalizedRows.some((row) => !row.stockItemId) ? "in_review" : "imported",
+          priority: input.priority,
+          lineCount: normalizedRows.length,
+          matchedLineCount: normalizedRows.filter((row) => row.stockItemId).length,
+          notes: input.notes?.trim() || null,
+          createdBy: ctx.user.id,
+          createdByName: ctx.user.name || ctx.user.email || "Unknown",
+        });
+        const importId = result.insertId;
+
+        const rowValues: Array<typeof manufacturingTransitionImportRows.$inferInsert> = normalizedRows.map((row) => ({
+          tenantId,
+          importId,
+          rowNumber: row.rowNumber,
+          rawProductKey: row.rawProductKey || null,
+          rawProductCode: row.rawProductCode || null,
+          rawProductName: row.rawProductName,
+          rawDescription: row.rawDescription || null,
+          rawCategory: row.rawCategory || null,
+          rawColour: row.rawColour || null,
+          rawUnit: row.rawUnit || null,
+          quantity: String(row.quantity ?? 1),
+          length: row.length == null ? null : String(row.length),
+          width: row.width == null ? null : String(row.width),
+          stockItemId: row.stockItemId,
+          stockItemCode: row.stockItemCode || null,
+          stockItemName: row.stockItemName || null,
+          matchStatus: row.matchStatus,
+          matchConfidence: String(row.matchConfidence || 0),
+          sourceType: row.sourceType || "manufacture",
+          rawData: row.rawData || {},
+          notes: row.notes || null,
+        }));
+
+        for (let index = 0; index < rowValues.length; index += 300) {
+          await db.insert(manufacturingTransitionImportRows).values(rowValues.slice(index, index + 300));
+        }
+
+        await rememberProductMappings(db, ctx, normalizedRows);
+        return { id: importId, importNumber };
+      }),
+
+    updateRowMatch: protectedProcedure
+      .input(z.object({
+        rowId: z.number(),
+        stockItemId: z.number().nullable(),
+        sourceType: z.enum(["manufacture", "procure"]).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdOrThrow(ctx);
+        const { import: importRow, importRow: row } = await requireTransitionRowAccess(db, ctx, input.rowId);
+        let stockItem: any = null;
+        if (input.stockItemId) {
+          const stockMap = await stockItemsById(db, ctx, [input.stockItemId]);
+          stockItem = stockMap.get(input.stockItemId);
+          if (!stockItem) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Selected stock item is outside this tenant." });
+          }
+        }
+
+        const updated = {
+          stockItemId: stockItem?.id ?? null,
+          stockItemCode: stockItem?.code ?? null,
+          stockItemName: stockItem?.name ?? null,
+          matchStatus: stockItem ? "manual" as const : "unmatched" as const,
+          matchConfidence: stockItem ? "100" : "0",
+          sourceType: input.sourceType || row.sourceType,
+          updatedAt: new Date(),
+        };
+        await db.update(manufacturingTransitionImportRows)
+          .set(updated)
+          .where(and(
+            eq(manufacturingTransitionImportRows.id, input.rowId),
+            eq(manufacturingTransitionImportRows.tenantId, tenantId),
+          ));
+
+        if (stockItem) {
+          await rememberProductMappings(db, ctx, [{
+            ...row,
+            stockItemId: stockItem.id,
+            stockItemCode: stockItem.code,
+            stockItemName: stockItem.name,
+            matchStatus: "manual",
+            matchConfidence: 100,
+          }]);
+        }
+        await refreshTransitionImportCounts(db, tenantId, importRow.id);
+        return { success: true };
+      }),
+
+    updateStatus: protectedProcedure
+      .input(z.object({
+        id: z.number(),
+        status: z.enum(["imported", "in_review", "accepted", "cancelled", "archived"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdOrThrow(ctx);
+        await requireTransitionImportAccess(db, ctx, input.id);
+        await db.update(manufacturingTransitionImports)
+          .set({ status: input.status, updatedAt: new Date() })
+          .where(and(
+            eq(manufacturingTransitionImports.tenantId, tenantId),
+            eq(manufacturingTransitionImports.id, input.id),
+          ));
+        return { success: true };
       }),
   }),
 

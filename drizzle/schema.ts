@@ -5069,6 +5069,85 @@ export const manufacturingOrders = mysqlTable("manufacturing_orders", {
 export type ManufacturingOrder = typeof manufacturingOrders.$inferSelect;
 export type InsertManufacturingOrder = typeof manufacturingOrders.$inferInsert;
 
+export const manufacturingTransitionImports = mysqlTable("manufacturing_transition_imports", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  importNumber: varchar("importNumber", { length: 64 }).notNull(),
+  sourceFileName: varchar("sourceFileName", { length: 255 }).notNull(),
+  worksheetName: varchar("worksheetName", { length: 255 }),
+  clientName: varchar("clientName", { length: 255 }),
+  siteAddress: text("siteAddress"),
+  status: mysqlEnum("status", ["imported", "in_review", "accepted", "cancelled", "archived"]).default("imported").notNull(),
+  priority: mysqlEnum("priority", ["low", "normal", "high", "urgent"]).default("normal").notNull(),
+  lineCount: int("lineCount").default(0).notNull(),
+  matchedLineCount: int("matchedLineCount").default(0).notNull(),
+  notes: text("notes"),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdByName: varchar("createdByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_manufacturing_transition_import_number").on(table.tenantId, table.importNumber),
+  index("idx_manufacturing_transition_import_tenant_status").on(table.tenantId, table.status),
+  index("idx_manufacturing_transition_import_tenant_updated").on(table.tenantId, table.updatedAt),
+]);
+export type ManufacturingTransitionImport = typeof manufacturingTransitionImports.$inferSelect;
+export type InsertManufacturingTransitionImport = typeof manufacturingTransitionImports.$inferInsert;
+
+export const manufacturingProductMatchMappings = mysqlTable("manufacturing_product_match_mappings", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  rawProductKey: varchar("rawProductKey", { length: 255 }).notNull(),
+  rawProductName: varchar("rawProductName", { length: 255 }).notNull(),
+  stockItemId: int("stockItemId"),
+  stockItemCode: varchar("stockItemCode", { length: 50 }),
+  stockItemName: varchar("stockItemName", { length: 255 }),
+  timesUsed: int("timesUsed").default(0).notNull(),
+  confidence: decimal("confidence", { precision: 5, scale: 2 }).default("100.00"),
+  lastUsedAt: timestamp("lastUsedAt"),
+  createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+  createdByName: varchar("createdByName", { length: 255 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  uniqueIndex("uq_manufacturing_product_match_key").on(table.tenantId, table.rawProductKey),
+  index("idx_manufacturing_product_match_stock").on(table.tenantId, table.stockItemId),
+]);
+export type ManufacturingProductMatchMapping = typeof manufacturingProductMatchMappings.$inferSelect;
+export type InsertManufacturingProductMatchMapping = typeof manufacturingProductMatchMappings.$inferInsert;
+
+export const manufacturingTransitionImportRows = mysqlTable("manufacturing_transition_import_rows", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  importId: int("importId").notNull().references(() => manufacturingTransitionImports.id, { onDelete: "cascade" }),
+  rowNumber: int("rowNumber").notNull(),
+  rawProductKey: varchar("rawProductKey", { length: 255 }),
+  rawProductCode: varchar("rawProductCode", { length: 128 }),
+  rawProductName: varchar("rawProductName", { length: 255 }).notNull(),
+  rawDescription: text("rawDescription"),
+  rawCategory: varchar("rawCategory", { length: 128 }),
+  rawColour: varchar("rawColour", { length: 128 }),
+  rawUnit: varchar("rawUnit", { length: 32 }),
+  quantity: decimal("quantity", { precision: 12, scale: 4 }).default("1.0000"),
+  length: decimal("length", { precision: 12, scale: 2 }),
+  width: decimal("width", { precision: 12, scale: 2 }),
+  stockItemId: int("stockItemId"),
+  stockItemCode: varchar("stockItemCode", { length: 50 }),
+  stockItemName: varchar("stockItemName", { length: 255 }),
+  matchStatus: mysqlEnum("matchStatus", ["learned", "fuzzy", "manual", "unmatched"]).default("unmatched").notNull(),
+  matchConfidence: decimal("matchConfidence", { precision: 5, scale: 2 }).default("0.00"),
+  sourceType: mysqlEnum("sourceType", ["manufacture", "procure"]).default("manufacture").notNull(),
+  rawData: json("rawData").$type<Record<string, any>>().default({}),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => [
+  index("idx_manufacturing_transition_rows_import").on(table.importId),
+  index("idx_manufacturing_transition_rows_tenant_status").on(table.tenantId, table.matchStatus),
+]);
+export type ManufacturingTransitionImportRow = typeof manufacturingTransitionImportRows.$inferSelect;
+export type InsertManufacturingTransitionImportRow = typeof manufacturingTransitionImportRows.$inferInsert;
+
 /**
  * Individual manufacturing tasks (line items) grouped by product/category/colour.
  * Each task represents a specific item to be manufactured or procured.

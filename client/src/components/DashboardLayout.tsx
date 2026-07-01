@@ -112,6 +112,7 @@ import {
   ListFilter,
   Phone,
   Activity,
+  UploadCloud,
   type LucideIcon,
 } from "lucide-react";
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
@@ -186,6 +187,7 @@ const constructionItems: MenuItem[] = [
 const manufacturingItems: MenuItem[] = [
   { icon: Factory, label: "Manufacturing Dashboard", path: "/manufacturing" },
   { icon: ClipboardList, label: "Orders", path: "/manufacturing/orders" },
+  { icon: UploadCloud, label: "Transition Assistant", path: "/manufacturing/transition-assistant" },
   { icon: CalendarDays, label: "Calendar", path: "/manufacturing/calendar" },
   { icon: BarChart3, label: "Reports", path: "/manufacturing/reports" },
   { icon: Receipt, label: "Purchase Orders", path: "/manufacturing/purchase-orders" },
