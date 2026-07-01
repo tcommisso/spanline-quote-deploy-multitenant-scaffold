@@ -96,11 +96,26 @@ function endOfDay(date: Date) {
   return value;
 }
 
+function toLocalDateKey(value: Date | string | number) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function eventExcludedDateKeys(event: { excludedDateKeys?: string[] | null }) {
+  return new Set(Array.isArray(event.excludedDateKeys) ? event.excludedDateKeys : []);
+}
+
 function eventEndOrStart(event: { startTime: Date | string; endTime?: Date | string | null }) {
   return event.endTime ? new Date(event.endTime) : new Date(event.startTime);
 }
 
-function eventOccursOnDate(event: { startTime: Date | string; endTime?: Date | string | null }, date: Date) {
+function eventOccursOnDate(event: { startTime: Date | string; endTime?: Date | string | null; excludedDateKeys?: string[] | null }, date: Date) {
+  if (eventExcludedDateKeys(event).has(toLocalDateKey(date))) return false;
   const eventStart = new Date(event.startTime);
   const eventEnd = eventEndOrStart(event);
   return eventStart <= endOfDay(date) && eventEnd >= startOfDay(date);
@@ -116,10 +131,24 @@ function eventSortTimeForDate(event: { startTime: Date | string; endTime?: Date 
   return isSameDay(eventStart, date) ? eventStart.getTime() : startOfDay(date).getTime();
 }
 
-function selectedDateForEvent(event: { startTime: Date | string; endTime?: Date | string | null }) {
+function firstVisibleOccurrenceDate(
+  event: { startTime: Date | string; endTime?: Date | string | null; excludedDateKeys?: string[] | null },
+  fromDate: Date,
+) {
+  const eventStart = startOfDay(new Date(event.startTime));
+  const eventEnd = startOfDay(eventEndOrStart(event));
+  const cursor = startOfDay(eventStart > fromDate ? eventStart : fromDate);
+  for (let guard = 0; cursor <= eventEnd && guard < 90; guard += 1) {
+    if (eventOccursOnDate(event, cursor)) return new Date(cursor);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return new Date(event.startTime);
+}
+
+function selectedDateForEvent(event: { startTime: Date | string; endTime?: Date | string | null; excludedDateKeys?: string[] | null }) {
   const today = new Date();
   if (eventOccursOnDate(event, today)) return today;
-  return new Date(event.startTime);
+  return firstVisibleOccurrenceDate(event, today);
 }
 
 function formatEventTimeForDate(
@@ -258,6 +287,7 @@ export default function TradePortalSchedule() {
     const now = new Date();
     return events
       .filter(e => eventEndOrStart(e) >= now)
+      .sort((a, b) => firstVisibleOccurrenceDate(a, now).getTime() - firstVisibleOccurrenceDate(b, now).getTime())
       .slice(0, 20);
   }, [events]);
 
@@ -565,6 +595,7 @@ export default function TradePortalSchedule() {
                 {upcomingEvents.map((event) => {
                   const primaryLine = scheduleEventPrimaryLine(event);
                   const secondaryLine = scheduleEventSecondaryLine(event);
+                  const occurrenceDate = firstVisibleOccurrenceDate(event, new Date());
                   return (
                     <div
                       key={event.id}
@@ -573,13 +604,13 @@ export default function TradePortalSchedule() {
                     >
                       <div className="text-center min-w-[40px] sm:min-w-[50px]">
                         <p className="text-[10px] sm:text-xs text-muted-foreground">
-                          {new Date(event.startTime).toLocaleDateString("en-AU", { weekday: "short" })}
+                          {occurrenceDate.toLocaleDateString("en-AU", { weekday: "short" })}
                         </p>
                         <p className="text-base sm:text-lg font-bold">
-                          {new Date(event.startTime).getDate()}
+                          {occurrenceDate.getDate()}
                         </p>
                         <p className="text-[10px] sm:text-xs text-muted-foreground">
-                          {new Date(event.startTime).toLocaleDateString("en-AU", { month: "short" })}
+                          {occurrenceDate.toLocaleDateString("en-AU", { month: "short" })}
                         </p>
                       </div>
                       <div className="flex-1 min-w-0">
@@ -600,7 +631,7 @@ export default function TradePortalSchedule() {
                         <div className={`w-2 h-2 rounded-full ${statusColors[event.status] || "bg-gray-400"}`} title={event.status} />
                         <span className="text-[10px] sm:text-xs text-muted-foreground flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          {new Date(event.startTime).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                          {formatEventTimeForDate(event, occurrenceDate).primary}
                         </span>
                       </div>
                     </div>

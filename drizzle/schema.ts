@@ -1558,6 +1558,27 @@ export const constructionScheduleEvents = mysqlTable("construction_schedule_even
 export type ConstructionScheduleEvent = typeof constructionScheduleEvents.$inferSelect;
 export type InsertConstructionScheduleEvent = typeof constructionScheduleEvents.$inferInsert;
 
+export const constructionScheduleEventExclusions = mysqlTable("construction_schedule_event_exclusions", {
+  id: int("id").autoincrement().primaryKey(),
+  tenantId: int("tenantId").references(() => tenants.id),
+  eventId: int("eventId").notNull(),
+  dateKey: varchar("dateKey", { length: 10 }).notNull(),
+  reason: varchar("reason", { length: 255 }).default("removed_day"),
+  createdBy: int("createdBy").references(() => users.id),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("uniq_construction_schedule_event_exclusion_day").on(table.tenantId, table.eventId, table.dateKey),
+  index("idx_construction_schedule_event_exclusions_tenant_event").on(table.tenantId, table.eventId),
+  index("idx_construction_schedule_event_exclusions_tenant_date").on(table.tenantId, table.dateKey),
+  foreignKey({
+    name: "fk_sched_event_exclusion_event",
+    columns: [table.eventId],
+    foreignColumns: [constructionScheduleEvents.id],
+  }).onDelete("cascade"),
+]);
+export type ConstructionScheduleEventExclusion = typeof constructionScheduleEventExclusions.$inferSelect;
+export type InsertConstructionScheduleEventExclusion = typeof constructionScheduleEventExclusions.$inferInsert;
+
 // ─── Construction Holiday Calendar Days ─────────────────────────────────────
 export const constructionHolidayCalendarDays = mysqlTable("construction_holiday_calendar_days", {
   id: int("id").autoincrement().primaryKey(),

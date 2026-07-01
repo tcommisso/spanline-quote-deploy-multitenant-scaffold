@@ -7,6 +7,7 @@ import {
   chatMessages,
   branches,
   constructionAssignments,
+  constructionScheduleEventExclusions,
   constructionScheduleEvents,
   constructionJobs,
   constructionInstallers,
@@ -21,7 +22,7 @@ import {
   tradeAvailabilities,
   users,
 } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray, isNull, or, asc, sql, isNotNull } from "drizzle-orm";
+import { eq, and, gte, lte, lt, gt, inArray, isNull, or, asc, sql, isNotNull } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
@@ -39,7 +40,13 @@ import {
   isWeekendDateKey,
   toDateKey,
 } from "./_core/australianHolidays";
-import { addDaysToDateOnly, APP_TIME_ZONE, formatDateInTimeZone } from "@shared/timezone";
+import {
+  addDaysToDateOnly,
+  APP_TIME_ZONE,
+  formatDateInTimeZone,
+  getDateTimePartsInTimeZone,
+  zonedDateTimeToUnixSeconds,
+} from "@shared/timezone";
 
 async function requireDb() {
   const db = await getDb();
@@ -66,6 +73,12 @@ function normalizeEmail(email?: string | null) {
 function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionHolidayCalendarDays.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function scheduleEventExclusionTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionScheduleEventExclusions.tenantId, tenantIdFromContext(ctx));
   return conditions;
 }
 
@@ -140,6 +153,39 @@ async function ensureScheduleEventStaffSchema(db: any) {
   return scheduleEventStaffSchemaReady;
 }
 
+let scheduleEventExclusionsSchemaReady: Promise<void> | null = null;
+
+async function ensureScheduleEventExclusionsSchema(db: any) {
+  scheduleEventExclusionsSchemaReady ??= db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS \`construction_schedule_event_exclusions\` (
+      \`id\` int NOT NULL AUTO_INCREMENT,
+      \`tenantId\` int DEFAULT NULL,
+      \`eventId\` int NOT NULL,
+      \`dateKey\` varchar(10) NOT NULL,
+      \`reason\` varchar(255) DEFAULT 'removed_day',
+      \`createdBy\` int DEFAULT NULL,
+      \`createdAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (\`id\`),
+      UNIQUE KEY \`uniq_construction_schedule_event_exclusion_day\` (\`tenantId\`, \`eventId\`, \`dateKey\`),
+      KEY \`idx_construction_schedule_event_exclusions_tenant_event\` (\`tenantId\`, \`eventId\`),
+      KEY \`idx_construction_schedule_event_exclusions_tenant_date\` (\`tenantId\`, \`dateKey\`),
+      CONSTRAINT \`construction_schedule_event_exclusions_tenantId_tenants_id_fk\`
+        FOREIGN KEY (\`tenantId\`) REFERENCES \`tenants\` (\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+      CONSTRAINT \`fk_sched_event_exclusion_event\`
+        FOREIGN KEY (\`eventId\`) REFERENCES \`construction_schedule_events\` (\`id\`) ON DELETE CASCADE ON UPDATE NO ACTION,
+      CONSTRAINT \`construction_schedule_event_exclusions_createdBy_users_id_fk\`
+        FOREIGN KEY (\`createdBy\`) REFERENCES \`users\` (\`id\`) ON DELETE NO ACTION ON UPDATE NO ACTION
+    )
+  `))
+    .then(() => undefined)
+    .catch((err: unknown) => {
+      scheduleEventExclusionsSchemaReady = null;
+      throw err;
+    });
+
+  return scheduleEventExclusionsSchemaReady;
+}
+
 let holidayCalendarSchemaReady: Promise<void> | null = null;
 
 async function ensureHolidayCalendarSchema(db: any) {
@@ -208,6 +254,23 @@ function appDateKey(value: Date | string | number) {
   } catch {
     return toDateKey(value);
   }
+}
+
+function padTimePart(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function localTimeStringForDate(value: Date | string | number, fallback: string) {
+  try {
+    const parts = getDateTimePartsInTimeZone(value, APP_TIME_ZONE);
+    return `${padTimePart(parts.hour)}:${padTimePart(parts.minute)}:${padTimePart(parts.second)}`;
+  } catch {
+    return fallback;
+  }
+}
+
+function dateKeyAtLocalTime(dateKey: string, time: string) {
+  return new Date(zonedDateTimeToUnixSeconds(dateKey, time, APP_TIME_ZONE) * 1000);
 }
 
 async function getActiveHolidayDateKeys(db: any, ctx: any, startKey: string, endKey: string) {
@@ -534,6 +597,34 @@ async function requireEventAccess(db: any, ctx: any, eventId: number) {
     .limit(1);
   if (!row?.event) throw new TRPCError({ code: "NOT_FOUND", message: "Schedule event not found" });
   return row.event;
+}
+
+async function deleteScheduleEventExclusionsOutsideRange(
+  db: any,
+  ctx: any,
+  eventId: number,
+  startKey: string,
+  endKey: string,
+) {
+  await ensureScheduleEventExclusionsSchema(db);
+  await db.delete(constructionScheduleEventExclusions)
+    .where(and(...scheduleEventExclusionTenantConditions(
+      ctx,
+      eq(constructionScheduleEventExclusions.eventId, eventId),
+      or(
+        lt(constructionScheduleEventExclusions.dateKey, startKey),
+        gt(constructionScheduleEventExclusions.dateKey, endKey),
+      )!,
+    )));
+}
+
+async function deleteAllScheduleEventExclusions(db: any, ctx: any, eventId: number) {
+  await ensureScheduleEventExclusionsSchema(db);
+  await db.delete(constructionScheduleEventExclusions)
+    .where(and(...scheduleEventExclusionTenantConditions(
+      ctx,
+      eq(constructionScheduleEventExclusions.eventId, eventId),
+    )));
 }
 
 async function ensureJobChatMembership(db: any, ctx: any, job: any, installerId?: number | null) {
@@ -955,6 +1046,7 @@ export const constructionScheduleRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await requireDb();
       await ensureScheduleEventStaffSchema(db);
+      await ensureScheduleEventExclusionsSchema(db);
       const conditions: any[] = [];
       if (input?.jobId) conditions.push(eq(constructionScheduleEvents.jobId, input.jobId));
       if (input?.startDate && input?.endDate) {
@@ -985,6 +1077,28 @@ export const constructionScheduleRouter = router({
         .where(and(...jobTenantConditions(ctx, ...conditions)))
         .orderBy(constructionScheduleEvents.startTime);
       const events = rows.map((row: any) => row.event);
+      const eventIds = events.map((event: any) => event.id).filter(Boolean);
+      const { startKey, endKey } = dateKeyRange(input?.startDate, input?.endDate);
+      const exclusionConditions: any[] = eventIds.length
+        ? [inArray(constructionScheduleEventExclusions.eventId, eventIds)]
+        : [sql`1 = 0`];
+      if (startKey) exclusionConditions.push(gte(constructionScheduleEventExclusions.dateKey, startKey));
+      if (endKey) exclusionConditions.push(lte(constructionScheduleEventExclusions.dateKey, endKey));
+      const exclusionRows = eventIds.length > 0
+        ? await db.select({
+            eventId: constructionScheduleEventExclusions.eventId,
+            dateKey: constructionScheduleEventExclusions.dateKey,
+          })
+            .from(constructionScheduleEventExclusions)
+            .where(and(...scheduleEventExclusionTenantConditions(ctx, ...exclusionConditions)))
+        : [];
+      const excludedDateKeysByEventId = new Map<number, string[]>();
+      for (const exclusion of exclusionRows as any[]) {
+        const eventId = Number(exclusion.eventId);
+        const list = excludedDateKeysByEventId.get(eventId) || [];
+        list.push(exclusion.dateKey);
+        excludedDateKeysByEventId.set(eventId, list);
+      }
 
       // Enrich with job and installer names
       const jobIds = Array.from(new Set(events.map(e => e.jobId)));
@@ -1025,6 +1139,7 @@ export const constructionScheduleRouter = router({
 
       return events.map(e => ({
         ...e,
+        excludedDateKeys: excludedDateKeysByEventId.get(e.id) || [],
         jobClientName: jobMap[e.jobId]?.clientName || "Unknown",
         jobSiteAddress: jobMap[e.jobId]?.siteAddress || "",
         installerName: e.assignedInstallerId ? (installerMap[e.assignedInstallerId]?.name || "Unassigned") : null,
@@ -1169,6 +1284,15 @@ export const constructionScheduleRouter = router({
       if (updates.notifyInstaller !== undefined) vals.notifyInstaller = updates.notifyInstaller;
       if (updates.status !== undefined) vals.status = updates.status;
       await db.update(constructionScheduleEvents).set(vals).where(eq(constructionScheduleEvents.id, id));
+      const effectiveStartTime = parsedStartTime || existingEvent.startTime;
+      const effectiveEndTime = parsedEndTime !== undefined ? parsedEndTime : existingEvent.endTime;
+      const existingStartKey = appDateKey(existingEvent.startTime);
+      const existingEndKey = appDateKey(existingEvent.endTime || existingEvent.startTime);
+      const nextStartKey = appDateKey(effectiveStartTime);
+      const nextEndKey = appDateKey(effectiveEndTime || effectiveStartTime);
+      if (existingStartKey !== nextStartKey || existingEndKey !== nextEndKey) {
+        await deleteAllScheduleEventExclusions(db, ctx, id);
+      }
 
       // Fire-and-forget notification with change summary
       const changes = Object.keys(updates).filter(k => (updates as any)[k] !== undefined && k !== 'id');
@@ -1180,7 +1304,7 @@ export const constructionScheduleRouter = router({
         id,
         jobId: nextJobId,
         title: updates.title || existingEvent.title,
-        startTime: parsedStartTime || existingEvent.startTime,
+        startTime: effectiveStartTime,
         eventType: updates.eventType || existingEvent.eventType,
         assignedInstallerId: requestedInstallerId || null,
         status: updates.status || existingEvent.status,
@@ -1211,6 +1335,102 @@ export const constructionScheduleRouter = router({
       }
 
       return { success: true };
+    }),
+
+  removeDay: protectedProcedure
+    .input(z.object({
+      id: z.number(),
+      dateKey: z.string(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!isValidDateKey(input.dateKey)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Select a valid schedule day to remove" });
+      }
+
+      const db = await requireDb();
+      await ensureScheduleEventStaffSchema(db);
+      await ensureScheduleEventExclusionsSchema(db);
+      const existingEvent = await requireEventAccess(db, ctx, input.id);
+      const startKey = appDateKey(existingEvent.startTime);
+      const endKey = appDateKey(existingEvent.endTime || existingEvent.startTime);
+      if (!isValidDateKey(startKey) || !isValidDateKey(endKey) || input.dateKey < startKey || input.dateKey > endKey) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Selected day is outside this schedule event" });
+      }
+
+      if (startKey === endKey) {
+        await deleteManufacturingPlaceholderForScheduleEvent(db, ctx, input.id);
+        await db.delete(constructionScheduleEvents).where(eq(constructionScheduleEvents.id, input.id));
+        return { success: true, mode: "deleted" as const };
+      }
+
+      const startTimeText = existingEvent.allDay
+        ? "00:00:00"
+        : localTimeStringForDate(existingEvent.startTime, "00:00:00");
+      const endTimeText = existingEvent.allDay
+        ? "23:59:59"
+        : localTimeStringForDate(existingEvent.endTime || existingEvent.startTime, "23:59:59");
+
+      if (input.dateKey === startKey) {
+        const nextStartKey = addDaysToDateOnly(input.dateKey, 1);
+        const nextStartTime = dateKeyAtLocalTime(nextStartKey, startTimeText);
+        await db.update(constructionScheduleEvents)
+          .set({ startTime: nextStartTime })
+          .where(eq(constructionScheduleEvents.id, input.id));
+        await deleteScheduleEventExclusionsOutsideRange(db, ctx, input.id, nextStartKey, endKey);
+        await syncManufacturingPlaceholderForScheduleEvent(db, ctx, {
+          id: input.id,
+          jobId: existingEvent.jobId,
+          title: existingEvent.title,
+          startTime: nextStartTime,
+          eventType: existingEvent.eventType,
+          assignedInstallerId: existingEvent.assignedInstallerId || null,
+          status: existingEvent.status,
+        });
+        notifyScheduleEventUpdated(input.id, ["startTime"]).catch(() => {});
+        return { success: true, mode: "shrunk_start" as const };
+      }
+
+      if (input.dateKey === endKey) {
+        const nextEndKey = addDaysToDateOnly(input.dateKey, -1);
+        const nextEndTime = dateKeyAtLocalTime(nextEndKey, endTimeText);
+        await db.update(constructionScheduleEvents)
+          .set({ endTime: nextEndTime })
+          .where(eq(constructionScheduleEvents.id, input.id));
+        await deleteScheduleEventExclusionsOutsideRange(db, ctx, input.id, startKey, nextEndKey);
+        await syncManufacturingPlaceholderForScheduleEvent(db, ctx, {
+          id: input.id,
+          jobId: existingEvent.jobId,
+          title: existingEvent.title,
+          startTime: existingEvent.startTime,
+          eventType: existingEvent.eventType,
+          assignedInstallerId: existingEvent.assignedInstallerId || null,
+          status: existingEvent.status,
+        });
+        notifyScheduleEventUpdated(input.id, ["endTime"]).catch(() => {});
+        return { success: true, mode: "shrunk_end" as const };
+      }
+
+      const [existingExclusion] = await db.select({ id: constructionScheduleEventExclusions.id })
+        .from(constructionScheduleEventExclusions)
+        .where(and(...scheduleEventExclusionTenantConditions(
+          ctx,
+          eq(constructionScheduleEventExclusions.eventId, input.id),
+          eq(constructionScheduleEventExclusions.dateKey, input.dateKey),
+        )))
+        .limit(1);
+
+      if (!existingExclusion) {
+        await db.insert(constructionScheduleEventExclusions).values({
+          tenantId: tenantIdFromContext(ctx),
+          eventId: input.id,
+          dateKey: input.dateKey,
+          reason: "removed_day",
+          createdBy: await nullableExistingUserId(db, ctx.user?.id),
+        });
+      }
+
+      notifyScheduleEventUpdated(input.id, ["excludedDateKeys"]).catch(() => {});
+      return { success: true, mode: "excluded" as const };
     }),
 
   delete: protectedProcedure

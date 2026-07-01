@@ -181,6 +181,24 @@ function eventSpansMultipleDays(event: any) {
   return toLocalDateKey(event.startTime) !== toLocalDateKey(event.endTime);
 }
 
+function eventExcludedDateKeys(event: any) {
+  return new Set(Array.isArray(event?.excludedDateKeys) ? event.excludedDateKeys : []);
+}
+
+function withSelectedEventDate(event: any, dateKey: string) {
+  return { ...event, __selectedDateKey: dateKey };
+}
+
+function selectedEventDateKey(event: any) {
+  return String(event?.__selectedDateKey || toLocalDateKey(event?.startTime || new Date()));
+}
+
+function formatDateKeyLabel(dateKey: string) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+}
+
 function scheduleReadinessWarnings(event: any) {
   return event?.readinessWarnings || event?.tradeReadiness?.warnings || [];
 }
@@ -504,6 +522,15 @@ export default function ConstructionSchedule() {
     },
   });
 
+  const removeEventDay = trpc.constructionSchedule.removeDay.useMutation({
+    onSuccess: (result) => {
+      eventsQuery.refetch();
+      setSelectedEvent(null);
+      toast.success(result.mode === "deleted" ? "Event deleted" : "Schedule day removed");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   const createBooking = trpc.equipment.bookings.create.useMutation({
     onSuccess: () => {
       equipmentBookingsQuery.refetch();
@@ -624,14 +651,17 @@ export default function ConstructionSchedule() {
     for (const event of filteredEvents) {
       const start = new Date(event.startTime);
       const end = event.endTime ? new Date(event.endTime) : start;
+      const excludedDateKeys = eventExcludedDateKeys(event);
       if (Number.isNaN(start.getTime())) continue;
       const last = Number.isNaN(end.getTime()) || end < start ? start : end;
       const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
       const lastDay = new Date(last.getFullYear(), last.getMonth(), last.getDate());
       for (let guard = 0; d <= lastDay && guard < 90; guard += 1) {
         const dateKey = toLocalDateKey(d);
-        if (!map[dateKey]) map[dateKey] = [];
-        map[dateKey].push(event);
+        if (!excludedDateKeys.has(dateKey)) {
+          if (!map[dateKey]) map[dateKey] = [];
+          map[dateKey].push(event);
+        }
         d.setDate(d.getDate() + 1);
       }
     }
@@ -971,7 +1001,7 @@ export default function ConstructionSchedule() {
                     <Card
                       key={`ev-${event.id}`}
                       className={`cursor-pointer border-l-4 hover:shadow-md transition-shadow ${config.accent} ${readinessWarnings.length ? "ring-1 ring-amber-300 dark:ring-amber-700" : ""}`}
-                      onClick={() => setSelectedEvent(event)}
+                      onClick={() => setSelectedEvent(withSelectedEventDate(event, currentDayKey))}
                     >
                       <CardContent className="py-3 px-4">
                         <div className="flex items-start gap-3">
@@ -1118,7 +1148,7 @@ export default function ConstructionSchedule() {
                           key={`ev-${event.id}`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedEvent(event);
+                            setSelectedEvent(withSelectedEventDate(event, dateKey));
                           }}
                           className={`w-full text-left text-[10px] leading-tight px-1.5 py-0.5 rounded truncate border-l-2 flex items-center gap-1 ${config.color} ${config.accent} ${isUnallocated ? "border border-dashed border-current" : ""} ${needsReview ? "ring-1 ring-amber-500" : ""}`}
                           title={`${primaryLine}${secondaryLine ? ` - ${secondaryLine}` : ""}`}
@@ -1206,7 +1236,13 @@ export default function ConstructionSchedule() {
               staffUsers={staffResourcesQuery.data || []}
               onUpdate={(data) => updateEvent.mutate({ id: selectedEvent.id, ...data })}
               onDelete={() => { if (confirm("Delete this event?")) deleteEvent.mutate({ id: selectedEvent.id }); }}
+              onRemoveDay={(dateKey) => {
+                if (confirm(`Remove ${formatDateKeyLabel(dateKey)} from this booking?`)) {
+                  removeEventDay.mutate({ id: selectedEvent.id, dateKey });
+                }
+              }}
               loading={updateEvent.isPending}
+              removingDay={removeEventDay.isPending}
             />
           )}
         </ScheduleDialogContent>
@@ -1629,7 +1665,7 @@ function EquipmentBookingForm({
 
 // ─── Event Detail View ───────────────────────────────────────────────────────
 function EventDetailView({
-  event, jobs, installers, staffUsers, onUpdate, onDelete, loading,
+  event, jobs, installers, staffUsers, onUpdate, onDelete, onRemoveDay, loading, removingDay,
 }: {
   event: any;
   jobs: any[];
@@ -1637,13 +1673,17 @@ function EventDetailView({
   staffUsers: any[];
   onUpdate: (data: any) => void;
   onDelete: () => void;
+  onRemoveDay: (dateKey: string) => void;
   loading: boolean;
+  removingDay: boolean;
 }) {
   const config = EVENT_TYPE_CONFIG[event.eventType] || EVENT_TYPE_CONFIG.other;
   const Icon = config.icon;
   const readinessWarnings = scheduleReadinessWarnings(event);
   const primaryLine = scheduleEventPrimaryLine(event);
   const secondaryLine = scheduleEventSecondaryLine(event);
+  const occurrenceDateKey = selectedEventDateKey(event);
+  const canRemoveSelectedDay = eventSpansMultipleDays(event) && Boolean(occurrenceDateKey);
 
   return (
     <div className="space-y-4">
@@ -1698,9 +1738,28 @@ function EventDetailView({
         loading={loading}
       />
 
-      <div className="flex gap-2 pt-2">
-        <Button variant="destructive" size="sm" onClick={onDelete} className="w-full">
-          <Trash2 className="h-4 w-4 mr-1" /> Delete
+      <div className="flex flex-col gap-2 pt-2 sm:flex-row">
+        {canRemoveSelectedDay && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onRemoveDay(occurrenceDateKey)}
+            disabled={loading || removingDay}
+            className="w-full border-destructive/40 text-destructive hover:text-destructive sm:flex-1"
+          >
+            <Trash2 className="h-4 w-4 mr-1" /> Remove {formatDateKeyLabel(occurrenceDateKey)}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          onClick={onDelete}
+          disabled={loading || removingDay}
+          className="w-full sm:flex-1"
+        >
+          <Trash2 className="h-4 w-4 mr-1" /> Delete entire event
         </Button>
       </div>
     </div>

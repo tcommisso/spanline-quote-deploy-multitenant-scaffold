@@ -6,7 +6,7 @@ import {
   tradePortalAccess, tradePortalSessions,
   tradeAvailabilities, tradeInvoices, tradeRemittances,
   tradePhotos, tradeMessages, tradeInvoicePhotos,
-  constructionInstallers, constructionJobs, constructionScheduleEvents,
+  constructionInstallers, constructionJobs, constructionScheduleEventExclusions, constructionScheduleEvents,
   constructionHolidayCalendarDays,
   constructionAssignments, jobSharedFiles, quotes,
   crmLeads,
@@ -42,6 +42,7 @@ import {
 } from "./trade-remittance-xero";
 import {
   dateKeyToStorageDate,
+  dateKeyRange,
   isWeekendDateKey,
   localDateKeyFromDate,
   toDateKey,
@@ -99,6 +100,12 @@ function tradeInstallerConditions(ctx: any, ...baseConditions: any[]) {
 function tradeHolidayConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionHolidayCalendarDays.tenantId, tradePortalTenantId(ctx));
+  return conditions;
+}
+
+function tradeScheduleEventExclusionConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, constructionScheduleEventExclusions.tenantId, tradePortalTenantId(ctx));
   return conditions;
 }
 
@@ -1805,8 +1812,31 @@ export const tradePortalRouter = router({
         .leftJoin(crmLeads, tradeLeadJoinConditions(ctx))
         .where(and(...conditions))
         .orderBy(asc(constructionScheduleEvents.startTime));
+      const eventIds = rows.map((row: any) => row.id).filter(Boolean);
+      const { startKey, endKey } = dateKeyRange(input?.startDate, input?.endDate);
+      const exclusionConditions: any[] = eventIds.length
+        ? [inArray(constructionScheduleEventExclusions.eventId, eventIds)]
+        : [sql`1 = 0`];
+      if (startKey) exclusionConditions.push(gte(constructionScheduleEventExclusions.dateKey, startKey));
+      if (endKey) exclusionConditions.push(lte(constructionScheduleEventExclusions.dateKey, endKey));
+      const exclusionRows = eventIds.length > 0
+        ? await db.select({
+            eventId: constructionScheduleEventExclusions.eventId,
+            dateKey: constructionScheduleEventExclusions.dateKey,
+          })
+            .from(constructionScheduleEventExclusions)
+            .where(and(...tradeScheduleEventExclusionConditions(ctx, ...exclusionConditions)))
+        : [];
+      const excludedDateKeysByEventId = new Map<number, string[]>();
+      for (const exclusion of exclusionRows as any[]) {
+        const eventId = Number(exclusion.eventId);
+        const list = excludedDateKeysByEventId.get(eventId) || [];
+        list.push(exclusion.dateKey);
+        excludedDateKeysByEventId.set(eventId, list);
+      }
       return rows.map((row: any) => ({
         ...withCanonicalClientName(row),
+        excludedDateKeys: excludedDateKeysByEventId.get(row.id) || [],
         assignedInstallerId: installerId,
         installerName: installer?.name || null,
         tradeName: installer?.name || null,
