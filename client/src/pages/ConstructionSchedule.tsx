@@ -18,6 +18,7 @@ import {
   CalendarDays, Plus, ChevronLeft, ChevronRight, Clock, Wrench,
   ClipboardCheck, Truck, Users, Bell, BellOff, Trash2, Package,
   UserCircle, AlertTriangle, HelpCircle, CloudRain, ChevronsUpDown, Check,
+  Maximize2, Minimize2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/useMobile";
@@ -26,6 +27,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole, ROLE_LABELS } from "@shared/const";
 
 type ResourceView = "all" | "staff" | "trades" | "unallocated" | "equipment";
+type ScheduleDialogSize = "compact" | "wide" | "full";
 
 const EVENT_TYPE_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   installation: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Wrench, label: "Installation" },
@@ -49,6 +51,62 @@ const RESOURCE_TABS: { value: ResourceView; label: string; icon: any }[] = [
   { value: "unallocated", label: "Unalloc", icon: HelpCircle },
   { value: "equipment", label: "Equip", icon: Package },
 ];
+
+const SCHEDULE_DIALOG_SIZE_CLASSES: Record<ScheduleDialogSize, string> = {
+  compact: "!w-[calc(100vw-1rem)] sm:!w-[560px] !max-w-[calc(100vw-1rem)] sm:!max-w-[560px] max-h-[92dvh] sm:max-h-[88vh]",
+  wide: "!w-[calc(100vw-1rem)] sm:!w-[760px] lg:!w-[900px] !max-w-[calc(100vw-1rem)] sm:!max-w-[92vw] max-h-[94dvh] min-h-[min(560px,88dvh)]",
+  full: "!w-[calc(100vw-0.5rem)] !max-w-[calc(100vw-0.5rem)] sm:!w-[min(1040px,96vw)] sm:!max-w-[96vw] h-[96dvh] max-h-[96dvh]",
+};
+
+function ScheduleDialogContent({
+  title,
+  size,
+  onSizeChange,
+  children,
+}: {
+  title: string;
+  size: ScheduleDialogSize;
+  onSizeChange: (size: ScheduleDialogSize) => void;
+  children: any;
+}) {
+  const sizeOptions: Array<{ value: ScheduleDialogSize; label: string; icon: any }> = [
+    { value: "compact", label: "Compact", icon: Minimize2 },
+    { value: "wide", label: "Wide", icon: ChevronsUpDown },
+    { value: "full", label: "Full", icon: Maximize2 },
+  ];
+
+  return (
+    <DialogContent
+      className={`flex flex-col gap-0 overflow-hidden p-0 sm:min-h-[420px] sm:min-w-[min(520px,calc(100vw-2rem))] sm:resize ${SCHEDULE_DIALOG_SIZE_CLASSES[size]}`}
+    >
+      <DialogHeader className="border-b px-4 py-3 pr-12 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <DialogTitle>{title}</DialogTitle>
+          <div className="grid grid-cols-3 gap-1 sm:flex sm:items-center" aria-label="Schedule dialog size">
+            {sizeOptions.map(({ value, label, icon: Icon }) => (
+              <Button
+                key={value}
+                type="button"
+                size="sm"
+                variant={size === value ? "secondary" : "outline"}
+                className="h-8 px-2 text-xs"
+                aria-pressed={size === value}
+                title={`${label} modal size`}
+                onClick={() => onSizeChange(value)}
+              >
+                <Icon className="mr-1 h-3.5 w-3.5" />
+                {label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </DialogHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+        {children}
+      </div>
+    </DialogContent>
+  );
+}
 
 function toLocalDateKey(value: Date | string | number) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
@@ -288,8 +346,10 @@ export default function ConstructionSchedule() {
   const [viewMode, setViewMode] = useState<"day" | "week" | "month">("week");
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [showCreateEvent, setShowCreateEvent] = useState(false);
+  const [createDialogSize, setCreateDialogSize] = useState<ScheduleDialogSize>("wide");
   const [showBookEquipment, setShowBookEquipment] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<any>(null);
+  const [editDialogSize, setEditDialogSize] = useState<ScheduleDialogSize>("wide");
   const [selectedBooking, setSelectedBooking] = useState<any>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [filterInstallerId, setFilterInstallerId] = useState<string>("all");
@@ -670,10 +730,11 @@ export default function ConstructionSchedule() {
                 <span className="hidden md:inline">New Event</span>
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader>
-                <DialogTitle>Create Schedule Event</DialogTitle>
-              </DialogHeader>
+            <ScheduleDialogContent
+              title="Create Schedule Event"
+              size={createDialogSize}
+              onSizeChange={setCreateDialogSize}
+            >
               <EventForm
                 jobs={jobsQuery.data || []}
                 installers={installersQuery.data || []}
@@ -684,7 +745,7 @@ export default function ConstructionSchedule() {
                 onBookEquipment={(data) => createBooking.mutate(data)}
                 loading={createEvent.isPending}
               />
-            </DialogContent>
+            </ScheduleDialogContent>
           </Dialog>
         </div>
       </div>
@@ -1097,10 +1158,11 @@ export default function ConstructionSchedule() {
 
       {/* Event Detail Dialog */}
       <Dialog open={!!selectedEvent} onOpenChange={(open) => !open && setSelectedEvent(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Edit Schedule Event</DialogTitle>
-          </DialogHeader>
+        <ScheduleDialogContent
+          title="Edit Schedule Event"
+          size={editDialogSize}
+          onSizeChange={setEditDialogSize}
+        >
           {selectedEvent && (
             <EventDetailView
               event={selectedEvent}
@@ -1112,7 +1174,7 @@ export default function ConstructionSchedule() {
               loading={updateEvent.isPending}
             />
           )}
-        </DialogContent>
+        </ScheduleDialogContent>
       </Dialog>
 
       {/* Equipment Booking Detail Dialog */}
