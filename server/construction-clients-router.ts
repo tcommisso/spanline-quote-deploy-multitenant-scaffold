@@ -67,6 +67,14 @@ const jobInstructionSignatureResponseSchema = z.object({
   signedName: z.string().trim().max(255).nullable().optional(),
   signedAt: z.string().datetime(),
 });
+const jobInstructionMatrixResponseSchema = z.object({
+  matrixRows: z.array(z.object({
+    criterion: z.string().trim().min(1).max(120),
+    rating: z.enum(["1", "2", "3", "4", "5", "na"]).nullable().optional(),
+    notes: z.string().trim().max(1000).nullable().optional(),
+  })).max(30),
+  updatedAt: z.string().datetime().optional(),
+});
 const jobInstructionResponseValueSchema = z.union([
   z.string().max(5000),
   z.number(),
@@ -74,6 +82,7 @@ const jobInstructionResponseValueSchema = z.union([
   z.array(z.string().max(240)).max(50),
   z.object({ files: z.array(jobInstructionResponseFileSchema).max(50) }),
   jobInstructionSignatureResponseSchema,
+  jobInstructionMatrixResponseSchema,
   z.null(),
 ]);
 const postBuildClassificationSchema = z.enum(["unclassified", "warranty", "workmanship", "chargeable"]);

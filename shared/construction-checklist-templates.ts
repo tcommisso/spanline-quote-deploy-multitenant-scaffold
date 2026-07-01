@@ -13,6 +13,7 @@ export const CONSTRUCTION_CHECKLIST_RESPONSE_TYPES = [
   "long_text",
   "number",
   "date",
+  "performance_matrix",
   "signature",
   "image_upload",
   "file_upload",

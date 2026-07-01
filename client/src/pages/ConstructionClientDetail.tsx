@@ -1464,6 +1464,7 @@ const FINAL_INSPECTION_RESPONSE_LABELS: Record<ConstructionChecklistResponseType
   long_text: "Long text",
   number: "Number",
   date: "Date",
+  performance_matrix: "Performance matrix",
   signature: "Signature",
   image_upload: "Image upload",
   file_upload: "File upload",
@@ -1478,6 +1479,15 @@ const CLIENT_LOOKUP_LABELS: Record<string, string> = {
   account_number: "Client account number",
 };
 const NO_LOOKUP_SELECTION = "__none__";
+const NO_MATRIX_RATING = "__none__";
+const MATRIX_RATING_OPTIONS = [
+  { value: "5", label: "5 - Excellent" },
+  { value: "4", label: "4 - Good" },
+  { value: "3", label: "3 - Satisfactory" },
+  { value: "2", label: "2 - Needs improvement" },
+  { value: "1", label: "1 - Poor" },
+  { value: "na", label: "N/A" },
+];
 
 type InstructionResponseFile = {
   url: string;
@@ -1492,6 +1502,17 @@ type SignatureResponseValue = {
   signatureDataUrl: string;
   signedName?: string | null;
   signedAt: string;
+};
+
+type MatrixResponseRow = {
+  criterion: string;
+  rating?: "1" | "2" | "3" | "4" | "5" | "na" | null;
+  notes?: string | null;
+};
+
+type MatrixResponseValue = {
+  matrixRows: MatrixResponseRow[];
+  updatedAt?: string;
 };
 
 function responseStringOptions(value: unknown): string[] {
@@ -1515,6 +1536,41 @@ function signatureResponseValue(value: unknown): SignatureResponseValue | null {
     signedName: typeof record.signedName === "string" ? record.signedName : null,
     signedAt: record.signedAt,
   };
+}
+
+function matrixResponseRows(value: unknown, criteria: string[]): MatrixResponseRow[] {
+  const configuredCriteria = criteria.length > 0
+    ? criteria
+    : ["Quality of work", "Timeliness", "Communication", "Site cleanliness", "Safety / WH&S"];
+  const savedRows = value && typeof value === "object" && Array.isArray((value as MatrixResponseValue).matrixRows)
+    ? (value as MatrixResponseValue).matrixRows
+    : [];
+  const savedByCriterion = new Map(
+    savedRows
+      .filter((row) => row && typeof row.criterion === "string")
+      .map((row) => [row.criterion.trim().toLowerCase(), row])
+  );
+
+  return configuredCriteria.map((criterion) => {
+    const saved = savedByCriterion.get(criterion.trim().toLowerCase());
+    const rating = saved?.rating && MATRIX_RATING_OPTIONS.some((option) => option.value === saved.rating)
+      ? saved.rating
+      : null;
+    return {
+      criterion,
+      rating,
+      notes: typeof saved?.notes === "string" ? saved.notes : "",
+    };
+  });
+}
+
+function matrixAverage(rows: MatrixResponseRow[]) {
+  const numericRatings = rows
+    .map((row) => Number(row.rating))
+    .filter((rating) => Number.isFinite(rating) && rating > 0);
+  if (numericRatings.length === 0) return null;
+  const average = numericRatings.reduce((total, rating) => total + rating, 0) / numericRatings.length;
+  return average.toFixed(1);
 }
 
 function dateResponseValue(value: unknown) {
@@ -1725,6 +1781,100 @@ function SignatureCapture({
           Signed{value?.signedName ? ` by ${value.signedName}` : ""} on {signedAtLabel}
         </p>
       )}
+    </div>
+  );
+}
+
+function PerformanceMatrixResponse({
+  criteria,
+  value,
+  disabled,
+  onSave,
+}: {
+  criteria: string[];
+  value: unknown;
+  disabled?: boolean;
+  onSave: (value: MatrixResponseValue) => void;
+}) {
+  const criteriaKey = criteria.join("\u0000");
+  const [rows, setRows] = useState<MatrixResponseRow[]>(() => matrixResponseRows(value, criteria));
+
+  useEffect(() => {
+    setRows(matrixResponseRows(value, criteria));
+  }, [criteriaKey, value]);
+
+  const persistRows = (nextRows: MatrixResponseRow[]) => {
+    setRows(nextRows);
+    onSave({
+      matrixRows: nextRows.map((row) => ({
+        criterion: row.criterion,
+        rating: row.rating || null,
+        notes: row.notes?.trim() || null,
+      })),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const updateRating = (criterion: string, rating: string) => {
+    const nextRows = rows.map((row) => row.criterion === criterion
+      ? { ...row, rating: rating === NO_MATRIX_RATING ? null : rating as MatrixResponseRow["rating"] }
+      : row);
+    persistRows(nextRows);
+  };
+
+  const updateNotes = (criterion: string, notes: string, persist = false) => {
+    const nextRows = rows.map((row) => row.criterion === criterion ? { ...row, notes } : row);
+    if (persist) persistRows(nextRows);
+    else setRows(nextRows);
+  };
+
+  const average = matrixAverage(rows);
+
+  return (
+    <div className="w-full space-y-2 lg:w-[38rem] xl:w-[44rem]">
+      <div className="overflow-hidden rounded-md border">
+        <div className="hidden grid-cols-[minmax(160px,1fr)_180px_minmax(180px,1fr)] gap-2 bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground md:grid">
+          <span>Criterion</span>
+          <span>Rating</span>
+          <span>Notes</span>
+        </div>
+        <div className="divide-y">
+          {rows.map((row) => (
+            <div key={row.criterion} className="grid gap-2 p-3 md:grid-cols-[minmax(160px,1fr)_180px_minmax(180px,1fr)] md:items-start">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{row.criterion}</p>
+              </div>
+              <Select
+                value={row.rating || NO_MATRIX_RATING}
+                onValueChange={(rating) => updateRating(row.criterion, rating)}
+                disabled={disabled}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_MATRIX_RATING}>Unrated</SelectItem>
+                  {MATRIX_RATING_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Textarea
+                value={row.notes || ""}
+                onChange={(event) => updateNotes(row.criterion, event.currentTarget.value)}
+                onBlur={(event) => updateNotes(row.criterion, event.currentTarget.value, true)}
+                placeholder="Optional note"
+                rows={2}
+                disabled={disabled}
+                className="min-h-10"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {average ? `Average rating ${average}/5` : "Rate one or more criteria to calculate an average."}
+      </p>
     </div>
   );
 }
@@ -2011,6 +2161,17 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
       );
     }
 
+    if (responseType === "performance_matrix") {
+      return (
+        <PerformanceMatrixResponse
+          criteria={options}
+          value={item.responseValue}
+          disabled={updateInstruction.isPending}
+          onSave={(matrixValue) => saveResponseValue(item, matrixValue)}
+        />
+      );
+    }
+
     if (responseType === "client_lookup") {
       const lookupField = options[0] || "client_name";
       return (
@@ -2177,8 +2338,12 @@ function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: 
                     </div>
                   );
                 }
+                const wideResponse = responseType === "performance_matrix" || responseType === "signature";
                 return (
-                <div key={item.id} className="grid gap-3 rounded-md border p-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,auto)_176px] lg:items-start">
+                <div
+                  key={item.id}
+                  className={`grid gap-3 rounded-md border p-3 ${wideResponse ? "xl:grid-cols-[minmax(0,0.75fr)_minmax(360px,1.5fr)_176px] xl:items-start" : "lg:grid-cols-[minmax(0,1fr)_minmax(240px,auto)_176px] lg:items-start"}`}
+                >
                   <div className="min-w-0 space-y-1">
                     <p className="font-medium">{item.title}</p>
                     {item.description && <p className="text-sm text-muted-foreground">{item.description}</p>}

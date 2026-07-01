@@ -39,6 +39,7 @@ const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; l
   { value: "long_text", label: "Long text" },
   { value: "number", label: "Number" },
   { value: "date", label: "Date" },
+  { value: "performance_matrix", label: "Performance matrix" },
   { value: "signature", label: "Signature" },
   { value: "image_upload", label: "Image upload" },
   { value: "file_upload", label: "File upload" },
@@ -47,7 +48,8 @@ const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; l
   { value: "user_lookup", label: "System user lookup" },
 ];
 
-const RESPONSE_TYPES_WITH_OPTIONS = new Set<ConstructionChecklistResponseType>(["dropdown", "multi_select"]);
+const RESPONSE_TYPES_WITH_OPTIONS = new Set<ConstructionChecklistResponseType>(["dropdown", "multi_select", "performance_matrix"]);
+const DEFAULT_PERFORMANCE_MATRIX_ROWS = ["Quality of work", "Timeliness", "Communication", "Site cleanliness", "Safety / WH&S"];
 const CLIENT_LOOKUP_OPTIONS = [
   { value: "client_name", label: "Client canonical name" },
   { value: "site_address", label: "Site / delivery address" },
@@ -273,6 +275,8 @@ export default function ConstructionChecklistTemplates() {
                           sendToUserId: isDisplayOnly ? null : item.sendToUserId,
                           responseOptions: nextType === "client_lookup"
                             ? [item.responseOptions?.[0] || "client_name"]
+                            : nextType === "performance_matrix"
+                              ? item.responseOptions.length > 0 ? item.responseOptions : DEFAULT_PERFORMANCE_MATRIX_ROWS
                             : isDisplayOnly ? [] : RESPONSE_TYPES_WITH_OPTIONS.has(nextType) ? item.responseOptions : [],
                         });
                       }}
@@ -383,13 +387,16 @@ export default function ConstructionChecklistTemplates() {
                   )}
                   {!isDisplayOnlyItem(item) && RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && (
                     <div className="space-y-1">
-                      <Label className="text-xs">Options</Label>
+                      <Label className="text-xs">{item.responseType === "performance_matrix" ? "Matrix criteria" : "Options"}</Label>
                       <Textarea
                         value={optionsText(item.responseOptions)}
                         onChange={(event) => updateItem(item.localId, { responseOptions: parseOptionsText(event.target.value) })}
-                        placeholder="One option per line..."
+                        placeholder={item.responseType === "performance_matrix" ? "One performance criterion per line..." : "One option per line..."}
                         rows={3}
                       />
+                      {item.responseType === "performance_matrix" && (
+                        <p className="text-[11px] text-muted-foreground">Each criterion is rated 1-5 or N/A on the job checklist.</p>
+                      )}
                     </div>
                   )}
                   {item.responseType !== "divider" && (
