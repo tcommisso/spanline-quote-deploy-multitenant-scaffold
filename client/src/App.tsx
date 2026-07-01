@@ -10,6 +10,7 @@ import { ImpersonationBanner } from "./components/ImpersonationBanner";
 import { useAuth } from "./_core/hooks/useAuth";
 import { useEffectivePermissions } from "./hooks/useEffectivePermissions";
 import { useFavicon } from "./hooks/useFavicon";
+import { useInstallSurfaceMetadata } from "./hooks/useInstallSurfaceMetadata";
 import MasterDataLayout from "./components/MasterDataLayout";
 import Home from "./pages/Home";
 import AppCentral from "./pages/AppCentral";
@@ -609,7 +610,9 @@ function RoutePermissionGuard({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  const [location] = useLocation();
   useFavicon();
+  useInstallSurfaceMetadata(location);
 
   return (
     <ErrorBoundary>

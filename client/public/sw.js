@@ -91,9 +91,9 @@ self.addEventListener('fetch', (event) => {
   // Skip API calls and tRPC requests entirely (don't intercept)
   if (url.pathname.startsWith('/api/')) return;
 
-  // Skip manifest.json and other non-navigation static assets that might
+  // Skip manifests and other non-navigation static assets that might
   // get redirected by the platform auth gate — let the browser handle them natively
-  if (url.pathname === '/manifest.json' || url.pathname === '/sw.js') return;
+  if (url.pathname === '/manifest.json' || url.pathname === '/trade-portal-manifest.json' || url.pathname === '/sw.js') return;
 
   if (event.request.mode === 'navigate') {
     event.respondWith(
