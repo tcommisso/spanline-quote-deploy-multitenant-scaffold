@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ImageIcon, Star, Download, X, Sparkles } from "lucide-react";
+import { logClientDownload } from "@/lib/userActivity";
 
 export default function PortalRenderGallery() {
   const { user } = usePortal();
@@ -132,10 +133,17 @@ export default function PortalRenderGallery() {
                   size="sm"
                   onClick={() => {
                     const link = document.createElement("a");
+                    const filename = "patio-design-render.png";
                     link.href = previewUrl;
-                    link.download = "patio-design-render.png";
+                    link.download = filename;
                     link.target = "_blank";
                     link.click();
+                    logClientDownload({
+                      filename,
+                      source: "client_portal_render_png",
+                      entityType: "portal_render",
+                      mimeType: "image/png",
+                    });
                   }}
                   className="gap-1.5"
                 >

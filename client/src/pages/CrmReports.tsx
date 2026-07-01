@@ -10,6 +10,7 @@ import { Download, FileText, Mail, Search, Calendar } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { logClientDownload } from "@/lib/userActivity";
 
 // ─── Australian Financial Year Helpers ───────────────────────────────────────
 function getCurrentFY(): number {
@@ -182,7 +183,15 @@ export default function CrmReports() {
       headStyles: { fillColor: [30, 64, 175] },
     });
 
-    doc.save(`${title.replace(/\s+/g, "_")}_${new Date().toISOString().slice(0, 10)}.pdf`);
+    const filename = `${title.replace(/\s+/g, "_")}_${new Date().toISOString().slice(0, 10)}.pdf`;
+    doc.save(filename);
+    logClientDownload({
+      filename,
+      source: "crm_report_pdf",
+      entityType: "crm_report",
+      mimeType: "application/pdf",
+      metadata: { title, rowCount: reportData.rows.length, financialYear: useCustomDates ? "custom" : getFYLabel(selectedFY) },
+    });
   };
 
   return (

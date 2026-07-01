@@ -27,6 +27,7 @@ import {
   type TermsDocument,
 } from "@/lib/proposalStore";
 import { useSettingsSync } from "@/hooks/useSettingsSync";
+import { logClientDownload } from "@/lib/userActivity";
 
 const SECTIONS = [
   { id: "notifications", label: "Notifications", icon: Bell },
@@ -135,6 +136,12 @@ export default function AdminSettings() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename: `altaspan-proposal-settings-${new Date().toISOString().slice(0, 10)}.json`,
+      source: "admin_settings_export",
+      entityType: "settings",
+      mimeType: "application/json",
+    });
     toast.success("Settings exported");
   };
 

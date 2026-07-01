@@ -6,6 +6,7 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { logClientDownload } from "@/lib/userActivity";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -280,6 +281,13 @@ export default function SmartshopOrderForm() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename: result.fileName,
+        source: "smartshop_order_pdf",
+        entityType: "smartshop_order",
+        entityId: lastSubmittedOrderId ?? undefined,
+        mimeType: "application/pdf",
+      });
       toast.success("PDF downloaded successfully");
     },
     onError: () => {

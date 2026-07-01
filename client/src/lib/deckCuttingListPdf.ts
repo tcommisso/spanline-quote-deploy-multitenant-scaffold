@@ -7,6 +7,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { loadCompanyDetails, loadCustomLogo } from "./proposalStore";
+import { logClientDownload } from "./userActivity";
 import type { SubfloorInputs, SubfloorResult, OptionResult, BearerLine } from "../../../shared/subfloor-calc";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -258,6 +259,14 @@ export async function generateCuttingListPdf(
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+    logClientDownload({
+      filename: `${options.quoteNumber}-cutting-list.pdf`,
+      source: "deck_cutting_list_pdf",
+      entityType: "deck_quote",
+      entityId: options.quoteNumber,
+      mimeType: "application/pdf",
+      metadata: { clientName: options.clientName },
+    });
   }
 }
 

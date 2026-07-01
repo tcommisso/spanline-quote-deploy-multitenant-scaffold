@@ -25,6 +25,7 @@ import {
   type CompanyDetails,
   type ProposalText,
 } from "./proposalStore";
+import { logClientDownload } from "./userActivity";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -180,6 +181,14 @@ export async function generateUnifiedQuotePDF(
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+    logClientDownload({
+      filename,
+      source: "unified_quote_pdf",
+      entityType: "quote",
+      entityId: data.opq?.quoteNumber || data.deck?.quoteNumber || data.eclipse?.quoteNumber,
+      mimeType: "application/pdf",
+      metadata: { clientName: data.client.name },
+    });
     return undefined;
   }
 }

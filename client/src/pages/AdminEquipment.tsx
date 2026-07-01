@@ -13,6 +13,7 @@ import {
   Plus, Pencil, Trash2, Package, Search, Wrench, Upload, Download,
 } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 const EQUIPMENT_CATEGORIES = [
   "Crane",
@@ -199,12 +200,20 @@ export default function AdminEquipment() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
+    const filename = `equipment-${new Date().toISOString().slice(0, 10)}.csv`;
     link.href = url;
-    link.download = `equipment-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "equipment_export",
+      entityType: "equipment",
+      mimeType: "text/csv",
+      metadata: { rowCount: allRows.length },
+    });
   };
 
   return (

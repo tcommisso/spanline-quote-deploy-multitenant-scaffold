@@ -19,6 +19,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { logClientDownload } from "@/lib/userActivity";
 
 type RoutingConditionDraft = {
   field: string;
@@ -2426,10 +2427,19 @@ function SyncFailureDetails({ syncLogId }: { syncLogId: number }) {
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
+    const filename = `sync-failures-${syncLogId}.csv`;
     link.href = url;
-    link.download = `sync-failures-${syncLogId}.csv`;
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "xero_sync_failures_export",
+      entityType: "xero_sync_log",
+      entityId: syncLogId,
+      mimeType: "text/csv",
+      metadata: { rowCount: failures.length },
+    });
   };
 
   return (

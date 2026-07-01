@@ -19,6 +19,7 @@ import {
 import { PullToRefresh } from "@/components/PullToRefresh";
 import CollapsibleFilters from "@/components/CollapsibleFilters";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { logClientDownload } from "@/lib/userActivity";
 
 const STATUS_CONFIG: Record<string, { color: string; icon: any; label: string }> = {
   scheduled: { color: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300", icon: Clock, label: "Scheduled" },
@@ -302,10 +303,18 @@ export default function ConstructionClients() {
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `construction-clients${activeFy ? `-FY${activeFy}` : ""}.csv`;
     a.href = url;
-    a.download = `construction-clients${activeFy ? `-FY${activeFy}` : ""}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "construction_clients_export",
+      entityType: "construction_job",
+      mimeType: "text/csv",
+      metadata: { rowCount: sortedClients.length, financialYear: activeFy },
+    });
   }, [sortedClients, activeFy]);
 
   const handleRefresh = useCallback(async () => {

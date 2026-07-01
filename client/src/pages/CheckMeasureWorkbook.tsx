@@ -23,6 +23,7 @@ import { applyInternalUseWatermark } from "@/lib/pdfWatermark";
 import CrossSectionDiagram from "@/components/CrossSectionDiagram";
 import FrontElevationDiagram from "@/components/FrontElevationDiagram";
 import PlanViewDiagram from "@/components/PlanViewDiagram";
+import { logClientDownload } from "@/lib/userActivity";
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   pending_review: { label: "Pending Review", color: "bg-yellow-100 text-yellow-800" },
@@ -695,7 +696,16 @@ export default function CheckMeasureWorkbook() {
 
     // Apply watermark
     applyInternalUseWatermark(doc);
-    doc.save(`CostReport-${workbook.originalQuoteNumber || `CM-${workbook.id}`}-INTERNAL.pdf`);
+    const filename = `CostReport-${workbook.originalQuoteNumber || `CM-${workbook.id}`}-INTERNAL.pdf`;
+    doc.save(filename);
+    logClientDownload({
+      filename,
+      source: "check_measure_cost_report_pdf",
+      entityType: "check_measure_workbook",
+      entityId: workbook.id,
+      mimeType: "application/pdf",
+      metadata: { quoteNumber: workbook.originalQuoteNumber },
+    });
     toast.success("Cost report PDF downloaded (Internal Use Only)");
   };
 

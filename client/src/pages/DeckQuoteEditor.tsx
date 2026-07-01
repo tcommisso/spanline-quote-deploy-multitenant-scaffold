@@ -22,6 +22,7 @@ import { adaptDeckQuoteToProposal, validateDeckQuoteForProposal } from "@/lib/de
 import { calculateSubfloor, computeDesignArea, computeDesignPerimeter, DEFAULT_INPUTS, type SubfloorInputs, type PricingOverrides } from "../../../shared/subfloor-calc";
 import { generateDeckBomCsv, downloadCsv } from "../../../shared/deckBomCsv";
 import { generateDeckManagementPDF } from "@/lib/deckManagementPdf";
+import { logClientDownload } from "@/lib/userActivity";
 import { calculateOptimisedCutPlan, calculateBoardCutPlan, calculateFramingCutPlan } from "../../../shared/boardCutPlan";
 import type { StairResult } from "../../../shared/stairCalc";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -1908,6 +1909,14 @@ export default function DeckQuoteEditor() {
                           });
                           const filename = `deck-bom-${(quote as any)?.quoteNumber || "export"}.csv`;
                           downloadCsv(csv, filename);
+                          logClientDownload({
+                            filename,
+                            source: "deck_bom_csv",
+                            entityType: "deck_quote",
+                            entityId: (quote as any)?.quoteNumber || undefined,
+                            mimeType: "text/csv",
+                            metadata: { clientName: form.clientName },
+                          });
                           toast.success("BOM CSV downloaded");
                         } catch (err: any) {
                           toast.error(err.message || "Failed to export CSV");

@@ -9,6 +9,7 @@ import { trpc } from "@/lib/trpc";
 import { PatioStructureOverlay, type RoofStyle, type StructureType, type GutterStyle, type DownpipeStyle } from "./PatioStructureOverlay";
 import { COLORBOND_COLOURS, type ColorbondColour } from "@/lib/colorbondColours";
 import { compressImage, formatFileSize } from "@/lib/imageCompression";
+import { logClientDownload } from "@/lib/userActivity";
 import type { ReactNode } from "react";
 
 interface PatioCanvasEditorProps {
@@ -190,9 +191,17 @@ export default function PatioCanvasEditor({
     ctx.restore();
 
     const link = document.createElement("a");
-    link.download = `patio-planner-${projectId}.png`;
+    const filename = `patio-planner-${projectId}.png`;
+    link.download = filename;
     link.href = canvas.toDataURL("image/png");
     link.click();
+    logClientDownload({
+      filename,
+      source: "patio_planner_image_export",
+      entityType: "patio_project",
+      entityId: projectId,
+      mimeType: "image/png",
+    });
     toast.success("Image exported with disclaimer");
   }, [photoUrl, projectId]);
 

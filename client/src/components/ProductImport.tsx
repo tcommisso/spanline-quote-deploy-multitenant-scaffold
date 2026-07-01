@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Upload, Download, FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 // CSV column definitions matching the products table (with cost breakdown)
 const CSV_HEADERS = ["productCode", "tabName", "subTab", "name", "uom", "baseCost", "materials", "installLabour", "consumables", "markupCategory", "fixedSell", "powderCoatSurcharge", "colourGroup", "coverageWidth", "sortOrder", "active"] as const;
@@ -298,6 +299,12 @@ export default function ProductImport() {
     a.download = "altaspan_products.csv";
     a.click();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename: "altaspan_products.csv",
+      source: "product_import_template",
+      entityType: "product",
+      mimeType: "text/csv",
+    });
   }, [exportData]);
 
   const executeImport = useCallback(() => {

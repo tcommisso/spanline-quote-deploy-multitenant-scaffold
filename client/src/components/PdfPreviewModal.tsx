@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Download, X, ZoomIn, ZoomOut } from "lucide-react";
+import { logClientDownload } from "@/lib/userActivity";
 
 interface PdfPreviewModalProps {
   open: boolean;
@@ -33,6 +34,12 @@ export default function PdfPreviewModal({ open, onClose, blob, filename }: PdfPr
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();
+    logClientDownload({
+      filename,
+      source: "pdf_preview_modal",
+      entityType: "pdf_preview",
+      mimeType: blob.type || "application/pdf",
+    });
     setTimeout(() => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);

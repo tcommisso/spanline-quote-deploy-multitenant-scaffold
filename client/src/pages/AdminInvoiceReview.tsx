@@ -21,6 +21,7 @@ import {
   CheckCheck, Undo2, Pencil,
 } from "lucide-react";
 import { PlanAnnotation } from "@/components/PlanAnnotation";
+import { logClientDownload } from "@/lib/userActivity";
 
 // ─── Status Badge ───────────────────────────────────────────────────────────
 
@@ -884,10 +885,19 @@ function InvoiceDetailDialog({ invoiceId, open, onClose }: { invoiceId: number; 
                           const content = await zip.generateAsync({ type: "blob" });
                           const url = URL.createObjectURL(content);
                           const a = document.createElement("a");
+                          const filename = `invoice-${data.invoice.invoiceNumber || invoiceId}-photos.zip`;
                           a.href = url;
-                          a.download = `invoice-${data.invoice.invoiceNumber || invoiceId}-photos.zip`;
+                          a.download = filename;
                           a.click();
                           URL.revokeObjectURL(url);
+                          logClientDownload({
+                            filename,
+                            source: "invoice_review_photo_zip",
+                            entityType: "trade_invoice",
+                            entityId: invoiceId,
+                            mimeType: "application/zip",
+                            metadata: { photoCount: data.photos.length },
+                          });
                           toast.success("Photos downloaded");
                         } catch (err) {
                           toast.error("Failed to download photos");

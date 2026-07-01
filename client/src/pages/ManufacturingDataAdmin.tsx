@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Archive, Download, Factory, PackagePlus, Pencil, RotateCcw, Search, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 type ManufacturingProduct = {
   id: number;
@@ -270,12 +271,20 @@ export default function ManufacturingDataAdmin() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
+    const filename = `manufacturing-data-${new Date().toISOString().slice(0, 10)}.csv`;
     link.href = url;
-    link.download = `manufacturing-data-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "manufacturing_data_export",
+      entityType: "manufacturing_product",
+      mimeType: "text/csv",
+      metadata: { rowCount: products.length },
+    });
   };
 
   const importCsv = async (file: File | null) => {

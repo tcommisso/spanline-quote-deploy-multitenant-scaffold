@@ -7,6 +7,7 @@ import jsPDF from "jspdf";
 import { renderRoofDiagram, parseRoofType, type RoofDiagramOptions } from "./renderRoofDiagram";
 import { loadCompanyDetails, loadCustomLogo, type CustomLogo, type CompanyDetails } from "./proposalStore";
 import { computePerSideInset, type PerSideSetbacks } from "./polygonInset";
+import { logClientDownload } from "./userActivity";
 
 
 
@@ -1610,6 +1611,14 @@ export async function generateBatchDiagramPdf(data: BatchDiagramData, mode: "dow
     document.body.appendChild(a);
     a.click();
     setTimeout(() => document.body.removeChild(a), 1000);
+    logClientDownload({
+      filename,
+      source: "batch_diagram_pdf",
+      entityType: "quote",
+      entityId: data.quoteNumber,
+      mimeType: "application/pdf",
+      metadata: { clientName: data.clientName },
+    });
     return null;
   }
 }

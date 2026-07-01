@@ -22,6 +22,7 @@ import {
 } from "./proposalStore";
 import { getAppendixPages, type SectionType } from "./proposalAppendixPlugins";
 import { trpcVanilla } from "./trpcVanilla";
+import { logClientDownload } from "./userActivity";
 import {
   PROPOSAL_LIBRARY_CONTENT_LABELS,
   PROPOSAL_LIBRARY_SECTION_LABELS,
@@ -405,6 +406,14 @@ export async function generateProposalPdf(
   switch (mode) {
     case "download":
       doc.save(fileName);
+      logClientDownload({
+        filename: fileName,
+        source: "consolidated_proposal_pdf",
+        entityType: "proposal",
+        entityId: data.proposalNumber,
+        mimeType: "application/pdf",
+        metadata: { clientName: data.clientName },
+      });
       return;
     case "preview":
       const blob = doc.output("blob");

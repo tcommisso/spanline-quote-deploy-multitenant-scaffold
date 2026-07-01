@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Clock, TrendingUp, Tag, History, ArrowRight, Download, RotateCcw, Filter, FileText, Palette } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 const ACTION_CONFIG: Record<string, { label: string; icon: any; color: string; badgeClass: string }> = {
   financial_update: { label: "Financial Update", icon: TrendingUp, color: "text-blue-600", badgeClass: "bg-blue-50 text-blue-700 border-blue-200" },
@@ -99,9 +100,18 @@ function exportToCSV(revisions: any[], quoteId: number) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `quote-${quoteId}-revisions.csv`;
+  const filename = `quote-${quoteId}-revisions.csv`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+  logClientDownload({
+    filename,
+    source: "quote_revision_history_export",
+    entityType: "quote",
+    entityId: quoteId,
+    mimeType: "text/csv",
+    metadata: { rowCount: revisions.length },
+  });
 }
 
 interface QuoteRevisionHistoryProps {

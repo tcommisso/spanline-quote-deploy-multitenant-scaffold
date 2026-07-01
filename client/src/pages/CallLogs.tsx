@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { logClientDownload } from "@/lib/userActivity";
 import {
   Dialog,
   DialogContent,
@@ -534,10 +535,18 @@ export default function CallLogs() {
       const blob = new Blob([result.csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
+      const filename = `call-logs-${new Date().toISOString().slice(0, 10)}.csv`;
       a.href = url;
-      a.download = `call-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename,
+        source: "call_logs_export",
+        entityType: "call_log",
+        mimeType: "text/csv",
+        metadata: { rowCount: result.count, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined },
+      });
       toast.success(`Exported ${result.count} calls`);
     } catch {
       toast.error("Export failed");

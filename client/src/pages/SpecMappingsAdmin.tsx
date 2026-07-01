@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import ConfirmDeleteDialog from "@/components/ConfirmDeleteDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SPEC_DEFINED_TERMS, SPEC_FIELDS, type SpecDefinedTerm, type SpecFieldDefinition, type SpecFieldType } from "@shared/spec-field-catalogue";
+import { logClientDownload } from "@/lib/userActivity";
 
 // Tab options are now loaded dynamically from the Tab Names master data (product_tab category)
 
@@ -135,6 +136,13 @@ function downloadCsv(filename: string, headers: string[], rows: unknown[][]) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+  logClientDownload({
+    filename,
+    source: "spec_mappings_export",
+    entityType: "spec_mapping",
+    mimeType: "text/csv",
+    metadata: { rowCount: rows.length },
+  });
 }
 
 interface TargetTabOption {

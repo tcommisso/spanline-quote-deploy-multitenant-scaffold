@@ -21,6 +21,7 @@ import DeckBoardLayout from "./DeckBoardLayout";
 import DeckSideView from "./DeckSideView";
 import DeckBoardProfile from "./DeckBoardProfile";
 import { DeckStairDesign } from "./DeckStairDesign";
+import { logClientDownload } from "@/lib/userActivity";
 import {
   calculateSubfloor,
   computeDesignArea,
@@ -207,10 +208,18 @@ export default function DeckDesignPanel({
       canvas.toBlob((blob) => {
         if (!blob) return;
         const a = document.createElement("a");
+        const filename = `deck-${expandedView === "plan" ? "plan-view" : "board-layout"}-${Date.now()}.png`;
         a.href = URL.createObjectURL(blob);
-        a.download = `deck-${expandedView === "plan" ? "plan-view" : "board-layout"}-${Date.now()}.png`;
+        a.download = filename;
         a.click();
         URL.revokeObjectURL(a.href);
+        logClientDownload({
+          filename,
+          source: "deck_design_image_export",
+          entityType: "deck_quote",
+          mimeType: "image/png",
+          metadata: { view: expandedView },
+        });
       }, "image/png");
       URL.revokeObjectURL(url);
     };

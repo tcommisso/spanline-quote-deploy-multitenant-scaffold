@@ -111,6 +111,7 @@ import {
   Tag,
   ListFilter,
   Phone,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
@@ -283,6 +284,7 @@ const adminGroups: AdminGroup[] = [
       { icon: Globe, label: "Client Portal", path: "/admin/portal-management" },
       { icon: HardHat, label: "Trade Portal", path: "/admin/trade-portal-content" },
       { icon: History, label: "Impersonation Log", path: "/admin/impersonation-log" },
+      { icon: Activity, label: "Activity Log", path: "/admin/activity-log" },
     ],
   },
   {

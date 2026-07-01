@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { PlanAnnotation } from "@/components/PlanAnnotation";
 import JSZip from "jszip";
+import { logClientDownload } from "@/lib/userActivity";
 
 const statusConfig: Record<string, { label: string; color: string }> = {
   submitted_to_client: { label: "Awaiting Your Approval", color: "bg-primary/10 text-primary" },
@@ -363,12 +364,23 @@ function DownloadAllButton() {
       const content = await zip.generateAsync({ type: "blob" });
       const url = URL.createObjectURL(content);
       const a = document.createElement("a");
+      const filename = `Approved_Plans_${new Date().toISOString().slice(0, 10)}.zip`;
       a.href = url;
-      a.download = `Approved_Plans_${new Date().toISOString().slice(0, 10)}.zip`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename,
+        source: "client_portal_approved_plans_zip",
+        entityType: "portal_plan",
+        mimeType: "application/zip",
+        metadata: {
+          fileCount: files.length,
+          zippedFileCount: usedNames.size,
+        },
+      });
       toast.success("ZIP downloaded successfully");
     } catch (e) {
       console.error("ZIP generation failed:", e);

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Package, DollarSign, Download } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { logClientDownload } from "@/lib/userActivity";
 import type { RoofStyle } from "./PatioStructureOverlay";
 import type { ColorbondColour } from "@/lib/colorbondColours";
 import type { PatioElement } from "./PatioElementLibrary";
@@ -412,11 +413,19 @@ export default function PatioMaterialsList({
     const slug = projectName
       ? projectName.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase()
       : "patio";
-    link.download = `${slug}-materials-estimate-${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `${slug}-materials-estimate-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "patio_materials_estimate_csv",
+      entityType: "patio_project",
+      mimeType: "text/csv",
+      metadata: { projectName, rowCount: materials.length },
+    });
   }, [materials, ratesByCode, hasRates, gutteringCostTotal, gutteringSellTotal, projectName]);
 
   return (

@@ -205,6 +205,7 @@ const DaNews = lazy(() => import("./pages/da-portal/DaNews"));
 const AdminDaInvoiceApproval = lazy(() => import("./pages/AdminDaInvoiceApproval"));
 const AdminDaCommissions = lazy(() => import("./pages/AdminDaCommissions"));
 const AdminImpersonationLog = lazy(() => import("./pages/AdminImpersonationLog"));
+const AdminActivityLog = lazy(() => import("./pages/AdminActivityLog"));
 const AdminColourScheme = lazy(() => import("./pages/AdminColourScheme"));
 import DaPortalLayout from "./pages/da-portal/DaPortalLayout";
 
@@ -539,6 +540,7 @@ function MainRouter() {
         <Route path="/admin/construction-checklist-templates">{() => <AdminRoute><ConstructionChecklistTemplates /></AdminRoute>}</Route>
         <Route path="/admin/checklist-pricing">{() => <AdminRoute><AdminChecklistPricing /></AdminRoute>}</Route>
         <Route path="/admin/impersonation-log">{() => <AdminRoute><AdminImpersonationLog /></AdminRoute>}</Route>
+        <Route path="/admin/activity-log">{() => <AdminRoute><AdminActivityLog /></AdminRoute>}</Route>
         <Route path="/admin/calendar-views">{() => <AdminRoute><CalendarViewsAdmin /></AdminRoute>}</Route>
         <Route path="/admin/support-submissions">{() => <AdminRoute><AdminSupportSubmissions /></AdminRoute>}</Route>
         <Route path="/admin/colour-scheme">{() => <AdminRoute><AdminColourScheme /></AdminRoute>}</Route>

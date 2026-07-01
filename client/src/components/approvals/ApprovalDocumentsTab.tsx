@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Eye, Upload, FileText, Plus, Package, Loader2, CheckCircle2, X, FolderUp } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 interface Props {
   projectId: number;
@@ -114,6 +115,18 @@ export function ApprovalDocumentsTab({ projectId }: Props) {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        logClientDownload({
+          filename: item.fileName,
+          source: "approval_document_pack_item",
+          entityType: "approval_document",
+          metadata: {
+            projectId,
+            packDownload: true,
+            documentType: item.documentType,
+            status: item.status,
+            title: item.title,
+          },
+        });
         await new Promise((r) => setTimeout(r, 500));
       }
     },

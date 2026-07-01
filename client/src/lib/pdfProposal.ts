@@ -17,6 +17,7 @@ import {
   type ProposalText,
 } from "./proposalStore";
 import { computePerSideInset, type PerSideSetbacks } from "./polygonInset";
+import { logClientDownload } from "./userActivity";
 
 /** Load an image from a URL into an HTMLImageElement, returns null on failure */
 function loadImage(url: string): Promise<HTMLImageElement | null> {
@@ -313,6 +314,14 @@ export async function generateProposalPDF(
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+    logClientDownload({
+      filename,
+      source: "proposal_pdf",
+      entityType: "quote",
+      entityId: data.quoteNumber,
+      mimeType: "application/pdf",
+      metadata: { clientName: data.clientName },
+    });
   }
   return undefined;
 }

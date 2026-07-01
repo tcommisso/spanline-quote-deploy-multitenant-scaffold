@@ -8,6 +8,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { applyInternalUseWatermark } from "./pdfWatermark";
 import { loadCompanyDetails, loadCustomLogo, type CustomLogo, type CompanyDetails } from "./proposalStore";
+import { logClientDownload } from "./userActivity";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,12 @@ function savePdfReliably(doc: jsPDF, filename: string) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => document.body.removeChild(a), 1000);
+  logClientDownload({
+    filename,
+    source: "da_commission_statement_pdf",
+    entityType: "da_commission",
+    mimeType: "application/pdf",
+  });
 }
 
 function getLogoData(): string | null {

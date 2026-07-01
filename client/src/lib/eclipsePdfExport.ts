@@ -13,6 +13,7 @@ import autoTable from "jspdf-autotable";
 import type { UnitInput, ProjectResult, AdditionalCosts, ValidationError } from "../../../shared/eclipseCalculations";
 import { totalAdditionalCosts, additionalCostsToArray, validateAllUnits } from "../../../shared/eclipseCalculations";
 import { loadCompanyDetails, loadCustomLogo, type CustomLogo, type CompanyDetails } from "./proposalStore";
+import { logClientDownload } from "./userActivity";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,12 @@ function savePdfReliably(doc: jsPDF, filename: string) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => document.body.removeChild(a), 1000);
+  logClientDownload({
+    filename,
+    source: "eclipse_pdf",
+    entityType: "eclipse_quote",
+    mimeType: "application/pdf",
+  });
 }
 
 /** Load the custom logo from proposalStore, or fall back to null */

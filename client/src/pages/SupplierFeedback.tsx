@@ -12,6 +12,7 @@ import { Plus, Star, Trash2, Filter, FileDown } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
+import { logClientDownload } from "@/lib/userActivity";
 
 function StarRating({ value, onChange, size = "md" }: { value: number; onChange?: (v: number) => void; size?: "sm" | "md" }) {
   const starSize = size === "sm" ? "h-4 w-4" : "h-5 w-5";
@@ -287,6 +288,13 @@ function DownloadScorecardButton({ supplierId }: { supplierId: number }) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename: data.filename,
+        source: "supplier_scorecard_pdf",
+        entityType: "supplier",
+        entityId: supplierId,
+        mimeType: "application/pdf",
+      });
       toast.success("Scorecard PDF downloaded");
     },
     onError: (e) => toast.error(e.message),

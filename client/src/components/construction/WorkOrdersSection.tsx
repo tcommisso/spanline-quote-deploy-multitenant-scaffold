@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Wrench, Plus, Loader2, Trash2, DollarSign, Calendar, CheckCircle2, Clock, AlertTriangle, Play, Ban, FileDown } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 interface WorkOrdersSectionProps {
   jobId: number;
@@ -89,6 +90,13 @@ export default function WorkOrdersSection({ jobId, assignments }: WorkOrdersSect
       a.download = data.fileName;
       a.click();
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename: data.fileName,
+        source: "job_work_order_pdf",
+        entityType: "job_work_order",
+        entityId: jobId,
+        mimeType: "application/pdf",
+      });
       toast.success("Work order PDF downloaded");
     },
     onError: (e) => toast.error(e.message),

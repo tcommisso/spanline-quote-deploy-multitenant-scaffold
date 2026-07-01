@@ -51,6 +51,7 @@ const TENANT_ID_TABLES = [
   "cpc_service_history",
   "trade_portal_access",
   "permission_audit_log",
+  "user_activity_log",
   "user_dashboard_config",
   "user_schedule_blocks",
   "user_notification_preferences",

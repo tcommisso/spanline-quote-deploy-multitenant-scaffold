@@ -37,6 +37,7 @@ import {
   Layers,
   CheckSquare,
 } from "lucide-react";
+import { logClientDownload } from "@/lib/userActivity";
 import { toast } from "sonner";
 import {
   RENDER_STYLE_PRESETS,
@@ -174,11 +175,19 @@ export function PatioAIRender({ projectId, hasPhoto, photoUrl }: PatioAIRenderPr
 
   const handleDownload = useCallback((url: string, index: number) => {
     const link = document.createElement("a");
+    const filename = `patio-render-${index + 1}.png`;
     link.href = url;
-    link.download = `patio-render-${index + 1}.png`;
+    link.download = filename;
     link.target = "_blank";
     link.click();
-  }, []);
+    logClientDownload({
+      filename,
+      source: "patio_ai_render_history_png",
+      entityType: "patio_project",
+      entityId: projectId,
+      mimeType: "image/png",
+    });
+  }, [projectId]);
 
   const sortedHistory = useMemo(
     () => [...(renderHistory || [])].sort((a, b) => {
@@ -649,10 +658,18 @@ export function PatioAIRender({ projectId, hasPhoto, photoUrl }: PatioAIRenderPr
                   size="sm"
                   onClick={() => {
                     const link = document.createElement("a");
+                    const filename = "patio-ai-render.png";
                     link.href = previewUrl;
-                    link.download = "patio-ai-render.png";
+                    link.download = filename;
                     link.target = "_blank";
                     link.click();
+                    logClientDownload({
+                      filename,
+                      source: "patio_ai_render_preview_png",
+                      entityType: "patio_project",
+                      entityId: projectId,
+                      mimeType: "image/png",
+                    });
                   }}
                   className="gap-1.5"
                 >

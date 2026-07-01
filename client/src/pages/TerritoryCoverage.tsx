@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { logClientDownload } from "@/lib/userActivity";
 
 export default function TerritoryCoverage() {
   const { data: report, isLoading, refetch } = trpc.territory.coverageReport.useQuery();
@@ -96,10 +97,18 @@ export default function TerritoryCoverage() {
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `territory-coverage-${new Date().toISOString().slice(0, 10)}.csv`;
     a.href = url;
-    a.download = `territory-coverage-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "territory_coverage_export",
+      entityType: "territory",
+      mimeType: "text/csv",
+      metadata: { lineCount: lines.length },
+    });
     toast.success("Territory coverage report downloaded.");
   };
 

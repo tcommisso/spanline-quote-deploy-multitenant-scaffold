@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DollarSign, Download, FileText } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { generateDaCommissionStatementPdf } from "@/lib/daCommissionStatementPdf";
+import { logClientDownload } from "@/lib/userActivity";
 
 function fmt(val: string | number | null | undefined): string {
   const n = parseFloat(String(val || "0"));
@@ -70,10 +71,18 @@ export default function DaCommissions() {
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `commission-statement-${new Date().toISOString().split("T")[0]}.csv`;
     a.href = url;
-    a.download = `commission-statement-${new Date().toISOString().split("T")[0]}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+    logClientDownload({
+      filename,
+      source: "da_commission_statement_csv",
+      entityType: "da_commission",
+      mimeType: "text/csv",
+      metadata: { rowCount: commissions.length },
+    });
   }
 
   if (isLoading) {

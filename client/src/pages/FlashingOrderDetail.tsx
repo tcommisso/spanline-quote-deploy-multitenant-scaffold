@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 type Point = { x: number; y: number };
 type Geometry = {
@@ -1826,7 +1827,16 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
       });
 
       addFooter();
-      doc.save(`${safeFileName(order.orderNumber)}-flashing-order.pdf`);
+      const filename = `${safeFileName(order.orderNumber)}-flashing-order.pdf`;
+      doc.save(filename);
+      logClientDownload({
+        filename,
+        source: "flashing_order_pdf",
+        entityType: "flashing_order",
+        entityId: order.id,
+        mimeType: "application/pdf",
+        metadata: { orderNumber: order.orderNumber },
+      });
       toast.success("Flashing PDF downloaded");
     } catch (error: any) {
       toast.error(`Failed to generate flashing PDF: ${error?.message || "Unknown error"}`);

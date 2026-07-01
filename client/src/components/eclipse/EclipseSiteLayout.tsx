@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RotateCw, Download } from "lucide-react";
 import type { UnitInput } from "../../../../shared/eclipseCalculations";
+import { logClientDownload } from "@/lib/userActivity";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -761,9 +762,16 @@ const EclipseSiteLayout = forwardRef<EclipseSiteLayoutHandle, EclipseSiteLayoutP
             const canvas = canvasRef.current;
             if (!canvas) return;
             const link = document.createElement('a');
-            link.download = `site-layout-${new Date().toISOString().slice(0, 10)}.png`;
+            const filename = `site-layout-${new Date().toISOString().slice(0, 10)}.png`;
+            link.download = filename;
             link.href = canvas.toDataURL('image/png');
             link.click();
+            logClientDownload({
+              filename,
+              source: "eclipse_site_layout_png",
+              entityType: "eclipse_quote",
+              mimeType: "image/png",
+            });
           }}
         >
           <Download className="w-3.5 h-3.5 mr-1" /> Download PNG

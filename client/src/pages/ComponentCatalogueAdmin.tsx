@@ -21,6 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2, Search, Plus, Pencil, Archive, ArchiveRestore, Upload, Package, Tags, Layers, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 type CatalogueProduct = {
   id: number;
@@ -74,6 +75,13 @@ function downloadCsv(filename: string, products: CatalogueProduct[]) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+  logClientDownload({
+    filename,
+    source: "component_catalogue_export",
+    entityType: "component_catalogue_product",
+    mimeType: "text/csv",
+    metadata: { rowCount: products.length },
+  });
 }
 
 export default function ComponentCatalogueAdmin() {

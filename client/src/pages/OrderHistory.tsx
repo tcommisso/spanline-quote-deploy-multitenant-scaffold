@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 const PAGE_SIZE = 20;
 
@@ -94,11 +95,25 @@ function ExportCsvButton({ jobNumber, status, dateFrom, dateTo }: {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `order-history-${new Date().toISOString().split("T")[0]}.csv`;
+        const filename = `order-history-${new Date().toISOString().split("T")[0]}.csv`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        logClientDownload({
+          filename,
+          source: "smartshop_order_history_export",
+          entityType: "smartshop_order",
+          mimeType: "text/csv",
+          metadata: {
+            rowCount: result.data.rowCount,
+            jobNumber,
+            status,
+            dateFrom,
+            dateTo,
+          },
+        });
         toast.success(`Exported ${result.data.rowCount} rows`);
       }
     } catch (err: any) {
@@ -447,6 +462,13 @@ function OrderDetailDialog({
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename: result.fileName,
+        source: "smartshop_order_pdf",
+        entityType: "smartshop_order",
+        entityId: orderId,
+        mimeType: "application/pdf",
+      });
       toast.success("PDF downloaded successfully");
     },
     onError: (err) => {

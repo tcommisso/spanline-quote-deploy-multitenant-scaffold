@@ -36,6 +36,7 @@ import {
   AreaChart,
 } from "recharts";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 import { useLocation } from "wouter";
 import { OnboardingTour, TourHelpButton } from "@/components/OnboardingTour";
 import { HelpLink } from "@/components/HelpLink";
@@ -347,8 +348,16 @@ export default function ConstructionDashboard() {
               const blob = new Blob([csv], { type: "text/csv" });
               const url = URL.createObjectURL(blob);
               const a = document.createElement("a");
-              a.href = url; a.download = `construction-jobs-${fyLabel}.csv`; a.click();
+              const filename = `construction-jobs-${fyLabel}.csv`;
+              a.href = url; a.download = filename; a.click();
               URL.revokeObjectURL(url);
+              logClientDownload({
+                filename,
+                source: "construction_dashboard_jobs_export",
+                entityType: "construction_job",
+                mimeType: "text/csv",
+                metadata: { rowCount: jobs.length, financialYear: fyLabel },
+              });
               toast.success(`Exported ${jobs.length} jobs to CSV`);
             }}
           >

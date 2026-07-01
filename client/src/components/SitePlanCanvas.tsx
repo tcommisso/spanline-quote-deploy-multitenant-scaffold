@@ -8,6 +8,7 @@ import {
   Pencil, Square, Circle, Minus, Type, Undo2, Redo2, Trash2, Download, Upload, Move, MousePointer, Eraser,
 } from "lucide-react";
 import { Canvas, Rect, Circle as FabricCircle, Line, IText, PencilBrush, FabricObject } from "fabric";
+import { logClientDownload } from "@/lib/userActivity";
 
 type Tool = "select" | "pencil" | "rect" | "circle" | "line" | "text" | "eraser";
 
@@ -236,9 +237,16 @@ export default function SitePlanCanvas({
     if (!canvas) return;
     const dataUrl = canvas.toDataURL({ format: "png", multiplier: 2 });
     const link = document.createElement("a");
-    link.download = "site-plan.png";
+    const filename = "site-plan.png";
+    link.download = filename;
     link.href = dataUrl;
     link.click();
+    logClientDownload({
+      filename,
+      source: "site_plan_canvas_png",
+      entityType: "site_plan",
+      mimeType: "image/png",
+    });
   };
 
   const handleSave = () => {

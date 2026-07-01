@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Eye, Download, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { computePerSideInset, type PerSideSetbacks } from "@/lib/polygonInset";
+import { logClientDownload } from "@/lib/userActivity";
 
 interface SitePlanPreviewDialogProps {
   open: boolean;
@@ -522,9 +523,17 @@ export default function SitePlanPreviewDialog({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const link = document.createElement("a");
-    link.download = `SitePlan_${quoteNumber || "preview"}.png`;
+    const filename = `SitePlan_${quoteNumber || "preview"}.png`;
+    link.download = filename;
     link.href = canvas.toDataURL("image/png");
     link.click();
+    logClientDownload({
+      filename,
+      source: "site_plan_preview_png",
+      entityType: "quote",
+      entityId: quoteNumber || undefined,
+      mimeType: "image/png",
+    });
   }
 
   return (

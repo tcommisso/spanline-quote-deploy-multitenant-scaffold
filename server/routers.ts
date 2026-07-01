@@ -85,6 +85,7 @@ import { driverRouter } from "./driver-router";
 import { geotrackingRouter } from "./geotracking-router";
 import { textBlocksRouter } from "./text-blocks-router";
 import { notificationLogRouter } from "./notification-log-router";
+import { userActivityRouter } from "./user-activity-router";
 import { appCentralRouter } from "./app-central-router";
 import { checklistItemsRouter } from "./checklist-items-router";
 import { checklistDefaultsRouter } from "./checklist-defaults-router";
@@ -332,6 +333,7 @@ export const appRouter = router({
   geotracking: geotrackingRouter,
   textBlocks: textBlocksRouter,
   notificationLog: notificationLogRouter,
+  userActivity: userActivityRouter,
   appCentral: appCentralRouter,
   chat: chatRouter,
   auth: router({

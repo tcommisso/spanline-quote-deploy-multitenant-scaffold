@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Pen, Eraser, Undo2, Download, X, Circle, Square, Type, Minus } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 type Tool = "pen" | "line" | "circle" | "rectangle" | "eraser";
 type DrawAction = {
@@ -189,9 +190,17 @@ export function PlanAnnotation({ open, onClose, imageUrl, planTitle, onSave }: P
     const canvas = canvasRef.current;
     if (!canvas) return;
     const link = document.createElement("a");
-    link.download = `${planTitle}-annotated.png`;
+    const filename = `${planTitle}-annotated.png`;
+    link.download = filename;
     link.href = canvas.toDataURL("image/png");
     link.click();
+    logClientDownload({
+      filename,
+      source: "plan_annotation_png",
+      entityType: "plan",
+      mimeType: "image/png",
+      metadata: { planTitle },
+    });
     toast.success("Annotated plan downloaded");
   };
 

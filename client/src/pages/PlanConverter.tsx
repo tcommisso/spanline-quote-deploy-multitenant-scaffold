@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { isAdminRole } from "@shared/const";
+import { logClientDownload } from "@/lib/userActivity";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Plus, Upload, FileText, Download, Trash2, ArrowLeft, Loader2,
@@ -87,9 +88,17 @@ function PlanConverterList({ onSelect }: { onSelect: (id: number) => void }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `drawing-template-${variables?.pageSize || "A4"}.pdf`;
+      const filename = `drawing-template-${variables?.pageSize || "A4"}.pdf`;
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename,
+        source: "plan_converter_template_pdf",
+        entityType: "plan_converter",
+        mimeType: "application/pdf",
+        metadata: { pageSize: variables?.pageSize || "A4" },
+      });
       toast.success(`${variables?.pageSize || "A4"} template downloaded — print it and draw your plan!`);
     },
     onError: (e) => toast.error(e.message),
@@ -103,9 +112,16 @@ function PlanConverterList({ onSelect }: { onSelect: (id: number) => void }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "connections-brackets-index.pdf";
+      const filename = "connections-brackets-index.pdf";
+      a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename,
+        source: "plan_converter_connections_index_pdf",
+        entityType: "plan_converter",
+        mimeType: "application/pdf",
+      });
       toast.success("Connections & Brackets Index downloaded");
     },
     onError: (e) => toast.error(e.message),

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DollarSign, ExternalLink, Download, CheckCircle, Clock, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import { logClientDownload } from "@/lib/userActivity";
 
 function ProgressPaymentSchedule() {
   const { data, isLoading } = trpc.portal.getPaymentSchedule.useQuery();
@@ -120,6 +121,13 @@ export default function PortalInvoices() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      logClientDownload({
+        filename,
+        source: "client_portal_invoice_pdf",
+        entityType: "portal_invoice_document",
+        mimeType: blob.type || "application/pdf",
+        metadata: { title },
+      });
     } catch {
       toast.error("Failed to download invoice PDF");
     }
