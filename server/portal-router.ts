@@ -1,13 +1,13 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getDb, getTenantBrandingSettings } from "./db";
-import { eq, and, desc, or, gt, sql } from "drizzle-orm";
+import { eq, and, desc, asc, or, gt, sql } from "drizzle-orm";
 import {
   portalAccess, portalSessions, portalDocuments,
   portalVariations, portalDefects, portalMaintenanceRequests,
   portalNews, portalProducts, cpcPlans, cpcSubscriptions, cpcServiceHistory,
   constructionJobs, constructionProgress, clientActivities, xeroProjectMappings, jobSharedFiles,
-  portalPhotoComments,
+  portalPhotoComments, constructionJobInstructions,
   approvalProjects, approvalLodgements, approvalInspections, approvalTasks, approvalRfis,
   patioPlanner, crmLeads,
 } from "../drizzle/schema";
@@ -372,6 +372,31 @@ export const portalRouter = router({
       completedStages: completedStages.length,
       progressPercent: stages.length > 0 ? Math.round((completedStages.length / stages.length) * 100) : 0,
     };
+  }),
+
+  getVisibleChecklistItems: protectedPortalProcedure.query(async ({ ctx }) => {
+    const db = await requireDb();
+    return db.select({
+      id: constructionJobInstructions.id,
+      title: constructionJobInstructions.title,
+      description: constructionJobInstructions.description,
+      category: constructionJobInstructions.category,
+      status: constructionJobInstructions.status,
+      priority: constructionJobInstructions.priority,
+      isBlocking: constructionJobInstructions.isBlocking,
+      dueAt: constructionJobInstructions.dueAt,
+      triggerLabel: constructionJobInstructions.triggerLabel,
+      responseType: constructionJobInstructions.responseType,
+      responseValue: constructionJobInstructions.responseValue,
+      updatedAt: constructionJobInstructions.updatedAt,
+    })
+      .from(constructionJobInstructions)
+      .innerJoin(constructionJobs, eq(constructionJobInstructions.jobId, constructionJobs.id))
+      .where(and(
+        ...portalJobConditions(ctx, eq(constructionJobInstructions.jobId, ctx.portalAccess.constructionJobId)),
+        eq(constructionJobInstructions.visibleToClient, true),
+      ))
+      .orderBy(desc(constructionJobInstructions.isBlocking), asc(constructionJobInstructions.sortOrder), asc(constructionJobInstructions.createdAt));
   }),
 
   // ─── Documents ──────────────────────────────────────────────────────────────

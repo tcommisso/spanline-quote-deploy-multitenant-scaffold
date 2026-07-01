@@ -908,7 +908,7 @@ export default function ConstructionClientDetail() {
 
         {/* Final Inspection Tab */}
         <TabsContent value="final-inspection" className="space-y-4">
-          <FinalInspectionSection jobId={jobId} />
+          <FinalInspectionSection job={job} jobId={jobId} assignments={assignments} />
         </TabsContent>
 
         {/* Maintenance & Warranty Tab */}
@@ -1094,6 +1094,7 @@ function toDateInputValue(value?: string | Date | null) {
 function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments: any[] }) {
   const utils = trpc.useUtils();
   const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
+  const usersQuery = trpc.constructionClients.assignableUsers.useQuery();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({
     title: "",
@@ -1102,7 +1103,9 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
     status: "open",
     priority: "normal",
     visibleToTrade: true,
+    visibleToClient: false,
     assignedInstallerId: "all",
+    sendToUserId: "none",
     isBlocking: false,
     dueAt: "",
     triggerLabel: "",
@@ -1117,7 +1120,9 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
       status: "open",
       priority: "normal",
       visibleToTrade: true,
+      visibleToClient: false,
       assignedInstallerId: "all",
+      sendToUserId: "none",
       isBlocking: false,
       dueAt: "",
       triggerLabel: "",
@@ -1157,6 +1162,14 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
       role: assignment.role,
     }));
   const uniqueTradeOptions = Array.from(new Map(tradeOptions.map((trade) => [trade.id, trade])).values());
+  const assignableUsers = useMemo(
+    () => [...(usersQuery.data || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
+    [usersQuery.data],
+  );
+  const assignableUserById = useMemo(
+    () => new Map(assignableUsers.map((user: any) => [Number(user.id), user])),
+    [assignableUsers],
+  );
 
   const saveInstruction = () => {
     const payload = {
@@ -1166,7 +1179,9 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
       status: form.status as any,
       priority: form.priority as any,
       visibleToTrade: form.visibleToTrade,
+      visibleToClient: form.visibleToClient,
       assignedInstallerId: form.assignedInstallerId === "all" ? null : Number(form.assignedInstallerId),
+      sendToUserId: form.sendToUserId === "none" ? null : Number(form.sendToUserId),
       isBlocking: form.isBlocking,
       dueAt: form.dueAt || null,
       triggerLabel: form.triggerLabel.trim() || null,
@@ -1191,7 +1206,9 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
       status: instruction.status || "open",
       priority: instruction.priority || "normal",
       visibleToTrade: instruction.visibleToTrade !== false,
+      visibleToClient: !!instruction.visibleToClient,
       assignedInstallerId: instruction.assignedInstallerId ? String(instruction.assignedInstallerId) : "all",
+      sendToUserId: instruction.sendToUserId ? String(instruction.sendToUserId) : "none",
       isBlocking: !!instruction.isBlocking,
       dueAt: toDateInputValue(instruction.dueAt),
       triggerLabel: instruction.triggerLabel || "",
@@ -1232,11 +1249,13 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
                         <p className="font-medium">{instruction.title}</p>
                         {instruction.isBlocking && <Badge variant="destructive">Blocking</Badge>}
                         <Badge variant="outline" className={jobInstructionBadgeClass(instruction.status)}>{formatDetailStatus(instruction.status)}</Badge>
+                        {instruction.visibleToClient && <Badge variant="outline">Client portal</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {formatDetailStatus(instruction.category)}
                         {instruction.assignedInstallerName ? ` - ${instruction.assignedInstallerName}` : " - All visible trades"}
                         {instruction.visibleToTrade ? " - Trade portal" : " - Internal"}
+                        {instruction.sendToUserId ? ` - Send to ${userDisplayName(assignableUserById.get(Number(instruction.sendToUserId)))}` : ""}
                       </p>
                       {instruction.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{instruction.description}</p>}
                       {(instruction.dueAt || instruction.triggerLabel) && (
@@ -1349,6 +1368,29 @@ function JobInstructionsTab({ jobId, assignments }: { jobId: number; assignments
           <label className="flex items-center gap-2 rounded-md border p-2 text-sm">
             <input
               type="checkbox"
+              checked={form.visibleToClient}
+              onChange={(e) => setForm({ ...form, visibleToClient: e.target.checked })}
+              className="h-4 w-4"
+            />
+            Show in client portal
+          </label>
+          <div className="space-y-1.5">
+            <Label>Send to</Label>
+            <Select value={form.sendToUserId} onValueChange={(value) => setForm({ ...form, sendToUserId: value })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No default recipient</SelectItem>
+                {assignableUsers.map((user: any) => (
+                  <SelectItem key={user.id} value={String(user.id)}>
+                    {userDisplayName(user)}{user.role ? ` (${String(user.role).replace(/_/g, " ")})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <label className="flex items-center gap-2 rounded-md border p-2 text-sm">
+            <input
+              type="checkbox"
               checked={form.isBlocking}
               onChange={(e) => setForm({ ...form, isBlocking: e.target.checked })}
               className="h-4 w-4"
@@ -1419,7 +1461,17 @@ const FINAL_INSPECTION_RESPONSE_LABELS: Record<ConstructionChecklistResponseType
   date: "Date",
   image_upload: "Image upload",
   file_upload: "File upload",
+  client_lookup: "Client / job lookup",
+  trade_user_lookup: "Trade portal user lookup",
+  user_lookup: "System user lookup",
 };
+
+const CLIENT_LOOKUP_LABELS: Record<string, string> = {
+  client_name: "Client canonical name",
+  site_address: "Site / delivery address",
+  account_number: "Client account number",
+};
+const NO_LOOKUP_SELECTION = "__none__";
 
 type InstructionResponseFile = {
   url: string;
@@ -1446,6 +1498,23 @@ function dateResponseValue(value: unknown) {
   return value.slice(0, 10);
 }
 
+function userDisplayName(user: any) {
+  return user?.name || user?.email || (user?.id ? `User #${user.id}` : "User");
+}
+
+function clientLookupValue(job: any, lookupField?: string | null) {
+  if (lookupField === "site_address") return job?.siteAddress || "";
+  if (lookupField === "account_number") return job?.clientNumber || "";
+  return job?.clientName || "";
+}
+
+function responseLookupValue(value: unknown) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
 function readFileBase64(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -1458,10 +1527,11 @@ function readFileBase64(file: File) {
   });
 }
 
-function FinalInspectionSection({ jobId }: { jobId: number }) {
+function FinalInspectionSection({ job, jobId, assignments }: { job: any; jobId: number; assignments: any[] }) {
   const utils = trpc.useUtils();
   const instructionsQuery = trpc.constructionClients.jobInstructions.useQuery({ jobId }, { enabled: !!jobId });
   const templatesQuery = trpc.globalSettings.getConstructionChecklistTemplates.useQuery();
+  const usersQuery = trpc.constructionClients.assignableUsers.useQuery();
   const createInstruction = trpc.constructionClients.createJobInstruction.useMutation();
   const updateInstruction = trpc.constructionClients.updateJobInstruction.useMutation({
     onSuccess: () => utils.constructionClients.jobInstructions.invalidate({ jobId }),
@@ -1478,6 +1548,32 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
   const finalItems = instructions.filter(isFinalInspectionInstruction);
   const completedCount = finalItems.filter((item: any) => item.status === "done" || item.status === "not_applicable").length;
   const progress = finalItems.length > 0 ? Math.round((completedCount / finalItems.length) * 100) : 0;
+  const assignableUsers = useMemo(
+    () => [...(usersQuery.data || [])].sort((a: any, b: any) => userDisplayName(a).localeCompare(userDisplayName(b))),
+    [usersQuery.data],
+  );
+  const assignableUserById = useMemo(
+    () => new Map(assignableUsers.map((user: any) => [Number(user.id), user])),
+    [assignableUsers],
+  );
+  const tradeOptions = useMemo(() => {
+    const options = assignments
+      .filter((assignment: any) => assignment.installerId)
+      .map((assignment: any) => ({
+        id: Number(assignment.installerId),
+        label: assignment.installer?.name || `Installer #${assignment.installerId}`,
+        role: assignment.role,
+      }));
+    return Array.from(new Map(options.map((trade) => [trade.id, trade])).values());
+  }, [assignments]);
+
+  const initialResponseValueForTemplate = (item: any) => {
+    const responseType = String(item.responseType || "check");
+    if (responseType === "client_lookup") {
+      return clientLookupValue(job, Array.isArray(item.responseOptions) ? item.responseOptions[0] : null) || null;
+    }
+    return null;
+  };
 
   const seedDefaults = async () => {
     const templateItems = templatesQuery.data?.finalInspection?.items || [];
@@ -1500,7 +1596,9 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
         status: "open",
         priority: item.priority || "normal",
         visibleToTrade: Boolean(item.visibleToTrade),
+        visibleToClient: Boolean(item.visibleToClient),
         assignedInstallerId: null,
+        sendToUserId: item.sendToUserId ?? null,
         isBlocking: Boolean(item.isBlocking),
         dueAt: null,
         triggerLabel: "Final Inspection",
@@ -1509,7 +1607,7 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
         responseOptions: Array.isArray(item.responseOptions) ? item.responseOptions : [],
         responseRequired: Boolean(item.responseRequired),
         responseHelpText: item.responseHelpText || null,
-        responseValue: null,
+        responseValue: initialResponseValueForTemplate(item),
       })));
       await utils.constructionClients.jobInstructions.invalidate({ jobId });
       toast.success("Final inspection checklist loaded");
@@ -1533,7 +1631,9 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
         status: "open",
         priority: "normal",
         visibleToTrade: false,
+        visibleToClient: false,
         assignedInstallerId: null,
+        sendToUserId: null,
         isBlocking: false,
         dueAt: null,
         triggerLabel: "Final Inspection",
@@ -1698,6 +1798,66 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
       );
     }
 
+    if (responseType === "client_lookup") {
+      const lookupField = options[0] || "client_name";
+      return (
+        <div className="w-full space-y-1 sm:w-72">
+          <Input
+            defaultValue={responseLookupValue(item.responseValue) || clientLookupValue(job, lookupField)}
+            placeholder={CLIENT_LOOKUP_LABELS[lookupField] || "Client / job value"}
+            onBlur={(event) => saveResponseValue(item, event.currentTarget.value.trim() || null)}
+          />
+          <p className="text-[11px] text-muted-foreground">{CLIENT_LOOKUP_LABELS[lookupField] || "Client / job lookup"}</p>
+        </div>
+      );
+    }
+
+    if (responseType === "trade_user_lookup") {
+      const selected = responseLookupValue(item.responseValue);
+      return (
+        <Select
+          value={selected || NO_LOOKUP_SELECTION}
+          onValueChange={(value) => saveResponseValue(item, value === NO_LOOKUP_SELECTION ? null : value)}
+          disabled={updateInstruction.isPending || tradeOptions.length === 0}
+        >
+          <SelectTrigger className="w-full sm:w-72">
+            <SelectValue placeholder={tradeOptions.length ? "Select trade portal user..." : "No assigned trades"} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_LOOKUP_SELECTION}>No trade selected</SelectItem>
+            {tradeOptions.map((trade: any) => (
+              <SelectItem key={trade.id} value={String(trade.id)}>
+                {trade.label}{trade.role ? ` - ${trade.role}` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      );
+    }
+
+    if (responseType === "user_lookup") {
+      const selected = responseLookupValue(item.responseValue);
+      return (
+        <Select
+          value={selected || NO_LOOKUP_SELECTION}
+          onValueChange={(value) => saveResponseValue(item, value === NO_LOOKUP_SELECTION ? null : value)}
+          disabled={updateInstruction.isPending || assignableUsers.length === 0}
+        >
+          <SelectTrigger className="w-full sm:w-72">
+            <SelectValue placeholder={assignableUsers.length ? "Select user..." : "No users available"} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_LOOKUP_SELECTION}>No user selected</SelectItem>
+            {assignableUsers.map((user: any) => (
+              <SelectItem key={user.id} value={String(user.id)}>
+                {userDisplayName(user)}{user.role ? ` (${String(user.role).replace(/_/g, " ")})` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      );
+    }
+
     if (responseType === "image_upload" || responseType === "file_upload") {
       const uploadingThisItem = uploadingInstructionId === item.id && uploadInstructionResponseFile.isPending;
       return (
@@ -1782,6 +1942,13 @@ function FinalInspectionSection({ jobId }: { jobId: number }) {
                         </Badge>
                       )}
                       {item.responseRequired && <Badge variant="secondary" className="text-[10px]">Required</Badge>}
+                      {item.visibleToTrade && <Badge variant="outline" className="text-[10px]">Trade portal</Badge>}
+                      {item.visibleToClient && <Badge variant="outline" className="text-[10px]">Client portal</Badge>}
+                      {item.sendToUserId && (
+                        <Badge variant="outline" className="text-[10px]">
+                          Send to {userDisplayName(assignableUserById.get(Number(item.sendToUserId)))}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                   <div className="min-w-0">

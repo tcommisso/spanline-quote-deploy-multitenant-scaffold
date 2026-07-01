@@ -19,6 +19,10 @@ export default function PortalDashboard() {
     enabled: !!user,
     retry: false,
   });
+  const checklistQuery = trpc.portal.getVisibleChecklistItems.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+  });
   const [tourActive, setTourActive] = useState(!isTourCompleted(TOUR_IDS.clientPortal));
 
   // Show loading skeleton while auth is resolving
@@ -109,6 +113,32 @@ export default function PortalDashboard() {
 
       {/* Approval Timeline */}
       <PortalApprovalTimeline />
+
+      {checklistQuery.data && checklistQuery.data.length > 0 && (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Project Checklist</p>
+                <p className="text-xs text-muted-foreground">Items shared by your construction team</p>
+              </div>
+              <Badge variant="secondary">{checklistQuery.data.length}</Badge>
+            </div>
+            <div className="space-y-2">
+              {checklistQuery.data.slice(0, 5).map((item: any) => (
+                <div key={item.id} className="flex items-start gap-2 rounded-md border p-3">
+                  <CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${item.status === "done" ? "text-green-600" : "text-muted-foreground"}`} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{item.title}</p>
+                    {item.description && <p className="line-clamp-2 text-xs text-muted-foreground">{item.description}</p>}
+                    <p className="mt-1 text-xs text-muted-foreground">{String(item.status || "open").replace(/_/g, " ")}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Quick Links Grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4" data-tour="portal-nav">

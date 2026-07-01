@@ -1474,7 +1474,9 @@ export const constructionJobInstructions = mysqlTable("construction_job_instruct
   status: mysqlEnum("status", ["open", "acknowledged", "done", "blocked", "not_applicable"]).default("open").notNull(),
   priority: mysqlEnum("priority", ["normal", "important", "urgent"]).default("normal").notNull(),
   visibleToTrade: boolean("visibleToTrade").default(true).notNull(),
+  visibleToClient: boolean("visibleToClient").default(false).notNull(),
   assignedInstallerId: int("assignedInstallerId").references(() => constructionInstallers.id, { onDelete: "set null" }),
+  sendToUserId: int("sendToUserId").references(() => users.id, { onDelete: "set null" }),
   isBlocking: boolean("isBlocking").default(false).notNull(),
   dueAt: timestamp("dueAt"),
   triggerLabel: varchar("triggerLabel", { length: 255 }),
@@ -1496,6 +1498,7 @@ export const constructionJobInstructions = mysqlTable("construction_job_instruct
   index("idx_construction_job_instructions_tenant").on(table.tenantId),
   index("idx_construction_job_instructions_tenant_job").on(table.tenantId, table.jobId),
   index("idx_construction_job_instructions_trade").on(table.tenantId, table.jobId, table.visibleToTrade, table.assignedInstallerId),
+  index("idx_construction_job_instructions_client").on(table.tenantId, table.jobId, table.visibleToClient),
 ]);
 export type ConstructionJobInstruction = typeof constructionJobInstructions.$inferSelect;
 export type InsertConstructionJobInstruction = typeof constructionJobInstructions.$inferInsert;

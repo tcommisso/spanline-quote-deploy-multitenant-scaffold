@@ -27,6 +27,8 @@ const constructionChecklistTemplateItemSchema = z.object({
   priority: z.enum(CONSTRUCTION_CHECKLIST_PRIORITIES),
   isBlocking: z.boolean(),
   visibleToTrade: z.boolean(),
+  visibleToClient: z.boolean().default(false),
+  sendToUserId: z.number().int().positive().nullable().optional(),
   responseType: z.enum(CONSTRUCTION_CHECKLIST_RESPONSE_TYPES).default("check"),
   responseOptions: z.array(z.string().trim().min(1).max(120)).max(30).default([]),
   responseRequired: z.boolean().default(false),

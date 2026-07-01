@@ -82,6 +82,8 @@ const STATUS_STYLES: Record<string, string> = {
   archived: "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
 };
 
+const STOCK_OPTION_LIMIT = 200;
+
 function formatStatus(value?: string | null) {
   return String(value || "unknown").replace(/_/g, " ");
 }
@@ -278,7 +280,7 @@ function StockMatchSelect({
     const filtered = (!search
       ? stockItems
       : stockItems.filter((item) => stockSearchText(item).includes(search))
-    ).slice(0, 80);
+    ).slice(0, STOCK_OPTION_LIMIT);
     if (selected && !filtered.some((item) => item.id === selected.id)) {
       return [selected, ...filtered];
     }
@@ -322,7 +324,7 @@ function StockMatchSelect({
                 No stock match
               </CommandItem>
             </CommandGroup>
-            <CommandGroup heading={options.length >= 80 ? "Stock items (showing first 80 matches)" : "Stock items"}>
+            <CommandGroup heading={options.length >= STOCK_OPTION_LIMIT ? `Stock items (showing first ${STOCK_OPTION_LIMIT} matches)` : "Stock items"}>
               {options.length === 0 ? (
                 <div className="px-2 py-3 text-sm text-muted-foreground">No matching stock items.</div>
               ) : options.map((item) => (
@@ -571,7 +573,10 @@ export default function ManufacturingTransitionAssistant() {
     onError: (error) => toast.error(error.message),
   });
 
-  const { data: stockItemsRaw = [] } = trpc.inventory.stockItems.list.useQuery({ activeOnly: true });
+  const { data: stockItemsRaw = [] } = trpc.inventory.stockItems.list.useQuery({
+    activeOnly: true,
+    search: stockSearch.trim() || undefined,
+  });
   const { data: branches = [] } = trpc.manufacturing.branches.useQuery();
   const { data: suppliers = [] } = trpc.suppliers.list.useQuery({ activeOnly: true });
   const { data: imports = [] } = trpc.manufacturing.transitionAssistant.listImports.useQuery({});
@@ -589,10 +594,9 @@ export default function ManufacturingTransitionAssistant() {
   const savedRows: TransitionRow[] = selectedImport?.rows || [];
   const activeRows = previewRows.length ? previewRows : savedRows;
   const stockItems = useMemo(() => {
-    const search = stockSearch.trim().toLowerCase();
     const items = stockItemsRaw as any[];
-    return !search ? items : items.filter((item) => stockSearchText(item).includes(search));
-  }, [stockItemsRaw, stockSearch]);
+    return items;
+  }, [stockItemsRaw]);
   const sourceOptions = useMemo<RowSourceOption[]>(() => {
     const branchOptions = (branches as any[]).map((branch) => ({
       value: `branch:${branch.id}`,
@@ -748,7 +752,7 @@ export default function ManufacturingTransitionAssistant() {
         </Button>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="space-y-4">
         <div className="space-y-4">
           <section className="rounded-lg border bg-card p-4 shadow-sm sm:p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -878,17 +882,18 @@ export default function ManufacturingTransitionAssistant() {
                     </Select>
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="transition-stock-search">Stock search filter</Label>
+                    <Label htmlFor="transition-stock-search">Stock catalogue search</Label>
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         id="transition-stock-search"
                         value={stockSearch}
                         onChange={(event) => setStockSearch(event.target.value)}
-                        placeholder="Filter stock dropdowns"
+                        placeholder="Search all stock items"
                         className="pl-9"
                       />
                     </div>
+                    <p className="text-xs text-muted-foreground">{stockItems.length} matching stock item{stockItems.length === 1 ? "" : "s"} available to row dropdowns</p>
                   </div>
                   <div className="space-y-1 sm:col-span-2">
                     <Label htmlFor="transition-notes">Notes</Label>
@@ -961,17 +966,18 @@ export default function ManufacturingTransitionAssistant() {
               </div>
 
               <div className="mt-4 space-y-1">
-                <Label htmlFor="saved-stock-search">Stock search filter</Label>
+                <Label htmlFor="saved-stock-search">Stock catalogue search</Label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     id="saved-stock-search"
                     value={stockSearch}
                     onChange={(event) => setStockSearch(event.target.value)}
-                    placeholder="Filter stock dropdowns"
+                    placeholder="Search all stock items"
                     className="pl-9"
                   />
                 </div>
+                <p className="text-xs text-muted-foreground">{stockItems.length} matching stock item{stockItems.length === 1 ? "" : "s"} available to row dropdowns</p>
               </div>
 
               <div className="mt-4">
@@ -996,37 +1002,40 @@ export default function ManufacturingTransitionAssistant() {
           )}
         </div>
 
-        <aside className="space-y-4">
-          <section className="rounded-lg border bg-card p-4 shadow-sm">
-            <h2 className="font-semibold">Recent uploads</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Saved transition orders also appear in Manufacturing Orders.</p>
-            <div className="mt-4 space-y-2">
-              {!imports.length ? (
-                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No uploaded orders yet.</div>
-              ) : (
-                imports.map((item: any) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => viewImport(item.id)}
-                    className="w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted/40"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-medium">{item.importNumber}</div>
-                        <div className="truncate text-xs text-muted-foreground">{item.clientName || item.sourceFileName}</div>
-                      </div>
-                      <Badge variant="secondary" className={STATUS_STYLES[item.status] || ""}>{formatStatus(item.status)}</Badge>
-                    </div>
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      {item.matchedLineCount}/{item.lineCount} matched
-                    </div>
-                  </button>
-                ))
-              )}
+        <section className="rounded-lg border bg-card p-4 shadow-sm sm:p-5">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-semibold">Recent uploads</h2>
+              <p className="text-sm text-muted-foreground">Saved transition orders also appear in Manufacturing Orders.</p>
             </div>
-          </section>
-        </aside>
+            <Badge variant="outline">{imports.length} upload{imports.length === 1 ? "" : "s"}</Badge>
+          </div>
+          <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {!imports.length ? (
+              <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground md:col-span-2 xl:col-span-3">No uploaded orders yet.</div>
+            ) : (
+              imports.map((item: any) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => viewImport(item.id)}
+                  className="w-full rounded-lg border bg-background p-3 text-left transition-colors hover:bg-muted/40"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium">{item.importNumber}</div>
+                      <div className="truncate text-xs text-muted-foreground">{item.clientName || item.sourceFileName}</div>
+                    </div>
+                    <Badge variant="secondary" className={STATUS_STYLES[item.status] || ""}>{formatStatus(item.status)}</Badge>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {item.matchedLineCount}/{item.lineCount} matched
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

@@ -1871,7 +1871,9 @@ export const constructionClientsRouter = router({
         status: constructionJobInstructions.status,
         priority: constructionJobInstructions.priority,
         visibleToTrade: constructionJobInstructions.visibleToTrade,
+        visibleToClient: constructionJobInstructions.visibleToClient,
         assignedInstallerId: constructionJobInstructions.assignedInstallerId,
+        sendToUserId: constructionJobInstructions.sendToUserId,
         assignedInstallerName: constructionInstallers.name,
         isBlocking: constructionJobInstructions.isBlocking,
         dueAt: constructionJobInstructions.dueAt,
@@ -1905,7 +1907,9 @@ export const constructionClientsRouter = router({
       status: jobInstructionStatusSchema.default("open"),
       priority: jobInstructionPrioritySchema.default("normal"),
       visibleToTrade: z.boolean().default(true),
+      visibleToClient: z.boolean().default(false),
       assignedInstallerId: z.number().nullable().optional(),
+      sendToUserId: z.number().nullable().optional(),
       isBlocking: z.boolean().default(false),
       dueAt: z.string().nullable().optional(),
       triggerLabel: z.string().max(255).nullable().optional(),
@@ -1920,6 +1924,9 @@ export const constructionClientsRouter = router({
       const db = await requireDb();
       await requireJobAccess(db, ctx, input.jobId);
       await requireVisibleJobInstaller(db, ctx, input.jobId, input.assignedInstallerId);
+      if (input.sendToUserId != null) {
+        await resolveProjectTeamRole(db, ctx, input.sendToUserId, null);
+      }
       const tenantId = tenantIdFromContext(ctx);
       if (!tenantId) throw new TRPCError({ code: "BAD_REQUEST", message: "Tenant context is required" });
 
@@ -1932,7 +1939,9 @@ export const constructionClientsRouter = router({
         status: input.status,
         priority: input.priority,
         visibleToTrade: input.visibleToTrade,
+        visibleToClient: input.visibleToClient,
         assignedInstallerId: input.assignedInstallerId ?? null,
+        sendToUserId: input.sendToUserId ?? null,
         isBlocking: input.isBlocking,
         dueAt: parseInstructionDate(input.dueAt),
         triggerLabel: trimNullable(input.triggerLabel),
@@ -1961,7 +1970,9 @@ export const constructionClientsRouter = router({
       status: jobInstructionStatusSchema.optional(),
       priority: jobInstructionPrioritySchema.optional(),
       visibleToTrade: z.boolean().optional(),
+      visibleToClient: z.boolean().optional(),
       assignedInstallerId: z.number().nullable().optional(),
+      sendToUserId: z.number().nullable().optional(),
       isBlocking: z.boolean().optional(),
       dueAt: z.string().nullable().optional(),
       triggerLabel: z.string().max(255).nullable().optional(),
@@ -1978,6 +1989,9 @@ export const constructionClientsRouter = router({
       if ("assignedInstallerId" in input) {
         await requireVisibleJobInstaller(db, ctx, instruction.jobId, input.assignedInstallerId);
       }
+      if ("sendToUserId" in input && input.sendToUserId != null) {
+        await resolveProjectTeamRole(db, ctx, input.sendToUserId, null);
+      }
 
       const updates: Record<string, any> = {
         updatedByUserId: ctx.user?.id ?? null,
@@ -1989,7 +2003,9 @@ export const constructionClientsRouter = router({
       if (input.status !== undefined) updates.status = input.status;
       if (input.priority !== undefined) updates.priority = input.priority;
       if (input.visibleToTrade !== undefined) updates.visibleToTrade = input.visibleToTrade;
+      if (input.visibleToClient !== undefined) updates.visibleToClient = input.visibleToClient;
       if ("assignedInstallerId" in input) updates.assignedInstallerId = input.assignedInstallerId ?? null;
+      if ("sendToUserId" in input) updates.sendToUserId = input.sendToUserId ?? null;
       if (input.isBlocking !== undefined) updates.isBlocking = input.isBlocking;
       if (input.dueAt !== undefined) updates.dueAt = parseInstructionDate(input.dueAt);
       if (input.triggerLabel !== undefined) updates.triggerLabel = trimNullable(input.triggerLabel);

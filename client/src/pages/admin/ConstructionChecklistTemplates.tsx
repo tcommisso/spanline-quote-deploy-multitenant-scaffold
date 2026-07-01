@@ -37,9 +37,18 @@ const RESPONSE_TYPE_OPTIONS: Array<{ value: ConstructionChecklistResponseType; l
   { value: "date", label: "Date" },
   { value: "image_upload", label: "Image upload" },
   { value: "file_upload", label: "File upload" },
+  { value: "client_lookup", label: "Client / job lookup" },
+  { value: "trade_user_lookup", label: "Trade portal user lookup" },
+  { value: "user_lookup", label: "System user lookup" },
 ];
 
 const RESPONSE_TYPES_WITH_OPTIONS = new Set<ConstructionChecklistResponseType>(["dropdown", "multi_select"]);
+const CLIENT_LOOKUP_OPTIONS = [
+  { value: "client_name", label: "Client canonical name" },
+  { value: "site_address", label: "Site / delivery address" },
+  { value: "account_number", label: "Client account number" },
+];
+const NO_SEND_TO_USER = "__none__";
 
 function makeDraftItem(item: ConstructionChecklistTemplateItem, index: number): DraftItem {
   return {
@@ -63,6 +72,8 @@ function newDraftItem(sortOrder: number): DraftItem {
     responseType: "check",
     responseOptions: [],
     responseRequired: false,
+    visibleToClient: false,
+    sendToUserId: null,
     responseHelpText: null,
     sortOrder,
   };
@@ -93,6 +104,7 @@ function parseOptionsText(value: string) {
 export default function ConstructionChecklistTemplates() {
   const utils = trpc.useUtils();
   const { data, isLoading } = trpc.globalSettings.getConstructionChecklistTemplates.useQuery();
+  const usersQuery = trpc.constructionClients.assignableUsers.useQuery();
   const [items, setItems] = useState<DraftItem[]>([]);
 
   const saveMutation = trpc.globalSettings.setConstructionChecklistTemplates.useMutation({
@@ -111,6 +123,11 @@ export default function ConstructionChecklistTemplates() {
   }, [data]);
 
   const activeCount = useMemo(() => items.filter((item) => item.title.trim()).length, [items]);
+  const sendToUsers = useMemo(() => {
+    return [...(usersQuery.data || [])].sort((a: any, b: any) =>
+      String(a.name || a.email || "").localeCompare(String(b.name || b.email || ""))
+    );
+  }, [usersQuery.data]);
 
   const updateItem = (localId: string, changes: Partial<DraftItem>) => {
     setItems((current) => current.map((item) => item.localId === localId ? { ...item, ...changes } : item));
@@ -146,8 +163,12 @@ export default function ConstructionChecklistTemplates() {
         priority: item.priority,
         isBlocking: item.isBlocking,
         visibleToTrade: item.visibleToTrade,
+        visibleToClient: item.visibleToClient,
+        sendToUserId: item.sendToUserId ?? null,
         responseType: item.responseType || "check",
-        responseOptions: RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) ? item.responseOptions : [],
+        responseOptions: item.responseType === "client_lookup"
+          ? [item.responseOptions?.[0] || "client_name"]
+          : RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) ? item.responseOptions : [],
         responseRequired: Boolean(item.responseRequired),
         responseHelpText: item.responseHelpText?.trim() || null,
         sortOrder: item.sortOrder,
@@ -221,10 +242,15 @@ export default function ConstructionChecklistTemplates() {
                     <Label className="text-xs">Question type</Label>
                     <Select
                       value={item.responseType || "check"}
-                      onValueChange={(responseType) => updateItem(item.localId, {
-                        responseType: responseType as ConstructionChecklistResponseType,
-                        responseOptions: RESPONSE_TYPES_WITH_OPTIONS.has(responseType as ConstructionChecklistResponseType) ? item.responseOptions : [],
-                      })}
+                      onValueChange={(responseType) => {
+                        const nextType = responseType as ConstructionChecklistResponseType;
+                        updateItem(item.localId, {
+                          responseType: nextType,
+                          responseOptions: nextType === "client_lookup"
+                            ? [item.responseOptions?.[0] || "client_name"]
+                            : RESPONSE_TYPES_WITH_OPTIONS.has(nextType) ? item.responseOptions : [],
+                        });
+                      }}
                     >
                       <SelectTrigger>
                         <SelectValue />
@@ -254,7 +280,7 @@ export default function ConstructionChecklistTemplates() {
                   </div>
                 </div>
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
                     <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
                       <Label className="text-xs">Required</Label>
                       <Switch checked={item.responseRequired} onCheckedChange={(checked) => updateItem(item.localId, { responseRequired: checked })} />
@@ -266,6 +292,10 @@ export default function ConstructionChecklistTemplates() {
                     <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
                       <Label className="text-xs">Trade visible</Label>
                       <Switch checked={item.visibleToTrade} onCheckedChange={(checked) => updateItem(item.localId, { visibleToTrade: checked })} />
+                    </div>
+                    <div className="flex min-h-10 items-center justify-between gap-3 rounded-md border px-3 py-2">
+                      <Label className="text-xs">Client visible</Label>
+                      <Switch checked={item.visibleToClient} onCheckedChange={(checked) => updateItem(item.localId, { visibleToClient: checked })} />
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-1 sm:ml-auto">
@@ -281,6 +311,45 @@ export default function ConstructionChecklistTemplates() {
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {item.responseType === "client_lookup" && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Client lookup value</Label>
+                      <Select
+                        value={item.responseOptions?.[0] || "client_name"}
+                        onValueChange={(value) => updateItem(item.localId, { responseOptions: [value] })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CLIENT_LOOKUP_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <Label className="text-xs">Send to</Label>
+                    <Select
+                      value={item.sendToUserId ? String(item.sendToUserId) : NO_SEND_TO_USER}
+                      onValueChange={(value) => updateItem(item.localId, {
+                        sendToUserId: value === NO_SEND_TO_USER ? null : Number(value),
+                      })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="No default recipient" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NO_SEND_TO_USER}>No default recipient</SelectItem>
+                        {sendToUsers.map((user: any) => (
+                          <SelectItem key={user.id} value={String(user.id)}>
+                            {user.name || user.email || `User #${user.id}`}{user.role ? ` (${String(user.role).replace(/_/g, " ")})` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   {RESPONSE_TYPES_WITH_OPTIONS.has(item.responseType) && (
                     <div className="space-y-1">
                       <Label className="text-xs">Options</Label>

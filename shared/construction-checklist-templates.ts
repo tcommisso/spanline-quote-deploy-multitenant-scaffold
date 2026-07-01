@@ -12,6 +12,9 @@ export const CONSTRUCTION_CHECKLIST_RESPONSE_TYPES = [
   "date",
   "image_upload",
   "file_upload",
+  "client_lookup",
+  "trade_user_lookup",
+  "user_lookup",
 ] as const;
 
 export type ConstructionChecklistPriority = (typeof CONSTRUCTION_CHECKLIST_PRIORITIES)[number];
@@ -22,6 +25,8 @@ export type ConstructionChecklistTemplateItem = {
   priority: ConstructionChecklistPriority;
   isBlocking: boolean;
   visibleToTrade: boolean;
+  visibleToClient: boolean;
+  sendToUserId: number | null;
   responseType: ConstructionChecklistResponseType;
   responseOptions: string[];
   responseRequired: boolean;
@@ -48,6 +53,8 @@ function checklistItem(
     priority,
     isBlocking,
     visibleToTrade,
+    visibleToClient: false,
+    sendToUserId: null,
     responseType,
     responseOptions: [],
     responseRequired: false,
@@ -73,6 +80,8 @@ function cloneItem(item: ConstructionChecklistTemplateItem): ConstructionCheckli
     priority: item.priority,
     isBlocking: item.isBlocking,
     visibleToTrade: item.visibleToTrade,
+    visibleToClient: item.visibleToClient,
+    sendToUserId: item.sendToUserId,
     responseType: item.responseType,
     responseOptions: [...item.responseOptions],
     responseRequired: item.responseRequired,
@@ -120,11 +129,14 @@ function normalizeItem(value: unknown, index: number): ConstructionChecklistTemp
   const priority = isPriority(item.priority) ? item.priority : "normal";
   const responseType = isResponseType(item.responseType) ? item.responseType : "check";
   const sortOrder = Number(item.sortOrder);
+  const sendToUserId = Number(item.sendToUserId);
   return {
     title,
     priority,
     isBlocking: Boolean(item.isBlocking),
     visibleToTrade: Boolean(item.visibleToTrade),
+    visibleToClient: Boolean(item.visibleToClient),
+    sendToUserId: Number.isInteger(sendToUserId) && sendToUserId > 0 ? sendToUserId : null,
     responseType,
     responseOptions: normalizeOptions(item.responseOptions),
     responseRequired: Boolean(item.responseRequired),
