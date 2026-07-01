@@ -12,6 +12,7 @@ import {
   manufacturingProductMatchMappings,
   inventoryStockItems,
   constructionJobs,
+  crmLeads,
   cmComponentOrders,
   checkMeasureWorkbooks,
   flashingOrders,
@@ -22,6 +23,7 @@ import { notifyOwner } from "./_core/notification";
 import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { privateTenantConditions } from "./private-tenant-scope";
 import { TRPCError } from "@trpc/server";
+import { canonicalClientFromLead } from "./canonical-client";
 
 async function requireDb() {
   const db = await getDb();
@@ -62,7 +64,7 @@ const transitionOrderStatuses = new Set([
 
 const HEADER_ALIASES: Record<string, string[]> = {
   productCode: ["code", "item code", "product code", "sku", "part", "part no", "part number"],
-  productName: ["item", "product", "product name", "description", "item description", "material", "profile"],
+  productName: ["component", "components", "item", "product", "product name", "description", "item description", "material", "profile"],
   description: ["notes", "note", "details", "description", "scope"],
   category: ["category", "type", "group", "product group"],
   colour: ["colour", "color", "finish"],
@@ -837,6 +839,83 @@ export const manufacturingRouter = router({
 
   // ─── Transition Assistant ─────────────────────────────────────────────────
   transitionAssistant: router({
+    searchConstructionClients: protectedProcedure
+      .input(z.object({
+        query: z.string().trim().min(2),
+        limit: z.number().int().min(1).max(25).optional(),
+      }))
+      .query(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdOrThrow(ctx);
+        const pattern = `%${input.query.toLowerCase()}%`;
+        const rows = await db.select({
+          id: constructionJobs.id,
+          quoteNumber: constructionJobs.quoteNumber,
+          storedClientName: constructionJobs.clientName,
+          status: constructionJobs.status,
+          siteAddress: constructionJobs.siteAddress,
+          updatedAt: constructionJobs.updatedAt,
+          leadId: crmLeads.id,
+          leadFirstName: crmLeads.contactFirstName,
+          leadLastName: crmLeads.contactLastName,
+          leadCompany: crmLeads.company,
+          leadPhone: crmLeads.contactPhone,
+          leadEmail: crmLeads.contactEmail,
+          leadAddress: crmLeads.contactAddress,
+          leadClientNumber: crmLeads.clientNumber,
+          leadStatus: crmLeads.status,
+        }).from(constructionJobs)
+          .leftJoin(crmLeads, and(
+            eq(constructionJobs.leadId, crmLeads.id),
+            tenantScoped(crmLeads.tenantId, tenantId),
+          ))
+          .where(and(
+            ...jobTenantConditions(
+              ctx,
+              or(
+                like(sql`LOWER(${constructionJobs.clientName})`, pattern),
+                like(sql`LOWER(${constructionJobs.quoteNumber})`, pattern),
+                like(sql`LOWER(${constructionJobs.siteAddress})`, pattern),
+                like(sql`LOWER(${crmLeads.clientNumber})`, pattern),
+                like(sql`LOWER(${crmLeads.contactFirstName})`, pattern),
+                like(sql`LOWER(${crmLeads.contactLastName})`, pattern),
+                like(sql`LOWER(${crmLeads.company})`, pattern),
+                like(sql`LOWER(${crmLeads.contactEmail})`, pattern),
+                like(sql`LOWER(${crmLeads.contactPhone})`, pattern),
+                like(sql`LOWER(${crmLeads.contactAddress})`, pattern),
+              )!,
+            ),
+          ))
+          .orderBy(desc(constructionJobs.updatedAt))
+          .limit(input.limit || 12);
+
+        return rows.map((row) => {
+          const canonicalClient = canonicalClientFromLead({
+            id: row.leadId,
+            contactFirstName: row.leadFirstName,
+            contactLastName: row.leadLastName,
+            company: row.leadCompany,
+            contactPhone: row.leadPhone,
+            contactEmail: row.leadEmail,
+            contactAddress: row.leadAddress,
+            clientNumber: row.leadClientNumber,
+            status: row.leadStatus,
+          });
+          const clientName = canonicalClient?.name || row.storedClientName;
+          return {
+            id: row.id,
+            quoteNumber: row.quoteNumber,
+            clientName,
+            storedClientName: row.storedClientName,
+            clientNumber: canonicalClient?.clientNumber || null,
+            siteAddress: row.siteAddress || canonicalClient?.address || null,
+            contactPhone: canonicalClient?.phone || null,
+            contactEmail: canonicalClient?.email || null,
+            status: row.status,
+          };
+        });
+      }),
+
     previewUpload: protectedProcedure
       .input(z.object({
         filename: z.string().min(1),
@@ -1051,6 +1130,21 @@ export const manufacturingRouter = router({
             matchConfidence: 100,
           }]);
         }
+        await refreshTransitionImportCounts(db, tenantId, importRow.id);
+        return { success: true };
+      }),
+
+    deleteRow: protectedProcedure
+      .input(z.object({ rowId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await requireDb();
+        const tenantId = tenantIdOrThrow(ctx);
+        const { import: importRow } = await requireTransitionRowAccess(db, ctx, input.rowId);
+        await db.delete(manufacturingTransitionImportRows)
+          .where(and(
+            eq(manufacturingTransitionImportRows.id, input.rowId),
+            eq(manufacturingTransitionImportRows.tenantId, tenantId),
+          ));
         await refreshTransitionImportCounts(db, tenantId, importRow.id);
         return { success: true };
       }),

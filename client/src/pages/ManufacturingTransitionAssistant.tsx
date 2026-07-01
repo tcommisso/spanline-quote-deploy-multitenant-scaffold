@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AlertCircle, CheckCircle2, FileSpreadsheet, RefreshCw, Save, Search, UploadCloud } from "lucide-react";
+import { AlertCircle, Building2, CheckCircle2, FileSpreadsheet, MapPin, RefreshCw, Save, Search, Trash2, UploadCloud } from "lucide-react";
 import { toast } from "sonner";
 
 type TransitionRow = {
@@ -41,6 +41,18 @@ type TransitionRow = {
   sourceType?: "manufacture" | "procure";
   rawData?: Record<string, unknown> | null;
   notes?: string | null;
+};
+
+type ConstructionClientLookupResult = {
+  id: number;
+  quoteNumber?: string | null;
+  clientName: string;
+  storedClientName?: string | null;
+  clientNumber?: string | null;
+  siteAddress?: string | null;
+  contactPhone?: string | null;
+  contactEmail?: string | null;
+  status?: string | null;
 };
 
 const MATCH_STYLES: Record<string, string> = {
@@ -149,14 +161,24 @@ function ImportRowsEditor({
   stockItems,
   onStockChange,
   onSourceChange,
+  onDeleteRow,
   isSaving,
 }: {
   rows: TransitionRow[];
   stockItems: any[];
   onStockChange: (row: TransitionRow, stockItemId: number | null) => void;
   onSourceChange: (row: TransitionRow, sourceType: "manufacture" | "procure") => void;
+  onDeleteRow: (row: TransitionRow) => void;
   isSaving?: boolean;
 }) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground">
+        All imported rows have been removed.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       <div className="md:hidden space-y-3">
@@ -185,6 +207,17 @@ function ImportRowsEditor({
             <div className="mt-3 space-y-2">
               <StockMatchSelect row={row} stockItems={stockItems} onChange={(id) => onStockChange(row, id)} disabled={isSaving} />
               <RowSourceSelect value={row.sourceType || "manufacture"} onChange={(value) => onSourceChange(row, value)} disabled={isSaving} />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full justify-center text-destructive hover:text-destructive"
+                onClick={() => onDeleteRow(row)}
+                disabled={isSaving}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete row
+              </Button>
             </div>
           </div>
         ))}
@@ -200,6 +233,7 @@ function ImportRowsEditor({
               <TableHead className="w-[320px]">Stock match</TableHead>
               <TableHead className="w-40">Source</TableHead>
               <TableHead className="w-32">Match</TableHead>
+              <TableHead className="w-16 text-right">Delete</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -220,6 +254,19 @@ function ImportRowsEditor({
                   <RowSourceSelect value={row.sourceType || "manufacture"} onChange={(value) => onSourceChange(row, value)} disabled={isSaving} />
                 </TableCell>
                 <TableCell><MatchBadge row={row} /></TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 text-destructive hover:text-destructive"
+                    onClick={() => onDeleteRow(row)}
+                    disabled={isSaving}
+                    aria-label={`Delete imported row ${row.rowNumber}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -239,6 +286,7 @@ export default function ManufacturingTransitionAssistant() {
   const [selectedImportId, setSelectedImportId] = useState<number | null>(initialImportId);
   const [preview, setPreview] = useState<any>(null);
   const [clientName, setClientName] = useState("");
+  const [clientLookupOpen, setClientLookupOpen] = useState(false);
   const [siteAddress, setSiteAddress] = useState("");
   const [priority, setPriority] = useState<"low" | "normal" | "high" | "urgent">("normal");
   const [notes, setNotes] = useState("");
@@ -280,6 +328,17 @@ export default function ManufacturingTransitionAssistant() {
     },
     onError: (error) => toast.error(error.message),
   });
+  const deleteRow = trpc.manufacturing.transitionAssistant.deleteRow.useMutation({
+    onSuccess: async () => {
+      await Promise.all([
+        utils.manufacturing.transitionAssistant.getImport.invalidate(),
+        utils.manufacturing.transitionAssistant.listImports.invalidate(),
+        utils.manufacturing.orders.list.invalidate(),
+      ]);
+      toast.success("Imported row deleted");
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const updateStatus = trpc.manufacturing.transitionAssistant.updateStatus.useMutation({
     onSuccess: async () => {
       await Promise.all([
@@ -294,6 +353,11 @@ export default function ManufacturingTransitionAssistant() {
 
   const { data: stockItemsRaw = [] } = trpc.inventory.stockItems.list.useQuery({ activeOnly: true });
   const { data: imports = [] } = trpc.manufacturing.transitionAssistant.listImports.useQuery({});
+  const { data: constructionClientResults = [], isFetching: clientLookupFetching } =
+    trpc.manufacturing.transitionAssistant.searchConstructionClients.useQuery(
+      { query: clientName.trim(), limit: 12 },
+      { enabled: Boolean(preview) && clientName.trim().length >= 2 },
+    );
   const { data: selectedImport } = trpc.manufacturing.transitionAssistant.getImport.useQuery(
     { id: selectedImportId || 0 },
     { enabled: Boolean(selectedImportId) },
@@ -364,6 +428,20 @@ export default function ManufacturingTransitionAssistant() {
     }
   }
 
+  function handlePreviewRowDelete(row: TransitionRow) {
+    if (!preview) return;
+    setPreview({
+      ...preview,
+      rows: preview.rows.filter((candidate: TransitionRow) => candidate.rowNumber !== row.rowNumber),
+    });
+  }
+
+  function handleSavedRowDelete(row: TransitionRow) {
+    if (!row.id) return;
+    if (!window.confirm(`Delete imported row ${row.rowNumber}?`)) return;
+    deleteRow.mutate({ rowId: row.id });
+  }
+
   function savePreview() {
     if (!preview) return;
     commitImport.mutate({
@@ -381,6 +459,15 @@ export default function ManufacturingTransitionAssistant() {
         sourceType: row.sourceType || "manufacture",
       })),
     });
+  }
+
+  function selectConstructionClient(client: ConstructionClientLookupResult) {
+    setClientName(client.clientName || client.storedClientName || "");
+    setSiteAddress(client.siteAddress || "");
+    setClientLookupOpen(false);
+    if (client.siteAddress) {
+      toast.success("Site address populated from construction client");
+    }
   }
 
   function viewImport(id: number) {
@@ -446,7 +533,74 @@ export default function ManufacturingTransitionAssistant() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <Label htmlFor="transition-client">Client / order reference</Label>
-                    <Input id="transition-client" value={clientName} onChange={(event) => setClientName(event.target.value)} placeholder="Optional" />
+                    <div
+                      className="relative"
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                          setClientLookupOpen(false);
+                        }
+                      }}
+                    >
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="transition-client"
+                        value={clientName}
+                        onChange={(event) => {
+                          setClientName(event.target.value);
+                          setClientLookupOpen(true);
+                        }}
+                        onFocus={() => setClientLookupOpen(true)}
+                        placeholder="Search construction clients or type reference"
+                        className="pl-9"
+                        autoComplete="off"
+                      />
+                      {clientLookupOpen && clientName.trim().length >= 2 && (
+                        <div className="absolute left-0 right-0 z-50 mt-1 max-h-72 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-lg">
+                          {clientLookupFetching ? (
+                            <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground">
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                              Searching construction clients...
+                            </div>
+                          ) : constructionClientResults.length === 0 ? (
+                            <div className="px-3 py-3 text-sm text-muted-foreground">
+                              No construction clients found. Keep this as a manual reference if needed.
+                            </div>
+                          ) : (
+                            constructionClientResults.map((client: ConstructionClientLookupResult) => (
+                              <button
+                                key={client.id}
+                                type="button"
+                                className="w-full border-b px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-accent"
+                                onClick={() => selectConstructionClient(client)}
+                              >
+                                <div className="flex min-w-0 items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                      <span className="truncate text-sm font-medium">{client.clientName}</span>
+                                    </div>
+                                    <div className="mt-0.5 truncate pl-6 text-xs text-muted-foreground">
+                                      {[client.quoteNumber || `Job #${client.id}`, client.clientNumber].filter(Boolean).join(" · ")}
+                                    </div>
+                                    {client.siteAddress && (
+                                      <div className="mt-1 flex items-start gap-1 pl-6 text-xs text-muted-foreground">
+                                        <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
+                                        <span className="line-clamp-2">{client.siteAddress}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {client.status && (
+                                    <Badge variant="outline" className="shrink-0 text-[10px]">
+                                      {formatStatus(client.status)}
+                                    </Badge>
+                                  )}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <Label htmlFor="transition-site">Site / delivery address</Label>
@@ -496,12 +650,13 @@ export default function ManufacturingTransitionAssistant() {
                   stockItems={stockItems}
                   onStockChange={handlePreviewStockChange}
                   onSourceChange={handleSourceChange}
+                  onDeleteRow={handlePreviewRowDelete}
                   isSaving={commitImport.isPending}
                 />
 
                 <div className="flex flex-col-reverse gap-2 border-t pt-4 sm:flex-row sm:items-center sm:justify-end">
                   <Button variant="outline" onClick={() => setPreview(null)} disabled={commitImport.isPending}>Discard preview</Button>
-                  <Button onClick={savePreview} disabled={commitImport.isPending}>
+                  <Button onClick={savePreview} disabled={commitImport.isPending || previewRows.length === 0}>
                     {commitImport.isPending ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                     Save uploaded order
                   </Button>
@@ -565,7 +720,8 @@ export default function ManufacturingTransitionAssistant() {
                   stockItems={stockItems}
                   onStockChange={handleSavedStockChange}
                   onSourceChange={handleSourceChange}
-                  isSaving={updateRowMatch.isPending}
+                  onDeleteRow={handleSavedRowDelete}
+                  isSaving={updateRowMatch.isPending || deleteRow.isPending}
                 />
               </div>
             </section>
