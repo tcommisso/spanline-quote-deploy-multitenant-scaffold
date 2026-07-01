@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { router, tenantProcedure as protectedProcedure } from "./_core/trpc";
 import { getDb } from "./db";
-import { daTrackerApplications, daTrackerWebhookSubscriptions, daTrackerWebhookDeliveries, daTrackerPollLog, approvalLodgements, approvalProjects } from "../drizzle/schema";
+import { daTrackerApplications, daTrackerWebhookSubscriptions, daTrackerWebhookDeliveries, daTrackerPollLog, approvalLodgements, approvalProjects, clientDas } from "../drizzle/schema";
 import { eq, and, isNull, isNotNull, desc, like, sql, inArray, gte, lte, or } from "drizzle-orm";
 
 const DA_TRACKER_DEFAULT_START_DATE = "2022-09-01";
@@ -34,6 +34,24 @@ type DaFinderApplicantInfo = {
   daNumber: string;
   companyName: string | null;
   applicantName: string | null;
+};
+
+type DaTrackerMapScope = "all" | "entity" | "competitor";
+
+type ClientDaMapRow = {
+  id: number;
+  daNumber: string;
+  companyName: string | null;
+  applicantName: string | null;
+  streetAddress: string | null;
+  suburb: string | null;
+  lodgementDate: Date | string | null;
+  daStage: string | null;
+  matchType: string;
+  matchConfidence: string;
+  isOurs: boolean;
+  centroidLat: number | null;
+  centroidLng: number | null;
 };
 
 let applicantOptionsCache: { key: string; expiresAt: number; applicants: string[] } | null = null;
@@ -165,6 +183,35 @@ function dedupeActDaRows<T extends { daNumber: number | string; lodgementDate: D
     }
   }
   return Array.from(byDaNumber.values());
+}
+
+function clientDaMapKey(row: ClientDaMapRow): string {
+  return [
+    normaliseDaNumber(row.daNumber),
+    String(row.companyName || "").trim().toUpperCase(),
+    String(row.streetAddress || "").trim().toUpperCase(),
+    String(row.suburb || "").trim().toUpperCase(),
+  ].join("|");
+}
+
+function dedupeClientDaMapRows<T extends ClientDaMapRow>(rows: T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = clientDaMapKey(row);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    const rowIsManual = row.matchType === "manual";
+    const existingIsManual = existing.matchType === "manual";
+    const rowLodged = row.lodgementDate ? new Date(row.lodgementDate).getTime() : 0;
+    const existingLodged = existing.lodgementDate ? new Date(existing.lodgementDate).getTime() : 0;
+    if ((rowIsManual && !existingIsManual) || rowLodged > existingLodged || (rowLodged === existingLodged && row.id < existing.id)) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 function calculateRingCentroid(ring: number[][] | undefined): { lat: number; lng: number } | null {
@@ -349,6 +396,7 @@ export const daTrackerRouter = router({
   // Get map data (all active DAs with centroid only)
   mapData: protectedProcedure
     .input(z.object({
+      scope: z.enum(["all", "entity", "competitor"]).optional(),
       district: z.string().optional(),
       subclass: z.string().optional(),
       myProjectsOnly: z.boolean().optional().default(true),
@@ -356,16 +404,19 @@ export const daTrackerRouter = router({
     .query(async ({ ctx, input }) => {
       const db = await getDb();
       if (!db) return [];
+      const scope: DaTrackerMapScope = input.scope || (input.myProjectsOnly ? "entity" : "all");
       const conditions: any[] = [
         daTrackerTenantScope(ctx.tenant!.id),
         isNull(daTrackerApplications.removedAt),
         gte(daTrackerApplications.lodgementDate, dateFromInput()),
+        isNotNull(daTrackerApplications.centroidLat),
+        isNotNull(daTrackerApplications.centroidLng),
       ];
       if (input.district && input.district !== "all") conditions.push(eq(daTrackerApplications.district, input.district));
       if (input.subclass && input.subclass !== "all") conditions.push(eq(daTrackerApplications.subclass, input.subclass));
 
       // Filter to only DAs linked to approval projects via lodgement external reference numbers
-      if (input.myProjectsOnly) {
+      if (scope === "entity") {
         const lodgements = await db.select({ ref: approvalLodgements.externalReferenceNumber })
           .from(approvalLodgements)
           .innerJoin(approvalProjects, eq(approvalProjects.id, approvalLodgements.projectId))
@@ -378,11 +429,14 @@ export const daTrackerRouter = router({
           .filter((n): n is string => !!n && n.length > 0)
           .map(n => Number(n))
           .filter(n => !isNaN(n));
-        if (daNumbers.length === 0) return [];
-        conditions.push(inArray(daTrackerApplications.daNumber, daNumbers));
+        if (daNumbers.length > 0) {
+          conditions.push(inArray(daTrackerApplications.daNumber, daNumbers));
+        } else {
+          conditions.push(sql`1 = 0`);
+        }
       }
 
-      return db.select({
+      const actRows = scope === "competitor" ? [] : await db.select({
         id: daTrackerApplications.id,
         daNumber: daTrackerApplications.daNumber,
         district: daTrackerApplications.district,
@@ -390,9 +444,67 @@ export const daTrackerRouter = router({
         subclass: daTrackerApplications.subclass,
         centroidLat: daTrackerApplications.centroidLat,
         centroidLng: daTrackerApplications.centroidLng,
+        source: sql<string>`'act_tracker'`,
+        mapScope: sql<DaTrackerMapScope>`${scope}`,
+        companyName: sql<string | null>`NULL`,
+        address: sql<string | null>`NULL`,
+        lodgementDate: daTrackerApplications.lodgementDate,
       })
         .from(daTrackerApplications)
-        .where(and(...conditions));
+        .where(and(...conditions))
+        .orderBy(desc(daTrackerApplications.lodgementDate))
+        .limit(5000);
+
+      if (scope === "all") {
+        return dedupeActDaRows(actRows);
+      }
+
+      const clientDaConditions: any[] = [
+        eq(clientDas.tenantId, ctx.tenant!.id),
+        eq(clientDas.isOurs, scope === "entity"),
+        isNotNull(clientDas.centroidLat),
+        isNotNull(clientDas.centroidLng),
+      ];
+
+      const clientRows = await db.select({
+        id: clientDas.id,
+        daNumber: clientDas.daNumber,
+        companyName: clientDas.companyName,
+        applicantName: clientDas.applicantName,
+        streetAddress: clientDas.streetAddress,
+        suburb: clientDas.suburb,
+        lodgementDate: clientDas.lodgementDate,
+        daStage: clientDas.daStage,
+        matchType: clientDas.matchType,
+        matchConfidence: clientDas.matchConfidence,
+        isOurs: clientDas.isOurs,
+        centroidLat: clientDas.centroidLat,
+        centroidLng: clientDas.centroidLng,
+      })
+        .from(clientDas)
+        .where(and(...clientDaConditions))
+        .orderBy(desc(clientDas.lodgementDate))
+        .limit(5000);
+
+      const clientMarkers = dedupeClientDaMapRows(clientRows).map((row) => ({
+        id: row.id,
+        daNumber: row.daNumber,
+        district: null,
+        division: row.suburb,
+        subclass: scope === "entity" ? "Associated to us" : "Competitor",
+        centroidLat: row.centroidLat,
+        centroidLng: row.centroidLng,
+        source: "client_das",
+        mapScope: scope,
+        companyName: row.companyName || row.applicantName,
+        address: row.streetAddress,
+        lodgementDate: row.lodgementDate,
+      }));
+
+      return [
+        ...dedupeActDaRows(actRows),
+        ...clientMarkers,
+      ];
     }),
 
   // Get filter options (distinct values)

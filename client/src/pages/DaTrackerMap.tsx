@@ -4,16 +4,42 @@ import { MapView } from "@/components/Map";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { Loader2, MapPin, FileText, Calendar } from "lucide-react";
 
 const DEFAULT_SUBCLASS = "ADDITIONS/ALTERATION";
+type MapScope = "entity" | "all" | "competitor";
+
+const MAP_SCOPE_OPTIONS: Array<{ value: MapScope; label: string; description: string }> = [
+  { value: "entity", label: "Entity DAs", description: "DAs associated to our approval jobs and matched client records" },
+  { value: "all", label: "All DAs", description: "All active ACT DA tracker points" },
+  { value: "competitor", label: "Competitor DAs", description: "Matched DA records marked as competitor activity" },
+];
+
+function mapScopeLabel(scope?: string | null) {
+  return MAP_SCOPE_OPTIONS.find((option) => option.value === scope)?.label || "DA";
+}
+
+function markerColour(da: any) {
+  if (da.mapScope === "competitor") return "#ef4444";
+  if (da.mapScope === "entity") return "#2563eb";
+  if (da.subclass === "Residential") return "#3b82f6";
+  if (da.subclass === "Commercial") return "#f59e0b";
+  return "#10b981";
+}
+
+function htmlEscape(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 export default function DaTrackerMap() {
   const [selectedDistrict, setSelectedDistrict] = useState<string>("");
   const [selectedSubclass, setSelectedSubclass] = useState<string>(DEFAULT_SUBCLASS);
-  const [myProjectsOnly, setMyProjectsOnly] = useState(true);
+  const [mapScope, setMapScope] = useState<MapScope>("entity");
   const [selectedDa, setSelectedDa] = useState<any>(null);
   const [mapReadyVersion, setMapReadyVersion] = useState(0);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -23,9 +49,9 @@ export default function DaTrackerMap() {
   const { data: stats } = trpc.daTracker.stats.useQuery();
   const { data: filterOptions } = trpc.daTracker.filterOptions.useQuery();
   const { data: mapData, isLoading } = trpc.daTracker.mapData.useQuery({
+    scope: mapScope,
     district: selectedDistrict && selectedDistrict !== "all" ? selectedDistrict : undefined,
     subclass: selectedSubclass && selectedSubclass !== "all" ? selectedSubclass : undefined,
-    myProjectsOnly,
   });
 
   // Update markers when mapData changes
@@ -49,11 +75,11 @@ export default function DaTrackerMap() {
       const marker = new google.maps.Marker({
         position: pos,
         map,
-        title: `DA ${da.daNumber} - ${da.division}`,
+        title: `DA ${da.daNumber} - ${da.companyName || da.division || da.address || ""}`,
         icon: {
           path: google.maps.SymbolPath.CIRCLE,
           scale: 8,
-          fillColor: da.subclass === "Residential" ? "#3b82f6" : da.subclass === "Commercial" ? "#f59e0b" : "#10b981",
+          fillColor: markerColour(da),
           fillOpacity: 0.8,
           strokeColor: "#fff",
           strokeWeight: 2,
@@ -62,9 +88,9 @@ export default function DaTrackerMap() {
 
       const infoWindow = new google.maps.InfoWindow({
         content: `<div style="padding:8px;max-width:250px;">
-          <strong>DA ${da.daNumber}</strong><br/>
-          <span style="color:#666;">${da.division || "Unknown"}, ${da.district || ""}</span><br/>
-          <span style="font-size:12px;color:#888;">${da.subclass || "N/A"}</span>
+          <strong>DA ${htmlEscape(da.daNumber)}</strong><br/>
+          <span style="color:#666;">${htmlEscape(da.companyName || da.division || da.address || "Unknown")}</span><br/>
+          <span style="font-size:12px;color:#888;">${htmlEscape(da.subclass || mapScopeLabel(da.mapScope))}</span>
         </div>`,
       });
 
@@ -95,12 +121,12 @@ export default function DaTrackerMap() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold">DA Tracker — Map View</h1>
           <p className="text-muted-foreground text-sm">Active development applications from ACT Government ArcGIS</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {stats && (
             <>
               <Badge variant="secondary" className="text-sm">
@@ -116,19 +142,21 @@ export default function DaTrackerMap() {
 
       {/* Filters */}
       <div className="flex gap-3 flex-wrap items-center">
-        <div className="flex items-center gap-2 border rounded-md px-3 py-2">
-          <Switch
-            id="my-projects-filter"
-            checked={myProjectsOnly}
-            onCheckedChange={setMyProjectsOnly}
-          />
-          <Label htmlFor="my-projects-filter" className="text-sm font-medium cursor-pointer">
-            My Projects Only
-          </Label>
-        </div>
+        <Select value={mapScope} onValueChange={(value) => setMapScope(value as MapScope)}>
+          <SelectTrigger className="w-full sm:w-[220px]">
+            <SelectValue placeholder="Map scope" />
+          </SelectTrigger>
+          <SelectContent>
+            {MAP_SCOPE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
         <Select value={selectedDistrict} onValueChange={setSelectedDistrict}>
-          <SelectTrigger className="w-[180px]">
+          <SelectTrigger className="w-full sm:w-[180px]">
             <SelectValue placeholder="All Districts" />
           </SelectTrigger>
           <SelectContent>
@@ -140,7 +168,7 @@ export default function DaTrackerMap() {
         </Select>
 
         <Select value={selectedSubclass} onValueChange={setSelectedSubclass}>
-          <SelectTrigger className="w-[180px]">
+          <SelectTrigger className="w-full sm:w-[180px]">
             <SelectValue placeholder="All Subclasses" />
           </SelectTrigger>
           <SelectContent>
@@ -154,7 +182,7 @@ export default function DaTrackerMap() {
 
       {/* Map */}
       <Card>
-        <CardContent className="p-0 h-[600px] relative">
+        <CardContent className="p-0 h-[520px] sm:h-[600px] relative">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -176,7 +204,7 @@ export default function DaTrackerMap() {
           )}
           {!isLoading && !mapError && mapData && mapData.length === 0 && (
             <div className="absolute inset-x-4 top-4 rounded-md border bg-background/95 p-3 text-sm text-muted-foreground shadow-sm">
-              No map points for the current filter.
+              No {mapScopeLabel(mapScope).toLowerCase()} map points for the current filter.
             </div>
           )}
         </CardContent>
@@ -194,16 +222,16 @@ export default function DaTrackerMap() {
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
-                <span className="text-muted-foreground">Division</span>
-                <p className="font-medium">{selectedDa.division || "N/A"}</p>
+                <span className="text-muted-foreground">Scope</span>
+                <p className="font-medium">{mapScopeLabel(selectedDa.mapScope)}</p>
               </div>
               <div>
-                <span className="text-muted-foreground">District</span>
-                <p className="font-medium">{selectedDa.district || "N/A"}</p>
+                <span className="text-muted-foreground">Location</span>
+                <p className="font-medium">{selectedDa.division || selectedDa.address || "N/A"}</p>
               </div>
               <div>
-                <span className="text-muted-foreground">Subclass</span>
-                <p className="font-medium">{selectedDa.subclass || "N/A"}</p>
+                <span className="text-muted-foreground">Details</span>
+                <p className="font-medium">{selectedDa.companyName || selectedDa.subclass || "N/A"}</p>
               </div>
               <div>
                 <span className="text-muted-foreground">Coordinates</span>
@@ -215,7 +243,9 @@ export default function DaTrackerMap() {
       )}
 
       {/* Legend */}
-      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-600 inline-block"></span> Entity DAs</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-500 inline-block"></span> Competitor DAs</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-500 inline-block"></span> Residential</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Commercial</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span> Other</span>
