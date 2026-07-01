@@ -466,6 +466,7 @@ export const manufacturingRouter = router({
           id: manufacturingSchedule.id,
           taskId: manufacturingSchedule.taskId,
           orderId: manufacturingSchedule.orderId,
+          constructionScheduleEventId: manufacturingSchedule.constructionScheduleEventId,
           branchId: manufacturingSchedule.branchId,
           branchName: manufacturingSchedule.branchName,
           scheduledDate: manufacturingSchedule.scheduledDate,

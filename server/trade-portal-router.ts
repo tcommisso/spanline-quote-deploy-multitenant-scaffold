@@ -10,6 +10,7 @@ import {
   constructionHolidayCalendarDays,
   constructionAssignments, jobSharedFiles, quotes,
   crmLeads,
+  manufacturingDispatches, manufacturingOrders,
   portalNews, poMilestones, cmWorkOrders,
   projectSubcontracts, tradeInvoiceLines,
   chatChannels, chatMessages, chatChannelMembers,
@@ -32,6 +33,7 @@ import { appendTenantScope, isRecordVisibleToTenant, tenantIdFromContext } from 
 import { resolveStorageUrlForPortal } from "./_core/storageSignedUrl";
 import { sendNotificationEmail } from "./email";
 import { invokeLLM, type MessageContent } from "./_core/llm";
+import * as inboxDb from "./inbox-db";
 import {
   addTradeRemittanceDedupeKeys,
   dedupeTradeRemittances,
@@ -171,6 +173,88 @@ async function getCanonicalClientForTradeJob(db: any, ctx: any, job: typeof cons
     status: crmLeads.status,
   }).from(crmLeads).where(and(...conditions)).limit(1);
   return canonicalClientFromLead(lead);
+}
+
+function deliveryDateLabel(value?: Date | string | null) {
+  if (!value) return "Date not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date not set";
+  return date.toLocaleDateString("en-AU", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Australia/Sydney",
+  });
+}
+
+function splitDeliveryMessageText(params: {
+  job: typeof constructionJobs.$inferSelect;
+  installerName: string;
+  dispatch: any;
+  requestDetails: string;
+}) {
+  const deliveryParts = [
+    params.dispatch.dispatchNumber || `Dispatch #${params.dispatch.id}`,
+    deliveryDateLabel(params.dispatch.scheduledDate),
+    params.dispatch.scheduledTimeSlot || null,
+  ].filter(Boolean).join(" - ");
+
+  return [
+    `Split delivery requested by ${params.installerName}.`,
+    "",
+    `Client: ${params.job.clientName}`,
+    `Job: ${params.job.quoteNumber || `#${params.job.id}`}`,
+    params.job.siteAddress ? `Site: ${params.job.siteAddress}` : null,
+    `Delivery: ${deliveryParts}`,
+    params.dispatch.deliveryAddress ? `Delivery address: ${params.dispatch.deliveryAddress}` : null,
+    "",
+    "Request details:",
+    params.requestDetails,
+  ].filter(Boolean).join("\n");
+}
+
+async function createSplitDeliveryInboxTicket(params: {
+  tenantId: number | null;
+  queue: "manufacturing" | "construction";
+  job: typeof constructionJobs.$inferSelect;
+  installerName: string;
+  installerEmail?: string | null;
+  subject: string;
+  content: string;
+}) {
+  const threadId = `trade-split-delivery-${params.queue}-${crypto.randomUUID()}`;
+  const { id } = await inboxDb.createInboxMessage({
+    tenantId: params.tenantId,
+    threadId,
+    direction: "inbound",
+    resendEmailId: null,
+    graphConversationId: null,
+    fromAddress: params.installerEmail || `trade:${params.installerName}`,
+    fromName: params.installerName,
+    toAddresses: JSON.stringify([`${params.queue} inbox`]),
+    receivedByAddress: null,
+    subject: params.subject,
+    htmlBody: null,
+    textBody: params.content,
+    matchedJobId: params.job.id,
+    matchedLeadId: params.job.leadId || null,
+    matchedClientEmail: null,
+    status: "new",
+    isRead: false,
+    isStarred: false,
+    portalVisible: false,
+    autoReplySent: false,
+    createdBy: null,
+    createdByName: "Trade Portal",
+  });
+  await inboxDb.updateTicketMetadata(threadId, {
+    queue: params.queue,
+    channel: "portal",
+    priority: "normal",
+    status: "new",
+  }, params.tenantId);
+  return id;
 }
 
 function tradeJobInstructionConditions(ctx: any, ...baseConditions: any[]) {
@@ -2302,6 +2386,101 @@ export const tradePortalRouter = router({
       return { id: result.insertId };
     }),
 
+  requestSplitDelivery: protectedTradePortalProcedure
+    .input(z.object({
+      jobId: z.number(),
+      dispatchId: z.number(),
+      requestDetails: z.string().trim().min(1).max(1500),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const db = await requireDb();
+      const installerId = ctx.tradeAccess.installerId;
+      const job = await requireTradeJobAccess(db, ctx, input.jobId);
+
+      const [installer] = await db.select({
+        id: constructionInstallers.id,
+        name: constructionInstallers.name,
+        email: constructionInstallers.email,
+      })
+        .from(constructionInstallers)
+        .where(and(...tradeInstallerConditions(ctx, eq(constructionInstallers.id, installerId))))
+        .limit(1);
+
+      const [dispatchRow] = await db.select({
+        id: manufacturingDispatches.id,
+        orderId: manufacturingDispatches.orderId,
+        dispatchNumber: manufacturingDispatches.dispatchNumber,
+        status: manufacturingDispatches.status,
+        scheduledDate: manufacturingDispatches.scheduledDate,
+        scheduledTimeSlot: manufacturingDispatches.scheduledTimeSlot,
+        deliveryAddress: manufacturingDispatches.deliveryAddress,
+        deliveryNotes: manufacturingDispatches.deliveryNotes,
+        orderNumber: manufacturingOrders.orderNumber,
+      })
+        .from(manufacturingDispatches)
+        .innerJoin(manufacturingOrders, eq(manufacturingDispatches.orderId, manufacturingOrders.id))
+        .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+        .where(and(
+          ...tradeJobConditions(ctx, eq(manufacturingDispatches.id, input.dispatchId)),
+          eq(manufacturingOrders.jobId, input.jobId),
+        ))
+        .limit(1);
+
+      if (!dispatchRow) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Delivery not found for this job." });
+      }
+
+      const installerName = installer?.name || ctx.tradeAccess.email || "Trade Portal";
+      const content = splitDeliveryMessageText({
+        job,
+        installerName,
+        dispatch: dispatchRow,
+        requestDetails: input.requestDetails,
+      });
+      const subject = `Split delivery request: ${job.clientName}`;
+      const tenantId = tradePortalTenantId(ctx);
+
+      await db.insert(tradeMessages).values({
+        installerId,
+        jobId: input.jobId,
+        content,
+        direction: "inbound",
+        senderName: installerName,
+        attachmentUrl: null,
+        attachmentKey: null,
+      });
+
+      const [manufacturingMessageId, constructionMessageId] = await Promise.all([
+        createSplitDeliveryInboxTicket({
+          tenantId,
+          queue: "manufacturing",
+          job,
+          installerName,
+          installerEmail: ctx.tradeAccess.email || installer?.email || null,
+          subject,
+          content,
+        }),
+        createSplitDeliveryInboxTicket({
+          tenantId,
+          queue: "construction",
+          job,
+          installerName,
+          installerEmail: ctx.tradeAccess.email || installer?.email || null,
+          subject: `CC: ${subject}`,
+          content,
+        }),
+      ]);
+
+      notifyOwner({
+        tenantId,
+        title: subject,
+        content,
+        settingKey: "trade_portal_split_delivery_request",
+      }).catch(() => {});
+
+      return { success: true, manufacturingMessageId, constructionMessageId };
+    }),
+
   getActiveJobs: protectedTradePortalProcedure.query(async ({ ctx }) => {
     const db = await requireDb();
     const eventRows = await db.select({
@@ -3089,6 +3268,31 @@ export const tradePortalRouter = router({
 
       const jobInstructions = await buildTradeJobInstructionItems(db, ctx, job, subcontracts);
 
+      const manufacturingDeliveries = await db.select({
+        id: manufacturingDispatches.id,
+        orderId: manufacturingDispatches.orderId,
+        dispatchNumber: manufacturingDispatches.dispatchNumber,
+        status: manufacturingDispatches.status,
+        driverName: manufacturingDispatches.driverName,
+        scheduledDate: manufacturingDispatches.scheduledDate,
+        scheduledTimeSlot: manufacturingDispatches.scheduledTimeSlot,
+        deliveryAddress: manufacturingDispatches.deliveryAddress,
+        deliveryContact: manufacturingDispatches.deliveryContact,
+        deliveryPhone: manufacturingDispatches.deliveryPhone,
+        deliveryNotes: manufacturingDispatches.deliveryNotes,
+        dispatchedAt: manufacturingDispatches.dispatchedAt,
+        deliveredAt: manufacturingDispatches.deliveredAt,
+        orderNumber: manufacturingOrders.orderNumber,
+      })
+        .from(manufacturingDispatches)
+        .innerJoin(manufacturingOrders, eq(manufacturingDispatches.orderId, manufacturingOrders.id))
+        .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+        .where(and(
+          ...tradeJobConditions(ctx, eq(manufacturingOrders.jobId, input.jobId)),
+          inArray(manufacturingDispatches.status, ["pending", "scheduled", "in_transit"] as any[]),
+        ))
+        .orderBy(asc(manufacturingDispatches.scheduledDate), asc(manufacturingDispatches.id));
+
       const signedSharedFiles = await Promise.all(sharedFiles.map(async (file) => ({
         ...file,
         fileUrl: await resolveStorageUrlForPortal(file.fileUrl),
@@ -3118,6 +3322,7 @@ export const tradePortalRouter = router({
         assignedTrades: allAssignments,
         jobInstructions,
         workOrders,
+        manufacturingDeliveries,
         sharedFiles: signedSharedFiles,
         subcontracts: signedSubcontracts,
       };

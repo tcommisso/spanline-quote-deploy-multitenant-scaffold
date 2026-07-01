@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import {
   MapPin, Phone, Users, FileText, Download, ChevronRight,
   ArrowLeft, Briefcase, Calendar, Clock, HardHat,
   ClipboardCheck, AlertTriangle, ShieldCheck, CheckCircle2,
-  Upload, Loader2, Camera,
+  Upload, Loader2, Camera, Truck, Send,
 } from "lucide-react";
 
 // ─── Job List View ──────────────────────────────────────────────────────────
@@ -155,6 +156,25 @@ function isImageEvidence(file: any) {
   return String(file?.mimeType || "").startsWith("image/");
 }
 
+function formatDeliveryDate(value?: string | Date | null) {
+  if (!value) return "Date not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date not set";
+  return date.toLocaleDateString("en-AU", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function deliveryStatusClass(status?: string | null) {
+  if (status === "in_transit") return "bg-blue-100 text-blue-700 border-blue-200";
+  if (status === "scheduled") return "bg-green-100 text-green-700 border-green-200";
+  if (status === "pending") return "bg-amber-100 text-amber-700 border-amber-200";
+  return "bg-slate-100 text-slate-600 border-slate-200";
+}
+
 // ─── Job Detail View ────────────────────────────────────────────────────────
 function JobDetailView({ jobId }: { jobId: number }) {
   const { data: job, isLoading } = trpc.tradePortal.getJobDetail.useQuery({ jobId });
@@ -163,6 +183,8 @@ function JobDetailView({ jobId }: { jobId: number }) {
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [evidenceCaption, setEvidenceCaption] = useState("");
   const [isReadingEvidence, setIsReadingEvidence] = useState(false);
+  const [splitDeliveryTarget, setSplitDeliveryTarget] = useState<any | null>(null);
+  const [splitDeliveryDetails, setSplitDeliveryDetails] = useState("");
 
   const refreshJob = () => utils.tradePortal.getJobDetail.invalidate({ jobId });
   const updateInstructionAction = trpc.tradePortal.updateJobInstructionAction.useMutation({
@@ -182,6 +204,15 @@ function JobDetailView({ jobId }: { jobId: number }) {
     },
     onError: (err) => toast.error(err.message || "Failed to upload evidence"),
   });
+  const requestSplitDelivery = trpc.tradePortal.requestSplitDelivery.useMutation({
+    onSuccess: () => {
+      refreshJob();
+      setSplitDeliveryTarget(null);
+      setSplitDeliveryDetails("");
+      toast.success("Split delivery request sent");
+    },
+    onError: (err) => toast.error(err.message || "Failed to send split delivery request"),
+  });
 
   const handleInstructionAction = (item: any, actionStatus: "acknowledged" | "completed") => {
     updateInstructionAction.mutate({
@@ -197,6 +228,24 @@ function JobDetailView({ jobId }: { jobId: number }) {
     setEvidenceTarget(item);
     setEvidenceFile(null);
     setEvidenceCaption("");
+  };
+
+  const openSplitDeliveryDialog = (delivery: any) => {
+    setSplitDeliveryTarget(delivery);
+    setSplitDeliveryDetails("");
+  };
+
+  const handleSplitDeliveryRequest = () => {
+    const details = splitDeliveryDetails.trim();
+    if (!splitDeliveryTarget || !details) {
+      toast.error("Enter the split delivery details");
+      return;
+    }
+    requestSplitDelivery.mutate({
+      jobId,
+      dispatchId: splitDeliveryTarget.id,
+      requestDetails: details,
+    });
   };
 
   const handleEvidenceUpload = async () => {
@@ -502,6 +551,69 @@ function JobDetailView({ jobId }: { jobId: number }) {
         </Card>
       )}
 
+      {/* Manufacturing Deliveries */}
+      {job.manufacturingDeliveries && job.manufacturingDeliveries.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Truck className="w-4 h-4" /> Scheduled Deliveries
+              </CardTitle>
+              <Badge variant="secondary">{job.manufacturingDeliveries.length}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {job.manufacturingDeliveries.map((delivery: any) => (
+              <div key={delivery.id} className="rounded-lg border bg-slate-50 p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="text-sm font-semibold">
+                        {delivery.dispatchNumber || `Delivery #${delivery.id}`}
+                      </p>
+                      <Badge variant="outline" className={`text-[10px] capitalize ${deliveryStatusClass(delivery.status)}`}>
+                        {String(delivery.status || "scheduled").replace("_", " ")}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Calendar className="h-3 w-3" />
+                      {formatDeliveryDate(delivery.scheduledDate)}
+                      {delivery.scheduledTimeSlot ? ` - ${delivery.scheduledTimeSlot}` : ""}
+                    </p>
+                    {delivery.orderNumber && (
+                      <p className="text-xs text-muted-foreground">Order: {delivery.orderNumber}</p>
+                    )}
+                    {delivery.deliveryAddress && (
+                      <p className="text-xs text-muted-foreground flex items-start gap-1">
+                        <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>{delivery.deliveryAddress}</span>
+                      </p>
+                    )}
+                    {(delivery.deliveryContact || delivery.deliveryPhone) && (
+                      <p className="text-xs text-muted-foreground">
+                        Contact: {[delivery.deliveryContact, delivery.deliveryPhone].filter(Boolean).join(" - ")}
+                      </p>
+                    )}
+                    {delivery.deliveryNotes && (
+                      <p className="text-xs text-slate-700 whitespace-pre-wrap">{delivery.deliveryNotes}</p>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full gap-1 text-xs sm:w-auto"
+                    onClick={() => openSplitDeliveryDialog(delivery)}
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Request Split Delivery
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Other Trades on This Job */}
       {job.assignedTrades && job.assignedTrades.length > 0 && (
         <Card>
@@ -667,6 +779,68 @@ function JobDetailView({ jobId }: { jobId: number }) {
             >
               {uploadEvidence.isPending || isReadingEvidence ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               Upload
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!splitDeliveryTarget} onOpenChange={(open) => {
+        if (!open) {
+          setSplitDeliveryTarget(null);
+          setSplitDeliveryDetails("");
+        }
+      }}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Truck className="h-5 w-5 text-primary" />
+              Request Split Delivery
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {splitDeliveryTarget && (
+              <div className="rounded-md border bg-slate-50 p-3 text-sm">
+                <p className="font-medium">
+                  {splitDeliveryTarget.dispatchNumber || `Delivery #${splitDeliveryTarget.id}`}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatDeliveryDate(splitDeliveryTarget.scheduledDate)}
+                  {splitDeliveryTarget.scheduledTimeSlot ? ` - ${splitDeliveryTarget.scheduledTimeSlot}` : ""}
+                </p>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>Request details</Label>
+              <Textarea
+                value={splitDeliveryDetails}
+                onChange={(event) => setSplitDeliveryDetails(event.target.value)}
+                placeholder="Explain what needs to be split, timing constraints, access notes, or preferred delivery sequence."
+                rows={5}
+                maxLength={1500}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                This will message Manufacturing and CC the Construction inbox.
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => {
+                setSplitDeliveryTarget(null);
+                setSplitDeliveryDetails("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="w-full gap-1.5 sm:w-auto"
+              onClick={handleSplitDeliveryRequest}
+              disabled={!splitDeliveryDetails.trim() || requestSplitDelivery.isPending}
+            >
+              {requestSplitDelivery.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Send Request
             </Button>
           </DialogFooter>
         </DialogContent>

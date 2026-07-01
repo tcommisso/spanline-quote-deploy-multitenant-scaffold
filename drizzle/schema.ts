@@ -5055,6 +5055,7 @@ export const manufacturingSchedule = mysqlTable("manufacturing_schedule", {
   id: int("id").autoincrement().primaryKey(),
   taskId: int("taskId").references(() => manufacturingTasks.id, { onDelete: "cascade" }),
   orderId: int("orderId").notNull().references(() => manufacturingOrders.id, { onDelete: "cascade" }),
+  constructionScheduleEventId: int("constructionScheduleEventId"),
   branchId: int("branchId").notNull().references(() => branches.id),
   branchName: varchar("branchName", { length: 128 }).notNull(),
   scheduledDate: timestamp("scheduledDate").notNull(),
@@ -5066,7 +5067,9 @@ export const manufacturingSchedule = mysqlTable("manufacturing_schedule", {
   createdBy: int("createdBy").references(() => users.id),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => [
+  uniqueIndex("uniq_manufacturing_schedule_construction_event").on(table.constructionScheduleEventId),
+]);
 export type ManufacturingScheduleEntry = typeof manufacturingSchedule.$inferSelect;
 export type InsertManufacturingScheduleEntry = typeof manufacturingSchedule.$inferInsert;
 

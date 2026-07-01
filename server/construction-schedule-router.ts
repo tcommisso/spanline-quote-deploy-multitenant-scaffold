@@ -11,13 +11,17 @@ import {
   constructionJobs,
   constructionInstallers,
   constructionHolidayCalendarDays,
+  crmLeads,
   designAdvisors,
+  manufacturingOrders,
+  manufacturingSchedule,
+  manufacturingTasks,
   notificationLog,
   tenantMemberships,
   tradeAvailabilities,
   users,
 } from "../drizzle/schema";
-import { eq, and, gte, lte, inArray, isNull, or, asc, sql } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, isNull, or, asc, sql, isNotNull } from "drizzle-orm";
 import { notifyScheduleEventCreated, notifyScheduleEventUpdated } from "./construction-notifications";
 import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
@@ -35,6 +39,7 @@ import {
   isWeekendDateKey,
   toDateKey,
 } from "./_core/australianHolidays";
+import { addDaysToDateOnly, APP_TIME_ZONE, formatDateInTimeZone } from "@shared/timezone";
 
 async function requireDb() {
   const db = await getDb();
@@ -61,6 +66,12 @@ function normalizeEmail(email?: string | null) {
 function holidayTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
   appendTenantScope(conditions, constructionHolidayCalendarDays.tenantId, tenantIdFromContext(ctx));
+  return conditions;
+}
+
+function branchTenantConditions(ctx: any, ...baseConditions: any[]) {
+  const conditions = [...baseConditions];
+  appendTenantScope(conditions, branches.tenantId, tenantIdFromContext(ctx));
   return conditions;
 }
 
@@ -182,6 +193,217 @@ function parseScheduleDateTime(value: string | null | undefined, fieldName: stri
 function assertScheduleRange(startTime: Date, endTime: Date | null) {
   if (endTime && endTime < startTime) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "End date must be after the start date" });
+  }
+}
+
+const MANUFACTURING_PLACEHOLDER_EVENT_TYPES = new Set(["installation", "delivery", "maintenance"]);
+
+function truncateText(value: string, maxLength: number) {
+  return value.length <= maxLength ? value : value.slice(0, Math.max(0, maxLength - 1)).trimEnd();
+}
+
+function appDateKey(value: Date | string | number) {
+  try {
+    return formatDateInTimeZone(value, APP_TIME_ZONE);
+  } catch {
+    return toDateKey(value);
+  }
+}
+
+async function getActiveHolidayDateKeys(db: any, ctx: any, startKey: string, endKey: string) {
+  const rows = await db.select({ dateKey: constructionHolidayCalendarDays.dateKey })
+    .from(constructionHolidayCalendarDays)
+    .where(and(...holidayTenantConditions(
+      ctx,
+      eq(constructionHolidayCalendarDays.active, true),
+      gte(constructionHolidayCalendarDays.dateKey, startKey),
+      lte(constructionHolidayCalendarDays.dateKey, endKey),
+    )));
+  return new Set(rows.map((row: { dateKey: string }) => row.dateKey));
+}
+
+async function previousWorkingDateKeyBefore(db: any, ctx: any, startTime: Date) {
+  const tradeStartKey = appDateKey(startTime);
+  let candidateKey = addDaysToDateOnly(tradeStartKey, -1);
+  const earliestKey = addDaysToDateOnly(candidateKey, -45);
+  const holidayKeys = await getActiveHolidayDateKeys(db, ctx, earliestKey, candidateKey);
+
+  for (let guard = 0; guard < 45; guard += 1) {
+    if (!isWeekendDateKey(candidateKey) && !holidayKeys.has(candidateKey)) {
+      return candidateKey;
+    }
+    candidateKey = addDaysToDateOnly(candidateKey, -1);
+  }
+
+  return candidateKey;
+}
+
+async function findManufacturingPlaceholderForScheduleEvent(db: any, ctx: any, eventId: number) {
+  const [row] = await db.select({
+    id: manufacturingSchedule.id,
+    orderId: manufacturingSchedule.orderId,
+    branchId: manufacturingSchedule.branchId,
+    branchName: manufacturingSchedule.branchName,
+  })
+    .from(manufacturingSchedule)
+    .innerJoin(manufacturingOrders, eq(manufacturingSchedule.orderId, manufacturingOrders.id))
+    .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+    .where(and(...jobTenantConditions(ctx, eq(manufacturingSchedule.constructionScheduleEventId, eventId))))
+    .limit(1);
+
+  return row || null;
+}
+
+async function deleteManufacturingPlaceholderForScheduleEvent(db: any, ctx: any, eventId: number) {
+  const existing = await findManufacturingPlaceholderForScheduleEvent(db, ctx, eventId);
+  if (!existing) return;
+  await db.delete(manufacturingSchedule).where(eq(manufacturingSchedule.id, existing.id));
+}
+
+async function findFirstManufacturingOrderForJob(db: any, ctx: any, jobId: number) {
+  const leadJoinConditions: any[] = [eq(constructionJobs.leadId, crmLeads.id)];
+  appendTenantScope(leadJoinConditions, crmLeads.tenantId, tenantIdFromContext(ctx));
+
+  const [row] = await db.select({
+    orderId: manufacturingOrders.id,
+    orderNumber: manufacturingOrders.orderNumber,
+    orderClientName: manufacturingOrders.clientName,
+    jobClientName: constructionJobs.clientName,
+    jobSiteAddress: constructionJobs.siteAddress,
+    leadBranchId: crmLeads.branchId,
+  })
+    .from(manufacturingOrders)
+    .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+    .leftJoin(crmLeads, and(...leadJoinConditions))
+    .where(and(...jobTenantConditions(ctx, eq(manufacturingOrders.jobId, jobId))))
+    .orderBy(asc(manufacturingOrders.id))
+    .limit(1);
+
+  return row || null;
+}
+
+async function resolveManufacturingPlaceholderBranch(
+  db: any,
+  ctx: any,
+  params: {
+    orderId: number;
+    leadBranchId?: number | null;
+    existing?: { orderId: number; branchId: number; branchName: string } | null;
+  },
+) {
+  const [taskBranch] = await db.select({
+    branchId: manufacturingTasks.branchId,
+    branchName: manufacturingTasks.branchName,
+  })
+    .from(manufacturingTasks)
+    .where(and(
+      eq(manufacturingTasks.orderId, params.orderId),
+      isNotNull(manufacturingTasks.branchId),
+    ))
+    .orderBy(asc(manufacturingTasks.id))
+    .limit(1);
+
+  if (taskBranch?.branchId && taskBranch.branchName) {
+    return { branchId: taskBranch.branchId, branchName: taskBranch.branchName };
+  }
+
+  if (params.leadBranchId) {
+    const [branch] = await db.select({ id: branches.id, name: branches.name })
+      .from(branches)
+      .where(and(...branchTenantConditions(
+        ctx,
+        eq(branches.id, params.leadBranchId),
+        eq(branches.isActive, true),
+      )))
+      .limit(1);
+    if (branch) return { branchId: branch.id, branchName: branch.name };
+  }
+
+  if (params.existing && params.existing.orderId === params.orderId) {
+    return { branchId: params.existing.branchId, branchName: params.existing.branchName };
+  }
+
+  const tenantBranches = await db.select({ id: branches.id, name: branches.name })
+    .from(branches)
+    .where(and(...branchTenantConditions(ctx, eq(branches.isActive, true))))
+    .orderBy(asc(branches.name))
+    .limit(2);
+  if (tenantBranches.length === 1) {
+    return { branchId: tenantBranches[0].id, branchName: tenantBranches[0].name };
+  }
+
+  return null;
+}
+
+async function syncManufacturingPlaceholderForScheduleEvent(db: any, ctx: any, event: {
+  id: number;
+  jobId: number;
+  title: string;
+  startTime: Date;
+  eventType?: string | null;
+  assignedInstallerId?: number | null;
+  status?: string | null;
+}) {
+  const shouldHavePlaceholder = Boolean(event.assignedInstallerId)
+    && event.status !== "cancelled"
+    && MANUFACTURING_PLACEHOLDER_EVENT_TYPES.has(event.eventType || "installation");
+
+  const existing = await findManufacturingPlaceholderForScheduleEvent(db, ctx, event.id);
+  if (!shouldHavePlaceholder) {
+    if (existing) await deleteManufacturingPlaceholderForScheduleEvent(db, ctx, event.id);
+    return;
+  }
+
+  const manufacturingOrder = await findFirstManufacturingOrderForJob(db, ctx, event.jobId);
+  if (!manufacturingOrder) {
+    if (existing) await deleteManufacturingPlaceholderForScheduleEvent(db, ctx, event.id);
+    return;
+  }
+
+  const branch = await resolveManufacturingPlaceholderBranch(db, ctx, {
+    orderId: manufacturingOrder.orderId,
+    leadBranchId: manufacturingOrder.leadBranchId,
+    existing,
+  });
+  if (!branch) {
+    if (existing) await deleteManufacturingPlaceholderForScheduleEvent(db, ctx, event.id);
+    return;
+  }
+
+  const placeholderKey = await previousWorkingDateKeyBefore(db, ctx, event.startTime);
+  const tradeStartKey = appDateKey(event.startTime);
+  const clientName = manufacturingOrder.jobClientName || manufacturingOrder.orderClientName || "Client";
+  const title = truncateText(`Pre-trade manufacturing placeholder - ${clientName}`, 255);
+  const description = [
+    `Auto-created from construction schedule event #${event.id}.`,
+    `Trade start: ${tradeStartKey}.`,
+    `Construction event: ${event.title}.`,
+    manufacturingOrder.orderNumber ? `Manufacturing order: ${manufacturingOrder.orderNumber}.` : null,
+    manufacturingOrder.jobSiteAddress ? `Site: ${manufacturingOrder.jobSiteAddress}.` : null,
+  ].filter(Boolean).join("\n");
+
+  const values = {
+    orderId: manufacturingOrder.orderId,
+    constructionScheduleEventId: event.id,
+    branchId: branch.branchId,
+    branchName: branch.branchName,
+    scheduledDate: dateKeyToStorageDate(placeholderKey),
+    scheduledEndDate: null,
+    title,
+    description,
+    status: "scheduled" as const,
+    assignedTo: null,
+  };
+
+  if (existing) {
+    await db.update(manufacturingSchedule)
+      .set(values)
+      .where(eq(manufacturingSchedule.id, existing.id));
+  } else {
+    await db.insert(manufacturingSchedule).values({
+      ...values,
+      createdBy: ctx.user?.id ?? null,
+    });
   }
 }
 
@@ -862,6 +1084,15 @@ export const constructionScheduleRouter = router({
       // Fire-and-forget notification
       const insertedId = result.insertId;
       notifyScheduleEventCreated(insertedId).catch(() => {});
+      await syncManufacturingPlaceholderForScheduleEvent(db, ctx, {
+        id: insertedId,
+        jobId: input.jobId,
+        title: input.title,
+        startTime,
+        eventType: input.eventType || "installation",
+        assignedInstallerId: input.assignedInstallerId || null,
+        status: "scheduled",
+      });
       if (installer) {
         await applyScheduledTradeSideEffects(db, ctx, {
           eventId: insertedId,
@@ -945,6 +1176,15 @@ export const constructionScheduleRouter = router({
         notifyScheduleEventUpdated(id, changes).catch(() => {});
       }
       const nextJobId = updates.jobId !== undefined ? updates.jobId : existingEvent.jobId;
+      await syncManufacturingPlaceholderForScheduleEvent(db, ctx, {
+        id,
+        jobId: nextJobId,
+        title: updates.title || existingEvent.title,
+        startTime: parsedStartTime || existingEvent.startTime,
+        eventType: updates.eventType || existingEvent.eventType,
+        assignedInstallerId: requestedInstallerId || null,
+        status: updates.status || existingEvent.status,
+      });
       const nextInstallerId = requestedInstallerId;
       if (nextInstallerId) {
         const [nextJob, nextInstaller] = await Promise.all([
@@ -978,6 +1218,7 @@ export const constructionScheduleRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = await requireDb();
       await requireEventAccess(db, ctx, input.id);
+      await deleteManufacturingPlaceholderForScheduleEvent(db, ctx, input.id);
       await db.delete(constructionScheduleEvents).where(eq(constructionScheduleEvents.id, input.id));
       return { success: true };
     }),

@@ -550,6 +550,7 @@ export async function listTicketPresence(
 export async function updateTicketMetadata(threadId: string, data: {
   priority?: InboxTicketPriority;
   channel?: InboxTicketChannel;
+  queue?: string | null;
   status?: InboxTicketStatus;
   resolutionNotes?: string | null;
   closedReason?: string | null;
@@ -569,6 +570,7 @@ export async function updateTicketMetadata(threadId: string, data: {
   const patch: any = {};
   if (data.priority) patch.priority = data.priority;
   if (data.channel) patch.channel = data.channel;
+  if (data.queue !== undefined) patch.queue = data.queue || null;
   if (data.resolutionNotes !== undefined) patch.resolutionNotes = data.resolutionNotes || null;
   if (data.closedReason !== undefined) patch.closedReason = data.closedReason || null;
 
