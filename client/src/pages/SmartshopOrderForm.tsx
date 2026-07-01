@@ -888,6 +888,8 @@ function ProductBrowserSection({
   const [searchInput, setSearchInput] = useState("");
   const [offset, setOffset] = useState(0);
   const [showFavouritesOnly, setShowFavouritesOnly] = useState(false);
+  const [categoryPickerCollapsed, setCategoryPickerCollapsed] = useState(true);
+  const [scopePickerCollapsed, setScopePickerCollapsed] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   // Colour group queries for dropdown
@@ -1022,17 +1024,21 @@ function ProductBrowserSection({
   const handleCategoryChange = (cat: string) => {
     setCategory(cat);
     resetFilters();
+    setCategoryPickerCollapsed(true);
   };
 
   const handleTagChange = (tag: string) => {
     setSelectedTag(tag);
     resetFilters();
+    setScopePickerCollapsed(true);
   };
 
   const handleBrowseModeChange = (mode: "category" | "tag") => {
     setBrowseMode(mode);
     setCategory("");
     setSelectedTag("");
+    setCategoryPickerCollapsed(true);
+    setScopePickerCollapsed(true);
     resetFilters();
   };
 
@@ -1238,10 +1244,11 @@ function ProductBrowserSection({
       </CardHeader>
       <CardContent className="pt-0">
         {/* Browse Mode Toggle */}
-        <div className="mb-4 flex items-center gap-3">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
           <span className="text-sm font-medium text-muted-foreground">Browse by:</span>
           <div className="flex rounded-lg border border-border overflow-hidden">
             <button
+              type="button"
               onClick={() => handleBrowseModeChange("category")}
               className={`px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2 ${
                 browseMode === "category"
@@ -1253,6 +1260,7 @@ function ProductBrowserSection({
               Category
             </button>
             <button
+              type="button"
               onClick={() => handleBrowseModeChange("tag")}
               className={`px-4 py-2 text-sm font-medium transition-colors flex items-center gap-2 ${
                 browseMode === "tag"
@@ -1266,74 +1274,139 @@ function ProductBrowserSection({
           </div>
         </div>
 
-        {/* Category Tabs (category mode) */}
+        {/* Category picker (category mode) */}
         {browseMode === "category" && categories && categories.length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-2">
-            <Button
-              variant={!category ? "default" : "outline"}
-              size="sm"
-              onClick={() => handleCategoryChange("")}
-              className="text-xs"
+          <div className="mb-4 overflow-hidden rounded-lg border border-border bg-muted/20">
+            <button
+              type="button"
+              onClick={() => setCategoryPickerCollapsed((value) => !value)}
+              className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
+              aria-expanded={!categoryPickerCollapsed}
             >
-              All products
-            </Button>
-            {categories.map((cat: string) => (
-              <Button
-                key={cat}
-                variant={category === cat ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleCategoryChange(cat)}
-                className="text-xs"
-              >
-                {cat}
-              </Button>
-            ))}
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Layers className="h-4 w-4 shrink-0 text-primary" />
+                <span className="text-sm font-medium">Categories</span>
+                <Badge variant="secondary" className="max-w-full truncate text-xs">
+                  {category || "All products"}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  {categories.length} {categories.length === 1 ? "category" : "categories"}
+                </span>
+              </div>
+              <span className="ml-auto flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground">
+                {categoryPickerCollapsed ? "Show" : "Hide"}
+                {categoryPickerCollapsed ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronUp className="h-4 w-4" />
+                )}
+              </span>
+            </button>
+            {!categoryPickerCollapsed && (
+              <div className="border-t border-border bg-card px-3 py-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={!category ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => handleCategoryChange("")}
+                    className="text-xs"
+                  >
+                    All products
+                  </Button>
+                  {categories.map((cat: string) => (
+                    <Button
+                      key={cat}
+                      variant={category === cat ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => handleCategoryChange(cat)}
+                      className="text-xs"
+                    >
+                      {cat}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Tag Tabs (tag/scope mode) */}
+        {/* Scope picker (tag/scope mode) */}
         {browseMode === "tag" && allTags && allTags.length > 0 && (
-          <div className="mb-4">
-            <div className="flex flex-wrap gap-2 mb-3">
-              {allTags.map((tag: string) => (
-                <Button
-                  key={tag}
-                  variant={selectedTag === tag ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => handleTagChange(tag)}
-                  className="text-xs gap-1"
-                >
-                  <Tag className="h-3 w-3" />
-                  {tag}
-                </Button>
-              ))}
-            </div>
-            {/* Sub-group filter chips when a tag is selected */}
-            {selectedTag && subGroupsList && subGroupsList.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                  <Filter className="h-3 w-3" />
-                  Sub-group:
+          <div className="mb-4 overflow-hidden rounded-lg border border-border bg-muted/20">
+            <button
+              type="button"
+              onClick={() => setScopePickerCollapsed((value) => !value)}
+              className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
+              aria-expanded={!scopePickerCollapsed}
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <Tag className="h-4 w-4 shrink-0 text-primary" />
+                <span className="text-sm font-medium">Scopes</span>
+                <Badge variant="secondary" className="max-w-full truncate text-xs">
+                  {selectedTag || "Select scope"}
+                </Badge>
+                {selectedSubGroup && (
+                  <Badge variant="outline" className="max-w-full truncate text-xs">
+                    {selectedSubGroup}
+                  </Badge>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {allTags.length} {allTags.length === 1 ? "scope" : "scopes"}
                 </span>
-                <Button
-                  variant={selectedSubGroup === "" ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => { setSelectedSubGroup(""); setOffset(0); }}
-                  className="text-xs h-7"
-                >
-                  All
-                </Button>
-                {subGroupsList.map((sg: string) => (
-                  <Button
-                    key={sg}
-                    variant={selectedSubGroup === sg ? "secondary" : "ghost"}
-                    size="sm"
-                    onClick={() => { setSelectedSubGroup(sg); setOffset(0); }}
-                    className="text-xs h-7"
-                  >
-                    {sg}
-                  </Button>
-                ))}
+              </div>
+              <span className="ml-auto flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground">
+                {scopePickerCollapsed ? "Show" : "Hide"}
+                {scopePickerCollapsed ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronUp className="h-4 w-4" />
+                )}
+              </span>
+            </button>
+            {!scopePickerCollapsed && (
+              <div className="space-y-3 border-t border-border bg-card px-3 py-3">
+                <div className="flex flex-wrap gap-2">
+                  {allTags.map((tag: string) => (
+                    <Button
+                      key={tag}
+                      variant={selectedTag === tag ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => handleTagChange(tag)}
+                      className="text-xs gap-1"
+                    >
+                      <Tag className="h-3 w-3" />
+                      {tag}
+                    </Button>
+                  ))}
+                </div>
+                {/* Sub-group filter chips when a tag is selected */}
+                {selectedTag && subGroupsList && subGroupsList.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                      <Filter className="h-3 w-3" />
+                      Sub-group:
+                    </span>
+                    <Button
+                      variant={selectedSubGroup === "" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => { setSelectedSubGroup(""); setOffset(0); }}
+                      className="text-xs h-7"
+                    >
+                      All
+                    </Button>
+                    {subGroupsList.map((sg: string) => (
+                      <Button
+                        key={sg}
+                        variant={selectedSubGroup === sg ? "secondary" : "ghost"}
+                        size="sm"
+                        onClick={() => { setSelectedSubGroup(sg); setOffset(0); }}
+                        className="text-xs h-7"
+                      >
+                        {sg}
+                      </Button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
