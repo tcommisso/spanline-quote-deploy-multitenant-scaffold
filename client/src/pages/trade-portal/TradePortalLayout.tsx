@@ -3,6 +3,7 @@ import { useLocation, Link, Redirect } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import { applyInstallSurfaceMetadata } from "@/hooks/useInstallSurfaceMetadata";
 import {
   LayoutDashboard, CalendarDays, CalendarCheck, User, Receipt,
   FileUp, Newspaper, Camera, MessageSquare, MessagesSquare, LogOut, Menu, X, ChevronRight, FileSignature, FileText,
@@ -105,26 +106,20 @@ export default function TradePortalLayout({ children }: { children: ReactNode })
     document.title = `${company} | ${pageName}`;
   }, [location, branding?.companyName, navItems]);
 
-  // Set favicon from company app icon
+  // Set browser favicon from company app icon without changing the install icon.
   useEffect(() => {
     if (branding?.appIconUrl) {
-      let link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
+      let link = document.getElementById("trade-portal-favicon") as HTMLLinkElement | null;
       if (!link) {
         link = document.createElement("link");
+        link.id = "trade-portal-favicon";
         link.rel = "icon";
         document.head.appendChild(link);
       }
       link.href = branding.appIconUrl;
-      // Also set apple-touch-icon
-      let appleLink = document.querySelector("link[rel='apple-touch-icon']") as HTMLLinkElement | null;
-      if (!appleLink) {
-        appleLink = document.createElement("link");
-        appleLink.rel = "apple-touch-icon";
-        document.head.appendChild(appleLink);
-      }
-      appleLink.href = branding.appIconUrl;
+      applyInstallSurfaceMetadata(location);
     }
-  }, [branding?.appIconUrl]);
+  }, [branding?.appIconUrl, location]);
 
   // Mark news as viewed when navigating to news page
   useEffect(() => {
