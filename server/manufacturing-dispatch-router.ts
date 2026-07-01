@@ -6,6 +6,7 @@ import {
   manufacturingTasks,
   manufacturingDispatches,
   manufacturingDrivers,
+  driverLocations,
   manufacturingSchedule,
   constructionJobs,
   branches,
@@ -15,7 +16,7 @@ import {
 import { eq, desc, and, gte, lte, sql, asc, count, isNotNull } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
 import crypto from "crypto";
-import { appendTenantScope, tenantIdFromContext } from "./_core/tenant-scope";
+import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { TRPCError } from "@trpc/server";
 
 async function requireDb() {
@@ -79,8 +80,17 @@ async function requireDispatchAccess(db: any, ctx: any, dispatchId: number) {
 }
 
 function publicDriverTenantCondition(driver: typeof manufacturingDrivers.$inferSelect) {
-  if (!driver.tenantId) return undefined;
-  return eq(constructionJobs.tenantId, driver.tenantId);
+  return tenantScoped(constructionJobs.tenantId, driver.tenantId);
+}
+
+async function requirePublicDriverByToken(db: any, token: string) {
+  const [driver] = await db.select().from(manufacturingDrivers)
+    .where(and(eq(manufacturingDrivers.driverAccessToken, token), eq(manufacturingDrivers.isActive, true)))
+    .limit(1);
+  if (!driver) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid or expired access token" });
+  }
+  return driver;
 }
 
 async function requirePublicDriverDispatch(db: any, driver: typeof manufacturingDrivers.$inferSelect, dispatchId: number) {
@@ -696,9 +706,7 @@ export const manufacturingDispatchRouter = router({
     // Public: Get driver schedule by token (no auth required)
     schedule: publicProcedure.input(z.object({ token: z.string() })).query(async ({ input }) => {
       const db = await requireDb();
-      const [driver] = await db.select().from(manufacturingDrivers)
-        .where(and(eq(manufacturingDrivers.driverAccessToken, input.token), eq(manufacturingDrivers.isActive, true)));
-      if (!driver) throw new Error("Invalid or expired access token");
+      const driver = await requirePublicDriverByToken(db, input.token);
 
       // Get upcoming dispatches for this driver
       const conditions: any[] = [
@@ -710,6 +718,7 @@ export const manufacturingDispatchRouter = router({
 
       const dispatches = await db.select({
         id: manufacturingDispatches.id,
+        orderId: manufacturingDispatches.orderId,
         dispatchNumber: manufacturingDispatches.dispatchNumber,
         status: manufacturingDispatches.status,
         scheduledDate: manufacturingDispatches.scheduledDate,
@@ -718,6 +727,10 @@ export const manufacturingDispatchRouter = router({
         deliveryContact: manufacturingDispatches.deliveryContact,
         deliveryPhone: manufacturingDispatches.deliveryPhone,
         deliveryNotes: manufacturingDispatches.deliveryNotes,
+        dispatchedAt: manufacturingDispatches.dispatchedAt,
+        orderNumber: manufacturingOrders.orderNumber,
+        clientName: manufacturingOrders.clientName,
+        siteAddress: manufacturingOrders.siteAddress,
       }).from(manufacturingDispatches)
         .innerJoin(manufacturingOrders, eq(manufacturingDispatches.orderId, manufacturingOrders.id))
         .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
@@ -730,6 +743,43 @@ export const manufacturingDispatchRouter = router({
       };
     }),
 
+    // Public: GPS check-in from a driver's mobile device
+    checkIn: publicProcedure.input(z.object({
+      token: z.string(),
+      dispatchId: z.number(),
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      heading: z.number().min(0).max(360).optional(),
+      speed: z.number().min(0).optional(),
+      accuracy: z.number().min(0).optional(),
+    })).mutation(async ({ input }) => {
+      const db = await requireDb();
+      const driver = await requirePublicDriverByToken(db, input.token);
+      const dispatch = await requirePublicDriverDispatch(db, driver, input.dispatchId);
+      const recordedAt = new Date();
+
+      await db.insert(driverLocations).values({
+        driverId: driver.id,
+        latitude: input.latitude.toFixed(7),
+        longitude: input.longitude.toFixed(7),
+        heading: input.heading != null ? input.heading.toFixed(1) : null,
+        speed: input.speed != null ? input.speed.toFixed(2) : null,
+        accuracy: input.accuracy != null ? input.accuracy.toFixed(2) : null,
+        recordedAt,
+      });
+
+      let status = dispatch.status;
+      if (dispatch.status === "scheduled") {
+        status = "in_transit";
+        await db.update(manufacturingDispatches).set({
+          status,
+          dispatchedAt: dispatch.dispatchedAt || recordedAt,
+        }).where(eq(manufacturingDispatches.id, input.dispatchId));
+      }
+
+      return { success: true, status, recordedAt: recordedAt.toISOString() };
+    }),
+
     // Public: Confirm delivery by token
     confirmDelivery: publicProcedure.input(z.object({
       token: z.string(),
@@ -738,9 +788,7 @@ export const manufacturingDispatchRouter = router({
       notes: z.string().optional(),
     })).mutation(async ({ input }) => {
       const db = await requireDb();
-      const [driver] = await db.select().from(manufacturingDrivers)
-        .where(and(eq(manufacturingDrivers.driverAccessToken, input.token), eq(manufacturingDrivers.isActive, true)));
-      if (!driver) throw new Error("Invalid or expired access token");
+      const driver = await requirePublicDriverByToken(db, input.token);
 
       const dispatch = await requirePublicDriverDispatch(db, driver, input.dispatchId);
 
@@ -770,9 +818,7 @@ export const manufacturingDispatchRouter = router({
       dispatchId: z.number(),
     })).mutation(async ({ input }) => {
       const db = await requireDb();
-      const [driver] = await db.select().from(manufacturingDrivers)
-        .where(and(eq(manufacturingDrivers.driverAccessToken, input.token), eq(manufacturingDrivers.isActive, true)));
-      if (!driver) throw new Error("Invalid or expired access token");
+      const driver = await requirePublicDriverByToken(db, input.token);
 
       await requirePublicDriverDispatch(db, driver, input.dispatchId);
 
