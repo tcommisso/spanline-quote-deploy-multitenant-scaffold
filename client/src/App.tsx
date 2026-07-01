@@ -463,6 +463,7 @@ function MainRouter() {
         <Route path="/construction/flashing-orders" component={FlashingOrderList} />
         <Route path="/construction/smartshop">{() => <Redirect to="/construction/component-orders" />}</Route>
         <Route path="/construction" component={ConstructionDashboard} />
+        <Route path="/manufacturing/flashing-orders/:id">{() => <FlashingOrderDetail returnPath="/manufacturing/orders" />}</Route>
         <Route path="/manufacturing/orders/:id" component={ManufacturingOrderDetail} />
         <Route path="/manufacturing/orders" component={ManufacturingOrders} />
         <Route path="/manufacturing/calendar" component={ManufacturingCalendar} />

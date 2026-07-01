@@ -9,9 +9,10 @@ import {
   constructionJobs,
   cmComponentOrders,
   checkMeasureWorkbooks,
+  flashingOrders,
   branches,
 } from "../drizzle/schema";
-import { eq, desc, and, gte, lte, inArray, sql, asc, or, isNull } from "drizzle-orm";
+import { eq, desc, and, gte, lte, inArray, sql, asc, or, isNull, like } from "drizzle-orm";
 import { notifyOwner } from "./_core/notification";
 import { appendTenantScope, tenantIdFromContext, tenantScoped } from "./_core/tenant-scope";
 import { privateTenantConditions } from "./private-tenant-scope";
@@ -22,6 +23,29 @@ async function requireDb() {
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
   return db;
 }
+
+const manufacturingOrderStatuses = new Set([
+  "received",
+  "in_production",
+  "partially_complete",
+  "completed",
+  "ready_for_dispatch",
+  "dispatched",
+  "on_hold",
+  "cancelled",
+]);
+
+const flashingOrderStatuses = new Set([
+  "draft",
+  "submitted",
+  "supplier_received",
+  "in_production",
+  "purchase_ordered",
+  "ready",
+  "completed",
+  "cancelled",
+  "archived",
+]);
 
 function jobTenantConditions(ctx: any, ...baseConditions: any[]) {
   const conditions = [...baseConditions];
@@ -146,40 +170,115 @@ export const manufacturingRouter = router({
       }).optional())
       .query(async ({ ctx, input }) => {
         const db = await requireDb();
-        const conditions: any[] = [];
-        if (input?.status && input.status !== "all") {
-          conditions.push(eq(manufacturingOrders.status, input.status as any));
+        const statusFilter = input?.status && input.status !== "all" ? input.status : null;
+        const search = input?.search?.trim();
+        const tenantId = tenantIdFromContext(ctx);
+        if (!tenantId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "A valid tenant context is required." });
         }
-        appendTenantScope(conditions, constructionJobs.tenantId, tenantIdFromContext(ctx));
-        let orders = await db.select({
-          id: manufacturingOrders.id,
-          componentOrderId: manufacturingOrders.componentOrderId,
-          jobId: manufacturingOrders.jobId,
-          orderNumber: manufacturingOrders.orderNumber,
-          clientName: manufacturingOrders.clientName,
-          siteAddress: manufacturingOrders.siteAddress,
-          status: manufacturingOrders.status,
-          priority: manufacturingOrders.priority,
-          targetDate: manufacturingOrders.targetDate,
-          completedAt: manufacturingOrders.completedAt,
-          notes: manufacturingOrders.notes,
-          receivedByName: manufacturingOrders.receivedByName,
-          receivedAt: manufacturingOrders.receivedAt,
-          createdAt: manufacturingOrders.createdAt,
-        }).from(manufacturingOrders)
-          .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(manufacturingOrders.createdAt));
+        const includeComponentOrders = !statusFilter || manufacturingOrderStatuses.has(statusFilter);
+        const includeFlashingOrders = !statusFilter || flashingOrderStatuses.has(statusFilter);
 
-        if (input?.search) {
-          const s = input.search.toLowerCase();
-          orders = orders.filter(o =>
-            o.clientName?.toLowerCase().includes(s) ||
-            o.orderNumber?.toLowerCase().includes(s) ||
-            o.siteAddress?.toLowerCase().includes(s)
+        const componentOrderRows = includeComponentOrders
+          ? await db.select({
+              id: manufacturingOrders.id,
+              componentOrderId: manufacturingOrders.componentOrderId,
+              jobId: manufacturingOrders.jobId,
+              orderNumber: manufacturingOrders.orderNumber,
+              clientName: manufacturingOrders.clientName,
+              siteAddress: manufacturingOrders.siteAddress,
+              status: manufacturingOrders.status,
+              priority: manufacturingOrders.priority,
+              targetDate: manufacturingOrders.targetDate,
+              completedAt: manufacturingOrders.completedAt,
+              notes: manufacturingOrders.notes,
+              receivedByName: manufacturingOrders.receivedByName,
+              receivedAt: manufacturingOrders.receivedAt,
+              createdAt: manufacturingOrders.createdAt,
+            }).from(manufacturingOrders)
+              .innerJoin(constructionJobs, eq(manufacturingOrders.jobId, constructionJobs.id))
+              .where(and(...jobTenantConditions(
+                ctx,
+                ...(statusFilter ? [eq(manufacturingOrders.status, statusFilter as any)] : []),
+              )))
+              .orderBy(desc(manufacturingOrders.createdAt))
+          : [];
+
+        const flashingConditions: any[] = [eq(flashingOrders.tenantId, tenantId)];
+        if (statusFilter) {
+          flashingConditions.push(eq(flashingOrders.status, statusFilter as any));
+        } else {
+          flashingConditions.push(sql`${flashingOrders.status} NOT IN ('draft', 'archived')`);
+        }
+        if (search) {
+          const pattern = `%${search.toLowerCase()}%`;
+          flashingConditions.push(or(
+            like(sql`LOWER(${flashingOrders.orderNumber})`, pattern),
+            like(sql`LOWER(${flashingOrders.jobNumber})`, pattern),
+            like(sql`LOWER(${flashingOrders.clientName})`, pattern),
+            like(sql`LOWER(${flashingOrders.siteAddress})`, pattern),
+            like(sql`LOWER(${flashingOrders.supplierName})`, pattern),
+          )!);
+        }
+
+        const flashingOrderRows = includeFlashingOrders
+          ? await db.select({
+              id: flashingOrders.id,
+              jobId: flashingOrders.jobId,
+              orderNumber: flashingOrders.orderNumber,
+              clientName: flashingOrders.clientName,
+              siteAddress: flashingOrders.siteAddress,
+              status: flashingOrders.status,
+              priority: flashingOrders.priority,
+              targetDate: flashingOrders.requestedDeliveryAt,
+              completedAt: sql<Date | null>`NULL`,
+              notes: flashingOrders.siteNotes,
+              receivedByName: flashingOrders.supplierName,
+              receivedAt: sql<Date>`COALESCE(${flashingOrders.submittedAt}, ${flashingOrders.updatedAt}, ${flashingOrders.createdAt})`,
+              createdAt: flashingOrders.createdAt,
+              lineCount: flashingOrders.lineCount,
+              totalLinealMetres: flashingOrders.totalLinealMetres,
+              totalExGst: flashingOrders.totalExGst,
+            }).from(flashingOrders)
+              .where(and(...flashingConditions))
+              .orderBy(desc(flashingOrders.updatedAt))
+          : [];
+
+        let orders = [
+          ...componentOrderRows.map((order: any) => ({
+            ...order,
+            sourceType: "component" as const,
+            sourceLabel: "Component order",
+            sourceHref: `/manufacturing/orders/${order.id}`,
+            lineCount: null,
+            totalLinealMetres: null,
+            totalExGst: null,
+          })),
+          ...flashingOrderRows.map((order: any) => ({
+            ...order,
+            componentOrderId: null,
+            clientName: order.clientName || "Manual flashing order",
+            sourceType: "flashing" as const,
+            sourceLabel: "Flashing order",
+            sourceHref: `/manufacturing/flashing-orders/${order.id}`,
+          })),
+        ];
+
+        if (search) {
+          const s = search.toLowerCase();
+          orders = orders.filter((order: any) =>
+            order.clientName?.toLowerCase().includes(s) ||
+            order.orderNumber?.toLowerCase().includes(s) ||
+            order.siteAddress?.toLowerCase().includes(s) ||
+            order.receivedByName?.toLowerCase().includes(s)
           );
         }
-        return orders;
+
+        return orders.sort((a: any, b: any) => {
+          const aTime = new Date(a.receivedAt || a.createdAt || 0).getTime();
+          const bTime = new Date(b.receivedAt || b.createdAt || 0).getTime();
+          return bTime - aTime;
+        });
       }),
 
     detail: protectedProcedure

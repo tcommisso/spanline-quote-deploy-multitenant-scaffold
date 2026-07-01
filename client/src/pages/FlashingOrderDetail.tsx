@@ -97,6 +97,7 @@ type FlashingAttachment = {
 
 type FlashingOrderDetailProps = {
   portalMode?: boolean;
+  returnPath?: string;
 };
 
 const CANVAS_W = 560;
@@ -1384,7 +1385,7 @@ export default function FlashingOrderDetail(props: FlashingOrderDetailProps | an
   const orderId = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const orderBasePath = portalMode ? "/trade-portal/flashing-orders" : "/construction/flashing-orders";
+  const orderBasePath = props?.returnPath || (portalMode ? "/trade-portal/flashing-orders" : "/construction/flashing-orders");
   const adminDetailQuery = trpc.flashing.getOrder.useQuery({ id: orderId }, { enabled: !portalMode && Number.isFinite(orderId) });
   const portalDetailQuery = trpc.tradePortal.getFlashingOrder.useQuery({ id: orderId }, { enabled: portalMode && Number.isFinite(orderId) });
   const detailQuery = portalMode ? portalDetailQuery : adminDetailQuery;
